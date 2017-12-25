@@ -1,0 +1,77 @@
+use ln::msgs;
+
+use bitcoin::blockdata::script::Script;
+use bitcoin::util::uint::Uint256;
+use bitcoin::util::hash::Sha256dHash;
+
+use secp256k1::key::PublicKey;
+
+use std::time::Instant;
+
+pub enum Event {
+	// Events a user will probably have to handle
+	/// Used to indicate that the client should generate a funding transaction with the given
+	/// parameters and then call ChannelManager::funding_transaction_generated.
+	/// Generated in ChannelManager message handling.
+	FundingGenerationReady {
+		temporary_channel_id: Uint256,
+		channel_value_satoshis: u64,
+		output_script: Script,
+		/// The value passed in to ChannelManager::create_channel
+		user_channel_id: u64,
+	},
+	/// Used to indicate that the client may now broadcast the funding transaction it created for a
+	/// channel. Broadcasting such a transaction prior to this event may lead to our counterparty
+	/// trivially stealing all funds in the funding transaction!
+	FundingBroadcastSafe {
+		funding_txo: (Sha256dHash, u16),
+		/// The value passed in to ChannelManager::create_channel
+		user_channel_id: u64,
+	},
+	/// Indicates we've received money! Just gotta dig out that payment preimage and feed it to
+	/// ChannelManager::claim_funds to get it....
+	PaymentReceived {
+		payment_hash: [u8; 32],
+		amt: u64,
+	},
+
+	// Events indicating the network loop should send a message to a peer:
+	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
+	/// time in the future.
+	PendingHTLCsForwardable {
+		time_forwardable: Instant,
+	},
+	/// Used to indicate that a funding_created message should be sent to the peer with the given node_id.
+	SendFundingCreated {
+		node_id: PublicKey,
+		msg: msgs::FundingCreated,
+	},
+	/// Used to indicate that a funding_locked message should be sent to the peer with the given node_id.
+	SendFundingLocked {
+		node_id: PublicKey,
+		msg: msgs::FundingLocked,
+		announcement_sigs: Option<msgs::AnnouncementSignatures>,
+	},
+	/// Used to indicate that a series of update_add_htlc messages, as well as a commitment_signed
+	/// message should be sent to the peer with the given node_id.
+	SendHTLCs {
+		node_id: PublicKey,
+		msgs: Vec<msgs::UpdateAddHTLC>,
+		commitment_msg: msgs::CommitmentSigned,
+	},
+	/// Used to indicate that we're ready to fulfill an htlc from the peer with the given node_id.
+	SendFulfillHTLC {
+		node_id: PublicKey,
+		msg: msgs::UpdateFulfillHTLC,
+	},
+	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
+	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
+	BroadcastChannelAnnouncement {
+		msg: msgs::ChannelAnnouncement,
+		update_msg: msgs::ChannelUpdate,
+	},
+}
+
+pub trait EventsProvider {
+	fn get_and_clear_pending_events(&self) -> Vec<Event>;
+}

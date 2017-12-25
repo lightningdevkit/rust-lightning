@@ -1,0 +1,21 @@
+[package]
+name = "lightning"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+license = "AGPL-3.0"
+repository = "https://github.com/TheBlueMatt/rust-lightning/"
+description = """
+A Bitcoin Lightning implementation in Rust.
+Still super-early code-dump quality and is missing large chunks. See README in git repo for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to finish building it to even try.
+"""
+
+[features]
+# Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
+non_bitcoin_chain_hash_routing = []
+
+[dependencies]
+bitcoin = "0.10.7"
+rust-crypto = "0.2"
+rand = "0.3"
+secp256k1 = "0.8.1"
+num = "0.1"
