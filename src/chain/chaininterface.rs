@@ -7,6 +7,9 @@ use std::sync::{Weak,Mutex};
 
 /// An interface to request notification of certain scripts as they appear the
 /// chain.
+/// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
+/// called from inside the library in response to ChainListener events, P2P events, or timer
+/// events).
 pub trait ChainWatchInterface: Sync + Send {
 	/// Provides a scriptPubKey which much be watched for.
 	fn install_watch_script(&self, script_pub_key: Script);
@@ -45,6 +48,11 @@ pub enum ConfirmationTarget {
 	HighPriority,
 }
 
+/// A trait which should be implemented to provide feerate information on a number of time
+/// horizons.
+/// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
+/// called from inside the library in response to ChainListener events, P2P events, or timer
+/// events).
 pub trait FeeEstimator: Sync + Send {
 	fn get_est_sat_per_vbyte(&self, ConfirmationTarget) -> u64;
 }
