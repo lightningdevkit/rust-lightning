@@ -39,6 +39,7 @@ pub struct ChannelKeys {
 	pub delayed_payment_base_key: SecretKey,
 	pub htlc_base_key: SecretKey,
 	pub channel_close_key: SecretKey,
+	pub channel_monitor_claim_key: SecretKey,
 	pub commitment_seed: [u8; 32],
 }
 
@@ -68,6 +69,9 @@ impl ChannelKeys {
 		hkdf_expand(sha, &prk, b"rust-lightning channel close key info", &mut okm);
 		let channel_close_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
 
+		hkdf_expand(sha, &prk, b"rust-lightning channel monitor claim key info", &mut okm);
+		let channel_monitor_claim_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+
 		hkdf_expand(sha, &prk, b"rust-lightning local commitment seed info", &mut okm);
 
 		Ok(ChannelKeys {
@@ -77,6 +81,7 @@ impl ChannelKeys {
 			delayed_payment_base_key: delayed_payment_base_key,
 			htlc_base_key: htlc_base_key,
 			channel_close_key: channel_close_key,
+			channel_monitor_claim_key: channel_monitor_claim_key,
 			commitment_seed: okm
 		})
 	}
@@ -284,8 +289,8 @@ impl Channel {
 		};
 
 		let secp_ctx = Secp256k1::new();
-		let our_channel_close_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_close_key).unwrap().serialize());
-		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
+		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
+		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key,
 		                                          &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key).unwrap(),
 		                                          &PublicKey::from_secret_key(&secp_ctx, &chan_keys.htlc_base_key).unwrap(),
@@ -397,8 +402,8 @@ impl Channel {
 		};
 
 		let secp_ctx = Secp256k1::new();
-		let our_channel_close_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_close_key).unwrap().serialize());
-		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
+		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
+		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let mut channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key,
 		                                          &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key).unwrap(),
 		                                          &PublicKey::from_secret_key(&secp_ctx, &chan_keys.htlc_base_key).unwrap(),
