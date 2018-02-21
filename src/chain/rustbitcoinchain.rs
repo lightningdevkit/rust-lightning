@@ -61,6 +61,6 @@ impl ChainWatchImpl {
 			//TODO: Height
 			self.util.do_call_block_connected(&block.header, 0, &txn_matched[..], &indexes_of_txn_matched[..]);
 		}
-		self.chain.lock().unwrap().add_block(block);
+		self.chain.lock().unwrap().add_block(block).unwrap();
 	}
 }
