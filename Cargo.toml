@@ -14,8 +14,7 @@ Still super-early code-dump quality and is missing large chunks. See README in g
 non_bitcoin_chain_hash_routing = []
 
 [dependencies]
-bitcoin = "0.10.7"
+bitcoin = "0.11"
 rust-crypto = "0.2"
-rand = "0.3"
-secp256k1 = "0.8.1"
-num = "0.1"
+rand = "0.4"
+secp256k1 = "0.8"

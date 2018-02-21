@@ -7,8 +7,6 @@ use bitcoin::util::hash::{Sha256dHash, Hash160};
 use bitcoin::util::bip143;
 use bitcoin::network::serialize::BitcoinHash;
 
-use num::FromPrimitive;
-
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1;
