@@ -1,5 +1,3 @@
-//TODO: Dont expose
-
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
 	((v[0] as u16) << 8*1) |
