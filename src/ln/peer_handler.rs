@@ -20,7 +20,7 @@ pub struct MessageHandler {
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
 /// to a remote host. You will need to be able to generate multiple of these which meet Eq and
 /// implement Hash to meet the PeerManager API.
-/// For effeciency, Clone should be relatively cheap for this type.
+/// For efficiency, Clone should be relatively cheap for this type.
 /// You probably want to just extend an int and put a file descriptor in a struct and implement
 /// send_data.
 pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {

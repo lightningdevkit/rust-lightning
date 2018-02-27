@@ -297,7 +297,7 @@ impl ChannelManager {
 			for (i, keys) in onion_keys.iter().enumerate() {
 				if i == payloads.len() - 1 { continue; }
 				let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
-				chacha.process(&ChannelManager::ZERO, &mut buf); // We dont have a seek function :(
+				chacha.process(&ChannelManager::ZERO, &mut buf); // We don't have a seek function :(
 				ChannelManager::xor_bufs(&mut res[0..(i + 1)*65], &buf[(20 - i)*65..21*65]);
 			}
 			res
@@ -557,7 +557,7 @@ impl ChannelManager {
 										// will automatically handle building the update_add_htlc and
 										// commitment_signed messages when we can.
 										// TODO: Do some kind of timer to set the channel as !is_live()
-										// as we dont really want others relying on us relaying through
+										// as we don't really want others relying on us relaying through
 										// this channel currently :/.
 									}
 								}
@@ -737,7 +737,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
-		//TODO: broke this - a node shouldnt be able to get their channel removed by sending a
+		//TODO: broke this - a node shouldn't be able to get their channel removed by sending a
 		//funding_created a second time, or long after the first, or whatever (note this also
 		//leaves the short_to_id map in a busted state.
 		let chan = {
@@ -814,7 +814,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
-		//TODO: BOLT 4 points out a specific attack where a peer may re-send a onion packet and
+		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
 		//determine the state of the payment based on our response/if we forward anything/the time
 		//we take to respond. We should take care to avoid allowing such an attack.
 		//
@@ -829,7 +829,7 @@ impl ChannelMessageHandler for ChannelManager {
 		let associated_data = Vec::new(); //TODO: What to put here?
 
 		if msg.onion_routing_packet.version != 0 {
-			//TODO: Spec doesnt indicate if we should only hash hop_data here (and in other
+			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
 			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
 			//the hash doesn't really serve any purpuse - in the case of hashing all data, the
 			//receiving node would have to brute force to figure out which version was put in the
@@ -919,7 +919,7 @@ impl ChannelMessageHandler for ChannelManager {
 					});
 				}
 
-				// Note that we could obviously respond immediately with a update_fulfill_htlc
+				// Note that we could obviously respond immediately with an update_fulfill_htlc
 				// message, however that would leak that we are the recipient of this payment, so
 				// instead we stay symmetric with the forwarding case, only responding (after a
 				// delay) once they've send us a commitment_signed!
