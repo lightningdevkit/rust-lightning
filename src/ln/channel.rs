@@ -154,7 +154,7 @@ enum ChannelState {
 	AwaitingRemoteRevoke = (1 << 7),
 }
 
-// TODO: We should refactor this to be a Inbound/OutboundChannel until initial setup handshaking
+// TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling get_channel_id() before we're set up or things like get_outbound_funding_signed on an
 // inbound channel.
@@ -897,7 +897,7 @@ impl Channel {
 	}
 
 	/// Handles a funding_signed message from the remote end.
-	/// If this call is successfull, broadcast the funding transaction (and not before!)
+	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed(&mut self, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
 		if !self.channel_outbound {
 			return Err(HandleError{err: "Received funding_signed for an inbound channel?", msg: None});
@@ -933,7 +933,7 @@ impl Channel {
 		}
 
 		//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-		//as otherwise we will have a commitment transaction that they cant revoke (well, kinda,
+		//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
 		//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
 		//a protocol oversight, but I assume I'm just missing something.
 		if self.their_cur_commitment_point != msg.next_per_commitment_point {
@@ -1333,7 +1333,7 @@ impl Channel {
 					self.funding_tx_confirmed_in = header.bitcoin_hash();
 
 					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-					//as otherwise we will have a commitment transaction that they cant revoke (well, kinda,
+					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
 					//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
 					//a protocol oversight, but I assume I'm just missing something.
 					let next_per_commitment_secret = match self.build_local_commitment_secret(self.cur_local_commitment_transaction_number) {
@@ -1466,7 +1466,7 @@ impl Channel {
 	/// Panics if called at some time other than immediately after initial handshake, if called twice,
 	/// or if called on an inbound channel.
 	/// Note that channel_id changes during this call!
-	/// Do NOT broadcast the funding transaction until after a successfull funding_signed call!
+	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	pub fn get_outbound_funding_created(&mut self, funding_txid: Sha256dHash, funding_output_index: u16) -> Result<msgs::FundingCreated, HandleError> {
 		if !self.channel_outbound {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
@@ -1694,7 +1694,7 @@ mod tests {
 		chan.local_keys.payment_base_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
 		chan.local_keys.delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap();
 		chan.local_keys.htlc_base_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
-		// chan.local_keys.commitment_seed isnt derived in the test vectors :(
+		// chan.local_keys.commitment_seed isn't derived in the test vectors :(
 
 		chan.channel_monitor.set_funding_info(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
 
