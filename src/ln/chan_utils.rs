@@ -35,7 +35,7 @@ pub fn derive_private_key(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey
 	sha.result(&mut res);
 
 	let mut key = base_secret.clone();
-	try!(key.add_assign(&secp_ctx, &try!(SecretKey::from_slice(&secp_ctx, &res))));
+	key.add_assign(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &res)?)?;
 	Ok(key)
 }
 
@@ -46,7 +46,7 @@ pub fn derive_public_key(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey,
 	let mut res = [0; 32];
 	sha.result(&mut res);
 
-	let hashkey = PublicKey::from_secret_key(&secp_ctx, &try!(SecretKey::from_slice(&secp_ctx, &res))).unwrap();
+	let hashkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &res)?).unwrap();
 	base_point.combine(&secp_ctx, &hashkey)
 }
 
@@ -62,7 +62,7 @@ pub fn derive_private_revocation_key(secp_ctx: &Secp256k1, per_commitment_secret
 		let mut res = [0; 32];
 		sha.result(&mut res);
 
-		try!(SecretKey::from_slice(&secp_ctx, &res))
+		SecretKey::from_slice(&secp_ctx, &res)?
 	};
 	let commit_append_rev_hash_key = {
 		let mut sha = Sha256::new();
@@ -71,14 +71,14 @@ pub fn derive_private_revocation_key(secp_ctx: &Secp256k1, per_commitment_secret
 		let mut res = [0; 32];
 		sha.result(&mut res);
 
-		try!(SecretKey::from_slice(&secp_ctx, &res))
+		SecretKey::from_slice(&secp_ctx, &res)?
 	};
 
 	let mut part_a = revocation_base_secret.clone();
-	try!(part_a.mul_assign(&secp_ctx, &rev_append_commit_hash_key));
+	part_a.mul_assign(&secp_ctx, &rev_append_commit_hash_key)?;
 	let mut part_b = per_commitment_secret.clone();
-	try!(part_b.mul_assign(&secp_ctx, &commit_append_rev_hash_key));
-	try!(part_a.add_assign(&secp_ctx, &part_b));
+	part_b.mul_assign(&secp_ctx, &commit_append_rev_hash_key)?;
+	part_a.add_assign(&secp_ctx, &part_b)?;
 	Ok(part_a)
 }
 
@@ -90,7 +90,7 @@ pub fn derive_public_revocation_key(secp_ctx: &Secp256k1, per_commitment_point: 
 		let mut res = [0; 32];
 		sha.result(&mut res);
 
-		try!(SecretKey::from_slice(&secp_ctx, &res))
+		SecretKey::from_slice(&secp_ctx, &res)?
 	};
 	let commit_append_rev_hash_key = {
 		let mut sha = Sha256::new();
@@ -99,13 +99,13 @@ pub fn derive_public_revocation_key(secp_ctx: &Secp256k1, per_commitment_point: 
 		let mut res = [0; 32];
 		sha.result(&mut res);
 
-		try!(SecretKey::from_slice(&secp_ctx, &res))
+		SecretKey::from_slice(&secp_ctx, &res)?
 	};
 
 	let mut part_a = revocation_base_point.clone();
-	try!(part_a.mul_assign(&secp_ctx, &rev_append_commit_hash_key));
+	part_a.mul_assign(&secp_ctx, &rev_append_commit_hash_key)?;
 	let mut part_b = per_commitment_point.clone();
-	try!(part_b.mul_assign(&secp_ctx, &commit_append_rev_hash_key));
+	part_b.mul_assign(&secp_ctx, &commit_append_rev_hash_key)?;
 	part_a.combine(&secp_ctx, &part_b)
 }
 
@@ -122,11 +122,11 @@ impl TxCreationKeys {
 	pub fn new(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
-			revocation_key: try!(derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)),
-			a_htlc_key: try!(derive_public_key(&secp_ctx, &per_commitment_point, &a_htlc_base)),
-			b_htlc_key: try!(derive_public_key(&secp_ctx, &per_commitment_point, &b_htlc_base)),
-			a_delayed_payment_key: try!(derive_public_key(&secp_ctx, &per_commitment_point, &a_delayed_payment_base)),
-			b_payment_key: try!(derive_public_key(&secp_ctx, &per_commitment_point, &b_payment_base)),
+			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)?,
+			a_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &a_htlc_base)?,
+			b_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &b_htlc_base)?,
+			a_delayed_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &a_delayed_payment_base)?,
+			b_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &b_payment_base)?,
 		})
 	}
 }

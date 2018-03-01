@@ -50,25 +50,25 @@ impl ChannelKeys {
 
 		let mut okm = [0; 32];
 		hkdf_expand(sha, &prk, b"rust-lightning funding key info", &mut okm);
-		let funding_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let funding_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning revocation base key info", &mut okm);
-		let revocation_base_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let revocation_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning payment base key info", &mut okm);
-		let payment_base_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning delayed payment base key info", &mut okm);
-		let delayed_payment_base_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning htlc base key info", &mut okm);
-		let htlc_base_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning channel close key info", &mut okm);
-		let channel_close_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let channel_close_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning channel monitor claim key info", &mut okm);
-		let channel_monitor_claim_key = try!(SecretKey::from_slice(&secp_ctx, &okm));
+		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
 		hkdf_expand(sha, &prk, b"rust-lightning local commitment seed info", &mut okm);
 
@@ -610,7 +610,7 @@ impl Channel {
 	/// The result is a transaction which we can revoke ownership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_local_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, HandleError> {
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &try!(self.build_local_commitment_secret(commitment_number))).unwrap();
+		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number)?).unwrap();
 		let delayed_payment_base = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.delayed_payment_base_key).unwrap();
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key).unwrap();
 
@@ -845,12 +845,12 @@ impl Channel {
 	fn funding_created_signature(&mut self, sig: &Signature) -> Result<(Transaction, Signature), HandleError> {
 		let funding_script = self.get_funding_redeemscript();
 
-		let remote_keys = try!(self.build_remote_transaction_keys());
-		let remote_initial_commitment_tx = try!(self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)).0;
+		let remote_keys = self.build_remote_transaction_keys()?;
+		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)?.0;
 		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
 
-		let local_keys = try!(self.build_local_transaction_keys(self.cur_local_commitment_transaction_number));
-		let local_initial_commitment_tx = try!(self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)).0;
+		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
+		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?.0;
 		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
@@ -911,8 +911,8 @@ impl Channel {
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let local_keys = try!(self.build_local_transaction_keys(self.cur_local_commitment_transaction_number));
-		let local_initial_commitment_tx = try!(self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)).0;
+		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
+		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?.0;
 		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
@@ -1061,7 +1061,7 @@ impl Channel {
 			//TODO: Need to examine the type of err - if its a fee issue or similar we may want to
 			//fail it back the route, if its a temporary issue we can ignore it...
 			if update_add_msgs.len() > 0 {
-				Ok(Some((update_add_msgs, try!(self.send_commitment()))))
+				Ok(Some((update_add_msgs, self.send_commitment()?)))
 			} else {
 				Err(err.unwrap())
 			}
@@ -1156,8 +1156,8 @@ impl Channel {
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let local_keys = try!(self.build_local_transaction_keys(self.cur_local_commitment_transaction_number));
-		let local_commitment_tx = try!(self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false));
+		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
+		let local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?;
 		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0, 0, &funding_script, self.channel_value_satoshis)[..]));
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey));
 
@@ -1166,13 +1166,13 @@ impl Channel {
 		}
 
 		for (idx, ref htlc) in local_commitment_tx.1.iter().enumerate() {
-			let htlc_tx = try!(self.build_htlc_transaction(&local_commitment_tx.0.txid(), htlc, true, &local_keys));
+			let htlc_tx = self.build_htlc_transaction(&local_commitment_tx.0.txid(), htlc, true, &local_keys)?;
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys, htlc.offered);
 			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx, 0, &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
 			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key));
 		}
 
-		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &try!(self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1))).unwrap();
+		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1)?).unwrap();
 		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number);
 
 		//TODO: Store htlc keys in our channel_watcher
@@ -1208,7 +1208,7 @@ impl Channel {
 		if PublicKey::from_secret_key(&self.secp_ctx, &get_key!(&self.secp_ctx, &msg.per_commitment_secret)).unwrap() != self.their_cur_commitment_point {
 			return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
 		}
-		try!(self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number, msg.per_commitment_secret));
+		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number, msg.per_commitment_secret)?;
 
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
@@ -1393,7 +1393,7 @@ impl Channel {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let local_commitment_secret = try!(self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
+		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number)?;
 
 		Ok(msgs::OpenChannel {
 			chain_hash: chain_hash,
@@ -1429,7 +1429,7 @@ impl Channel {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
-		let local_commitment_secret = try!(self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
+		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number)?;
 
 		Ok(msgs::AcceptChannel {
 			temporary_channel_id: self.channel_id,
@@ -1453,8 +1453,8 @@ impl Channel {
 	fn get_outbound_funding_created_signature(&mut self) -> Result<Signature, HandleError> {
 		let funding_script = self.get_funding_redeemscript();
 
-		let remote_keys = try!(self.build_remote_transaction_keys());
-		let remote_initial_commitment_tx = try!(self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)).0;
+		let remote_keys = self.build_remote_transaction_keys()?;
+		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)?.0;
 		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -1615,15 +1615,15 @@ impl Channel {
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let remote_keys = try!(self.build_remote_transaction_keys());
-		let remote_commitment_tx = try!(self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true));
+		let remote_keys = self.build_remote_transaction_keys()?;
+		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true)?;
 		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_commitment_tx.0).sighash_all(&remote_commitment_tx.0, 0, &funding_script, self.channel_value_satoshis)[..]));
 		let our_sig = secp_call!(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key));
 
 		let mut htlc_sigs = Vec::new();
 
 		for ref htlc in remote_commitment_tx.1.iter() {
-			let htlc_tx = try!(self.build_htlc_transaction(&remote_commitment_tx.0.txid(), htlc, false, &remote_keys));
+			let htlc_tx = self.build_htlc_transaction(&remote_commitment_tx.0.txid(), htlc, false, &remote_keys)?;
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys, htlc.offered);
 			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx, 0, &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
 			let our_htlc_key = secp_call!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
@@ -1645,9 +1645,9 @@ impl Channel {
 	/// Shorthand for calling send_htlc() followed by send_commitment(), see docs on those for
 	/// more info.
 	pub fn send_htlc_and_commit(&mut self, amount_msat: u64, payment_hash: [u8; 32], cltv_expiry: u32, onion_routing_packet: msgs::OnionPacket) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned)>, HandleError> {
-		match try!(self.send_htlc(amount_msat, payment_hash, cltv_expiry, onion_routing_packet)) {
+		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, onion_routing_packet)? {
 			Some(update_add_htlc) =>
-				Ok(Some((update_add_htlc, try!(self.send_commitment())))),
+				Ok(Some((update_add_htlc, self.send_commitment()?))),
 			None => Ok(None)
 		}
 	}

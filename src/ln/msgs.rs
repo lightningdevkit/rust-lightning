@@ -477,11 +477,11 @@ impl MsgEncodable for GlobalFeatures {
 
 impl MsgDecodable for Init {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		let global_features = try!(GlobalFeatures::decode(v));
+		let global_features = GlobalFeatures::decode(v)?;
 		if global_features.flags.len() + 4 <= v.len() {
 			return Err(DecodeError::WrongLength);
 		}
-		let local_features = try!(LocalFeatures::decode(&v[global_features.flags.len() + 2..]));
+		let local_features = LocalFeatures::decode(&v[global_features.flags.len() + 2..])?;
 		if global_features.flags.len() + local_features.flags.len() + 4 != v.len() {
 			return Err(DecodeError::WrongLength);
 		}
@@ -873,7 +873,7 @@ impl MsgDecodable for OnionHopData {
 		hmac[..].copy_from_slice(&v[33..65]);
 		Ok(OnionHopData {
 			realm: realm,
-			data: try!(OnionRealm0HopData::decode(&v[1..33])),
+			data: OnionRealm0HopData::decode(&v[1..33])?,
 			hmac: hmac,
 		})
 	}

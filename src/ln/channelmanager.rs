@@ -144,7 +144,7 @@ impl ChannelManager {
 
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, user_id: u64) -> Result<msgs::OpenChannel, HandleError> {
 		let channel = Channel::new_outbound(&*self.fee_estimator, their_network_key, channel_value_satoshis, self.announce_channels_publicly, user_id);
-		let res = try!(channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator));
+		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator)?;
 		let mut channels = self.channels.lock().unwrap();
 		match channels.by_id.insert(channel.channel_id(), channel) {
 			Some(_) => panic!("RNG is bad???"),
@@ -429,9 +429,9 @@ impl ChannelManager {
 
 		let associated_data = Vec::new(); //TODO: What to put here?
 
-		let onion_keys = try!(ChannelManager::construct_onion_keys(&self.secp_ctx, route, &session_priv));
-		let (onion_payloads, htlc_msat, htlc_cltv) = try!(ChannelManager::build_onion_payloads(route));
-		let onion_packet = try!(ChannelManager::construct_onion_packet(onion_payloads, onion_keys, associated_data));
+		let onion_keys = ChannelManager::construct_onion_keys(&self.secp_ctx, route, &session_priv)?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(route)?;
+		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, associated_data)?;
 
 		let mut channels = self.channels.lock().unwrap();
 		let id = match channels.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
@@ -489,7 +489,7 @@ impl ChannelManager {
 	fn get_announcement_sigs(&self, chan: &Channel) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
 		if !chan.is_usable() { return Ok(None) }
 
-		let (announcement, our_bitcoin_sig) = try!(chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()));
+		let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone())?;
 		let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
 		let our_node_sig = secp_call!(self.secp_ctx.sign(&msghash, &self.our_network_key));
 
@@ -706,8 +706,8 @@ impl ChannelMessageHandler for ChannelManager {
 		if channels.by_id.contains_key(&msg.temporary_channel_id) {
 			return Err(HandleError{err: "temporary_channel_id collision!", msg: None});
 		}
-		let channel = try!(Channel::new_from_req(&*self.fee_estimator, their_node_id.clone(), msg, 0, self.announce_channels_publicly));
-		let accept_msg = try!(channel.get_accept_channel());
+		let channel = Channel::new_from_req(&*self.fee_estimator, their_node_id.clone(), msg, 0, self.announce_channels_publicly)?;
+		let accept_msg = channel.get_accept_channel()?;
 		channels.by_id.insert(channel.channel_id(), channel);
 		Ok(accept_msg)
 	}
@@ -720,7 +720,7 @@ impl ChannelMessageHandler for ChannelManager {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
-					try!(chan.accept_channel(&msg));
+					chan.accept_channel(&msg)?;
 					(chan.get_value_satoshis(), chan.get_funding_redeemscript().to_v0_p2wsh(), chan.get_user_id())
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
@@ -763,7 +763,7 @@ impl ChannelMessageHandler for ChannelManager {
 		   // channel back-to-back with funding_created, we'll end up thinking they sent a message
 		   // for a bogus channel.
 		let chan_monitor = chan.0.channel_monitor();
-		try!(self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor));
+		self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor)?;
 		let mut channels = self.channels.lock().unwrap();
 		channels.by_id.insert(chan.1.channel_id, chan.0);
 		Ok(chan.1)
@@ -777,7 +777,7 @@ impl ChannelMessageHandler for ChannelManager {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
-					try!(chan.funding_signed(&msg));
+					chan.funding_signed(&msg)?;
 					(chan.get_funding_txo().unwrap(), chan.get_user_id())
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
@@ -798,8 +798,8 @@ impl ChannelMessageHandler for ChannelManager {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 				}
-				try!(chan.funding_locked(&msg));
-				return Ok(try!(self.get_announcement_sigs(chan)));
+				chan.funding_locked(&msg)?;
+				return Ok(self.get_announcement_sigs(chan)?);
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 		};
@@ -1099,13 +1099,13 @@ impl ChannelMessageHandler for ChannelManager {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
-					(try!(chan.commitment_signed(&msg)), chan.channel_monitor())
+					(chan.commitment_signed(&msg)?, chan.channel_monitor())
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
 		};
 		//TODO: Only if we store HTLC sigs
-		try!(self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor));
+		self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor)?;
 
 		let mut forward_event = None;
 		{
@@ -1147,13 +1147,13 @@ impl ChannelMessageHandler for ChannelManager {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
-					try!(chan.revoke_and_ack(&msg));
+					chan.revoke_and_ack(&msg)?;
 					chan.channel_monitor()
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
 		};
-		try!(self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor));
+		self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor)?;
 		Ok(())
 	}
 
@@ -1183,7 +1183,7 @@ impl ChannelMessageHandler for ChannelManager {
 					}
 
 					let our_node_id = self.get_our_node_id();
-					let (announcement, our_bitcoin_sig) = try!(chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone()));
+					let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone())?;
 
 					let were_node_one = announcement.node_id_1 == our_node_id;
 					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
