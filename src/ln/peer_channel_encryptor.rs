@@ -216,7 +216,7 @@ impl PeerChannelEncryptor {
 		let temp_k = PeerChannelEncryptor::hkdf(state, ss);
 
 		let mut dec = [0; 0];
-		try!(PeerChannelEncryptor::decrypt_with_ad(&mut dec, 0, &temp_k, &state.h, &act[34..]));
+		PeerChannelEncryptor::decrypt_with_ad(&mut dec, 0, &temp_k, &state.h, &act[34..])?;
 
 		sha.reset();
 		sha.input(&state.h);
@@ -257,7 +257,7 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 
-						let (their_pub, _) = try!(PeerChannelEncryptor::inbound_noise_act(&self.secp_ctx, bidirectional_state, act_one, &our_node_secret));
+						let (their_pub, _) = PeerChannelEncryptor::inbound_noise_act(&self.secp_ctx, bidirectional_state, act_one, &our_node_secret)?;
 						ie.get_or_insert(their_pub);
 
 						re.get_or_insert(our_ephemeral);
@@ -296,7 +296,7 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 
-						let (re, temp_k2) = try!(PeerChannelEncryptor::inbound_noise_act(&self.secp_ctx, bidirectional_state, act_two, &ie));
+						let (re, temp_k2) = PeerChannelEncryptor::inbound_noise_act(&self.secp_ctx, bidirectional_state, act_two, &ie)?;
 
 						let mut res = [0; 66];
 						let our_node_id = PublicKey::from_secret_key(&self.secp_ctx, &our_node_secret).unwrap(); //TODO: nicer rng-is-bad error message
@@ -359,7 +359,7 @@ impl PeerChannelEncryptor {
 						}
 
 						let mut their_node_id = [0; 33];
-						try!(PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50]));
+						PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
 						self.their_node_id = Some(match PublicKey::from_slice(&self.secp_ctx, &their_node_id) {
 							Ok(key) => key,
 							Err(_) => return Err(HandleError{err: "Bad node_id from peer", msg: Some(msgs::ErrorMessage::DisconnectPeer{})}),
@@ -373,7 +373,7 @@ impl PeerChannelEncryptor {
 						let ss = SharedSecret::new(&self.secp_ctx, &self.their_node_id.unwrap(), &re.unwrap());
 						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
 
-						try!(PeerChannelEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..]));
+						PeerChannelEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..])?;
 
 						sha.reset();
 						let mut prk = [0; 32];
@@ -459,7 +459,7 @@ impl PeerChannelEncryptor {
 				}
 
 				let mut res = [0; 2];
-				try!(Self::decrypt_with_ad(&mut res, *rn, rk, &[0; 0], msg));
+				Self::decrypt_with_ad(&mut res, *rn, rk, &[0; 0], msg)?;
 				*rn += 1;
 				Ok(byte_utils::slice_to_be16(&res))
 			},
@@ -478,7 +478,7 @@ impl PeerChannelEncryptor {
 			NoiseState::Finished { sk: _, sn: _, sck: _, ref rk, ref mut rn, rck: _ } => {
 				let mut res = Vec::with_capacity(msg.len() - 16);
 				res.resize(msg.len() - 16, 0);
-				try!(Self::decrypt_with_ad(&mut res[..], *rn, rk, &[0; 0], msg));
+				Self::decrypt_with_ad(&mut res[..], *rn, rk, &[0; 0], msg)?;
 				*rn += 1;
 
 				Ok(res)
