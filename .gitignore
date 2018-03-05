@@ -3,3 +3,6 @@
 Cargo.lock
 /target/
 **/*.rs.bk
+#IntelliJ IDEA files
+.idea
+*.iml
