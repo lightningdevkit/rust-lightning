@@ -19,7 +19,7 @@ bitcoin = "0.11"
 rust-crypto = "0.2"
 rand = "0.4"
 secp256k1 = "0.8"
-bitcoin-spv = { git = "https://github.com/tamasblummer/bitcoin-spv", branch = "master", optional = true }
+bitcoin-spv = { git = "https://github.com/tamasblummer/bitcoin-spv", branch = "integration", optional = true }
 
 [patch.crates-io]
 bitcoin = { git = "https://github.com/tamasblummer/rust-bitcoin", branch = "prs"  }
