@@ -61,5 +61,4 @@ Notes on coding style:
  * Use tabs. If you want to align lines, use spaces. Any desired alignment
    should display fine at any tab-length display setting.
 
-License is AGPL, but with agreement that Matt can relicense under any other
-OSI-approved license at will (and likely will with sufficient motivation).
+License is Apache-2.0.
