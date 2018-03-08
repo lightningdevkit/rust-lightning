@@ -8,13 +8,15 @@ use secp256k1::key::PublicKey;
 use super::TaggedField;
 use super::TaggedField::*;
 
-named!(timestamp <&[u8], u32>, fold_many_m_n!(7, 7, take!(1), 0, |acc, place: &[u8]| {
-    (acc * 32 + (place[0] as u32))
+use chrono::Duration;
+
+named_args!(parse_u64(len: usize) <u64>, fold_many_m_n!(len, len, take!(1), 0u64, |acc, place: &[u8]| {
+    (acc * 32 + (place[0] as u64))
 }));
 
-named!(data_length <&[u8], u16>, fold_many_m_n!(2, 2, take!(1), 0, |acc, place: &[u8]| {
-    (acc * 32 + (place[0] as u16))
-}));
+named!(timestamp <&[u8], u32>, map!(call!(parse_u64, 7), |x| x as u32));
+
+named!(data_length <&[u8], usize>, map!(call!(parse_u64, 2), |x| x as usize));
 
 // 0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|
 // 0 1 2 3 4|0 1 2 3 4|0 1 2 3 4|0 1 2 3 4|0 1 2 3 4|0 1 2 3 4|0 1 2 3 4|0 1 2 3 4|
@@ -57,7 +59,7 @@ impl<T: Default + Copy + Debug> ToArray<T> for Vec<T> {
 named!(payment_hash <&[u8], TaggedField>,
     do_parse!(
         tag!(&[1u8]) >>
-        verify!(data_length, |len: u16| {len == 52}) >>
+        verify!(data_length, |len: usize| {len == 52}) >>
         hash: call!(parse_bytes, 32, 52) >>
         (PaymentHash(hash.to_array_32()))
     )
@@ -77,7 +79,7 @@ named!(description <&[u8], TaggedField>,
 named!(payee_public_key <&[u8], TaggedField>, map_res!(
     do_parse!(
         tag!(&[19_u8]) >>
-        verify!(data_length, |len: u16| {len == 53}) >>
+        verify!(data_length, |len: usize| {len == 53}) >>
         key: call!(parse_bytes, 33, 53) >>
         (key)
     ), |key: Vec<u8>| {
@@ -90,9 +92,18 @@ named!(payee_public_key <&[u8], TaggedField>, map_res!(
 named!(description_hash <&[u8], TaggedField>,
     do_parse!(
         tag!(&[23u8]) >>
-        verify!(data_length, |len: u16| {len == 52}) >>
+        verify!(data_length, |len: usize| {len == 52}) >>
         hash: call!(parse_bytes, 32, 52) >>
         (DescriptionHash(hash.to_array_32()))
+    )
+);
+
+named!(expiry_time <&[u8], TaggedField>,
+    do_parse!(
+        tag!(&[6u8]) >>
+        data_length: data_length >>
+        expiry_time_seconds: call!(parse_u64, data_length) >>
+        (ExpiryTime(Duration::seconds(expiry_time_seconds as i64)))
     )
 );
 
@@ -201,5 +212,20 @@ mod test {
                 .to_array_32()
         );
         assert_eq!(description_hash(&bytes), Done(&[][..], expected));
+    }
+
+    #[test]
+    fn test_expiry_time_parser() {
+        use super::TaggedField::ExpiryTime;
+        use chrono::Duration;
+        use super::expiry_time;
+        use nom::IResult::Done;
+
+        let bytes = "xqzpu".bytes().map(
+            |c| CHARSET_REV[c as usize] as u8
+        ).collect::<Vec<_>>();
+
+        let expected = ExpiryTime(Duration::seconds(60));
+        assert_eq!(expiry_time(&bytes), Done(&[][..], expected));
     }
 }
