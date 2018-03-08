@@ -107,6 +107,15 @@ named!(expiry_time <&[u8], TaggedField>,
     )
 );
 
+named!(min_final_cltv_expiry <&[u8], TaggedField>,
+    do_parse!(
+        tag!(&[24u8]) >>
+        data_length: data_length >>
+        mfce: call!(parse_u64, data_length) >>
+        (MinFinalCltvExpiry(mfce))
+    )
+);
+
 #[cfg(test)]
 mod test {
     // Reverse character set. Maps ASCII byte -> CHARSET index on [0,31]
@@ -227,5 +236,20 @@ mod test {
 
         let expected = ExpiryTime(Duration::seconds(60));
         assert_eq!(expiry_time(&bytes), Done(&[][..], expected));
+    }
+
+    #[test]
+    fn test_min_final_cltv_expiry_parser() {
+        use super::TaggedField::MinFinalCltvExpiry;
+        use chrono::Duration;
+        use super::min_final_cltv_expiry;
+        use nom::IResult::Done;
+
+        let bytes = "cqzpu".bytes().map(
+            |c| CHARSET_REV[c as usize] as u8
+        ).collect::<Vec<_>>();
+
+        let expected = MinFinalCltvExpiry(60);
+        assert_eq!(min_final_cltv_expiry(&bytes), Done(&[][..], expected));
     }
 }
