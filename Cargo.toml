@@ -15,6 +15,10 @@ non_bitcoin_chain_hash_routing = []
 
 [dependencies]
 bitcoin = "0.11"
+bitcoin-chain = { git = "https://github.com/rust-bitcoin/rust-bitcoin-chain", branch = "master" }
 rust-crypto = "0.2"
 rand = "0.4"
 secp256k1 = "0.8"
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", branch = "master"  }
