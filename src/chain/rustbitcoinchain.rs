@@ -1,4 +1,4 @@
-use bitcoin::blockdata::blockchain::Blockchain;
+use bitcoin_chain::blockchain::Blockchain;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::script::Script;
