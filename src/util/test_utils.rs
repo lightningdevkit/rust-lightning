@@ -31,9 +31,6 @@ impl chaininterface::ChainWatchInterface for TestWatchInterface {
 	fn watch_all_txn(&self) {
 		unimplemented!();
 	}
-	fn broadcast_transaction(&self, _tx: &Transaction) {
-		unimplemented!();
-	}
 	fn register_listener(&self, listener: Weak<chaininterface::ChainListener>) {
 		self.watch_util.register_listener(listener);
 	}

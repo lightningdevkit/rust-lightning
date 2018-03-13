@@ -133,7 +133,7 @@ impl ChainWatchInterfaceUtil {
 	}
 
 	/// call listeners for connected blocks if they are still around
-	fn do_call_block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
+	pub fn do_call_block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
 			match listener.upgrade() {
