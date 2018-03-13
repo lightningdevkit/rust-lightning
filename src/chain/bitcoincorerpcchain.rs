@@ -1,8 +1,10 @@
+use std::error::Error;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::util::hash::Sha256dHash;
 
-use chain::chaininterface::{ChainWatchInterface,ChainWatchInterfaceUtil,ChainListener};
+use chain::chaininterface::{ChainWatchInterface,ChainWatchInterfaceUtil,ChainListener, BroadcasterInterface};
 
 use std::sync::Weak;
 
@@ -23,12 +25,14 @@ impl ChainWatchInterface for BitcoinCoreRPCClientChain {
 		self.util.watch_all_txn()
 	}
 
-	fn broadcast_transaction(&self, _tx: &Transaction) {
-		unimplemented!()
-	}
-
 	fn register_listener(&self, listener: Weak<ChainListener>) {
 		self.util.register_listener(listener)
+	}
+}
+
+impl BroadcasterInterface for BitcoinCoreRPCClientChain {
+	fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), Box<Error>> {
+		unimplemented!()
 	}
 }
 
@@ -37,5 +41,13 @@ impl BitcoinCoreRPCClientChain {
 		BitcoinCoreRPCClientChain {
 			util: ChainWatchInterfaceUtil::new(),
 		}
+	}
+
+	pub fn block_connected(&self, block: &Block, height: u32) {
+		self.util.block_connected(block, height)
+	}
+
+	pub fn block_disconnected(&self, header: &BlockHeader) {
+		self.util.block_disconnected(header)
 	}
 }

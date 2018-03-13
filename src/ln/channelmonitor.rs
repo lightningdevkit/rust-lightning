@@ -13,7 +13,7 @@ use secp256k1::key::{SecretKey,PublicKey};
 use ln::msgs::HandleError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
-use chain::chaininterface::{ChainListener,ChainWatchInterface};
+use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 
 use std::collections::HashMap;
 use std::sync::{Arc,Mutex};
@@ -39,13 +39,14 @@ pub trait ManyChannelMonitor: Send + Sync {
 pub struct SimpleManyChannelMonitor<Key> {
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	chain_monitor: Arc<ChainWatchInterface>,
+	broadcaster: Arc<BroadcasterInterface>
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
 	fn block_connected(&self, _header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values() {
-			monitor.block_connected(txn_matched, height, &*self.chain_monitor);
+			monitor.block_connected(txn_matched, height, &*self.broadcaster);
 		}
 	}
 
@@ -53,10 +54,11 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> Arc<SimpleManyChannelMonitor<Key>> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>) -> Arc<SimpleManyChannelMonitor<Key>> {
 		let res = Arc::new(SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
-			chain_monitor: chain_monitor,
+			chain_monitor,
+			broadcaster
 		});
 		let weak_res = Arc::downgrade(&res);
 		res.chain_monitor.register_listener(weak_res);
@@ -443,7 +445,7 @@ impl ChannelMonitor {
 		txn_to_broadcast
 	}
 
-	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, chain_monitor: &ChainWatchInterface) {
+	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface) {
 		for tx in txn_matched {
 			if tx.input.len() != 1 {
 				// We currently only ever sign something spending a commitment or HTLC
@@ -454,7 +456,7 @@ impl ChannelMonitor {
 			for txin in tx.input.iter() {
 				if self.funding_txo.is_none() || (txin.prev_hash == self.funding_txo.unwrap().0 && txin.prev_index == self.funding_txo.unwrap().1 as u32) {
 					for tx in self.check_spend_transaction(tx, height).iter() {
-						chain_monitor.broadcast_transaction(tx);
+						broadcaster.broadcast_transaction(tx); // TODO: use result
 					}
 				}
 			}
