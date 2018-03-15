@@ -3,7 +3,7 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::hash::Sha256dHash;
-use std::sync::{Mutex,Weak};
+use std::sync::{Mutex,Weak,MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// An interface to request notification of certain scripts as they appear the
@@ -113,15 +113,18 @@ impl ChainWatchInterfaceUtil {
 		let mut last_seen = 0;
 		// re-scan if new watch added during previous scan
 		while last_seen != watch {
+			last_seen = watch;
 			let mut matched = Vec::new();
 			let mut matched_index = Vec::new();
-			for (index, transaction) in block.txdata.iter().enumerate() {
-				if self.does_match_tx(transaction) {
-					matched.push(transaction);
-					matched_index.push(index as u32);
+			{
+				let watched = self.watched.lock().unwrap();
+				for (index, transaction) in block.txdata.iter().enumerate() {
+					if self.does_match_tx_unguarded(transaction, &watched) {
+						matched.push(transaction);
+						matched_index.push(index as u32);
+					}
 				}
 			}
-			last_seen = watch;
 			self.do_call_block_connected(&block.header, height, matched.as_slice(), matched_index.as_slice());
 			watch = self.reentered.load(Ordering::Relaxed);
 		}
@@ -132,7 +135,7 @@ impl ChainWatchInterfaceUtil {
 		self.do_call_block_disconnected(header);
 	}
 
-	/// call listeners for connected blocks if they are still around
+	/// call listeners for connected blocks if they are still around. public only because of tests
 	pub fn do_call_block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
@@ -155,8 +158,12 @@ impl ChainWatchInterfaceUtil {
 	}
 
 	/// Checks if a given transaction matches the current filter
-	fn does_match_tx(&self, tx: &Transaction) -> bool {
+	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
 		let watched = self.watched.lock().unwrap();
+		self.does_match_tx_unguarded (tx, &watched)
+	}
+
+	fn does_match_tx_unguarded (&self, tx: &Transaction, watched: &MutexGuard<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>) -> bool {
 		if watched.2 {
 			return true;
 		}
