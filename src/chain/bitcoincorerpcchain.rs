@@ -42,12 +42,4 @@ impl BitcoinCoreRPCClientChain {
 			util: ChainWatchInterfaceUtil::new(),
 		}
 	}
-
-	pub fn block_connected(&self, block: &Block, height: u32) {
-		self.util.block_connected(block, height)
-	}
-
-	pub fn block_disconnected(&self, header: &BlockHeader) {
-		self.util.block_disconnected(header)
-	}
 }
