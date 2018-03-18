@@ -31,7 +31,7 @@ impl ChainWatchInterface for BitcoinCoreRPCClientChain {
 }
 
 impl BroadcasterInterface for BitcoinCoreRPCClientChain {
-	fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), Box<Error>> {
+	fn broadcast_transaction(&self, tx: &Transaction) {
 		unimplemented!()
 	}
 }
