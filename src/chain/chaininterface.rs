@@ -31,7 +31,7 @@ pub trait ChainWatchInterface: Sync + Send {
 /// that peers rejected the transaction.
 pub trait BroadcasterInterface: Sync + Send {
 	/// Sends a transaction out to (hopefully) be mined
-	fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), Box<Error>>;
+	fn broadcast_transaction(&self, tx: &Transaction);
 }
 
 /// A trait indicating a desire to listen for events from the chain
