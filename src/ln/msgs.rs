@@ -20,6 +20,8 @@ pub enum DecodeError {
 	UnknownRealmByte,
 	/// Failed to decode a public key (ie it's invalid)
 	BadPublicKey,
+	/// Failed to decode a signature (ie it's invalid)
+	BadSignature,
 	/// Buffer not of right length (either too short or too long)
 	WrongLength,
 }
@@ -408,6 +410,7 @@ impl Error for DecodeError {
 		match *self {
 			DecodeError::UnknownRealmByte => "Unknown realm byte in Onion packet",
 			DecodeError::BadPublicKey => "Invalid public key in packet",
+			DecodeError::BadSignature => "Invalid signature in packet",
 			DecodeError::WrongLength => "Data was wrong length for packet",
 		}
 	}
@@ -429,6 +432,15 @@ macro_rules! secp_pubkey {
 		match PublicKey::from_slice($ctx, $slice) {
 			Ok(key) => key,
 			Err(_) => return Err(DecodeError::BadPublicKey)
+		}
+	};
+}
+
+macro_rules! secp_signature {
+	( $ctx: expr, $slice: expr ) => {
+		match Signature::from_compact($ctx, $slice) {
+			Ok(sig) => sig,
+			Err(_) => return Err(DecodeError::BadSignature)
 		}
 	};
 }
@@ -502,16 +514,10 @@ impl MsgEncodable for Init {
 
 impl MsgDecodable for OpenChannel {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() != 2*32+6*8+4+2*2+6*33+1 {
+		if v.len() < 2*32+6*8+4+2*2+6*33+1 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
-		let funding_pubkey = secp_pubkey!(&ctx, &v[120..153]);
-		let revocation_basepoint = secp_pubkey!(&ctx, &v[153..186]);
-		let payment_basepoint = secp_pubkey!(&ctx, &v[186..219]);
-		let delayed_payment_basepoint = secp_pubkey!(&ctx, &v[219..252]);
-		let htlc_basepoint = secp_pubkey!(&ctx, &v[252..285]);
-		let first_per_commitment_point = secp_pubkey!(&ctx, &v[285..318]);
 
 		let mut shutdown_scriptpubkey = None;
 		if v.len() >= 321 {
@@ -520,6 +526,8 @@ impl MsgDecodable for OpenChannel {
 				return Err(DecodeError::WrongLength);
 			}
 			shutdown_scriptpubkey = Some(Script::from(v[321..321+len].to_vec()));
+		} else if v.len() != 2*32+6*8+4+2*2+6*33+1 {
+			return Err(DecodeError::WrongLength);
 		}
 
 		Ok(OpenChannel {
@@ -534,12 +542,12 @@ impl MsgDecodable for OpenChannel {
 			feerate_per_kw: byte_utils::slice_to_be32(&v[112..116]),
 			to_self_delay: byte_utils::slice_to_be16(&v[116..118]),
 			max_accepted_htlcs: byte_utils::slice_to_be16(&v[118..120]),
-			funding_pubkey: funding_pubkey,
-			revocation_basepoint: revocation_basepoint,
-			payment_basepoint: payment_basepoint,
-			delayed_payment_basepoint: delayed_payment_basepoint,
-			htlc_basepoint: htlc_basepoint,
-			first_per_commitment_point: first_per_commitment_point,
+			funding_pubkey: secp_pubkey!(&ctx, &v[120..153]),
+			revocation_basepoint: secp_pubkey!(&ctx, &v[153..186]),
+			payment_basepoint: secp_pubkey!(&ctx, &v[186..219]),
+			delayed_payment_basepoint: secp_pubkey!(&ctx, &v[219..252]),
+			htlc_basepoint: secp_pubkey!(&ctx, &v[252..285]),
+			first_per_commitment_point: secp_pubkey!(&ctx, &v[285..318]),
 			channel_flags: v[318],
 			shutdown_scriptpubkey: shutdown_scriptpubkey
 		})
@@ -551,10 +559,41 @@ impl MsgEncodable for OpenChannel {
 	}
 }
 
-
 impl MsgDecodable for AcceptChannel {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+4*8+4+2*2+6*33 {
+			return Err(DecodeError::WrongLength);
+		}
+		let ctx = Secp256k1::without_caps();
+
+		let mut shutdown_scriptpubkey = None;
+		if v.len() >= 272 {
+			let len = byte_utils::slice_to_be16(&v[270..272]) as usize;
+			if v.len() != 272+len {
+				return Err(DecodeError::WrongLength);
+			}
+			shutdown_scriptpubkey = Some(Script::from(v[272..272+len].to_vec()));
+		} else if v.len() != 32+4*8+4+2*2+6*33 {
+			return Err(DecodeError::WrongLength);
+		}
+
+		Ok(Self {
+			temporary_channel_id: deserialize(&v[0..32]).unwrap(),
+			dust_limit_satoshis: byte_utils::slice_to_be64(&v[32..40]),
+			max_htlc_value_in_flight_msat: byte_utils::slice_to_be64(&v[40..48]),
+			channel_reserve_satoshis: byte_utils::slice_to_be64(&v[48..56]),
+			htlc_minimum_msat: byte_utils::slice_to_be64(&v[56..64]),
+			minimum_depth: byte_utils::slice_to_be32(&v[64..68]),
+			to_self_delay: byte_utils::slice_to_be16(&v[68..70]),
+			max_accepted_htlcs: byte_utils::slice_to_be16(&v[70..72]),
+			funding_pubkey: secp_pubkey!(&ctx, &v[72..105]),
+			revocation_basepoint: secp_pubkey!(&ctx, &v[105..138]),
+			payment_basepoint: secp_pubkey!(&ctx, &v[138..171]),
+			delayed_payment_basepoint: secp_pubkey!(&ctx, &v[171..204]),
+			htlc_basepoint: secp_pubkey!(&ctx, &v[204..237]),
+			first_per_commitment_point: secp_pubkey!(&ctx, &v[237..270]),
+			shutdown_scriptpubkey: shutdown_scriptpubkey
+		})
 	}
 }
 impl MsgEncodable for AcceptChannel {
@@ -564,8 +603,17 @@ impl MsgEncodable for AcceptChannel {
 }
 
 impl MsgDecodable for FundingCreated {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() != 32+32+2+64 {
+			return Err(DecodeError::WrongLength);
+		}
+		let ctx = Secp256k1::without_caps();
+		Ok(Self {
+			temporary_channel_id: deserialize(&v[0..32]).unwrap(),
+			funding_txid: deserialize(&v[32..64]).unwrap(),
+			funding_output_index: byte_utils::slice_to_be16(&v[64..66]),
+			signature: secp_signature!(&ctx, &v[66..130]),
+		})
 	}
 }
 impl MsgEncodable for FundingCreated {
@@ -575,8 +623,15 @@ impl MsgEncodable for FundingCreated {
 }
 
 impl MsgDecodable for FundingSigned {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() != 32+64 {
+			return Err(DecodeError::WrongLength);
+		}
+		let ctx = Secp256k1::without_caps();
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			signature: secp_signature!(&ctx, &v[32..96]),
+		})
 	}
 }
 impl MsgEncodable for FundingSigned {
@@ -586,8 +641,15 @@ impl MsgEncodable for FundingSigned {
 }
 
 impl MsgDecodable for FundingLocked {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() != 32+33 {
+			return Err(DecodeError::WrongLength);
+		}
+		let ctx = Secp256k1::without_caps();
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			next_per_commitment_point: secp_pubkey!(&ctx, &v[32..65]),
+		})
 	}
 }
 impl MsgEncodable for FundingLocked {
