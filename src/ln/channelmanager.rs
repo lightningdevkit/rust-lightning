@@ -42,6 +42,20 @@ pub struct PendingForwardHTLCInfo {
 	amt_to_forward: u64,
 	outgoing_cltv_value: u32,
 }
+//TODO: This is public, and needed to call Channel::update_add_htlc, so there needs to be a way to
+//initialize it usefully...probably make it optional in Channel instead).
+impl PendingForwardHTLCInfo {
+	pub fn dummy() -> Self {
+		Self {
+			onion_packet: None,
+			payment_hash: [0; 32],
+			short_channel_id: 0,
+			prev_short_channel_id: 0,
+			amt_to_forward: 0,
+			outgoing_cltv_value: 0,
+		}
+	}
+}
 
 enum PendingOutboundHTLC {
 	IntermediaryHopData {
