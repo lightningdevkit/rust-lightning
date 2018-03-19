@@ -2,7 +2,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::hash::Sha256dHash;
 
-use chain::chaininterface::{ChainWatchInterface,ChainWatchInterfaceUtil,ChainListener};
+use chain::chaininterface::{ChainWatchInterface,ChainWatchInterfaceUtil,ChainListener, BroadcasterInterface};
 
 use std::sync::Weak;
 
@@ -23,12 +23,14 @@ impl ChainWatchInterface for BitcoinCoreRPCClientChain {
 		self.util.watch_all_txn()
 	}
 
-	fn broadcast_transaction(&self, _tx: &Transaction) {
-		unimplemented!()
-	}
-
 	fn register_listener(&self, listener: Weak<ChainListener>) {
 		self.util.register_listener(listener)
+	}
+}
+
+impl BroadcasterInterface for BitcoinCoreRPCClientChain {
+	fn broadcast_transaction(&self, _tx: &Transaction) {
+		unimplemented!()
 	}
 }
 

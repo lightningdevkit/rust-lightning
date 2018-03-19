@@ -1392,10 +1392,10 @@ mod tests {
 	fn confirm_transaction(chain: &test_utils::TestWatchInterface, tx: &Transaction) {
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		let chan_id = unsafe { CHAN_COUNT };
-		chain.watch_util.do_call_block_connected(&header, 1, &[tx; 1], &[chan_id as u32; 1]);
+		chain.watch_util.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as u32; 1]);
 		for i in 2..100 {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			chain.watch_util.do_call_block_connected(&header, i, &[tx; 0], &[0; 0]);
+			chain.watch_util.block_connected_checked(&header, i, &[tx; 0], &[0; 0]);
 		}
 	}
 
