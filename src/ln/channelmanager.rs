@@ -17,11 +17,7 @@ use ln::channelmonitor::ManyChannelMonitor;
 use ln::router::Route;
 use ln::msgs;
 use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable,MsgDecodable};
-use util::byte_utils;
-use util::events;
-use util::internal_traits;
-
-use rand::{thread_rng,Rng};
+use util::{byte_utils, events, internal_traits, rng};
 
 use crypto::mac::{Mac,MacResult};
 use crypto::hmac::Hmac;
@@ -468,10 +464,9 @@ impl ChannelManager {
 			}
 		}
 
-		let mut rng = thread_rng();
 		let session_priv = secp_call!(SecretKey::from_slice(&self.secp_ctx, &{
 			let mut session_key = [0; 32];
-			rng.fill_bytes(&mut session_key);
+			rng::fill_bytes(&mut session_key);
 			session_key
 		}));
 
@@ -1319,8 +1314,7 @@ impl ChannelMessageHandler for ChannelManager {
 			};
 
 			if channel_state.forward_htlcs.is_empty() {
-				let mut rng = thread_rng();
-				forward_event = Some(Instant::now() + Duration::from_millis(((rng.next_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
 				channel_state.next_forward = forward_event.unwrap();
 			}
 			for forward_info in forwarding_infos.drain(..) {

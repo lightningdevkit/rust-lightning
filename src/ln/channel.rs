@@ -22,9 +22,7 @@ use ln::channelmanager::PendingForwardHTLCInfo;
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-use util::transaction_utils;
-
-use rand::{thread_rng,Rng};
+use util::{transaction_utils,rng};
 
 use std::default::Default;
 use std::cmp;
@@ -274,12 +272,11 @@ impl Channel {
 			panic!("funding value > 2^24");
 		}
 
-		let mut rng = thread_rng();
 		let feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Normal);
 		let background_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
 
 		let mut key_seed = [0u8; 32];
-		rng.fill_bytes(&mut key_seed);
+		rng::fill_bytes(&mut key_seed);
 		let chan_keys = match ChannelKeys::new_from_seed(&key_seed) {
 			Ok(key) => key,
 			Err(_) => panic!("RNG is busted!")
@@ -296,7 +293,7 @@ impl Channel {
 		Channel {
 			user_id: user_id,
 
-			channel_id: Uint256([rng.gen(), rng.gen(), rng.gen(), rng.gen()]),
+			channel_id: rng::rand_uint256(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: secp_ctx,
@@ -392,9 +389,8 @@ impl Channel {
 
 		let background_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
 
-		let mut rng = thread_rng();
 		let mut key_seed = [0u8; 32];
-		rng.fill_bytes(&mut key_seed);
+		rng::fill_bytes(&mut key_seed);
 		let chan_keys = match ChannelKeys::new_from_seed(&key_seed) {
 			Ok(key) => key,
 			Err(_) => panic!("RNG is busted!")
