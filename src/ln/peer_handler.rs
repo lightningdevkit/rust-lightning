@@ -8,13 +8,11 @@ use util::events::{EventsProvider,Event};
 
 use std::collections::{HashMap,LinkedList};
 use std::sync::{Arc, Mutex};
-use std::cmp;
-use std::mem;
-use std::hash;
+use std::{cmp,mem,hash,fmt};
 
 pub struct MessageHandler {
-    pub chan_handler: Arc<msgs::ChannelMessageHandler>,
-    pub route_handler: Arc<msgs::RoutingMessageHandler>,
+	pub chan_handler: Arc<msgs::ChannelMessageHandler>,
+	pub route_handler: Arc<msgs::RoutingMessageHandler>,
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -43,6 +41,11 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 /// disconnect_event (unless it was provided in response to a new_*_connection event, in which case
 /// no such disconnect_event must be generated and the socket be silently disconencted).
 pub struct PeerHandleError {}
+impl fmt::Debug for PeerHandleError {
+	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		formatter.write_str("Peer Send Invalid Data")
+	}
+}
 
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
@@ -206,6 +209,16 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	/// course of this function!
 	/// Panics if the descriptor was not previously registered in a new_*_connection event.
 	pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) -> Result<bool, PeerHandleError> {
+		match self.do_read_event(peer_descriptor, data) {
+			Ok(res) => Ok(res),
+			Err(e) => {
+				self.disconnect_event(peer_descriptor);
+				Err(e)
+			}
+		}
+	}
+
+	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) -> Result<bool, PeerHandleError> {
 		let mut upstream_events = Vec::new();
 		let pause_read = {
 			let mut peers = self.peers.lock().unwrap();
