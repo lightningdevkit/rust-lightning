@@ -1,4 +1,3 @@
-use std::error::Error;
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
@@ -108,12 +107,9 @@ impl ChainWatchInterfaceUtil {
 
 	/// notify listener that a block was connected
 	/// notification will repeat if notified listener register new listeners
-	pub fn block_connected(&self, block: &Block, height: u32) {
-		let mut watch = self.reentered.load(Ordering::Relaxed);
-		let mut last_seen = 0;
-		// re-scan if new watch added during previous scan
-		while last_seen != watch {
-			last_seen = watch;
+	pub fn block_connected_with_filtering(&self, block: &Block, height: u32) {
+		let mut reentered = true;
+		while reentered {
 			let mut matched = Vec::new();
 			let mut matched_index = Vec::new();
 			{
@@ -125,29 +121,12 @@ impl ChainWatchInterfaceUtil {
 					}
 				}
 			}
-			self.do_call_block_connected(&block.header, height, matched.as_slice(), matched_index.as_slice());
-			watch = self.reentered.load(Ordering::Relaxed);
+			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
 		}
 	}
 
 	/// notify listener that a block was disconnected
 	pub fn block_disconnected(&self, header: &BlockHeader) {
-		self.do_call_block_disconnected(header);
-	}
-
-	/// call listeners for connected blocks if they are still around. public only because of tests
-	pub fn do_call_block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
-		let listeners = self.listeners.lock().unwrap().clone();
-		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
-				None => ()
-			}
-		}
-	}
-
-	/// call listeners for disconnected blocks if they are still around
-	fn do_call_block_disconnected(&self, header: &BlockHeader) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
 			match listener.upgrade() {
@@ -155,6 +134,21 @@ impl ChainWatchInterfaceUtil {
 				None => ()
 			}
 		}
+	}
+
+	/// call listeners for connected blocks if they are still around.
+	/// returns true if notified listeners registered additional listener
+	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
+		let last_seen = self.reentered.load(Ordering::Relaxed);
+
+		let listeners = self.listeners.lock().unwrap().clone();
+		for listener in listeners.iter() {
+			match listener.upgrade() {
+				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
+				None => ()
+			}
+		}
+		return last_seen != self.reentered.load(Ordering::Relaxed);
 	}
 
 	/// Checks if a given transaction matches the current filter

@@ -1,7 +1,5 @@
-use std::error::Error;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::util::hash::Sha256dHash;
 
 use chain::chaininterface::{ChainWatchInterface,ChainWatchInterfaceUtil,ChainListener, BroadcasterInterface};
@@ -31,7 +29,7 @@ impl ChainWatchInterface for BitcoinCoreRPCClientChain {
 }
 
 impl BroadcasterInterface for BitcoinCoreRPCClientChain {
-	fn broadcast_transaction(&self, tx: &Transaction) {
+	fn broadcast_transaction(&self, _tx: &Transaction) {
 		unimplemented!()
 	}
 }
