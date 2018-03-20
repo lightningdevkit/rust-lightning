@@ -449,7 +449,7 @@ impl MsgDecodable for LocalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 3 { return Err(DecodeError::WrongLength); }
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
-		if v.len() != len + 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
 		let mut flags = Vec::with_capacity(len);
 		flags.extend_from_slice(&v[2..]);
 		Ok(Self {
@@ -470,7 +470,7 @@ impl MsgDecodable for GlobalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 3 { return Err(DecodeError::WrongLength); }
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
-		if v.len() != len + 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
 		let mut flags = Vec::with_capacity(len);
 		flags.extend_from_slice(&v[2..]);
 		Ok(Self {
@@ -490,13 +490,10 @@ impl MsgEncodable for GlobalFeatures {
 impl MsgDecodable for Init {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let global_features = GlobalFeatures::decode(v)?;
-		if global_features.flags.len() + 4 <= v.len() {
+		if v.len() < global_features.flags.len() + 4 {
 			return Err(DecodeError::WrongLength);
 		}
 		let local_features = LocalFeatures::decode(&v[global_features.flags.len() + 2..])?;
-		if global_features.flags.len() + local_features.flags.len() + 4 != v.len() {
-			return Err(DecodeError::WrongLength);
-		}
 		Ok(Self {
 			global_features: global_features,
 			local_features: local_features,
@@ -522,11 +519,11 @@ impl MsgDecodable for OpenChannel {
 		let mut shutdown_scriptpubkey = None;
 		if v.len() >= 321 {
 			let len = byte_utils::slice_to_be16(&v[319..321]) as usize;
-			if v.len() != 321+len {
+			if v.len() < 321+len {
 				return Err(DecodeError::WrongLength);
 			}
 			shutdown_scriptpubkey = Some(Script::from(v[321..321+len].to_vec()));
-		} else if v.len() != 2*32+6*8+4+2*2+6*33+1 {
+		} else if v.len() != 2*32+6*8+4+2*2+6*33+1 { // Message cant have 1 extra byte
 			return Err(DecodeError::WrongLength);
 		}
 
@@ -569,11 +566,11 @@ impl MsgDecodable for AcceptChannel {
 		let mut shutdown_scriptpubkey = None;
 		if v.len() >= 272 {
 			let len = byte_utils::slice_to_be16(&v[270..272]) as usize;
-			if v.len() != 272+len {
+			if v.len() < 272+len {
 				return Err(DecodeError::WrongLength);
 			}
 			shutdown_scriptpubkey = Some(Script::from(v[272..272+len].to_vec()));
-		} else if v.len() != 32+4*8+4+2*2+6*33 {
+		} else if v.len() != 32+4*8+4+2*2+6*33 { // Message cant have 1 extra byte
 			return Err(DecodeError::WrongLength);
 		}
 
@@ -604,7 +601,7 @@ impl MsgEncodable for AcceptChannel {
 
 impl MsgDecodable for FundingCreated {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() != 32+32+2+64 {
+		if v.len() < 32+32+2+64 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -624,7 +621,7 @@ impl MsgEncodable for FundingCreated {
 
 impl MsgDecodable for FundingSigned {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() != 32+64 {
+		if v.len() < 32+64 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -642,7 +639,7 @@ impl MsgEncodable for FundingSigned {
 
 impl MsgDecodable for FundingLocked {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() != 32+33 {
+		if v.len() < 32+33 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -901,7 +898,7 @@ impl MsgEncodable for ChannelUpdate {
 
 impl MsgDecodable for OnionRealm0HopData {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() != 32 {
+		if v.len() < 32 {
 			return Err(DecodeError::WrongLength);
 		}
 		Ok(OnionRealm0HopData {
@@ -924,7 +921,7 @@ impl MsgEncodable for OnionRealm0HopData {
 
 impl MsgDecodable for OnionHopData {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() != 65 {
+		if v.len() < 65 {
 			return Err(DecodeError::WrongLength);
 		}
 		let realm = v[0];
