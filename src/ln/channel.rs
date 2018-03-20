@@ -13,7 +13,6 @@ use secp256k1;
 
 use crypto::digest::Digest;
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
-use crypto::sha2::Sha256;
 
 use ln::msgs;
 use ln::msgs::{HandleError, MsgEncodable};
@@ -23,6 +22,7 @@ use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use util::{transaction_utils,rng};
+use util::sha2::Sha256;
 
 use std::default::Default;
 use std::cmp;

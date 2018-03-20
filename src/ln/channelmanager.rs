@@ -18,11 +18,11 @@ use ln::router::Route;
 use ln::msgs;
 use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable,MsgDecodable};
 use util::{byte_utils, events, internal_traits, rng};
+use util::sha2::Sha256;
 
 use crypto::mac::{Mac,MacResult};
 use crypto::hmac::Hmac;
 use crypto::digest::Digest;
-use crypto::sha2::Sha256;
 use crypto::symmetriccipher::SynchronousStreamCipher;
 use crypto::chacha20::ChaCha20;
 

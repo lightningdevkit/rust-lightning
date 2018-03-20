@@ -4,7 +4,6 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::util::bip143;
 
-use crypto::sha2::Sha256;
 use crypto::digest::Digest;
 
 use secp256k1::{Secp256k1,Message,Signature};
@@ -14,6 +13,7 @@ use ln::msgs::HandleError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
+use util::sha2::Sha256;
 
 use std::collections::HashMap;
 use std::sync::{Arc,Mutex};
