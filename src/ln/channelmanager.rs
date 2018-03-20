@@ -1211,6 +1211,7 @@ impl ChannelMessageHandler for ChannelManager {
 
 #[cfg(test)]
 mod tests {
+	use chain::chaininterface;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
@@ -1389,17 +1390,17 @@ mod tests {
 	}
 
 	static mut CHAN_COUNT: u16 = 0;
-	fn confirm_transaction(chain: &test_utils::TestWatchInterface, tx: &Transaction) {
+	fn confirm_transaction(chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction) {
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		let chan_id = unsafe { CHAN_COUNT };
-		chain.watch_util.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as u32; 1]);
+		chain.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as u32; 1]);
 		for i in 2..100 {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			chain.watch_util.block_connected_checked(&header, i, &[tx; 0], &[0; 0]);
+			chain.block_connected_checked(&header, i, &[tx; 0], &[0; 0]);
 		}
 	}
 
-	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &test_utils::TestWatchInterface, node_b: &ChannelManager, chain_b: &test_utils::TestWatchInterface) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
+	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
 		let open_chan = node_a.create_channel(node_b.get_our_node_id(), (1 << 24) - 1, 42).unwrap();
 		let accept_chan = node_b.handle_open_channel(&node_a.get_our_node_id(), &open_chan).unwrap();
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
@@ -1615,7 +1616,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let feeest_1 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_1 = Arc::new(test_utils::TestWatchInterface::new());
+		let chain_monitor_1 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_1 = Arc::new(test_utils::TestChannelMonitor{});
 		let node_id_1 = {
 			let mut key_slice = [0; 32];
@@ -1626,7 +1627,7 @@ mod tests {
 		let router_1 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_1).unwrap());
 
 		let feeest_2 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_2 = Arc::new(test_utils::TestWatchInterface::new());
+		let chain_monitor_2 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_2 = Arc::new(test_utils::TestChannelMonitor{});
 		let node_id_2 = {
 			let mut key_slice = [0; 32];
@@ -1637,7 +1638,7 @@ mod tests {
 		let router_2 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_2).unwrap());
 
 		let feeest_3 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_3 = Arc::new(test_utils::TestWatchInterface::new());
+		let chain_monitor_3 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_3 = Arc::new(test_utils::TestChannelMonitor{});
 		let node_id_3 = {
 			let mut key_slice = [0; 32];
@@ -1648,7 +1649,7 @@ mod tests {
 		let router_3 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_3).unwrap());
 
 		let feeest_4 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_4 = Arc::new(test_utils::TestWatchInterface::new());
+		let chain_monitor_4 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_4 = Arc::new(test_utils::TestChannelMonitor{});
 		let node_id_4 = {
 			let mut key_slice = [0; 32];

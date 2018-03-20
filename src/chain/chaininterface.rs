@@ -25,11 +25,9 @@ pub trait ChainWatchInterface: Sync + Send {
 	//TODO: unregister
 }
 
-/// An interface to send a transaction to connected Bitcoin peers.
-/// This is for final settlement. An error might indicate that no peers can be reached or
-/// that peers rejected the transaction.
+/// An interface to send a transaction to the Bitcoin network.
 pub trait BroadcasterInterface: Sync + Send {
-	/// Sends a transaction out to (hopefully) be mined
+	/// Sends a transaction out to (hopefully) be mined.
 	fn broadcast_transaction(&self, tx: &Transaction);
 }
 
@@ -105,8 +103,9 @@ impl ChainWatchInterfaceUtil {
 		}
 	}
 
-	/// notify listener that a block was connected
-	/// notification will repeat if notified listener register new listeners
+	/// Notify listeners that a block was connected.
+	/// Handles re-scanning the block and calling block_connected again if listeners register new
+	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
 	pub fn block_connected_with_filtering(&self, block: &Block, height: u32) {
 		let mut reentered = true;
 		while reentered {
@@ -125,7 +124,7 @@ impl ChainWatchInterfaceUtil {
 		}
 	}
 
-	/// notify listener that a block was disconnected
+	/// Notify listeners that a block was disconnected.
 	pub fn block_disconnected(&self, header: &BlockHeader) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
@@ -136,8 +135,10 @@ impl ChainWatchInterfaceUtil {
 		}
 	}
 
-	/// call listeners for connected blocks if they are still around.
-	/// returns true if notified listeners registered additional listener
+	/// Notify listeners that a block was connected.
+	/// Returns true if notified listeners registered additional watch data (implying that the
+	/// block must be re-scanned and this function called again prior to further block_connected
+	/// calls, see ChainListener::block_connected for more info).
 	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
 		let last_seen = self.reentered.load(Ordering::Relaxed);
 
@@ -151,7 +152,7 @@ impl ChainWatchInterfaceUtil {
 		return last_seen != self.reentered.load(Ordering::Relaxed);
 	}
 
-	/// Checks if a given transaction matches the current filter
+	/// Checks if a given transaction matches the current filter.
 	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
 		let watched = self.watched.lock().unwrap();
 		self.does_match_tx_unguarded (tx, &watched)

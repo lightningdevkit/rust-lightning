@@ -374,7 +374,7 @@ impl Channel {
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(HandleError{err: "Minimum htlc value is full channel value", msg: None});
 		}
-		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw).unwrap();
+		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
 			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", msg: None});
 		}

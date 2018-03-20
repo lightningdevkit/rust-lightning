@@ -456,7 +456,7 @@ impl ChannelMonitor {
 			for txin in tx.input.iter() {
 				if self.funding_txo.is_none() || (txin.prev_hash == self.funding_txo.unwrap().0 && txin.prev_index == self.funding_txo.unwrap().1 as u32) {
 					for tx in self.check_spend_transaction(tx, height).iter() {
-						broadcaster.broadcast_transaction(tx); // TODO: use result
+						broadcaster.broadcast_transaction(tx);
 					}
 				}
 			}
