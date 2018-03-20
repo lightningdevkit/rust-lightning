@@ -12,6 +12,7 @@ use std::collections::{HashMap,BinaryHeap};
 use std::collections::hash_map::Entry;
 
 /// A hop in a route
+#[derive(Clone)]
 pub struct RouteHop {
 	pub pubkey: PublicKey,
 	/// The channel that should be used from the previous hop to reach this node.
@@ -24,6 +25,7 @@ pub struct RouteHop {
 }
 
 /// A route from us through the network to a destination
+#[derive(Clone)]
 pub struct Route {
 	/// The list of hops, NOT INCLUDING our own, where the last hop is the destination. Thus, this
 	/// must always be at least length one. By protocol rules, this may not currently exceed 20 in

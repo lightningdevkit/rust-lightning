@@ -502,6 +502,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 					Event::FundingGenerationReady {..} => { /* Hand upstream */ },
 					Event::FundingBroadcastSafe {..} => { /* Hand upstream */ },
 					Event::PaymentReceived {..} => { /* Hand upstream */ },
+					Event::PaymentSent {..} => { /* Hand upstream */ },
+					Event::PaymentFailed {..} => { /* Hand upstream */ },
 
 					Event::PendingHTLCsForwardable {..} => {
 						//TODO: Handle upstream in some confused form so that upstream just knows
@@ -544,6 +546,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 130)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+						continue;
+					},
+					Event::SendFailHTLC { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Do whatever we're gonna do for handling dropped messages
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},

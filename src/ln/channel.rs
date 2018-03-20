@@ -782,12 +782,44 @@ impl Channel {
 			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
 		}
 
+		//TODO: This is racy af, they may have pending messages in flight to us that will not have
+		//received this yet!
 		self.value_to_self_msat += htlc_amount_msat;
-
 		Ok(msgs::UpdateFulfillHTLC {
 			channel_id: self.channel_id(),
 			htlc_id: htlc_id,
 			payment_preimage: payment_preimage,
+		})
+	}
+
+	pub fn get_update_fail_htlc(&mut self, payment_hash: &[u8; 32], err_packet: msgs::OnionErrorPacket) -> Result<msgs::UpdateFailHTLC, HandleError> {
+		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+			return Err(HandleError{err: "Was asked to fail an HTLC when channel was not in an operational state", msg: None});
+		}
+
+		let mut htlc_id = 0;
+		let mut htlc_amount_msat = 0;
+		self.pending_htlcs.retain(|ref htlc| {
+			if !htlc.outbound && htlc.payment_hash == *payment_hash {
+				if htlc_id != 0 {
+					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
+				}
+				htlc_id = htlc.htlc_id;
+				htlc_amount_msat += htlc.amount_msat;
+				false
+			} else { true }
+		});
+		if htlc_amount_msat == 0 {
+			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+		}
+
+		//TODO: This is racy af, they may have pending messages in flight to us that will not have
+		//received this yet!
+
+		Ok(msgs::UpdateFailHTLC {
+			channel_id: self.channel_id(),
+			htlc_id,
+			reason: err_packet
 		})
 	}
 
@@ -1010,7 +1042,7 @@ impl Channel {
 	}
 
 	/// Removes an outbound HTLC which has been commitment_signed by the remote end
-	fn remove_htlc(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>) -> Result<HTLCOutput, HandleError> {
+	fn remove_outbound_htlc(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>) -> Result<HTLCOutput, HandleError> {
 		let mut found_idx = None;
 		for (idx, ref htlc) in self.pending_htlcs.iter().enumerate() {
 			if htlc.outbound && htlc.htlc_id == htlc_id {
@@ -1026,7 +1058,7 @@ impl Channel {
 			}
 		}
 		match found_idx {
-			None => Err(HandleError{err: "Remote tried to fulfill an HTLC we couldn't find", msg: None}),
+			None => Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", msg: None}),
 			Some(idx) => {
 				Ok(self.pending_htlcs.swap_remove(idx))
 			}
@@ -1096,9 +1128,7 @@ impl Channel {
 		let mut payment_hash = [0; 32];
 		sha.result(&mut payment_hash);
 
-		//TODO: Tell channel_monitor about the payment_preimage
-
-		match self.remove_htlc(msg.htlc_id, Some(payment_hash)) {
+		match self.remove_outbound_htlc(msg.htlc_id, Some(payment_hash)) {
 			Err(e) => return Err(e),
 			Ok(htlc) => {
 				//TODO: Double-check that we didn't exceed some limits (or value_to_self went
@@ -1110,43 +1140,40 @@ impl Channel {
 		self.check_and_free_holding_cell_htlcs()
 	}
 
-
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<([u8; 32], Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
 
-		//TODO: Lots of checks here (and implementation after the remove?)
-
-		match self.remove_htlc(msg.htlc_id, None) {
+		let payment_hash = match self.remove_outbound_htlc(msg.htlc_id, None) {
 			Err(e) => return Err(e),
-			Ok(_htlc) => {
+			Ok(htlc) => {
 				//TODO: Double-check that we didn't exceed some limits (or value_to_self went
 				//negative here?)
-				////TODO: Something?
+				htlc.payment_hash
 			}
-		}
+		};
 
-		self.check_and_free_holding_cell_htlcs()
+		let holding_cell_freedom = self.check_and_free_holding_cell_htlcs()?;
+		Ok((payment_hash, holding_cell_freedom))
 	}
 
-	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<([u8; 32], Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
 
-		//TODO: Lots of checks here (and implementation after the remove?)
-
-		match self.remove_htlc(msg.htlc_id, None) {
+		let payment_hash = match self.remove_outbound_htlc(msg.htlc_id, None) {
 			Err(e) => return Err(e),
-			Ok(_htlc) => {
+			Ok(htlc) => {
 				//TODO: Double-check that we didn't exceed some limits (or value_to_self went
 				//negative here?)
-				////TODO: Something?
+				htlc.payment_hash
 			}
-		}
+		};
 
-		self.check_and_free_holding_cell_htlcs()
+		let holding_cell_freedom = self.check_and_free_holding_cell_htlcs()?;
+		Ok((payment_hash, holding_cell_freedom))
 	}
 
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Vec<PendingForwardHTLCInfo>), HandleError> {

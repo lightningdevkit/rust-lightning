@@ -205,12 +205,14 @@ pub struct UpdateFulfillHTLC {
 	pub payment_preimage: [u8; 32],
 }
 
+#[derive(Clone)]
 pub struct UpdateFailHTLC {
 	pub channel_id: Uint256,
 	pub htlc_id: u64,
 	pub reason: OnionErrorPacket,
 }
 
+#[derive(Clone)]
 pub struct UpdateFailMalformedHTLC {
 	pub channel_id: Uint256,
 	pub htlc_id: u64,
@@ -337,6 +339,9 @@ pub struct HandleError { //TODO: rename me
 	pub msg: Option<ErrorMessage>, //TODO: Move into an Action enum and require it!
 }
 
+/// A trait to describe an object which can receive channel messages. Messages MAY be called in
+/// paralell when they originate from different their_node_ids, however they MUST NOT be called in
+/// paralell when the two calls have the same their_node_id.
 pub trait ChannelMessageHandler : events::EventsProvider {
 	//Channel init:
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<AcceptChannel, HandleError>;
@@ -399,6 +404,7 @@ pub struct DecodedOnionErrorPacket {
 	pub pad: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
