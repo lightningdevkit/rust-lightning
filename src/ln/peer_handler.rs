@@ -299,7 +299,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										let msg_len = try_potential_handleerror!(peer.channel_encryptor.decrypt_length_header(&peer.pending_read_buffer[..]));
 										peer.pending_read_buffer = Vec::with_capacity(msg_len as usize + 16);
 										peer.pending_read_buffer.resize(msg_len as usize + 16, 0);
-										if msg_len < 2 + 16 { // Need at least the message type tag
+										if msg_len < 2 { // Need at least the message type tag
 											return Err(PeerHandleError{});
 										}
 										peer.pending_read_is_header = false;
