@@ -43,34 +43,33 @@ pub struct ChannelKeys {
 
 impl ChannelKeys {
 	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
-		let sha = Sha256::new();
 		let mut prk = [0; 32];
-		hkdf_extract(sha, b"rust-lightning key gen salt", seed, &mut prk);
+		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
 		let secp_ctx = Secp256k1::new();
 
 		let mut okm = [0; 32];
-		hkdf_expand(sha, &prk, b"rust-lightning funding key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);
 		let funding_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning revocation base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning revocation base key info", &mut okm);
 		let revocation_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning payment base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning payment base key info", &mut okm);
 		let payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning delayed payment base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning delayed payment base key info", &mut okm);
 		let delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning htlc base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning htlc base key info", &mut okm);
 		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning channel close key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel close key info", &mut okm);
 		let channel_close_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning channel monitor claim key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel monitor claim key info", &mut okm);
 		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning local commitment seed info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning local commitment seed info", &mut okm);
 
 		Ok(ChannelKeys {
 			funding_key: funding_key,

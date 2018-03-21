@@ -157,12 +157,11 @@ impl PeerChannelEncryptor {
 
 	#[inline]
 	fn hkdf(state: &mut BidirectionalNoiseState, ss: SharedSecret) -> [u8; 32] {
-		let sha = Sha256::new();
 		let mut hkdf = [0; 64];
 		{
 			let mut prk = [0; 32];
-			hkdf_extract(sha, &state.ck, &ss[..], &mut prk);
-			hkdf_expand(sha, &prk, &[0;0], &mut hkdf);
+			hkdf_extract(Sha256::new(), &state.ck, &ss[..], &mut prk);
+			hkdf_expand(Sha256::new(), &prk, &[0;0], &mut hkdf);
 		}
 		state.ck.copy_from_slice(&hkdf[0..32]);
 		let mut res = [0; 32];
@@ -313,10 +312,9 @@ impl PeerChannelEncryptor {
 
 						PeerChannelEncryptor::encrypt_with_ad(&mut res[50..], 0, &temp_k, &bidirectional_state.h, &[0; 0]);
 
-						sha.reset();
 						let mut prk = [0; 32];
-						hkdf_extract(sha, &bidirectional_state.ck, &[0; 0], &mut prk);
-						hkdf_expand(sha, &prk, &[0;0], &mut final_hkdf);
+						hkdf_extract(Sha256::new(), &bidirectional_state.ck, &[0; 0], &mut prk);
+						hkdf_expand(Sha256::new(), &prk, &[0;0], &mut final_hkdf);
 						ck = bidirectional_state.ck.clone();
 						res
 					},
@@ -375,10 +373,9 @@ impl PeerChannelEncryptor {
 
 						PeerChannelEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..])?;
 
-						sha.reset();
 						let mut prk = [0; 32];
-						hkdf_extract(sha, &bidirectional_state.ck, &[0; 0], &mut prk);
-						hkdf_expand(sha, &prk, &[0;0], &mut final_hkdf);
+						hkdf_extract(Sha256::new(), &bidirectional_state.ck, &[0; 0], &mut prk);
+						hkdf_expand(Sha256::new(), &prk, &[0;0], &mut final_hkdf);
 						ck = bidirectional_state.ck.clone();
 					},
 					_ => panic!("Wrong direction for act"),
@@ -416,11 +413,10 @@ impl PeerChannelEncryptor {
 		match self.noise_state {
 			NoiseState::Finished { ref mut sk, ref mut sn, ref mut sck, rk: _, rn: _, rck: _ } => {
 				if *sn >= 1000 {
-					let mut sha = Sha256::new();
 					let mut prk = [0; 32];
-					hkdf_extract(sha, sck, sk, &mut prk);
+					hkdf_extract(Sha256::new(), sck, sk, &mut prk);
 					let mut hkdf = [0; 64];
-					hkdf_expand(sha, &prk, &[0;0], &mut hkdf);
+					hkdf_expand(Sha256::new(), &prk, &[0;0], &mut hkdf);
 
 					sck[..].copy_from_slice(&hkdf[0..32]);
 					sk[..].copy_from_slice(&hkdf[32..]);
@@ -447,11 +443,10 @@ impl PeerChannelEncryptor {
 		match self.noise_state {
 			NoiseState::Finished { sk: _, sn: _, sck: _, ref mut rk, ref mut rn, ref mut rck } => {
 				if *rn >= 1000 {
-					let mut sha = Sha256::new();
 					let mut prk = [0; 32];
-					hkdf_extract(sha, rck, rk, &mut prk);
+					hkdf_extract(Sha256::new(), rck, rk, &mut prk);
 					let mut hkdf = [0; 64];
-					hkdf_expand(sha, &prk, &[0;0], &mut hkdf);
+					hkdf_expand(Sha256::new(), &prk, &[0;0], &mut hkdf);
 
 					rck[..].copy_from_slice(&hkdf[0..32]);
 					rk[..].copy_from_slice(&hkdf[32..]);
