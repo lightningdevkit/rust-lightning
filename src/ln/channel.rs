@@ -1012,8 +1012,10 @@ impl Channel {
 		if htlc_inbound_value_msat + msg.amount_msat > Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis) {
 			return Err(HandleError{err: "Remote HTLC add would put them over their max HTLC value in flight", msg: None});
 		}
-		// Check our_channel_reserve_satoshis:
-		if htlc_inbound_value_msat + htlc_outbound_value_msat + msg.amount_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
+		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
+		// the reserve_satoshis we told them to always have as direct payment so that they lose
+		// something if we punish them for broadcasting an old state).
+		if htlc_inbound_value_msat + htlc_outbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
 			return Err(HandleError{err: "Remote HTLC add would put them over their reserve value", msg: None});
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
@@ -1591,7 +1593,7 @@ impl Channel {
 			return Err(HandleError{err: "Cannot send value that would put us over our max HTLC value in flight", msg: None});
 		}
 		// Check their_channel_reserve_satoshis:
-		if htlc_outbound_value_msat + amount_msat > (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 - htlc_inbound_value_msat {
+		if htlc_inbound_value_msat + htlc_outbound_value_msat + amount_msat + (self.channel_value_satoshis * 1000 - self.value_to_self_msat) > (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 {
 			return Err(HandleError{err: "Cannot send value that would put us over our reserve value", msg: None});
 		}
 
