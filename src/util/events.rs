@@ -30,9 +30,22 @@ pub enum Event {
 	},
 	/// Indicates we've received money! Just gotta dig out that payment preimage and feed it to
 	/// ChannelManager::claim_funds to get it....
+	/// Note that if the preimage is not known, you must call ChannelManager::fail_htlc_backwards
+	/// to free up resources for this HTLC.
 	PaymentReceived {
 		payment_hash: [u8; 32],
 		amt: u64,
+	},
+	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
+	/// and we got back the payment preimage for it). payment_preimage serves as a payment receipt,
+	/// if you wish to have such a thing, you must store it somehow!
+	PaymentSent {
+		payment_preimage: [u8; 32],
+	},
+	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
+	/// something. You may wish to retry with a different route.
+	PaymentFailed {
+		payment_hash: [u8; 32],
 	},
 
 	// Events indicating the network loop should send a message to a peer:
@@ -63,6 +76,11 @@ pub enum Event {
 	SendFulfillHTLC {
 		node_id: PublicKey,
 		msg: msgs::UpdateFulfillHTLC,
+	},
+	/// Used to indicate that we need to fail an htlc from the peer with the given node_id.
+	SendFailHTLC {
+		node_id: PublicKey,
+		msg: msgs::UpdateFailHTLC,
 	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
