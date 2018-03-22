@@ -366,7 +366,9 @@ impl Channel {
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(HandleError{err: "push_msat more than highest possible value", msg: None});
 		}
-		//TODO Check if dust_limit is sane?
+		if msg.dust_limit_satoshis > 21000000 * 100000000 {
+			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
+		}
 		if msg.max_htlc_value_in_flight_msat > msg.funding_satoshis * 1000 {
 			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: None});
 		}
@@ -826,12 +828,14 @@ impl Channel {
 
 	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		// Check sanity of message fields:
-		//TODO Check if dust_limit is sane?
 		if !self.channel_outbound {
 			return Err(HandleError{err: "Got an accept_channel message from an inbound peer", msg: None});
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
 			return Err(HandleError{err: "Got an accept_channel message at a strange time", msg: None});
+		}
+		if msg.dust_limit_satoshis > 21000000 * 100000000 {
+			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
 		}
 		if msg.max_htlc_value_in_flight_msat > self.channel_value_satoshis * 1000 {
 			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: None});
