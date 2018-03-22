@@ -747,7 +747,7 @@ mod tests {
 			let res = outbound_peer.encrypt_message(&msg);
 			assert_eq!(res.len(), 5 + 2*16 + 2);
 
-			let mut len_header = res[0..2+16].to_vec();
+			let len_header = res[0..2+16].to_vec();
 			assert_eq!(inbound_peer.decrypt_length_header(&len_header[..]).unwrap() as usize, msg.len());
 			assert_eq!(inbound_peer.decrypt_message(&res[2+16..]).unwrap()[..], msg[..]);
 

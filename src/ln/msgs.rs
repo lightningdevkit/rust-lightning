@@ -684,8 +684,20 @@ impl MsgEncodable for ClosingSigned {
 }
 
 impl MsgDecodable for UpdateAddHTLC {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+8+8+32+4+1+33+20*65+32 {
+			return Err(DecodeError::WrongLength);
+		}
+		let mut payment_hash = [0; 32];
+		payment_hash.copy_from_slice(&v[48..80]);
+		Ok(Self{
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
+			amount_msat: byte_utils::slice_to_be64(&v[40..48]),
+			payment_hash,
+			cltv_expiry: byte_utils::slice_to_be32(&v[80..84]),
+			onion_routing_packet: OnionPacket::decode(&v[84..])?,
+		})
 	}
 }
 impl MsgEncodable for UpdateAddHTLC {
@@ -695,8 +707,17 @@ impl MsgEncodable for UpdateAddHTLC {
 }
 
 impl MsgDecodable for UpdateFulfillHTLC {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+8+32 {
+			return Err(DecodeError::WrongLength);
+		}
+		let mut payment_preimage = [0; 32];
+		payment_preimage.copy_from_slice(&v[40..72]);
+		Ok(Self{
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
+			payment_preimage,
+		})
 	}
 }
 impl MsgEncodable for UpdateFulfillHTLC {
@@ -706,8 +727,15 @@ impl MsgEncodable for UpdateFulfillHTLC {
 }
 
 impl MsgDecodable for UpdateFailHTLC {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+8 {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self{
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
+			reason: OnionErrorPacket::decode(&v[40..])?,
+		})
 	}
 }
 impl MsgEncodable for UpdateFailHTLC {
@@ -717,8 +745,18 @@ impl MsgEncodable for UpdateFailHTLC {
 }
 
 impl MsgDecodable for UpdateFailMalformedHTLC {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+8+32+2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let mut sha256_of_onion = [0; 32];
+		sha256_of_onion.copy_from_slice(&v[40..72]);
+		Ok(Self{
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
+			sha256_of_onion,
+			failure_code: byte_utils::slice_to_be16(&v[72..74]),
+		})
 	}
 }
 impl MsgEncodable for UpdateFailMalformedHTLC {
@@ -728,8 +766,24 @@ impl MsgEncodable for UpdateFailMalformedHTLC {
 }
 
 impl MsgDecodable for CommitmentSigned {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+64+2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let htlcs = byte_utils::slice_to_be16(&v[96..98]) as usize;
+		if v.len() < 32+64+2+htlcs*64 {
+			return Err(DecodeError::WrongLength);
+		}
+		let mut htlc_signatures = Vec::with_capacity(htlcs);
+		let secp_ctx = Secp256k1::without_caps();
+		for i in 0..htlcs {
+			htlc_signatures.push(secp_signature!(&secp_ctx, &v[98+i*64..98+(i+1)*64]));
+		}
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			signature: secp_signature!(&secp_ctx, &v[32..96]),
+			htlc_signatures,
+		})
 	}
 }
 impl MsgEncodable for CommitmentSigned {
@@ -739,8 +793,18 @@ impl MsgEncodable for CommitmentSigned {
 }
 
 impl MsgDecodable for RevokeAndACK {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+32+33 {
+			return Err(DecodeError::WrongLength);
+		}
+		let mut per_commitment_secret = [0; 32];
+		per_commitment_secret.copy_from_slice(&v[32..64]);
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			per_commitment_secret,
+			next_per_commitment_point: secp_pubkey!(&secp_ctx, &v[64..97]),
+		})
 	}
 }
 impl MsgEncodable for RevokeAndACK {
@@ -750,8 +814,14 @@ impl MsgEncodable for RevokeAndACK {
 }
 
 impl MsgDecodable for UpdateFee {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+4 {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			feerate_per_kw: byte_utils::slice_to_be32(&v[32..36]),
+		})
 	}
 }
 impl MsgEncodable for UpdateFee {
@@ -954,8 +1024,21 @@ impl MsgEncodable for OnionHopData {
 }
 
 impl MsgDecodable for OnionPacket {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 1+33+20*65+32 {
+			return Err(DecodeError::WrongLength);
+		}
+		let mut hop_data = [0; 20*65];
+		hop_data.copy_from_slice(&v[34..1334]);
+		let mut hmac = [0; 32];
+		hmac.copy_from_slice(&v[1334..1366]);
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			version: v[0],
+			public_key: secp_pubkey!(&secp_ctx, &v[1..34]),
+			hop_data,
+			hmac,
+		})
 	}
 }
 impl MsgEncodable for OnionPacket {
@@ -987,8 +1070,17 @@ impl MsgEncodable for DecodedOnionErrorPacket {
 }
 
 impl MsgDecodable for OnionErrorPacket {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
+		if v.len() < 2 + len {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self {
+			data: v[2..len+2].to_vec(),
+		})
 	}
 }
 impl MsgEncodable for OnionErrorPacket {
