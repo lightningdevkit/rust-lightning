@@ -211,7 +211,7 @@ pub struct Channel {
 	channel_monitor: ChannelMonitor,
 }
 
-const OUR_MAX_HTLCS: u16 = 1; //TODO
+const OUR_MAX_HTLCS: u16 = 5; //TODO
 const CONF_TARGET: u32 = 12; //TODO: Should be much higher
 /// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't

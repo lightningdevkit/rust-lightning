@@ -1572,7 +1572,7 @@ mod tests {
 	}
 
 	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
-		let open_chan = node_a.create_channel(node_b.get_our_node_id(), (1 << 24) - 1, 42).unwrap();
+		let open_chan = node_a.create_channel(node_b.get_our_node_id(), 100000, 42).unwrap();
 		let accept_chan = node_b.handle_open_channel(&node_a.get_our_node_id(), &open_chan).unwrap();
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
 
@@ -1584,7 +1584,7 @@ mod tests {
 		assert_eq!(events_1.len(), 1);
 		match events_1[0] {
 			Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, output_script: _, user_channel_id } => {
-				assert_eq!(*channel_value_satoshis, (1 << 24) - 1);
+				assert_eq!(*channel_value_satoshis, 100000);
 				assert_eq!(user_channel_id, 42);
 
 				node_a.funding_transaction_generated(&temporary_channel_id, funding_output.clone());
@@ -1676,7 +1676,7 @@ mod tests {
 	impl SendEvent {
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::SendHTLCs{ node_id, msgs, commitment_msg } => {
+				Event::SendHTLCs { node_id, msgs, commitment_msg } => {
 					SendEvent { node_id: node_id, msgs: msgs, commitment_msg: commitment_msg }
 				},
 				_ => panic!("Unexpected event type!"),
@@ -1746,15 +1746,7 @@ mod tests {
 		(our_payment_preimage, our_payment_hash)
 	}
 
-	fn send_payment(origin_node: &ChannelManager, origin_router: &Router, expected_route: &[&ChannelManager], recv_value: u64) {
-		let route = origin_router.get_route(&expected_route.last().unwrap().get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
-		assert_eq!(route.hops.len(), expected_route.len());
-		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
-			assert_eq!(hop.pubkey, node.get_our_node_id());
-		}
-
-		let our_payment_preimage = send_along_route(origin_node, route, expected_route, recv_value).0;
-
+	fn claim_payment(origin_node: &ChannelManager, expected_route: &[&ChannelManager], our_payment_preimage: [u8; 32]) {
 		assert!(expected_route.last().unwrap().claim_funds(our_payment_preimage));
 
 		let mut expected_next_node = expected_route.last().unwrap().get_our_node_id();
@@ -1792,6 +1784,42 @@ mod tests {
 			},
 			_ => panic!("Unexpected event"),
 		}
+	}
+
+	fn route_payment(origin_node: &ChannelManager, origin_router: &Router, expected_route: &[&ChannelManager], recv_value: u64) -> ([u8; 32], [u8; 32]) {
+		let route = origin_router.get_route(&expected_route.last().unwrap().get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
+		assert_eq!(route.hops.len(), expected_route.len());
+		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
+			assert_eq!(hop.pubkey, node.get_our_node_id());
+		}
+
+		send_along_route(origin_node, route, expected_route, recv_value)
+	}
+
+	fn route_over_limit(origin_node: &ChannelManager, origin_router: &Router, expected_route: &[&ChannelManager], recv_value: u64) {
+		let route = origin_router.get_route(&expected_route.last().unwrap().get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
+		assert_eq!(route.hops.len(), expected_route.len());
+		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
+			assert_eq!(hop.pubkey, node.get_our_node_id());
+		}
+
+		let our_payment_preimage = unsafe { [PAYMENT_COUNT; 32] };
+		unsafe { PAYMENT_COUNT += 1 };
+		let our_payment_hash = {
+			let mut sha = Sha256::new();
+			sha.input(&our_payment_preimage[..]);
+			let mut ret = [0; 32];
+			sha.result(&mut ret);
+			ret
+		};
+
+		let err = origin_node.send_payment(route, our_payment_hash).err().unwrap();
+		assert_eq!(err.err, "Cannot send value that would put us over our max HTLC value in flight");
+	}
+
+	fn send_payment(origin_node: &ChannelManager, origin_router: &Router, expected_route: &[&ChannelManager], recv_value: u64) {
+		let our_payment_preimage = route_payment(origin_node, origin_router, expected_route, recv_value).0;
+		claim_payment(origin_node, expected_route, our_payment_preimage);
 	}
 
 	fn send_failed_payment(origin_node: &ChannelManager, origin_router: &Router, expected_route: &[&ChannelManager]) {
@@ -1912,11 +1940,17 @@ mod tests {
 			router.handle_channel_update(&chan_announcement_3.2).unwrap();
 		}
 
-		// Send some payments
-		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..], 1000000);
+		// Rebalance the network a bit by relaying one payment through all the channels...
+		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..], 8000000);
+		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..], 8000000);
+		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..], 8000000);
+		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..], 8000000);
+		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..], 8000000);
+
+		// Send some more payments
 		send_payment(&node_2, &router_2, &vec!(&*node_3, &*node_4)[..], 1000000);
 		send_payment(&node_4, &router_4, &vec!(&*node_3, &*node_2, &*node_1)[..], 1000000);
-		send_payment(&node_4, &router_4, &vec!(&*node_3, &*node_2)[..], 250000);
+		send_payment(&node_4, &router_4, &vec!(&*node_3, &*node_2)[..], 1000000);
 
 		// Test failure packets
 		send_failed_payment(&node_1, &router_1, &vec!(&*node_2, &*node_3, &*node_4)[..]);
@@ -1930,8 +1964,14 @@ mod tests {
 		}
 
 		send_payment(&node_1, &router_1, &vec!(&*node_2, &*node_4)[..], 1000000);
+		send_payment(&node_3, &router_3, &vec!(&*node_4)[..], 1000000);
+		send_payment(&node_2, &router_2, &vec!(&*node_4)[..], 8000000);
+		send_payment(&node_2, &router_2, &vec!(&*node_4)[..], 8000000);
+		send_payment(&node_2, &router_2, &vec!(&*node_4)[..], 8000000);
+		send_payment(&node_2, &router_2, &vec!(&*node_4)[..], 8000000);
+		send_payment(&node_2, &router_2, &vec!(&*node_4)[..], 8000000);
 
-		// Rebalance a bit
+		// Do some rebalance loop payments, simultaneously
 		let mut hops = Vec::with_capacity(3);
 		hops.push(RouteHop {
 			pubkey: node_3.get_our_node_id(),
@@ -1948,12 +1988,60 @@ mod tests {
 		hops.push(RouteHop {
 			pubkey: node_2.get_our_node_id(),
 			short_channel_id: chan_announcement_4.1.contents.short_channel_id,
-			fee_msat: 250000,
+			fee_msat: 1000000,
 			cltv_expiry_delta: 142,
 		});
 		hops[1].fee_msat = chan_announcement_4.2.contents.fee_base_msat as u64 + chan_announcement_4.2.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 		hops[0].fee_msat = chan_announcement_3.1.contents.fee_base_msat as u64 + chan_announcement_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-		send_along_route(&node_2, Route { hops }, &vec!(&*node_3, &*node_4, &*node_2)[..], 250000);
+		let payment_preimage_1 = send_along_route(&node_2, Route { hops }, &vec!(&*node_3, &*node_4, &*node_2)[..], 1000000).0;
+
+		let mut hops = Vec::with_capacity(3);
+		hops.push(RouteHop {
+			pubkey: node_4.get_our_node_id(),
+			short_channel_id: chan_announcement_4.1.contents.short_channel_id,
+			fee_msat: 0,
+			cltv_expiry_delta: chan_announcement_3.2.contents.cltv_expiry_delta as u32
+		});
+		hops.push(RouteHop {
+			pubkey: node_3.get_our_node_id(),
+			short_channel_id: chan_announcement_3.1.contents.short_channel_id,
+			fee_msat: 0,
+			cltv_expiry_delta: chan_announcement_2.2.contents.cltv_expiry_delta as u32
+		});
+		hops.push(RouteHop {
+			pubkey: node_2.get_our_node_id(),
+			short_channel_id: chan_announcement_2.1.contents.short_channel_id,
+			fee_msat: 1000000,
+			cltv_expiry_delta: 142,
+		});
+		hops[1].fee_msat = chan_announcement_2.2.contents.fee_base_msat as u64 + chan_announcement_2.2.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
+		hops[0].fee_msat = chan_announcement_3.2.contents.fee_base_msat as u64 + chan_announcement_3.2.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
+		let payment_preimage_2 = send_along_route(&node_2, Route { hops }, &vec!(&*node_4, &*node_3, &*node_2)[..], 1000000).0;
+
+		// Claim the rebalances...
+		claim_payment(&node_2, &vec!(&*node_4, &*node_3, &*node_2)[..], payment_preimage_2);
+		claim_payment(&node_2, &vec!(&*node_3, &*node_4, &*node_2)[..], payment_preimage_1);
+
+		// Add a duplicate new channel from 2 to 4
+		let chan_announcement_5 = create_chan_between_nodes(&node_2, &chain_monitor_2, &node_4, &chain_monitor_4);
+		for router in vec!(&router_1, &router_2, &router_3, &router_4) {
+			assert!(router.handle_channel_announcement(&chan_announcement_5.0).unwrap());
+			router.handle_channel_update(&chan_announcement_5.1).unwrap();
+			router.handle_channel_update(&chan_announcement_5.2).unwrap();
+		}
+
+		// Send some payments across both channels
+		let payment_preimage_3 = route_payment(&node_1, &router_1, &vec!(&*node_2, &*node_4)[..], 3000000).0;
+		let payment_preimage_4 = route_payment(&node_1, &router_1, &vec!(&*node_2, &*node_4)[..], 3000000).0;
+		let payment_preimage_5 = route_payment(&node_1, &router_1, &vec!(&*node_2, &*node_4)[..], 3000000).0;
+
+		route_over_limit(&node_1, &router_1, &vec!(&*node_2, &*node_4)[..], 3000000);
+
+		//TODO: Test that routes work again here as we've been notified that the channel is full
+
+		claim_payment(&node_1, &vec!(&*node_2, &*node_4)[..], payment_preimage_3);
+		claim_payment(&node_1, &vec!(&*node_2, &*node_4)[..], payment_preimage_4);
+		claim_payment(&node_1, &vec!(&*node_2, &*node_4)[..], payment_preimage_5);
 
 		// Check that we processed all pending events
 		for node in vec!(&node_1, &node_2, &node_3, &node_4) {
