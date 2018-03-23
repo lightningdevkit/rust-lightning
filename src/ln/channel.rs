@@ -43,34 +43,33 @@ pub struct ChannelKeys {
 
 impl ChannelKeys {
 	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
-		let sha = Sha256::new();
 		let mut prk = [0; 32];
-		hkdf_extract(sha, b"rust-lightning key gen salt", seed, &mut prk);
+		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
 		let secp_ctx = Secp256k1::new();
 
 		let mut okm = [0; 32];
-		hkdf_expand(sha, &prk, b"rust-lightning funding key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);
 		let funding_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning revocation base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning revocation base key info", &mut okm);
 		let revocation_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning payment base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning payment base key info", &mut okm);
 		let payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning delayed payment base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning delayed payment base key info", &mut okm);
 		let delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning htlc base key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning htlc base key info", &mut okm);
 		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning channel close key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel close key info", &mut okm);
 		let channel_close_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning channel monitor claim key info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel monitor claim key info", &mut okm);
 		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &okm)?;
 
-		hkdf_expand(sha, &prk, b"rust-lightning local commitment seed info", &mut okm);
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning local commitment seed info", &mut okm);
 
 		Ok(ChannelKeys {
 			funding_key: funding_key,
@@ -367,7 +366,9 @@ impl Channel {
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(HandleError{err: "push_msat more than highest possible value", msg: None});
 		}
-		//TODO Check if dust_limit is sane?
+		if msg.dust_limit_satoshis > 21000000 * 100000000 {
+			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
+		}
 		if msg.max_htlc_value_in_flight_msat > msg.funding_satoshis * 1000 {
 			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: None});
 		}
@@ -827,12 +828,14 @@ impl Channel {
 
 	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		// Check sanity of message fields:
-		//TODO Check if dust_limit is sane?
 		if !self.channel_outbound {
 			return Err(HandleError{err: "Got an accept_channel message from an inbound peer", msg: None});
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
 			return Err(HandleError{err: "Got an accept_channel message at a strange time", msg: None});
+		}
+		if msg.dust_limit_satoshis > 21000000 * 100000000 {
+			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
 		}
 		if msg.max_htlc_value_in_flight_msat > self.channel_value_satoshis * 1000 {
 			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: None});
@@ -1013,8 +1016,10 @@ impl Channel {
 		if htlc_inbound_value_msat + msg.amount_msat > Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis) {
 			return Err(HandleError{err: "Remote HTLC add would put them over their max HTLC value in flight", msg: None});
 		}
-		// Check our_channel_reserve_satoshis:
-		if htlc_inbound_value_msat + htlc_outbound_value_msat + msg.amount_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
+		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
+		// the reserve_satoshis we told them to always have as direct payment so that they lose
+		// something if we punish them for broadcasting an old state).
+		if htlc_inbound_value_msat + htlc_outbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
 			return Err(HandleError{err: "Remote HTLC add would put them over their reserve value", msg: None});
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
@@ -1592,7 +1597,7 @@ impl Channel {
 			return Err(HandleError{err: "Cannot send value that would put us over our max HTLC value in flight", msg: None});
 		}
 		// Check their_channel_reserve_satoshis:
-		if htlc_outbound_value_msat + amount_msat > (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 - htlc_inbound_value_msat {
+		if htlc_inbound_value_msat + htlc_outbound_value_msat + amount_msat + (self.channel_value_satoshis * 1000 - self.value_to_self_msat) > (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 {
 			return Err(HandleError{err: "Cannot send value that would put us over our reserve value", msg: None});
 		}
 
