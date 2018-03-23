@@ -12,12 +12,10 @@ Still super-early code-dump quality and is missing large chunks. See README in g
 [features]
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
 non_bitcoin_chain_hash_routing = []
+fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget"]
 
 [dependencies]
-bitcoin = "0.11"
+bitcoin = "0.12"
 rust-crypto = "0.2"
 rand = "0.4"
-secp256k1 = "0.8"
-
-[patch.crates-io]
-bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", branch = "master"  }
+secp256k1 = "0.9"

@@ -1,4 +1,15 @@
 language: rust
 rust:
   - stable
+  - beta
+  - 1.22.0
 cache: cargo
+
+before_install:
+  - sudo apt-get -qq update
+  - sudo apt-get install -y binutils-dev libunwind8-dev
+
+script:
+  - cargo build --verbose
+  - cargo test --verbose
+  - if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd fuzz && cargo test --verbose && ./travis-fuzz.sh; fi

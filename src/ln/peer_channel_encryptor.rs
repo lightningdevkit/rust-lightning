@@ -5,16 +5,14 @@ use secp256k1::Secp256k1;
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::ecdh::SharedSecret;
 
-use rand::{thread_rng,Rng};
-
 use crypto::digest::Digest;
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
-use crypto::sha2::Sha256;
 
 use crypto::aead::{AeadEncryptor, AeadDecryptor};
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
-use util::byte_utils;
+use util::{byte_utils,rng};
+use util::sha2::Sha256;
 
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
@@ -75,9 +73,8 @@ pub struct PeerChannelEncryptor {
 
 impl PeerChannelEncryptor {
 	pub fn new_outbound(their_node_id: PublicKey) -> PeerChannelEncryptor {
-		let mut rng = thread_rng();
 		let mut key = [0u8; 32];
-		rng.fill_bytes(&mut key);
+		rng::fill_bytes(&mut key);
 
 		let secp_ctx = Secp256k1::new();
 		let sec_key = SecretKey::from_slice(&secp_ctx, &key).unwrap(); //TODO: nicer rng-is-bad error message
@@ -275,9 +272,8 @@ impl PeerChannelEncryptor {
 	pub fn process_act_one_with_key(&mut self, act_one: &[u8], our_node_secret: &SecretKey) -> Result<[u8; 50], HandleError> {
 		assert_eq!(act_one.len(), 50);
 
-		let mut rng = thread_rng();
 		let mut key = [0u8; 32];
-		rng.fill_bytes(&mut key);
+		rng::fill_bytes(&mut key);
 		let our_ephemeral_key = SecretKey::from_slice(&self.secp_ctx, &key).unwrap(); //TODO: nicer rng-is-bad error message
 		self.process_act_one_with_ephemeral_key(act_one, our_node_secret, our_ephemeral_key)
 	}

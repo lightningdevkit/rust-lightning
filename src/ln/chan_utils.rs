@@ -7,8 +7,9 @@ use secp256k1::Secp256k1;
 use secp256k1;
 
 use crypto::digest::Digest;
-use crypto::sha2::Sha256;
 use crypto::ripemd160::Ripemd160;
+
+use util::sha2::Sha256;
 
 // Various functions for key derivation and transaction creation for use within channels. Primarily
 // used in Channel and ChannelMonitor.
