@@ -1236,7 +1236,7 @@ impl ChannelMessageHandler for ChannelManager {
 
 		match claimable_htlcs_entry {
 			hash_map::Entry::Occupied(mut e) => {
-				let mut outbound_route = e.get_mut();
+				let outbound_route = e.get_mut();
 				let route = match outbound_route {
 					&mut PendingOutboundHTLC::OutboundRoute { ref route } => {
 						route.clone()
