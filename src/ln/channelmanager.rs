@@ -78,6 +78,7 @@ enum HTLCFailReason<'a> {
 	},
 	Reason {
 		failure_code: u16,
+		data: &'a[u8],
 	}
 }
 
@@ -571,6 +572,7 @@ impl ChannelManager {
 
 	pub fn process_pending_htlc_forward(&self) {
 		let mut new_events = Vec::new();
+		let mut failed_forwards = Vec::new();
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -584,6 +586,10 @@ impl ChannelManager {
 					let forward_chan_id = match channel_state.short_to_id.get(&short_chan_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => {
+							failed_forwards.reserve(pending_forwards.len());
+							for forward_info in pending_forwards {
+								failed_forwards.push((forward_info.payment_hash, 0x4000 | 10, None));
+							}
 							// TODO: Send a failure packet back on each pending_forward
 							continue;
 						}
@@ -594,7 +600,8 @@ impl ChannelManager {
 					for forward_info in pending_forwards {
 						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, forward_info.onion_packet.unwrap()) {
 							Err(_e) => {
-								// TODO: Send a failure packet back
+								let chan_update = self.get_channel_update(forward_chan).unwrap();
+								failed_forwards.push((forward_info.payment_hash, 0x4000 | 7, Some(chan_update)));
 								continue;
 							},
 							Ok(update_add) => {
@@ -639,6 +646,13 @@ impl ChannelManager {
 			}
 		}
 
+		for failed_forward in failed_forwards.drain(..) {
+			match failed_forward.2 {
+				None => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: &[0;0] }),
+				Some(chan_update) => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: &chan_update.encode()[..] }),
+			};
+		}
+
 		if new_events.is_empty() { return }
 
 		let mut events = self.pending_events.lock().unwrap();
@@ -650,7 +664,7 @@ impl ChannelManager {
 
 	/// Indicates that the preimage for payment_hash is unknown after a PaymentReceived event.
 	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32]) -> bool {
-		self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 15 })
+		self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: &[0;0] })
 	}
 
 	fn fail_htlc_backwards_internal(&self, mut channel_state: MutexGuard<ChannelHolder>, payment_hash: &[u8; 32], onion_error: HTLCFailReason) -> bool {
@@ -681,8 +695,8 @@ impl ChannelManager {
 			},
 			PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret } => {
 				let err_packet = match onion_error {
-					HTLCFailReason::Reason { failure_code } => {
-						let packet = ChannelManager::build_failure_packet(&incoming_packet_shared_secret, failure_code, &[0; 0]).encode();
+					HTLCFailReason::Reason { failure_code, data } => {
+						let packet = ChannelManager::build_failure_packet(&incoming_packet_shared_secret, failure_code, data).encode();
 						ChannelManager::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
 					},
 					HTLCFailReason::ErrorPacket { err } => {
@@ -1244,7 +1258,7 @@ impl ChannelMessageHandler for ChannelManager {
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 		}
-		self.fail_htlc_backwards_internal(channel_state, &res.0, HTLCFailReason::Reason { failure_code: msg.failure_code });
+		self.fail_htlc_backwards_internal(channel_state, &res.0, HTLCFailReason::Reason { failure_code: msg.failure_code, data: &[0;0] });
 		Ok(res.1)
 	}
 
