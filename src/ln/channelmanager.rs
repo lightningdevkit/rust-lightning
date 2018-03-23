@@ -985,6 +985,33 @@ impl ChannelMessageHandler for ChannelManager {
 
 		let associated_data = Vec::new(); //TODO: What to put here?
 
+		macro_rules! get_onion_hash {
+			() => {
+				{
+					let mut sha = Sha256::new();
+					sha.input(&msg.onion_routing_packet.hop_data);
+					let mut onion_hash = [0; 32];
+					sha.result(&mut onion_hash);
+					onion_hash
+				}
+			}
+		}
+
+		macro_rules! return_err {
+			($msg: expr, $err_code: expr, $data: expr) => {
+				return Err(msgs::HandleError {
+					err: $msg,
+					msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
+						msg: msgs::UpdateFailHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
+						}
+					}),
+				});
+			}
+		}
+
 		if msg.onion_routing_packet.version != 0 {
 			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
 			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
@@ -992,39 +1019,14 @@ impl ChannelMessageHandler for ChannelManager {
 			//receiving node would have to brute force to figure out which version was put in the
 			//packet by the node that send us the message, in the case of hashing the hop_data, the
 			//node knows the HMAC matched, so they already know what is there...
-			let mut sha = Sha256::new();
-			sha.input(&msg.onion_routing_packet.hop_data);
-			let mut onion_hash = [0; 32];
-			sha.result(&mut onion_hash);
-			return Err(msgs::HandleError {
-				err: "Unknown onion packet version",
-				msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-					msg: msgs::UpdateFailHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x8000 | 0x4000 | 4, &onion_hash),
-					}
-				}),
-			});
+			return_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4, &get_onion_hash!());
 		}
 
 		let mut hmac = Hmac::new(Sha256::new(), &mu);
 		hmac.input(&msg.onion_routing_packet.hop_data);
 		hmac.input(&associated_data[..]);
 		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
-			let mut sha = Sha256::new();
-			sha.input(&msg.onion_routing_packet.hop_data);
-			let mut onion_hash = [0; 32];
-			sha.result(&mut onion_hash);
-			return Err(HandleError{err: "HMAC Check failed",
-				msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-					msg: msgs::UpdateFailHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x8000 | 0x4000 | 5, &onion_hash),
-					}
-				}),
-			});
+			return_err!("HMAC Check failed", 0x8000 | 0x4000 | 5, &get_onion_hash!());
 		}
 
 		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
@@ -1037,15 +1039,7 @@ impl ChannelMessageHandler for ChannelManager {
 						msgs::DecodeError::UnknownRealmByte => 0x4000 | 1,
 						_ => 0x2000 | 2, // Should never happen
 					};
-					return Err(HandleError{err: "Unable to decode our hop data",
-						msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-							msg: msgs::UpdateFailHTLC {
-								channel_id: msg.channel_id,
-								htlc_id: msg.htlc_id,
-								reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, error_code, &[0;0]),
-							}
-						}),
-					});
+					return_err!("Unable to decode our hop data", error_code, &[0;0]);
 				},
 				Ok(msg) => msg
 			}
@@ -1054,26 +1048,10 @@ impl ChannelMessageHandler for ChannelManager {
 		let mut pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
 				if next_hop_data.data.amt_to_forward != msg.amount_msat {
-					return Err(HandleError{err: "Upstream node sent less than we were supposed to receive in payment",
-						msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-							msg: msgs::UpdateFailHTLC {
-								channel_id: msg.channel_id,
-								htlc_id: msg.htlc_id,
-								reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 19, &byte_utils::be64_to_array(msg.amount_msat)),
-							}
-						}),
-					});
+					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
 				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
-					return Err(HandleError{err: "Upstream node set CLTV to the wrong value",
-						msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-							msg: msgs::UpdateFailHTLC {
-								channel_id: msg.channel_id,
-								htlc_id: msg.htlc_id,
-								reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 18, &byte_utils::be32_to_array(msg.cltv_expiry)),
-							}
-						}),
-					});
+					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
 
 				// Note that we could obviously respond immediately with an update_fulfill_htlc
@@ -1106,15 +1084,7 @@ impl ChannelMessageHandler for ChannelManager {
 						Err(_) => {
 							// Return temporary node failure as its technically our issue, not the
 							// channel's issue.
-							return Err(HandleError{err: "Blinding factor is an invalid private key",
-								msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-									msg: msgs::UpdateFailHTLC {
-										channel_id: msg.channel_id,
-										htlc_id: msg.htlc_id,
-										reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x2000 | 2, &[0;0]),
-									}
-								}),
-							});
+							return_err!("Blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
 						},
 						Ok(key) => key
 					}
@@ -1124,15 +1094,7 @@ impl ChannelMessageHandler for ChannelManager {
 					Err(_) => {
 						// Return temporary node failure as its technically our issue, not the
 						// channel's issue.
-						return Err(HandleError{err: "New blinding factor is an invalid private key",
-							msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-								msg: msgs::UpdateFailHTLC {
-									channel_id: msg.channel_id,
-									htlc_id: msg.htlc_id,
-									reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x2000 | 2, &[0;0]),
-								}
-							}),
-						});
+						return_err!("New blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
 					},
 					Ok(_) => {}
 				};
@@ -1162,30 +1124,14 @@ impl ChannelMessageHandler for ChannelManager {
 		if pending_forward_info.onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
 			let forwarding_id = match channel_state.short_to_id.get(&pending_forward_info.short_channel_id) {
 				None => {
-					return Err(HandleError{err: "Don't have available channel for forwarding as requested.",
-						msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-							msg: msgs::UpdateFailHTLC {
-								channel_id: msg.channel_id,
-								htlc_id: msg.htlc_id,
-								reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x4000 | 10, &[0;0]),
-							}
-						}),
-					});
+					return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
 				},
 				Some(id) => id.clone(),
 			};
 			let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
 			if !chan.is_live() {
 				let chan_update = self.get_channel_update(chan).unwrap();
-				return Err(HandleError{err: "Forwarding channel is not in a ready state.",
-					msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-						msg: msgs::UpdateFailHTLC {
-							channel_id: msg.channel_id,
-							htlc_id: msg.htlc_id,
-							reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x4000 | 10, &chan_update.encode()[..]),
-						}
-					}),
-				});
+				return_err!("Forwarding channel is not in a ready state.", 0x4000 | 10, &chan_update.encode()[..]);
 			}
 		}
 
@@ -1205,15 +1151,7 @@ impl ChannelMessageHandler for ChannelManager {
 					_ => {},
 				}
 				if !acceptable_cycle {
-					return Err(HandleError{err: "Payment looped through us twice",
-						msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
-							msg: msgs::UpdateFailHTLC {
-								channel_id: msg.channel_id,
-								htlc_id: msg.htlc_id,
-								reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x4000 | 0x2000|2, &[0;0]),
-							}
-						}),
-					});
+					return_err!("Payment looped through us twice", 0x4000 | 0x2000 | 2, &[0;0]);
 				}
 			},
 			_ => {},
