@@ -114,6 +114,7 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::UnknownRealmByte => return,
 					msgs::DecodeError::BadPublicKey => return,
 					msgs::DecodeError::BadSignature => return,
+					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::WrongLength => panic!("We picked the length..."),
 				}
 			}
@@ -133,6 +134,7 @@ pub fn do_test(data: &[u8]) {
 						msgs::DecodeError::UnknownRealmByte => return,
 						msgs::DecodeError::BadPublicKey => return,
 						msgs::DecodeError::BadSignature => return,
+						msgs::DecodeError::ExtraAddressesPerType => return,
 						msgs::DecodeError::WrongLength => panic!("We picked the length..."),
 					}
 				}
