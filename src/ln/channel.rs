@@ -1105,23 +1105,7 @@ impl Channel {
 		}
 	}
 
-	/// Checks if there are any LocalAnnounced HTLCs remaining and sets
-	/// ChannelState::AwaitingRemoteRevoke accordingly, possibly calling free_holding_cell_htlcs.
-	fn check_and_free_holding_cell_htlcs(&mut self) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
-			for htlc in self.pending_htlcs.iter() {
-				if htlc.state == HTLCState::LocalAnnounced {
-					return Ok(None);
-				}
-			}
-			self.channel_state &= !(ChannelState::AwaitingRemoteRevoke as u32);
-			self.free_holding_cell_htlcs()
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1139,11 +1123,10 @@ impl Channel {
 				self.value_to_self_msat -= htlc.amount_msat;
 			}
 		}
-
-		self.check_and_free_holding_cell_htlcs()
+		Ok(())
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<([u8; 32], Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>), HandleError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<[u8; 32], HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1156,12 +1139,10 @@ impl Channel {
 				htlc.payment_hash
 			}
 		};
-
-		let holding_cell_freedom = self.check_and_free_holding_cell_htlcs()?;
-		Ok((payment_hash, holding_cell_freedom))
+		Ok(payment_hash)
 	}
 
-	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<([u8; 32], Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>), HandleError> {
+	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<[u8; 32], HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1174,9 +1155,7 @@ impl Channel {
 				htlc.payment_hash
 			}
 		};
-
-		let holding_cell_freedom = self.check_and_free_holding_cell_htlcs()?;
-		Ok((payment_hash, holding_cell_freedom))
+		Ok(payment_hash)
 	}
 
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Vec<PendingForwardHTLCInfo>), HandleError> {

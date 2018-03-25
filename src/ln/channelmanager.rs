@@ -1212,54 +1212,52 @@ impl ChannelMessageHandler for ChannelManager {
 		Ok(res)
 	}
 
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
-		let res = {
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
+		{
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
-					chan.update_fulfill_htlc(&msg)
+					chan.update_fulfill_htlc(&msg)?;
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
-		};
+		}
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		self.claim_funds_internal(msg.payment_preimage.clone(), false);
-		res
+		Ok(())
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let res;
-		match channel_state.by_id.get_mut(&msg.channel_id) {
+		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 				}
-				res = chan.update_fail_htlc(&msg)?;
+				chan.update_fail_htlc(&msg)?
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
-		}
-		self.fail_htlc_backwards_internal(channel_state, &res.0, HTLCFailReason::ErrorPacket { err: &msg.reason });
-		Ok(res.1)
+		};
+		self.fail_htlc_backwards_internal(channel_state, &payment_hash, HTLCFailReason::ErrorPacket { err: &msg.reason });
+		Ok(())
 	}
 
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let res;
-		match channel_state.by_id.get_mut(&msg.channel_id) {
+		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 				}
-				res = chan.update_fail_malformed_htlc(&msg)?;
+				chan.update_fail_malformed_htlc(&msg)?
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
-		}
-		self.fail_htlc_backwards_internal(channel_state, &res.0, HTLCFailReason::Reason { failure_code: msg.failure_code, data: &[0;0] });
-		Ok(res.1)
+		};
+		self.fail_htlc_backwards_internal(channel_state, &payment_hash, HTLCFailReason::Reason { failure_code: msg.failure_code, data: &[0;0] });
+		Ok(())
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<msgs::RevokeAndACK, HandleError> {
@@ -1310,22 +1308,21 @@ impl ChannelMessageHandler for ChannelManager {
 		Ok(res)
 	}
 
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), HandleError> {
-		let monitor = {
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+		let (res, monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
-					chan.revoke_and_ack(&msg)?;
-					chan.channel_monitor()
+					(chan.revoke_and_ack(&msg)?, chan.channel_monitor())
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
 		};
 		self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor)?;
-		Ok(())
+		Ok(res)
 	}
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
@@ -1711,7 +1708,7 @@ mod tests {
 
 			node.handle_update_add_htlc(&prev_node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
 			let revoke_and_ack = node.handle_commitment_signed(&prev_node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
-			prev_node.handle_revoke_and_ack(&node.get_our_node_id(), &revoke_and_ack).unwrap();
+			assert!(prev_node.handle_revoke_and_ack(&node.get_our_node_id(), &revoke_and_ack).unwrap().is_none());
 
 			let events_1 = node.get_and_clear_pending_events();
 			assert_eq!(events_1.len(), 1);
@@ -1756,7 +1753,7 @@ mod tests {
 			assert_eq!(expected_next_node, node.get_our_node_id());
 			match next_msg {
 				Some(msg) => {
-					assert!(node.handle_update_fulfill_htlc(&prev_node.get_our_node_id(), &msg).unwrap().is_none());
+					node.handle_update_fulfill_htlc(&prev_node.get_our_node_id(), &msg).unwrap();
 				}, None => {}
 			}
 
@@ -1774,7 +1771,7 @@ mod tests {
 		}
 
 		assert_eq!(expected_next_node, origin_node.get_our_node_id());
-		assert!(origin_node.handle_update_fulfill_htlc(&expected_route.first().unwrap().get_our_node_id(), &next_msg.unwrap()).unwrap().is_none());
+		origin_node.handle_update_fulfill_htlc(&expected_route.first().unwrap().get_our_node_id(), &next_msg.unwrap()).unwrap();
 
 		let events = origin_node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -1839,7 +1836,7 @@ mod tests {
 			assert_eq!(expected_next_node, node.get_our_node_id());
 			match next_msg {
 				Some(msg) => {
-					assert!(node.handle_update_fail_htlc(&prev_node.get_our_node_id(), &msg).unwrap().is_none());
+					node.handle_update_fail_htlc(&prev_node.get_our_node_id(), &msg).unwrap();
 				}, None => {}
 			}
 
@@ -1857,7 +1854,7 @@ mod tests {
 		}
 
 		assert_eq!(expected_next_node, origin_node.get_our_node_id());
-		assert!(origin_node.handle_update_fail_htlc(&expected_route.first().unwrap().get_our_node_id(), &next_msg.unwrap()).unwrap().is_none());
+		origin_node.handle_update_fail_htlc(&expected_route.first().unwrap().get_our_node_id(), &next_msg.unwrap()).unwrap();
 
 		let events = origin_node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
