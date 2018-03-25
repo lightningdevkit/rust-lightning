@@ -765,6 +765,7 @@ impl Channel {
 
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
+		//TODO: swap_remove since we dont need to maintain ordering here
 		self.pending_htlcs.retain(|ref htlc| {
 			if !htlc.outbound && htlc.payment_hash == payment_hash {
 				if htlc_id != 0 {
@@ -796,6 +797,7 @@ impl Channel {
 
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
+		//TODO: swap_remove since we dont need to maintain ordering here
 		self.pending_htlcs.retain(|ref htlc| {
 			if !htlc.outbound && htlc.payment_hash == *payment_hash {
 				if htlc_id != 0 {
@@ -1258,7 +1260,7 @@ impl Channel {
         if self.channel_outbound {
 			return Err(HandleError{err: "Non-funding remote tried to update channel fee", msg: None});
         }
-		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw).unwrap();
+		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.feerate_per_kw = msg.feerate_per_kw as u64;
 		Ok(())
 	}
