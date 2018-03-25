@@ -772,6 +772,7 @@ impl ChannelManager {
 				if from_user {
 					panic!("Called claim_funds with a preimage for an outgoing payment. There is nothing we can do with this, and something is seriously wrong if you knew this...");
 				}
+				mem::drop(channel_state);
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push(events::Event::PaymentSent {
 					payment_preimage
@@ -795,6 +796,7 @@ impl ChannelManager {
 					}
 				};
 
+				mem::drop(channel_state);
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push(events::Event::SendFulfillHTLC {
 					node_id: node_id,
