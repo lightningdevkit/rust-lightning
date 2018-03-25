@@ -1621,6 +1621,19 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", msg: None});
 		}
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+			return Err(HandleError{err: "Cannot create commitment tx until remote revokes their previous commitment", msg: None});
+		}
+		let mut have_updates = false; // TODO initialize with "have we sent a fee update?"
+		for htlc in self.pending_htlcs.iter() {
+			if htlc.state == HTLCState::LocalAnnounced {
+				have_updates = true;
+			}
+			if have_updates { break; }
+		}
+		if !have_updates {
+			return Err(HandleError{err: "Cannot create commitment tx until we have some updates to send", msg: None});
+		}
 
 		let funding_script = self.get_funding_redeemscript();
 
