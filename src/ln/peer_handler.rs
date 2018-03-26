@@ -357,11 +357,20 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 											38 => {
 												let msg = try_potential_decodeerror!(msgs::Shutdown::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg));
+												let resp_options = try_potential_handleerror!(self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg));
+												if let Some(resp) = resp_options.0 {
+													encode_and_send_msg!(resp, 38);
+												}
+												if let Some(resp) = resp_options.1 {
+													encode_and_send_msg!(resp, 39);
+												}
 											},
 											39 => {
 												let msg = try_potential_decodeerror!(msgs::ClosingSigned::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg));
+												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg));
+												if let Some(resp) = resp_option {
+													encode_and_send_msg!(resp, 39);
+												}
 											},
 
 											128 => {

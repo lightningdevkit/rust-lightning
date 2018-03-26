@@ -149,7 +149,20 @@ enum ChannelState {
 	/// later.
 	/// Flag is set on ChannelFunded.
 	AwaitingRemoteRevoke = (1 << 7),
+	/// Flag which is set on ChannelFunded or FundingSent after receiving a shutdown message from
+	/// the remote end. If set, they may not add any new HTLCs to the channel, and we are expected
+	/// to respond with our own shutdown message when possible.
+	RemoteShutdownSent = (1 << 8),
+	/// Flag which is set on ChannelFunded or FundingSent after sending a shutdown message. At this
+	/// point, we may not add any new HTLCs to the channel.
+	/// TODO: Investigate some kind of timeout mechanism by which point the remote end must provide
+	/// us their shutdown.
+	LocalShutdownSent = (1 << 9),
+	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
+	/// to drop us, but we store this anyway.
+	ShutdownComplete = (1 << 10),
 }
+const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32);
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
@@ -176,6 +189,8 @@ pub struct Channel {
 	next_remote_htlc_id: u64,
 	channel_update_count: u32,
 	feerate_per_kw: u64,
+
+	last_sent_closing_fee: Option<(u64, u64)>, // (feerate, fee)
 
 	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
 	/// to detect unconfirmation after a serialize-unserialize roudtrip where we may not see a full
@@ -207,6 +222,8 @@ pub struct Channel {
 	their_htlc_basepoint: PublicKey,
 	their_cur_commitment_point: PublicKey,
 	their_node_id: PublicKey,
+
+	their_shutdown_scriptpubkey: Option<Script>,
 
 	channel_monitor: ChannelMonitor,
 }
@@ -310,6 +327,8 @@ impl Channel {
 			next_remote_htlc_id: 0,
 			channel_update_count: 0,
 
+			last_sent_closing_fee: None,
+
 			funding_tx_confirmed_in: Default::default(),
 			short_channel_id: None,
 			last_block_connected: Default::default(),
@@ -332,6 +351,8 @@ impl Channel {
 			their_htlc_basepoint: PublicKey::new(),
 			their_cur_commitment_point: PublicKey::new(),
 			their_node_id: their_node_id,
+
+			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
 		}
@@ -424,6 +445,8 @@ impl Channel {
 			next_remote_htlc_id: 0,
 			channel_update_count: 0,
 
+			last_sent_closing_fee: None,
+
 			funding_tx_confirmed_in: Default::default(),
 			short_channel_id: None,
 			last_block_connected: Default::default(),
@@ -447,6 +470,8 @@ impl Channel {
 			their_htlc_basepoint: msg.htlc_basepoint,
 			their_cur_commitment_point: msg.first_per_commitment_point,
 			their_node_id: their_node_id,
+
+			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
 		};
@@ -599,6 +624,75 @@ impl Channel {
 	}
 
 	#[inline]
+	fn get_closing_scriptpubkey(&self) -> Script {
+		let our_channel_close_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.channel_close_key).unwrap().serialize());
+		Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
+	}
+
+	#[inline]
+	fn get_closing_transaction_weight(a_scriptpubkey: &Script, b_scriptpubkey: &Script) -> u64 {
+		(4 + 1 + 36 + 4 + 1 + 1 + 2*(8+1) + 4 + a_scriptpubkey.len() as u64 + b_scriptpubkey.len() as u64)*4 + 2 + 1 + 1 + 2*(1 + 72)
+	}
+
+	#[inline]
+	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> (Transaction, u64) {
+		let txins = {
+			let mut ins: Vec<TxIn> = Vec::new();
+			ins.push(TxIn {
+				prev_hash: self.channel_monitor.get_funding_txo().unwrap().0,
+				prev_index: self.channel_monitor.get_funding_txo().unwrap().1 as u32,
+				script_sig: Script::new(),
+				sequence: 0xffffffff,
+				witness: Vec::new(),
+			});
+			ins
+		};
+
+		assert!(self.pending_htlcs.is_empty());
+		let mut txouts: Vec<(TxOut, ())> = Vec::new();
+
+		let mut total_fee_satoshis = proposed_total_fee_satoshis;
+		let value_to_self: i64 = (self.value_to_self_msat as i64) / 1000 - if self.channel_outbound { total_fee_satoshis as i64 } else { 0 };
+		let value_to_remote: i64 = ((self.channel_value_satoshis * 1000 - self.value_to_self_msat) as i64 / 1000) - if self.channel_outbound { 0 } else { total_fee_satoshis as i64 };
+
+		if value_to_self < 0 {
+			assert!(self.channel_outbound);
+			total_fee_satoshis += (-value_to_self) as u64;
+		} else if value_to_remote < 0 {
+			assert!(!self.channel_outbound);
+			total_fee_satoshis += (-value_to_remote) as u64;
+		}
+
+		if !skip_remote_output && value_to_remote as u64 > self.our_dust_limit_satoshis {
+			txouts.push((TxOut {
+				script_pubkey: self.their_shutdown_scriptpubkey.clone().unwrap(),
+				value: value_to_remote as u64
+			}, ()));
+		}
+
+		if value_to_self as u64 > self.our_dust_limit_satoshis {
+			txouts.push((TxOut {
+				script_pubkey: self.get_closing_scriptpubkey(),
+				value: value_to_self as u64
+			}, ()));
+		}
+
+		transaction_utils::sort_outputs(&mut txouts);
+
+		let mut outputs: Vec<TxOut> = Vec::new();
+		for out in txouts.drain(..) {
+			outputs.push(out.0);
+		}
+
+		(Transaction {
+			version: 2,
+			lock_time: 0,
+			input: txins,
+			output: outputs,
+		}, total_fee_satoshis)
+	}
+
+	#[inline]
 	/// Creates a set of keys for build_commitment_transaction to generate a transaction which our
 	/// counterparty will sign (ie DO NOT send signatures over a transaction created by this to
 	/// our counterparty!)
@@ -640,7 +734,7 @@ impl Channel {
 		}.push_opcode(opcodes::All::OP_PUSHNUM_2).push_opcode(opcodes::All::OP_CHECKMULTISIG).into_script()
 	}
 
-	fn sign_commitment_transaction(&self, tx: &mut Transaction, their_sig: &Signature) -> Result<(), HandleError> {
+	fn sign_commitment_transaction(&self, tx: &mut Transaction, their_sig: &Signature) -> Signature {
 		if tx.input.len() != 1 {
 			panic!("Tried to sign commitment transaction that had input count != 1!");
 		}
@@ -650,8 +744,8 @@ impl Channel {
 
 		let funding_redeemscript = self.get_funding_redeemscript();
 
-		let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
-		let our_sig = secp_call!(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key));
+		let sighash = Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
+		let our_sig = self.secp_ctx.sign(&sighash, &self.local_keys.funding_key).unwrap();
 
 		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
@@ -669,7 +763,7 @@ impl Channel {
 
 		tx.input[0].witness.push(funding_redeemscript.into_vec());
 
-		Ok(())
+		our_sig
 	}
 
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
@@ -752,6 +846,7 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Was asked to fulfill an HTLC when channel was not in an operational state", msg: None});
 		}
+		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		let mut sha = Sha256::new();
 		sha.input(&payment_preimage);
@@ -789,6 +884,7 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Was asked to fail an HTLC when channel was not in an operational state", msg: None});
 		}
+		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
@@ -952,12 +1048,13 @@ impl Channel {
 	}
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
-		if self.channel_state == ChannelState::FundingSent as u32 {
+		let non_shutdown_state = self.channel_state & (!BOTH_SIDES_SHUTDOWN_MASK);
+		if non_shutdown_state == ChannelState::FundingSent as u32 {
 			self.channel_state |= ChannelState::TheirFundingLocked as u32;
-		} else if self.channel_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
-			self.channel_state = ChannelState::ChannelFunded as u32;
-		} else if self.channel_state < ChannelState::FundingSent as u32 {
-			return Err(HandleError{err: "Peer sent a funding_locked before we'd even been told the funding txid", msg: None});
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
+		} else {
+			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", msg: None});
 		}
 
 		//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
@@ -990,7 +1087,7 @@ impl Channel {
 	}
 
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingForwardHTLCInfo) -> Result<(), HandleError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
 		if msg.amount_msat > self.channel_value_satoshis * 1000 {
@@ -1240,6 +1337,179 @@ impl Channel {
 		Ok(())
 	}
 
+	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<[u8; 32]>), HandleError> {
+		if self.channel_state < ChannelState::FundingSent as u32 {
+			self.channel_state = ChannelState::ShutdownComplete as u32;
+			return Ok((None, None, Vec::new()));
+		}
+		for htlc in self.pending_htlcs.iter() {
+			if htlc.state == HTLCState::RemoteAnnounced {
+				return Err(HandleError{err: "Got shutdown with remote pending HTLCs", msg: None});
+			}
+		}
+		if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
+			return Err(HandleError{err: "Remote peer sent duplicate shutdown message", msg: None});
+		}
+		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
+
+		// BOLT 2 says we must only send a scriptpubkey of certain standard forms, which are up to
+		// 34 bytes in length, so dont let the remote peer feed us some super fee-heavy script.
+		if self.channel_outbound && msg.scriptpubkey.len() > 34 {
+			return Err(HandleError{err: "Got shutdown_scriptpubkey of absurd length from remote peer", msg: None});
+		}
+		//TODO: Check shutdown_scriptpubkey form as BOLT says we must? WHYYY
+
+		if self.their_shutdown_scriptpubkey.is_some() {
+			if Some(&msg.scriptpubkey) != self.their_shutdown_scriptpubkey.as_ref() {
+				return Err(HandleError{err: "Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey", msg: None});
+			}
+		} else {
+			self.their_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
+		}
+
+		let our_closing_script = self.get_closing_scriptpubkey();
+
+		let (proposed_feerate, proposed_fee, our_sig) = if self.channel_outbound && self.pending_htlcs.is_empty() {
+			let mut proposed_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
+			if self.feerate_per_kw > proposed_feerate * 250 {
+				proposed_feerate = self.feerate_per_kw / 250;
+			}
+			let tx_weight = Self::get_closing_transaction_weight(&our_closing_script, &msg.scriptpubkey);
+			let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 4;
+
+			let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
+			let funding_redeemscript = self.get_funding_redeemscript();
+			let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+
+			(Some(proposed_feerate), Some(total_fee_satoshis), Some(secp_call!(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key))))
+		} else { (None, None, None) };
+
+		// From here on out, we may not fail!
+
+		self.channel_state |= ChannelState::RemoteShutdownSent as u32;
+
+		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
+		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
+		// cell HTLCs and return them to fail the payment.
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlcs.len());
+		for htlc in self.holding_cell_htlcs.drain(..) {
+			dropped_outbound_htlcs.push(htlc.payment_hash);
+		}
+		for htlc in self.pending_htlcs.iter() {
+			if htlc.state == HTLCState::LocalAnnounced {
+				return Ok((None, None, dropped_outbound_htlcs));
+			}
+		}
+
+		let our_shutdown = if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
+			None
+		} else {
+			Some(msgs::Shutdown {
+				channel_id: self.channel_id,
+				scriptpubkey: our_closing_script,
+			})
+		};
+
+		self.channel_state |= ChannelState::LocalShutdownSent as u32;
+		if self.pending_htlcs.is_empty() && self.channel_outbound {
+			// There are no more HTLCs and we're the funder, this means we start the closing_signed
+			// dance with an initial fee proposal!
+			self.last_sent_closing_fee = Some((proposed_feerate.unwrap(), proposed_fee.unwrap()));
+			Ok((our_shutdown, Some(msgs::ClosingSigned {
+				channel_id: self.channel_id,
+				fee_satoshis: proposed_fee.unwrap(),
+				signature: our_sig.unwrap(),
+			}), dropped_outbound_htlcs))
+		} else {
+			Ok((our_shutdown, None, dropped_outbound_htlcs))
+		}
+	}
+
+	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), HandleError> {
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
+			return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", msg: None});
+		}
+		if !self.pending_htlcs.is_empty() {
+			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", msg: None});
+		}
+		if msg.fee_satoshis > 21000000 * 10000000 {
+			return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee", msg: None});
+		}
+
+		let funding_redeemscript = self.get_funding_redeemscript();
+		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
+		if used_total_fee != msg.fee_satoshis {
+			return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", msg: None});
+		}
+		let mut sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+
+		match self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey) {
+			Ok(_) => {},
+			Err(_) => {
+				// The remote end may have decided to revoke their output due to inconsistent dust
+				// limits, so check for that case by re-checking the signature here.
+				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
+				sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+				secp_call!(self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey));
+			},
+		};
+
+		if let Some((_, last_fee)) = self.last_sent_closing_fee {
+			if last_fee == msg.fee_satoshis {
+				self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
+				self.channel_state = ChannelState::ShutdownComplete as u32;
+				return Ok((None, Some(closing_tx)));
+			}
+		}
+
+		macro_rules! propose_new_feerate {
+			($new_feerate: expr) => {
+				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
+				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 4, false);
+				sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+				let our_sig = self.secp_ctx.sign(&sighash, &self.local_keys.funding_key).unwrap();
+				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee));
+				return Ok((Some(msgs::ClosingSigned {
+					channel_id: self.channel_id,
+					fee_satoshis: used_total_fee,
+					signature: our_sig,
+				}), None))
+			}
+		}
+
+		let proposed_sat_per_vbyte = msg.fee_satoshis * 4 / closing_tx.get_weight();
+		if self.channel_outbound {
+			let our_max_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Normal);
+			if proposed_sat_per_vbyte > our_max_feerate {
+				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
+					if our_max_feerate <= last_feerate {
+						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", msg: None});
+					}
+				}
+				propose_new_feerate!(our_max_feerate);
+			}
+		} else {
+			let our_min_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
+			if proposed_sat_per_vbyte < our_min_feerate {
+				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
+					if our_min_feerate >= last_feerate {
+						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", msg: None});
+					}
+				}
+				propose_new_feerate!(our_min_feerate);
+			}
+		}
+
+		let our_sig = self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
+		self.channel_state = ChannelState::ShutdownComplete as u32;
+
+		Ok((Some(msgs::ClosingSigned {
+			channel_id: self.channel_id,
+			fee_satoshis: msg.fee_satoshis,
+			signature: our_sig,
+		}), Some(closing_tx)))
+	}
+
 	// Public utilities:
 
 	pub fn channel_id(&self) -> Uint256 {
@@ -1309,7 +1579,8 @@ impl Channel {
 
 	/// Returns true if this channel is fully established and not known to be closing.
 	pub fn is_usable(&self) -> bool {
-		(self.channel_state & (ChannelState::ChannelFunded as u32)) == (ChannelState::ChannelFunded as u32)
+		let mask = ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK;
+		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32)
 	}
 
 	/// Returns true if this channel is currently available for use. This is a superset of
@@ -1318,19 +1589,30 @@ impl Channel {
 		self.is_usable()
 	}
 
+	/// Returns true if this channel is fully shut down. True here implies that no further actions
+	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
+	/// will be handled appropriately by the chain monitor.
+	pub fn is_shutdown(&self) -> bool {
+		if (self.channel_state & ChannelState::ShutdownComplete as u32) == ChannelState::ShutdownComplete as u32  {
+			assert!(self.channel_state == ChannelState::ShutdownComplete as u32);
+			true
+		} else { false }
+	}
+
 	/// Called by channelmanager based on chain blocks being connected.
 	/// Note that we only need to use this to detect funding_signed, anything else is handled by
 	/// the channel_monitor.
 	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Option<msgs::FundingLocked> {
+		let non_shutdown_state = self.channel_state & (!BOTH_SIDES_SHUTDOWN_MASK);
 		if self.funding_tx_confirmations > 0 {
 			if header.bitcoin_hash() != self.last_block_connected {
 				self.last_block_connected = header.bitcoin_hash();
 				self.funding_tx_confirmations += 1;
 				if self.funding_tx_confirmations == CONF_TARGET as u64 {
-					if self.channel_state == ChannelState::FundingSent as u32 {
+					if non_shutdown_state == ChannelState::FundingSent as u32 {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
-					} else if self.channel_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-						self.channel_state = ChannelState::ChannelFunded as u32;
+					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
+						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
 						//TODO: Something about a state where we "lost confirmation"
 					} else if self.channel_state < ChannelState::ChannelFunded as u32 {
 						panic!("Started confirming a channel in a state pre-FundingSent?");
@@ -1354,7 +1636,7 @@ impl Channel {
 				}
 			}
 		}
-		if self.channel_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
+		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for (ref tx, index_in_block) in txn_matched.iter().zip(indexes_of_txn_matched) {
 				if tx.txid() == self.channel_monitor.get_funding_txo().unwrap().0 {
 					self.funding_tx_confirmations = 1;
@@ -1513,11 +1795,14 @@ impl Channel {
 	/// bitcoin_key, if available, for this channel. The channel must be publicly announceable and
 	/// available for use (have exchanged FundingLocked messages in both directions. Should be used
 	/// for both loose and in response to an AnnouncementSignatures message from the remote peer.
+	/// Note that you can get an announcement for a channel which is closing, though you should
+	/// likely not announce such a thing. In case its already been announced, a channel_update
+	/// message can mark the channel disabled.
 	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), HandleError> {
 		if !self.announce_publicly {
 			return Err(HandleError{err: "Channel is not available for public announcements", msg: None});
 		}
-		if self.channel_state < ChannelState::ChannelFunded as u32 {
+		if self.channel_state & (ChannelState::ChannelFunded as u32) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", msg: None});
 		}
 
@@ -1549,8 +1834,8 @@ impl Channel {
 	/// waiting on the remote peer to send us a revoke_and_ack during which time we cannot add new
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: [u8; 32], cltv_expiry: u32, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, HandleError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Cannot send HTLC until channel is fully established", msg: None});
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
+			return Err(HandleError{err: "Cannot send HTLC until channel is fully established and we haven't started shutting down", msg: None});
 		}
 
 		if amount_msat > self.channel_value_satoshis * 1000 {
@@ -1749,7 +2034,7 @@ mod tests {
 				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &chan.get_funding_redeemscript(), chan.channel_value_satoshis)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, &chan.their_funding_pubkey).unwrap();
 
-				chan.sign_commitment_transaction(&mut unsigned_tx.0, &their_signature).unwrap();
+				chan.sign_commitment_transaction(&mut unsigned_tx.0, &their_signature);
 
 				assert_eq!(serialize(&unsigned_tx.0).unwrap()[..],
 						hex_bytes($tx_hex).unwrap()[..]);

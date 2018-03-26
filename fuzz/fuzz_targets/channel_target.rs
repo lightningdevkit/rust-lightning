@@ -248,6 +248,14 @@ pub fn do_test(data: &[u8]) {
 				let update_fee = decode_msg!(msgs::UpdateFee, 32+4);
 				return_err!(channel.update_fee(&fee_est, &update_fee));
 			},
+			9 => {
+				let shutdown = decode_msg_with_len16!(msgs::Shutdown, 32, 1);
+				return_err!(channel.shutdown(&fee_est, &shutdown));
+			},
+			10 => {
+				let closing_signed = decode_msg!(msgs::ClosingSigned, 32+8+64);
+				return_err!(channel.closing_signed(&fee_est, &closing_signed));
+			},
 			_ => return,
 		}
 	}

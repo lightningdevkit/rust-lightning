@@ -11,7 +11,7 @@ use secp256k1::{Secp256k1,Message};
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use chain::chaininterface::{ChainListener,ChainWatchInterface,FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use ln::channel::Channel;
 use ln::channelmonitor::ManyChannelMonitor;
 use ln::router::Route;
@@ -126,6 +126,7 @@ pub struct ChannelManager {
 	fee_estimator: Arc<FeeEstimator>,
 	monitor: Arc<ManyChannelMonitor>,
 	chain_monitor: Arc<ChainWatchInterface>,
+	tx_broadcaster: Arc<BroadcasterInterface>,
 
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
@@ -165,18 +166,19 @@ impl ChannelManager {
 	/// fee_proportional_millionths is an optional fee to charge any payments routed through us.
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	/// panics if channel_value_satoshis is >= (1 << 24)!
-	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: feeest.clone(),
 			monitor: monitor.clone(),
-			chain_monitor: chain_monitor,
+			chain_monitor,
+			tx_broadcaster,
 
-			announce_channels_publicly: announce_channels_publicly,
-			fee_proportional_millionths: fee_proportional_millionths,
-			secp_ctx: secp_ctx,
+			announce_channels_publicly,
+			fee_proportional_millionths,
+			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
 				by_id: HashMap::new(),
@@ -185,7 +187,7 @@ impl ChannelManager {
 				forward_htlcs: HashMap::new(),
 				claimable_htlcs: HashMap::new(),
 			}),
-			our_network_key: our_network_key,
+			our_network_key,
 
 			pending_events: Mutex::new(Vec::new()),
 		});
@@ -978,12 +980,57 @@ impl ChannelMessageHandler for ChannelManager {
 		};
 	}
 
-	fn handle_shutdown(&self, _their_node_id: &PublicKey, _msg: &msgs::Shutdown) -> Result<(), HandleError> {
-		unimplemented!()
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), HandleError> {
+		let res = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+
+			match channel_state.by_id.entry(msg.channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if chan_entry.get().get_their_node_id() != *their_node_id {
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					}
+					let res = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg)?;
+					if chan_entry.get().is_shutdown() {
+						chan_entry.remove_entry();
+					}
+					res
+				},
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+			}
+		};
+		for payment_hash in res.2 {
+			// unknown_next_peer...I dunno who that is anymore....
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: &[0; 0] });
+		}
+		Ok((res.0, res.1))
 	}
 
-	fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::ClosingSigned) -> Result<(), HandleError> {
-		unimplemented!()
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
+		let res = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.entry(msg.channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if chan_entry.get().get_their_node_id() != *their_node_id {
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					}
+					let res = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg)?;
+					if res.1.is_some() {
+						// We're done with this channel, we've got a signed closing transaction and
+						// will send the closing_signed back to the remote peer upon return. This
+						// also implies there are no pending HTLCs left on the channel, so we can
+						// fully delete it from tracking (the channel monitor is still around to
+						// watch for old state broadcasts)!
+						chan_entry.remove_entry();
+					}
+					res
+				},
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+			}
+		};
+		if let Some(broadcast_tx) = res.1 {
+			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
+		}
+		Ok(res.0)
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
@@ -1878,45 +1925,49 @@ mod tests {
 		let feeest_1 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_1 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_1 = Arc::new(test_utils::TestChannelMonitor{});
+		let tx_broadcaster_1 = Arc::new(test_utils::TestBroadcaster{});
 		let node_id_1 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
 			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 		};
-		let node_1 = ChannelManager::new(node_id_1.clone(), 0, true, Network::Testnet, feeest_1.clone(), chan_monitor_1.clone(), chain_monitor_1.clone()).unwrap();
+		let node_1 = ChannelManager::new(node_id_1.clone(), 0, true, Network::Testnet, feeest_1.clone(), chan_monitor_1.clone(), chain_monitor_1.clone(), tx_broadcaster_1.clone()).unwrap();
 		let router_1 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_1).unwrap());
 
 		let feeest_2 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_2 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_2 = Arc::new(test_utils::TestChannelMonitor{});
+		let tx_broadcaster_2 = Arc::new(test_utils::TestBroadcaster{});
 		let node_id_2 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
 			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 		};
-		let node_2 = ChannelManager::new(node_id_2.clone(), 0, true, Network::Testnet, feeest_2.clone(), chan_monitor_2.clone(), chain_monitor_2.clone()).unwrap();
+		let node_2 = ChannelManager::new(node_id_2.clone(), 0, true, Network::Testnet, feeest_2.clone(), chan_monitor_2.clone(), chain_monitor_2.clone(), tx_broadcaster_2.clone()).unwrap();
 		let router_2 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_2).unwrap());
 
 		let feeest_3 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_3 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_3 = Arc::new(test_utils::TestChannelMonitor{});
+		let tx_broadcaster_3 = Arc::new(test_utils::TestBroadcaster{});
 		let node_id_3 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
 			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 		};
-		let node_3 = ChannelManager::new(node_id_3.clone(), 0, true, Network::Testnet, feeest_3.clone(), chan_monitor_3.clone(), chain_monitor_3.clone()).unwrap();
+		let node_3 = ChannelManager::new(node_id_3.clone(), 0, true, Network::Testnet, feeest_3.clone(), chan_monitor_3.clone(), chain_monitor_3.clone(), tx_broadcaster_3.clone()).unwrap();
 		let router_3 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_3).unwrap());
 
 		let feeest_4 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_4 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_4 = Arc::new(test_utils::TestChannelMonitor{});
+		let tx_broadcaster_4 = Arc::new(test_utils::TestBroadcaster{});
 		let node_id_4 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
 			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 		};
-		let node_4 = ChannelManager::new(node_id_4.clone(), 0, true, Network::Testnet, feeest_4.clone(), chan_monitor_4.clone(), chain_monitor_4.clone()).unwrap();
+		let node_4 = ChannelManager::new(node_id_4.clone(), 0, true, Network::Testnet, feeest_4.clone(), chan_monitor_4.clone(), chain_monitor_4.clone(), tx_broadcaster_4.clone()).unwrap();
 		let router_4 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_4).unwrap());
 
 		// Create some initial channels

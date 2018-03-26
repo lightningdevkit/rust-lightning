@@ -3,6 +3,7 @@ use chain::chaininterface::ConfirmationTarget;
 use ln::channelmonitor;
 use ln::msgs::HandleError;
 
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::hash::Sha256dHash;
 
 pub struct TestFeeEstimator {
@@ -21,5 +22,14 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 	fn add_update_monitor(&self, _funding_txo: (Sha256dHash, u16), _monitor: channelmonitor::ChannelMonitor) -> Result<(), HandleError> {
 		//TODO!
 		Ok(())
+	}
+}
+
+pub struct TestBroadcaster {
+
+}
+impl chaininterface::BroadcasterInterface for TestBroadcaster {
+	fn broadcast_transaction(&self, _tx: &Transaction) {
+		//TODO
 	}
 }
