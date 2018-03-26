@@ -511,12 +511,11 @@ impl Channel {
 				prev_hash: self.channel_monitor.get_funding_txo().unwrap().0,
 				prev_index: self.channel_monitor.get_funding_txo().unwrap().1 as u32,
 				script_sig: Script::new(),
-				sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32)
+				sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32),
+				witness: Vec::new(),
 			});
 			ins
 		};
-		let mut witness: Vec<Vec<Vec<u8>>> = Vec::new();
-		witness.push(Vec::new());
 
 		let mut txouts: Vec<(TxOut, Option<HTLCOutputInCommitment>)> = Vec::new();
 
@@ -596,7 +595,6 @@ impl Channel {
 			lock_time: ((0x20 as u32) << 8*3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
 			input: txins,
 			output: outputs,
-			witness: witness
 		}, htlcs_used))
 	}
 
@@ -646,30 +644,30 @@ impl Channel {
 		if tx.input.len() != 1 {
 			panic!("Tried to sign commitment transaction that had input count != 1!");
 		}
-		if tx.witness.len() != 1 || tx.witness[0].len() != 0 {
+		if tx.input[0].witness.len() != 0 {
 			panic!("Tried to re-sign commitment transaction");
 		}
 
 		let funding_redeemscript = self.get_funding_redeemscript();
 
-		let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx, 0, &funding_redeemscript, self.channel_value_satoshis)[..]));
+		let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
 		let our_sig = secp_call!(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key));
 
-		tx.witness[0].push(Vec::new()); // First is the multisig dummy
+		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
 		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key).unwrap().serialize();
 		let their_funding_key = self.their_funding_pubkey.serialize();
 		if our_funding_key[..] < their_funding_key[..] {
-			tx.witness[0].push(our_sig.serialize_der(&self.secp_ctx).to_vec());
-			tx.witness[0].push(their_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(our_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(their_sig.serialize_der(&self.secp_ctx).to_vec());
 		} else {
-			tx.witness[0].push(their_sig.serialize_der(&self.secp_ctx).to_vec());
-			tx.witness[0].push(our_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(their_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(our_sig.serialize_der(&self.secp_ctx).to_vec());
 		}
-		tx.witness[0][1].push(SigHashType::All as u8);
-		tx.witness[0][2].push(SigHashType::All as u8);
+		tx.input[0].witness[1].push(SigHashType::All as u8);
+		tx.input[0].witness[2].push(SigHashType::All as u8);
 
-		tx.witness[0].push(funding_redeemscript.into_vec());
+		tx.input[0].witness.push(funding_redeemscript.into_vec());
 
 		Ok(())
 	}
@@ -683,11 +681,9 @@ impl Channel {
 			prev_hash: prev_hash.clone(),
 			prev_index: htlc.transaction_output_index,
 			script_sig: Script::new(),
-			sequence: 0
+			sequence: 0,
+			witness: Vec::new(),
 		});
-
-		let mut witnesses: Vec<Vec<Vec<u8>>> = Vec::new();
-		witnesses.push(Vec::new());
 
 		let total_fee = if htlc.offered {
 				self.feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000
@@ -708,7 +704,6 @@ impl Channel {
 			lock_time: if htlc.offered { htlc.cltv_expiry } else { 0 },
 			input: txins,
 			output: txouts,
-			witness: witnesses
 		})
 	}
 
@@ -718,37 +713,37 @@ impl Channel {
 		if tx.input.len() != 1 {
 			panic!("Tried to sign HTLC transaction that had input count != 1!");
 		}
-		if tx.witness.len() != 1 || tx.witness[0].len() != 0 {
+		if tx.input[0].witness.len() != 0 {
 			panic!("Tried to re-sign HTLC transaction");
 		}
 
 		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys, htlc.offered);
 
 		let our_htlc_key = secp_call!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, &self.local_keys.htlc_base_key));
-		let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx, 0, &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
+		let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
 		let our_sig = secp_call!(self.secp_ctx.sign(&sighash, &our_htlc_key));
 
 		let local_tx = PublicKey::from_secret_key(&self.secp_ctx, &our_htlc_key).unwrap() == keys.a_htlc_key;
 
-		tx.witness[0].push(Vec::new()); // First is the multisig dummy
+		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
 		if local_tx { // b, then a
-			tx.witness[0].push(their_sig.serialize_der(&self.secp_ctx).to_vec());
-			tx.witness[0].push(our_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(their_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(our_sig.serialize_der(&self.secp_ctx).to_vec());
 		} else {
-			tx.witness[0].push(our_sig.serialize_der(&self.secp_ctx).to_vec());
-			tx.witness[0].push(their_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(our_sig.serialize_der(&self.secp_ctx).to_vec());
+			tx.input[0].witness.push(their_sig.serialize_der(&self.secp_ctx).to_vec());
 		}
-		tx.witness[0][1].push(SigHashType::All as u8);
-		tx.witness[0][2].push(SigHashType::All as u8);
+		tx.input[0].witness[1].push(SigHashType::All as u8);
+		tx.input[0].witness[2].push(SigHashType::All as u8);
 
 		if htlc.offered {
-			tx.witness[0].push(Vec::new());
+			tx.input[0].witness.push(Vec::new());
 		} else {
-			tx.witness[0].push(preimage.unwrap().to_vec());
+			tx.input[0].witness.push(preimage.unwrap().to_vec());
 		}
 
-		tx.witness[0].push(htlc_redeemscript.into_vec());
+		tx.input[0].witness.push(htlc_redeemscript.into_vec());
 
 		Ok(())
 	}
@@ -880,11 +875,11 @@ impl Channel {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)?.0;
-		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
+		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?.0;
-		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
+		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
 		secp_call!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey));
@@ -946,7 +941,7 @@ impl Channel {
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?.0;
-		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
+		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey));
@@ -1167,7 +1162,8 @@ impl Channel {
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?;
-		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0, 0, &funding_script, self.channel_value_satoshis)[..]));
+		let local_commitment_txid = local_commitment_tx.0.txid();
+		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]));
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey));
 
 		if msg.htlc_signatures.len() != local_commitment_tx.1.len() {
@@ -1175,9 +1171,9 @@ impl Channel {
 		}
 
 		for (idx, ref htlc) in local_commitment_tx.1.iter().enumerate() {
-			let htlc_tx = self.build_htlc_transaction(&local_commitment_tx.0.txid(), htlc, true, &local_keys)?;
+			let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys)?;
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys, htlc.offered);
-			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx, 0, &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
+			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
 			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key));
 		}
 
@@ -1464,7 +1460,7 @@ impl Channel {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)?.0;
-		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx, 0, &funding_script, self.channel_value_satoshis)[..]));
+		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
 		Ok(secp_call!(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key)))
@@ -1639,15 +1635,16 @@ impl Channel {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true)?;
-		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_commitment_tx.0).sighash_all(&remote_commitment_tx.0, 0, &funding_script, self.channel_value_satoshis)[..]));
+		let remote_commitment_txid = remote_commitment_tx.0.txid();
+		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_commitment_tx.0).sighash_all(&remote_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]));
 		let our_sig = secp_call!(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key));
 
 		let mut htlc_sigs = Vec::new();
 
 		for ref htlc in remote_commitment_tx.1.iter() {
-			let htlc_tx = self.build_htlc_transaction(&remote_commitment_tx.0.txid(), htlc, false, &remote_keys)?;
+			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys)?;
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys, htlc.offered);
-			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx, 0, &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
+			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
 			let our_htlc_key = secp_call!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
 			htlc_sigs.push(secp_call!(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key)));
 		}
@@ -1749,7 +1746,7 @@ mod tests {
 			( $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr) => {
 				unsigned_tx = chan.build_commitment_transaction(42, &keys, true, false).unwrap();
 				let their_signature = Signature::from_der(&secp_ctx, &hex_bytes($their_sig_hex).unwrap()[..]).unwrap();
-				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0, 0, &chan.get_funding_redeemscript(), chan.channel_value_satoshis)[..]).unwrap();
+				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &chan.get_funding_redeemscript(), chan.channel_value_satoshis)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, &chan.their_funding_pubkey).unwrap();
 
 				chan.sign_commitment_transaction(&mut unsigned_tx.0, &their_signature).unwrap();
@@ -1766,7 +1763,7 @@ mod tests {
 				let ref htlc = unsigned_tx.1[$htlc_idx];
 				let mut htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys).unwrap();
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys, htlc.offered);
-				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx, 0, &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 				secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
 
 				let mut preimage: Option<[u8; 32]> = None;

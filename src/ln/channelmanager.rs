@@ -1576,7 +1576,7 @@ mod tests {
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
 
 		let chan_id = unsafe { CHAN_COUNT };
-		let tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: Vec::new(), witness: Vec::new() };
+		let tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: Vec::new() };
 		let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), chan_id);
 
 		let events_1 = node_a.get_and_clear_pending_events();

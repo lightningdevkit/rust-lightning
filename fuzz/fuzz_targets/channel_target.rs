@@ -163,7 +163,7 @@ pub fn do_test(data: &[u8]) {
 
 	let their_pubkey = get_pubkey!();
 
-	let tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new(), witness: Vec::new() };
+	let tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 	let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
 	let mut channel = if get_slice!(1)[0] != 0 {
