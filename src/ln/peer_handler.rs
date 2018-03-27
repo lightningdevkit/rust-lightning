@@ -370,42 +370,15 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											130 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFulfillHTLC::decode(&msg_data[2..]));
-												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg));
-												match resp_option {
-													Some(resps) => {
-														for resp in resps.0 {
-															encode_and_send_msg!(resp, 128);
-														}
-														encode_and_send_msg!(resps.1, 132);
-													},
-													None => {},
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 											131 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::decode(&msg_data[2..]));
-												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
-												match resp_option {
-													Some(resps) => {
-														for resp in resps.0 {
-															encode_and_send_msg!(resp, 128);
-														}
-														encode_and_send_msg!(resps.1, 132);
-													},
-													None => {},
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 											135 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::decode(&msg_data[2..]));
-												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg));
-												match resp_option {
-													Some(resps) => {
-														for resp in resps.0 {
-															encode_and_send_msg!(resp, 128);
-														}
-														encode_and_send_msg!(resps.1, 132);
-													},
-													None => {},
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 
 											132 => {
@@ -415,9 +388,17 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											133 => {
 												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
+												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
+												match resp_option {
+													Some(resps) => {
+														for resp in resps.0 {
+															encode_and_send_msg!(resp, 128);
+														}
+														encode_and_send_msg!(resps.1, 132);
+													},
+													None => {},
+												}
 											},
-
 											134 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFee::decode(&msg_data[2..]));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fee(&peer.their_node_id.unwrap(), &msg));

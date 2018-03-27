@@ -13,6 +13,8 @@ use util::{byte_utils, internal_traits, events};
 
 pub trait MsgEncodable {
 	fn encode(&self) -> Vec<u8>;
+	#[inline]
+	fn encoded_len(&self) -> usize { self.encode().len() }
 }
 #[derive(Debug)]
 pub enum DecodeError {
@@ -24,6 +26,8 @@ pub enum DecodeError {
 	BadSignature,
 	/// Buffer not of right length (either too short or too long)
 	WrongLength,
+	/// node_announcement included more than one address of a given type!
+	ExtraAddressesPerType,
 }
 pub trait MsgDecodable: Sized {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError>;
@@ -256,7 +260,6 @@ pub struct AnnouncementSignatures {
 
 #[derive(Clone)]
 pub enum NetAddress {
-	Dummy,
 	IPv4 {
 		addr: [u8; 4],
 		port: u16,
@@ -273,8 +276,18 @@ pub enum NetAddress {
 		ed25519_pubkey: [u8; 32],
 		checksum: u16,
 		version: u8,
-		//TODO: Do we need a port number here???
+		port: u16,
 	},
+}
+impl NetAddress {
+	fn get_id(&self) -> u8 {
+		match self {
+			&NetAddress::IPv4 {..} => { 1 },
+			&NetAddress::IPv6 {..} => { 2 },
+			&NetAddress::OnionV2 {..} => { 3 },
+			&NetAddress::OnionV3 {..} => { 4 },
+		}
+	}
 }
 
 pub struct UnsignedNodeAnnouncement {
@@ -283,6 +296,8 @@ pub struct UnsignedNodeAnnouncement {
 	pub node_id: PublicKey,
 	pub rgb: [u8; 3],
 	pub alias: [u8; 32],
+	/// List of addresses on which this node is reachable. Note that you may only have up to one
+	/// address of each type, if you have more, they may be silently discarded or we may panic!
 	pub addresses: Vec<NetAddress>,
 }
 pub struct NodeAnnouncement {
@@ -356,11 +371,11 @@ pub trait ChannelMessageHandler : events::EventsProvider {
 
 	// HTLC handling:
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC) -> Result<(), HandleError>;
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<Option<(Vec<UpdateAddHTLC>, CommitmentSigned)>, HandleError>;
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<Option<(Vec<UpdateAddHTLC>, CommitmentSigned)>, HandleError>;
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<Option<(Vec<UpdateAddHTLC>, CommitmentSigned)>, HandleError>;
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), HandleError>;
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<RevokeAndACK, HandleError>;
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<(), HandleError>;
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<(Vec<UpdateAddHTLC>, CommitmentSigned)>, HandleError>;
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
 
@@ -418,6 +433,7 @@ impl Error for DecodeError {
 			DecodeError::BadPublicKey => "Invalid public key in packet",
 			DecodeError::BadSignature => "Invalid signature in packet",
 			DecodeError::WrongLength => "Data was wrong length for packet",
+			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 		}
 	}
 }
@@ -470,6 +486,7 @@ impl MsgEncodable for LocalFeatures {
 		res.extend_from_slice(&self.flags[..]);
 		res
 	}
+	fn encoded_len(&self) -> usize { self.flags.len() + 2 }
 }
 
 impl MsgDecodable for GlobalFeatures {
@@ -491,6 +508,7 @@ impl MsgEncodable for GlobalFeatures {
 		res.extend_from_slice(&self.flags[..]);
 		res
 	}
+	fn encoded_len(&self) -> usize { self.flags.len() + 2 }
 }
 
 impl MsgDecodable for Init {
@@ -662,8 +680,18 @@ impl MsgEncodable for FundingLocked {
 }
 
 impl MsgDecodable for Shutdown {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32 + 2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let scriptlen = byte_utils::slice_to_be16(&v[32..34]) as usize;
+		if v.len() < 32 + 2 + scriptlen {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			scriptpubkey: Script::from(v[34..34 + scriptlen].to_vec()),
+		})
 	}
 }
 impl MsgEncodable for Shutdown {
@@ -673,8 +701,16 @@ impl MsgEncodable for Shutdown {
 }
 
 impl MsgDecodable for ClosingSigned {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32 + 8 + 64 {
+			return Err(DecodeError::WrongLength);
+		}
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			fee_satoshis: byte_utils::slice_to_be64(&v[32..40]),
+			signature: secp_signature!(&secp_ctx, &v[40..104]),
+		})
 	}
 }
 impl MsgEncodable for ClosingSigned {
@@ -842,8 +878,17 @@ impl MsgEncodable for ChannelReestablish {
 }
 
 impl MsgDecodable for AnnouncementSignatures {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+8+64*2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			short_channel_id: byte_utils::slice_to_be64(&v[32..40]),
+			node_signature: secp_signature!(&secp_ctx, &v[40..104]),
+			bitcoin_signature: secp_signature!(&secp_ctx, &v[104..168]),
+		})
 	}
 }
 impl MsgEncodable for AnnouncementSignatures {
@@ -853,8 +898,105 @@ impl MsgEncodable for AnnouncementSignatures {
 }
 
 impl MsgDecodable for UnsignedNodeAnnouncement {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		let features = GlobalFeatures::decode(&v[..])?;
+		if v.len() < features.encoded_len() + 4 + 33 + 3 + 32 + 2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let start = features.encoded_len();
+
+		let mut rgb = [0; 3];
+		rgb.copy_from_slice(&v[start + 37..start + 40]);
+
+		let mut alias = [0; 32];
+		alias.copy_from_slice(&v[start + 40..start + 72]);
+
+		let addrlen = byte_utils::slice_to_be16(&v[start + 72..start + 74]) as usize;
+		if v.len() < start + 74 + addrlen {
+			return Err(DecodeError::WrongLength);
+		}
+
+		let mut addresses = Vec::with_capacity(4);
+		let mut read_pos = start + 74;
+		loop {
+			if v.len() <= read_pos { break; }
+			match v[read_pos] {
+				0 => { read_pos += 1; },
+				1 => {
+					if v.len() < read_pos + 1 + 6 {
+						return Err(DecodeError::WrongLength);
+					}
+					if addresses.len() > 0 {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					let mut addr = [0; 4];
+					addr.copy_from_slice(&v[read_pos + 1..read_pos + 5]);
+					addresses.push(NetAddress::IPv4 {
+						addr,
+						port: byte_utils::slice_to_be16(&v[read_pos + 5..read_pos + 7]),
+					});
+					read_pos += 1 + 6;
+				},
+				2 => {
+					if v.len() < read_pos + 1 + 18 {
+						return Err(DecodeError::WrongLength);
+					}
+					if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					let mut addr = [0; 16];
+					addr.copy_from_slice(&v[read_pos + 1..read_pos + 17]);
+					addresses.push(NetAddress::IPv6 {
+						addr,
+						port: byte_utils::slice_to_be16(&v[read_pos + 17..read_pos + 19]),
+					});
+					read_pos += 1 + 18;
+				},
+				3 => {
+					if v.len() < read_pos + 1 + 12 {
+						return Err(DecodeError::WrongLength);
+					}
+					if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					let mut addr = [0; 10];
+					addr.copy_from_slice(&v[read_pos + 1..read_pos + 11]);
+					addresses.push(NetAddress::OnionV2 {
+						addr,
+						port: byte_utils::slice_to_be16(&v[read_pos + 11..read_pos + 13]),
+					});
+					read_pos += 1 + 12;
+				},
+				4 => {
+					if v.len() < read_pos + 1 + 37 {
+						return Err(DecodeError::WrongLength);
+					}
+					if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					let mut ed25519_pubkey = [0; 32];
+					ed25519_pubkey.copy_from_slice(&v[read_pos + 1..read_pos + 33]);
+					addresses.push(NetAddress::OnionV3 {
+						ed25519_pubkey,
+						checksum: byte_utils::slice_to_be16(&v[read_pos + 33..read_pos + 35]),
+						version: v[read_pos + 35],
+						port: byte_utils::slice_to_be16(&v[read_pos + 36..read_pos + 38]),
+					});
+					read_pos += 1 + 37;
+				},
+				_ => { break; } // We've read all we can, we dont understand anything higher (and they're sorted)
+			}
+		}
+
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			features,
+			timestamp: byte_utils::slice_to_be32(&v[start..start + 4]),
+			node_id: secp_pubkey!(&secp_ctx, &v[start + 4..start + 37]),
+			rgb,
+			alias,
+			addresses,
+		})
 	}
 }
 impl MsgEncodable for UnsignedNodeAnnouncement {
@@ -867,25 +1009,32 @@ impl MsgEncodable for UnsignedNodeAnnouncement {
 		res.extend_from_slice(&self.rgb);
 		res.extend_from_slice(&self.alias);
 		let mut addr_slice = Vec::with_capacity(self.addresses.len() * 18);
-		for addr in self.addresses.iter() {
+		let mut addrs_to_encode = self.addresses.clone();
+		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
+		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
+		for addr in addrs_to_encode.iter() {
 			match addr {
-				&NetAddress::Dummy => {},
 				&NetAddress::IPv4{addr, port} => {
+					addr_slice.push(1);
 					addr_slice.extend_from_slice(&addr);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
 				},
 				&NetAddress::IPv6{addr, port} => {
+					addr_slice.push(2);
 					addr_slice.extend_from_slice(&addr);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
 				},
 				&NetAddress::OnionV2{addr, port} => {
+					addr_slice.push(3);
 					addr_slice.extend_from_slice(&addr);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
 				},
-				&NetAddress::OnionV3{ed25519_pubkey, checksum, version} => {
+				&NetAddress::OnionV3{ed25519_pubkey, checksum, version, port} => {
+					addr_slice.push(4);
 					addr_slice.extend_from_slice(&ed25519_pubkey);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(checksum));
 					addr_slice.push(version);
+					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
 				},
 			}
 		}
@@ -896,8 +1045,15 @@ impl MsgEncodable for UnsignedNodeAnnouncement {
 }
 
 impl MsgDecodable for NodeAnnouncement {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 64 {
+			return Err(DecodeError::WrongLength);
+		}
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			signature: secp_signature!(&secp_ctx, &v[0..64]),
+			contents: UnsignedNodeAnnouncement::decode(&v[64..])?,
+		})
 	}
 }
 impl MsgEncodable for NodeAnnouncement {
@@ -907,8 +1063,22 @@ impl MsgEncodable for NodeAnnouncement {
 }
 
 impl MsgDecodable for UnsignedChannelAnnouncement {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		let features = GlobalFeatures::decode(&v[..])?;
+		if v.len() < features.encoded_len() + 32 + 8 + 33*4 {
+			return Err(DecodeError::WrongLength);
+		}
+		let start = features.encoded_len();
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			features,
+			chain_hash: deserialize(&v[start..start + 32]).unwrap(),
+			short_channel_id: byte_utils::slice_to_be64(&v[start + 32..start + 40]),
+			node_id_1: secp_pubkey!(&secp_ctx, &v[start + 40..start + 73]),
+			node_id_2: secp_pubkey!(&secp_ctx, &v[start + 73..start + 106]),
+			bitcoin_key_1: secp_pubkey!(&secp_ctx, &v[start + 106..start + 139]),
+			bitcoin_key_2: secp_pubkey!(&secp_ctx, &v[start + 139..start + 172]),
+		})
 	}
 }
 impl MsgEncodable for UnsignedChannelAnnouncement {
@@ -927,8 +1097,18 @@ impl MsgEncodable for UnsignedChannelAnnouncement {
 }
 
 impl MsgDecodable for ChannelAnnouncement {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 64*4 {
+			return Err(DecodeError::WrongLength);
+		}
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			node_signature_1: secp_signature!(&secp_ctx, &v[0..64]),
+			node_signature_2: secp_signature!(&secp_ctx, &v[64..128]),
+			bitcoin_signature_1: secp_signature!(&secp_ctx, &v[128..192]),
+			bitcoin_signature_2: secp_signature!(&secp_ctx, &v[192..256]),
+			contents: UnsignedChannelAnnouncement::decode(&v[256..])?,
+		})
 	}
 }
 impl MsgEncodable for ChannelAnnouncement {
@@ -938,8 +1118,20 @@ impl MsgEncodable for ChannelAnnouncement {
 }
 
 impl MsgDecodable for UnsignedChannelUpdate {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+8+4+2+2+8+4+4 {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self {
+			chain_hash: deserialize(&v[0..32]).unwrap(),
+			short_channel_id: byte_utils::slice_to_be64(&v[32..40]),
+			timestamp: byte_utils::slice_to_be32(&v[40..44]),
+			flags: byte_utils::slice_to_be16(&v[44..46]),
+			cltv_expiry_delta: byte_utils::slice_to_be16(&v[46..48]),
+			htlc_minimum_msat: byte_utils::slice_to_be64(&v[48..56]),
+			fee_base_msat: byte_utils::slice_to_be32(&v[56..60]),
+			fee_proportional_millionths: byte_utils::slice_to_be32(&v[60..64]),
+		})
 	}
 }
 impl MsgEncodable for UnsignedChannelUpdate {
@@ -958,15 +1150,21 @@ impl MsgEncodable for UnsignedChannelUpdate {
 }
 
 impl MsgDecodable for ChannelUpdate {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 128 {
+			return Err(DecodeError::WrongLength);
+		}
+		let secp_ctx = Secp256k1::without_caps();
+		Ok(Self {
+			signature: secp_signature!(&secp_ctx, &v[0..64]),
+			contents: UnsignedChannelUpdate::decode(&v[64..])?,
+		})
 	}
 }
 impl MsgEncodable for ChannelUpdate {
 	fn encode(&self) -> Vec<u8> {
 		let mut res = Vec::with_capacity(128);
-		//TODO: Should avoid creating a new secp ctx just for a serialize call :(
-		res.extend_from_slice(&self.signature.serialize_der(&Secp256k1::new())[..]); //TODO: Need in non-der form! (probably elsewhere too)
+		res.extend_from_slice(&self.signature.serialize_compact(&Secp256k1::without_caps())[..]);
 		res.extend_from_slice(&self.contents.encode()[..]);
 		res
 	}

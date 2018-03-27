@@ -211,7 +211,7 @@ pub struct Channel {
 	channel_monitor: ChannelMonitor,
 }
 
-const OUR_MAX_HTLCS: u16 = 1; //TODO
+const OUR_MAX_HTLCS: u16 = 5; //TODO
 const CONF_TARGET: u32 = 12; //TODO: Should be much higher
 /// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
@@ -765,6 +765,7 @@ impl Channel {
 
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
+		//TODO: swap_remove since we dont need to maintain ordering here
 		self.pending_htlcs.retain(|ref htlc| {
 			if !htlc.outbound && htlc.payment_hash == payment_hash {
 				if htlc_id != 0 {
@@ -796,6 +797,7 @@ impl Channel {
 
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
+		//TODO: swap_remove since we dont need to maintain ordering here
 		self.pending_htlcs.retain(|ref htlc| {
 			if !htlc.outbound && htlc.payment_hash == *payment_hash {
 				if htlc_id != 0 {
@@ -1103,23 +1105,7 @@ impl Channel {
 		}
 	}
 
-	/// Checks if there are any LocalAnnounced HTLCs remaining and sets
-	/// ChannelState::AwaitingRemoteRevoke accordingly, possibly calling free_holding_cell_htlcs.
-	fn check_and_free_holding_cell_htlcs(&mut self) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
-			for htlc in self.pending_htlcs.iter() {
-				if htlc.state == HTLCState::LocalAnnounced {
-					return Ok(None);
-				}
-			}
-			self.channel_state &= !(ChannelState::AwaitingRemoteRevoke as u32);
-			self.free_holding_cell_htlcs()
-		} else {
-			Ok(None)
-		}
-	}
-
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1137,11 +1123,10 @@ impl Channel {
 				self.value_to_self_msat -= htlc.amount_msat;
 			}
 		}
-
-		self.check_and_free_holding_cell_htlcs()
+		Ok(())
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<([u8; 32], Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>), HandleError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<[u8; 32], HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1154,12 +1139,10 @@ impl Channel {
 				htlc.payment_hash
 			}
 		};
-
-		let holding_cell_freedom = self.check_and_free_holding_cell_htlcs()?;
-		Ok((payment_hash, holding_cell_freedom))
+		Ok(payment_hash)
 	}
 
-	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<([u8; 32], Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>), HandleError> {
+	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<[u8; 32], HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1172,9 +1155,7 @@ impl Channel {
 				htlc.payment_hash
 			}
 		};
-
-		let holding_cell_freedom = self.check_and_free_holding_cell_htlcs()?;
-		Ok((payment_hash, holding_cell_freedom))
+		Ok(payment_hash)
 	}
 
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Vec<PendingForwardHTLCInfo>), HandleError> {
@@ -1258,7 +1239,7 @@ impl Channel {
         if self.channel_outbound {
 			return Err(HandleError{err: "Non-funding remote tried to update channel fee", msg: None});
         }
-		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw).unwrap();
+		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.feerate_per_kw = msg.feerate_per_kw as u64;
 		Ok(())
 	}
@@ -1639,6 +1620,19 @@ impl Channel {
 	pub fn send_commitment(&mut self) -> Result<msgs::CommitmentSigned, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", msg: None});
+		}
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+			return Err(HandleError{err: "Cannot create commitment tx until remote revokes their previous commitment", msg: None});
+		}
+		let mut have_updates = false; // TODO initialize with "have we sent a fee update?"
+		for htlc in self.pending_htlcs.iter() {
+			if htlc.state == HTLCState::LocalAnnounced {
+				have_updates = true;
+			}
+			if have_updates { break; }
+		}
+		if !have_updates {
+			return Err(HandleError{err: "Cannot create commitment tx until we have some updates to send", msg: None});
 		}
 
 		let funding_script = self.get_funding_redeemscript();
