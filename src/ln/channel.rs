@@ -1955,6 +1955,42 @@ impl Channel {
 			None => Ok(None)
 		}
 	}
+
+	/// Begins the shutdown process, getting a message for the remote peer and returning all
+	/// holding cell HTLCs for payment failure.
+	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<[u8; 32]>), HandleError> {
+		for htlc in self.pending_htlcs.iter() {
+			if htlc.state == HTLCState::LocalAnnounced {
+				return Err(HandleError{err: "Cannot begin shutdown with pending HTLCs, call send_commitment first", msg: None});
+			}
+		}
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0 {
+			return Err(HandleError{err: "Shutdown already in progress", msg: None});
+		}
+		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
+
+		let our_closing_script = self.get_closing_scriptpubkey();
+
+		// From here on out, we may not fail!
+		if self.channel_state < ChannelState::FundingSent as u32 {
+			self.channel_state = ChannelState::ShutdownComplete as u32;
+		} else {
+			self.channel_state |= ChannelState::LocalShutdownSent as u32;
+		}
+
+		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
+		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
+		// cell HTLCs and return them to fail the payment.
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlcs.len());
+		for htlc in self.holding_cell_htlcs.drain(..) {
+			dropped_outbound_htlcs.push(htlc.payment_hash);
+		}
+
+		Ok((msgs::Shutdown {
+			channel_id: self.channel_id,
+			scriptpubkey: our_closing_script,
+		}, dropped_outbound_htlcs))
+	}
 }
 
 #[cfg(test)]

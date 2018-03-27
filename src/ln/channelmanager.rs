@@ -160,6 +160,21 @@ struct OnionKeys {
 	mu: [u8; 32],
 }
 
+pub struct ChannelDetails {
+	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
+	/// thereafter this is the txid of the funding transaction xor the funding transaction output).
+	/// Note that this means this value is *not* persistent - it can change once during the
+	/// lifetime of the channel.
+	pub channel_id: Uint256,
+	/// The position of the funding transaction in the chain. None if the funding transaction has
+	/// not yet been confirmed and the channel fully opened.
+	pub short_channel_id: Option<u64>,
+	pub remote_network_id: PublicKey,
+	pub channel_value_satoshis: u64,
+	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
+	pub user_id: u64,
+}
+
 impl ChannelManager {
 	/// Constructs a new ChannelManager to hold several channels and route between them. This is
 	/// the main "logic hub" for all channel-related actions, and implements ChannelMessageHandler.
@@ -204,6 +219,47 @@ impl ChannelManager {
 			Some(_) => panic!("RNG is bad???"),
 			None => Ok(res)
 		}
+	}
+
+	/// Gets the list of open channels, in random order. See ChannelDetail field documentation for
+	/// more information.
+	pub fn list_channels(&self) -> Vec<ChannelDetails> {
+		let channel_state = self.channel_state.lock().unwrap();
+		let mut res = Vec::with_capacity(channel_state.by_id.len());
+		for (channel_id, channel) in channel_state.by_id.iter() {
+			res.push(ChannelDetails {
+				channel_id: (*channel_id).clone(),
+				short_channel_id: channel.get_short_channel_id(),
+				remote_network_id: channel.get_their_node_id(),
+				channel_value_satoshis: channel.get_value_satoshis(),
+				user_id: channel.get_user_id(),
+			});
+		}
+		res
+	}
+
+	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
+	/// will be accepted on the given channel, and after additional timeout/the closing of all
+	/// pending HTLCs, the channel will be closed on chain.
+	pub fn close_channel(&self, channel_id: &Uint256) -> Result<msgs::Shutdown, HandleError> {
+		let res = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.entry(channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					let res = chan_entry.get_mut().get_shutdown()?;
+					if chan_entry.get().is_shutdown() {
+						chan_entry.remove_entry();
+					}
+					res
+				},
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", msg: None})
+			}
+		};
+		for payment_hash in res.1 {
+			// unknown_next_peer...I dunno who that is anymore....
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: &[0; 0] });
+		}
+		Ok(res.0)
 	}
 
 	#[inline]
@@ -1438,6 +1494,7 @@ mod tests {
 
 	use bitcoin::util::misc::hex_bytes;
 	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::util::uint::Uint256;
 	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::transaction::Transaction;
 	use bitcoin::network::constants::Network;
@@ -1452,7 +1509,7 @@ mod tests {
 
 	use rand::{thread_rng,Rng};
 
-	use std::sync::Arc;
+	use std::sync::{Arc, Mutex};
 	use std::default::Default;
 	use std::time::Instant;
 
@@ -1617,7 +1674,7 @@ mod tests {
 		}
 	}
 
-	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
+	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256) {
 		let open_chan = node_a.create_channel(node_b.get_our_node_id(), 100000, 42).unwrap();
 		let accept_chan = node_b.handle_open_channel(&node_a.get_our_node_id(), &open_chan).unwrap();
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
@@ -1674,12 +1731,15 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
+		let channel_id;
+
 		confirm_transaction(&chain_b, &tx);
 		let events_5 = node_b.get_and_clear_pending_events();
 		assert_eq!(events_5.len(), 1);
 		let as_announcement_sigs = match events_5[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
 				assert_eq!(*node_id, node_a.get_our_node_id());
+				channel_id = msg.channel_id.clone();
 				let as_announcement_sigs = node_a.handle_funding_locked(&node_b.get_our_node_id(), msg).unwrap().unwrap();
 				node_a.handle_announcement_signatures(&node_b.get_our_node_id(), &(*announcement_sigs).clone().unwrap()).unwrap();
 				as_announcement_sigs
@@ -1711,7 +1771,42 @@ mod tests {
 			CHAN_COUNT += 1;
 		}
 
-		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone())
+		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id)
+	}
+
+	fn close_channel(outbound_node: &ChannelManager, outbound_broadcaster: &test_utils::TestBroadcaster, inbound_node: &ChannelManager, inbound_broadcaster: &test_utils::TestBroadcaster, channel_id: &Uint256, close_inbound_first: bool) {
+		let (node_a, broadcaster_a) = if close_inbound_first { (inbound_node, inbound_broadcaster) } else { (outbound_node, outbound_broadcaster) };
+		let (node_b, broadcaster_b) = if close_inbound_first { (outbound_node, outbound_broadcaster) } else { (inbound_node, inbound_broadcaster) };
+		let (tx_a, tx_b);
+
+		let shutdown_a = node_a.close_channel(channel_id).unwrap();
+		let (shutdown_b, mut closing_signed_b) = node_b.handle_shutdown(&node_a.get_our_node_id(), &shutdown_a).unwrap();
+		if !close_inbound_first {
+			assert!(closing_signed_b.is_none());
+		}
+		let (empty_a, mut closing_signed_a) = node_a.handle_shutdown(&node_b.get_our_node_id(), &shutdown_b.unwrap()).unwrap();
+		assert!(empty_a.is_none());
+		if close_inbound_first {
+			assert!(closing_signed_a.is_none());
+			closing_signed_a = node_a.handle_closing_signed(&node_b.get_our_node_id(), &closing_signed_b.unwrap()).unwrap();
+			assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
+			tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
+
+			let empty_b = node_b.handle_closing_signed(&node_a.get_our_node_id(), &closing_signed_a.unwrap()).unwrap();
+			assert!(empty_b.is_none());
+			assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
+			tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
+		} else {
+			closing_signed_b = node_b.handle_closing_signed(&node_a.get_our_node_id(), &closing_signed_a.unwrap()).unwrap();
+			assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
+			tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
+
+			let empty_a2 = node_a.handle_closing_signed(&node_b.get_our_node_id(), &closing_signed_b.unwrap()).unwrap();
+			assert!(empty_a2.is_none());
+			assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
+			tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
+		}
+		assert_eq!(tx_a, tx_b);
 	}
 
 	struct SendEvent {
@@ -1925,7 +2020,7 @@ mod tests {
 		let feeest_1 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_1 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_1 = Arc::new(test_utils::TestChannelMonitor{});
-		let tx_broadcaster_1 = Arc::new(test_utils::TestBroadcaster{});
+		let tx_broadcaster_1 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 		let node_id_1 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
@@ -1937,7 +2032,7 @@ mod tests {
 		let feeest_2 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_2 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_2 = Arc::new(test_utils::TestChannelMonitor{});
-		let tx_broadcaster_2 = Arc::new(test_utils::TestBroadcaster{});
+		let tx_broadcaster_2 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 		let node_id_2 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
@@ -1949,7 +2044,7 @@ mod tests {
 		let feeest_3 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_3 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_3 = Arc::new(test_utils::TestChannelMonitor{});
-		let tx_broadcaster_3 = Arc::new(test_utils::TestBroadcaster{});
+		let tx_broadcaster_3 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 		let node_id_3 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
@@ -1961,7 +2056,7 @@ mod tests {
 		let feeest_4 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
 		let chain_monitor_4 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 		let chan_monitor_4 = Arc::new(test_utils::TestChannelMonitor{});
-		let tx_broadcaster_4 = Arc::new(test_utils::TestBroadcaster{});
+		let tx_broadcaster_4 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 		let node_id_4 = {
 			let mut key_slice = [0; 32];
 			rng.fill_bytes(&mut key_slice);
@@ -2092,6 +2187,12 @@ mod tests {
 		claim_payment(&node_1, &vec!(&*node_2, &*node_4)[..], payment_preimage_3);
 		claim_payment(&node_1, &vec!(&*node_2, &*node_4)[..], payment_preimage_4);
 		claim_payment(&node_1, &vec!(&*node_2, &*node_4)[..], payment_preimage_5);
+
+		// Close down the channels...
+		close_channel(&node_1, &tx_broadcaster_1, &node_2, &tx_broadcaster_2, &chan_announcement_1.3, true);
+		close_channel(&node_2, &tx_broadcaster_2, &node_3, &tx_broadcaster_3, &chan_announcement_2.3, false);
+		close_channel(&node_3, &tx_broadcaster_3, &node_4, &tx_broadcaster_4, &chan_announcement_3.3, true);
+		close_channel(&node_2, &tx_broadcaster_2, &node_4, &tx_broadcaster_4, &chan_announcement_4.3, false);
 
 		// Check that we processed all pending events
 		for node in vec!(&node_1, &node_2, &node_3, &node_4) {

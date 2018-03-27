@@ -6,6 +6,8 @@ use ln::msgs::HandleError;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::hash::Sha256dHash;
 
+use std::sync::Mutex;
+
 pub struct TestFeeEstimator {
 	pub sat_per_vbyte: u64,
 }
@@ -26,10 +28,10 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 }
 
 pub struct TestBroadcaster {
-
+	pub txn_broadcasted: Mutex<Vec<Transaction>>,
 }
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, _tx: &Transaction) {
-		//TODO
+	fn broadcast_transaction(&self, tx: &Transaction) {
+		self.txn_broadcasted.lock().unwrap().push(tx.clone());
 	}
 }
