@@ -15,6 +15,7 @@ honggfuzz_fuzz = ["honggfuzz"]
 lightning = { path = "..", features = ["fuzztarget"] }
 bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", features = ["fuzztarget"] }
 secp256k1 = { version = "0.9", features = ["fuzztarget"] }
+rust-crypto = "0.2"
 honggfuzz = { version = "0.5", optional = true }
 afl = { version = "0.3", optional = true }
 

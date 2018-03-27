@@ -2,6 +2,7 @@ extern crate lightning;
 extern crate secp256k1;
 
 use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
+use lightning::util::reset_rng_state;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
@@ -14,6 +15,8 @@ fn slice_to_be16(v: &[u8]) -> u16 {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
+	reset_rng_state();
+
 	let mut read_pos = 0;
 	macro_rules! get_slice {
 		($len: expr) => {

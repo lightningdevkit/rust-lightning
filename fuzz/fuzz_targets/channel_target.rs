@@ -12,6 +12,7 @@ use lightning::ln::channelmanager::PendingForwardHTLCInfo;
 use lightning::ln::msgs;
 use lightning::ln::msgs::MsgDecodable;
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
+use lightning::util::reset_rng_state;
 
 use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
@@ -89,6 +90,8 @@ impl<'a> FeeEstimator for FuzzEstimator<'a> {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
+	reset_rng_state();
+
 	let input = InputData {
 		data,
 		read_pos: AtomicUsize::new(0),
