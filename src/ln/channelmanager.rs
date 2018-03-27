@@ -41,8 +41,8 @@ pub struct PendingForwardHTLCInfo {
 	amt_to_forward: u64,
 	outgoing_cltv_value: u32,
 }
-//TODO: This is public, and needed to call Channel::update_add_htlc, so there needs to be a way to
-//initialize it usefully...probably make it optional in Channel instead).
+
+#[cfg(feature = "fuzztarget")]
 impl PendingForwardHTLCInfo {
 	pub fn dummy() -> Self {
 		Self {
@@ -635,7 +635,7 @@ impl ChannelManager {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 
-			if Instant::now() < *channel_state.next_forward {
+			if cfg!(not(feature = "fuzztarget")) && Instant::now() < *channel_state.next_forward {
 				return;
 			}
 
