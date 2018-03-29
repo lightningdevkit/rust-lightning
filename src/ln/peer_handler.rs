@@ -279,6 +279,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									let act_three = try_potential_handleerror!(peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..], &self.our_node_secret)).to_vec();
 									peer.pending_outbound_buffer.push_back(act_three);
 									peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
+									peer.pending_read_is_header = true;
 
 									insert_node_id = Some(peer.their_node_id.unwrap());
 									encode_and_send_msg!(msgs::Init {
@@ -317,7 +318,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												if msg.local_features.requires_unknown_bits() {
 													return Err(PeerHandleError{});
 												}
-												//TODO: Store features!
+												//TODO: Store features (and check that we've
+												//received Init prior to any other messages)!
+												//TODO: Respond to Init with Init if we're inbound.
 											},
 											17 => {
 												// Error msg
