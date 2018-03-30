@@ -906,6 +906,7 @@ impl ChainListener for ChannelManager {
 					},
 					None => {}
 				}
+				//TODO: Check if channel was closed (or disabled) here
 			}
 			for to_insert in short_to_ids_to_insert {
 				channel_state.short_to_id.insert(to_insert.0, to_insert.1);
@@ -1496,7 +1497,7 @@ mod tests {
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::util::uint::Uint256;
 	use bitcoin::blockdata::block::BlockHeader;
-	use bitcoin::blockdata::transaction::Transaction;
+	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
 	use bitcoin::network::serialize::serialize;
 	use bitcoin::network::serialize::BitcoinHash;
@@ -1680,15 +1681,20 @@ mod tests {
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
 
 		let chan_id = unsafe { CHAN_COUNT };
-		let tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: Vec::new() };
-		let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), chan_id);
+		let tx;
+		let funding_output;
 
 		let events_1 = node_a.get_and_clear_pending_events();
 		assert_eq!(events_1.len(), 1);
 		match events_1[0] {
-			Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, output_script: _, user_channel_id } => {
+			Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
 				assert_eq!(*channel_value_satoshis, 100000);
 				assert_eq!(user_channel_id, 42);
+
+				tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+					value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+				}]};
+				funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
 				node_a.funding_transaction_generated(&temporary_channel_id, funding_output.clone());
 				//TODO: Check that we got added to chan_monitor_a!
