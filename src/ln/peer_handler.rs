@@ -40,16 +40,21 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 /// generate no further read/write_events for the descriptor, only triggering a single
 /// disconnect_event (unless it was provided in response to a new_*_connection event, in which case
 /// no such disconnect_event must be generated and the socket be silently disconencted).
-pub struct PeerHandleError {}
+pub struct PeerHandleError {
+	no_connection_possible: bool,
+}
 impl fmt::Debug for PeerHandleError {
 	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		formatter.write_str("Peer Send Invalid Data")
+		formatter.write_str("Peer Sent Invalid Data")
 	}
 }
 
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
+	outbound: bool,
 	their_node_id: Option<PublicKey>,
+	their_global_features: Option<msgs::GlobalFeatures>,
+	their_local_features: Option<msgs::LocalFeatures>,
 
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
@@ -112,7 +117,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
 			channel_encryptor: peer_encryptor,
+			outbound: true,
 			their_node_id: Some(their_node_id),
+			their_global_features: None,
+			their_local_features: None,
 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
@@ -141,7 +149,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
 			channel_encryptor: peer_encryptor,
+			outbound: false,
 			their_node_id: None,
+			their_global_features: None,
+			their_local_features: None,
 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
@@ -308,6 +319,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										assert!(msg_data.len() >= 2);
 
 										let msg_type = byte_utils::slice_to_be16(&msg_data[0..2]);
+										if msg_type != 16 && peer.their_global_features.is_none() {
+											// Need an init message as first message
+											return Err(PeerHandleError{});
+										}
 										match msg_type {
 											// Connection control:
 											16 => {
@@ -318,9 +333,15 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												if msg.local_features.requires_unknown_bits() {
 													return Err(PeerHandleError{});
 												}
-												//TODO: Store features (and check that we've
-												//received Init prior to any other messages)!
-												//TODO: Respond to Init with Init if we're inbound.
+												peer.their_global_features = Some(msg.global_features);
+												peer.their_local_features = Some(msg.local_features);
+
+												if !peer.outbound {
+													encode_and_send_msg!(msgs::Init {
+														global_features: msgs::GlobalFeatures::new(),
+														local_features: msgs::LocalFeatures::new(),
+													}, 16);
+												}
 											},
 											17 => {
 												// Error msg
