@@ -343,9 +343,12 @@ pub struct ChannelUpdate {
 
 /// Used to put an error message in a HandleError
 pub enum ErrorAction {
+	/// Indicates an inbound HTLC add resulted in a failure, and the UpdateFailHTLC provided in msg
+	/// should be sent back to the sender.
 	UpdateFailHTLC {
 		msg: UpdateFailHTLC
 	},
+	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer {},
 }
 
