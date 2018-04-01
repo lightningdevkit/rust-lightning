@@ -342,7 +342,7 @@ pub struct ChannelUpdate {
 }
 
 /// Used to put an error message in a HandleError
-pub enum ErrorMessage {
+pub enum ErrorAction {
 	UpdateFailHTLC {
 		msg: UpdateFailHTLC
 	},
@@ -351,7 +351,7 @@ pub enum ErrorMessage {
 
 pub struct HandleError { //TODO: rename me
 	pub err: &'static str,
-	pub msg: Option<ErrorMessage>, //TODO: Move into an Action enum and require it!
+	pub msg: Option<ErrorAction>, //TODO: Make this required and rename it
 }
 
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in

@@ -1121,7 +1121,7 @@ impl ChannelMessageHandler for ChannelManager {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				return Err(msgs::HandleError {
 					err: $msg,
-					msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
+					msg: Some(msgs::ErrorAction::UpdateFailHTLC {
 						msg: msgs::UpdateFailHTLC {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
