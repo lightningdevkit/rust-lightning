@@ -1,20 +1,31 @@
 extern crate bitcoin;
+extern crate crypto;
 extern crate lightning;
 extern crate secp256k1;
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::blockdata::script::Script;
 use bitcoin::network::constants::Network;
+use bitcoin::network::serialize::{serialize, BitcoinHash};
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::uint::Uint256;
 
-use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,FeeEstimator,ChainWatchInterfaceUtil};
+use crypto::sha2::Sha256;
+use crypto::digest::Digest;
+
+use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::ln::{channelmonitor,msgs};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
+use lightning::util::events::{EventsProvider,Event};
+use lightning::util::reset_rng_state;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
 
@@ -25,11 +36,32 @@ pub fn slice_to_be16(v: &[u8]) -> u16 {
 }
 
 #[inline]
+pub fn slice_to_be24(v: &[u8]) -> u32 {
+	((v[0] as u32) << 8*2) |
+	((v[1] as u32) << 8*1) |
+	((v[2] as u32) << 8*0)
+}
+
+#[inline]
 pub fn slice_to_be32(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*3) |
 	((v[1] as u32) << 8*2) |
 	((v[2] as u32) << 8*1) |
 	((v[3] as u32) << 8*0)
+}
+
+#[inline]
+pub fn be64_to_array(u: u64) -> [u8; 8] {
+	let mut v = [0; 8];
+	v[0] = ((u >> 8*7) & 0xff) as u8;
+	v[1] = ((u >> 8*6) & 0xff) as u8;
+	v[2] = ((u >> 8*5) & 0xff) as u8;
+	v[3] = ((u >> 8*4) & 0xff) as u8;
+	v[4] = ((u >> 8*3) & 0xff) as u8;
+	v[5] = ((u >> 8*2) & 0xff) as u8;
+	v[6] = ((u >> 8*1) & 0xff) as u8;
+	v[7] = ((u >> 8*0) & 0xff) as u8;
+	v
 }
 
 struct InputData {
@@ -39,13 +71,6 @@ struct InputData {
 impl InputData {
 	fn get_slice(&self, len: usize) -> Option<&[u8]> {
 		let old_pos = self.read_pos.fetch_add(len, Ordering::AcqRel);
-		if self.data.len() < old_pos + len {
-			return None;
-		}
-		Some(&self.data[old_pos..old_pos + len])
-	}
-	fn get_slice_nonadvancing(&self, len: usize) -> Option<&[u8]> {
-		let old_pos = self.read_pos.load(Ordering::Acquire);
 		if self.data.len() < old_pos + len {
 			return None;
 		}
@@ -92,6 +117,8 @@ impl SocketDescriptor for Peer {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
+	reset_rng_state();
+
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
@@ -137,6 +164,12 @@ pub fn do_test(data: &[u8]) {
 	}, our_network_key);
 
 	let mut peers = [false; 256];
+	let mut should_forward = false;
+	let mut payments_received = Vec::new();
+	let mut payments_sent = 0;
+	let mut pending_funding_generation: Vec<(Uint256, u64, Script)> = Vec::new();
+	let mut pending_funding_signatures = HashMap::new();
+	let mut pending_funding_relay = Vec::new();
 
 	loop {
 		match get_slice!(1)[0] {
@@ -178,7 +211,121 @@ pub fn do_test(data: &[u8]) {
 					Err(_) => { peers[peer_id as usize] = false; }
 				}
 			},
+			4 => {
+				let value = slice_to_be24(get_slice!(3)) as u64;
+				let route = match router.get_route(&get_pubkey!(), &Vec::new(), value, 42) {
+					Ok(route) => route,
+					Err(_) => return,
+				};
+				let mut payment_hash = [0; 32];
+				payment_hash[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				let mut sha = Sha256::new();
+				sha.input(&payment_hash);
+				sha.result(&mut payment_hash);
+				for i in 1..32 { payment_hash[i] = 0; }
+				payments_sent += 1;
+				match channelmanager.send_payment(route, payment_hash) {
+					Ok(_) => {},
+					Err(_) => return,
+				}
+			},
+			5 => {
+				let peer_id = get_slice!(1)[0];
+				if !peers[peer_id as usize] { return; }
+				let their_key = get_pubkey!();
+				let chan_value = slice_to_be24(get_slice!(3)) as u64;
+				if channelmanager.create_channel(their_key, chan_value, 0).is_err() { return; }
+			},
+			6 => {
+				let mut channels = channelmanager.list_channels();
+				let channel_id = get_slice!(1)[0] as usize;
+				if channel_id >= channels.len() { return; }
+				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
+				if channelmanager.close_channel(&channels[channel_id].channel_id).is_err() { return; }
+			},
+			7 => {
+				if should_forward {
+					channelmanager.process_pending_htlc_forward();
+					handler.process_events();
+					should_forward = false;
+				}
+			},
+			8 => {
+				for payment in payments_received.drain(..) {
+					let mut payment_preimage = None;
+					for i in 0..payments_sent {
+						let mut payment_hash = [0; 32];
+						payment_hash[0..8].copy_from_slice(&be64_to_array(i));
+						let mut sha = Sha256::new();
+						sha.input(&payment_hash);
+						sha.result(&mut payment_hash);
+						for i in 1..32 { payment_hash[i] = 0; }
+						if payment_hash == payment {
+							payment_hash = [0; 32];
+							payment_hash[0..8].copy_from_slice(&be64_to_array(i));
+							payment_preimage = Some(payment_hash);
+							break;
+						}
+					}
+					channelmanager.claim_funds(payment_preimage.unwrap());
+				}
+			},
+			9 => {
+				for payment in payments_received.drain(..) {
+					channelmanager.fail_htlc_backwards(&payment);
+				}
+			},
+			10 => {
+				for funding_generation in  pending_funding_generation.drain(..) {
+					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+							value: funding_generation.1, script_pubkey: funding_generation.2,
+						}] };
+					let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+					channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
+					pending_funding_signatures.insert(funding_output, tx);
+				}
+			},
+			11 => {
+				if !pending_funding_relay.is_empty() {
+					let mut txn = Vec::with_capacity(pending_funding_relay.len());
+					let mut txn_idxs = Vec::with_capacity(pending_funding_relay.len());
+					for (idx, tx) in pending_funding_relay.iter().enumerate() {
+						txn.push(tx);
+						txn_idxs.push(idx as u32 + 1);
+					}
+
+					let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+					channelmanager.block_connected(&header, 1, &txn[..], &txn_idxs[..]);
+					txn.clear();
+					txn_idxs.clear();
+					for i in 2..100 {
+						header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+						channelmanager.block_connected(&header, i, &txn[..], &txn_idxs[..]);
+					}
+				}
+				pending_funding_relay.clear();
+			},
 			_ => return,
+		}
+		for event in handler.get_and_clear_pending_events() {
+			match event {
+				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
+					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
+				},
+				Event::FundingBroadcastSafe { funding_txo, .. } => {
+					pending_funding_relay.push(pending_funding_signatures.remove(&funding_txo).unwrap());
+				},
+				Event::PaymentReceived { payment_hash, .. } => {
+					payments_received.push(payment_hash);
+				},
+				Event::PaymentSent {..} => {},
+				Event::PaymentFailed {..} => {},
+
+				Event::PendingHTLCsForwardable {..} => {
+					should_forward = true;
+				},
+				_ => panic!("Unknown event"),
+			}
 		}
 	}
 }

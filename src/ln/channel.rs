@@ -1639,10 +1639,16 @@ impl Channel {
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for (ref tx, index_in_block) in txn_matched.iter().zip(indexes_of_txn_matched) {
 				if tx.txid() == self.channel_monitor.get_funding_txo().unwrap().0 {
-					self.funding_tx_confirmations = 1;
-					self.short_channel_id = Some(((height as u64)          << (5*8)) |
-					                             ((*index_in_block as u64) << (2*8)) |
-					                             ((self.channel_monitor.get_funding_txo().unwrap().1 as u64) << (2*8)));
+					let txo_idx = self.channel_monitor.get_funding_txo().unwrap().1 as usize;
+					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
+						tx.output[txo_idx].value != self.channel_value_satoshis {
+						self.channel_state = ChannelState::ShutdownComplete as u32;
+					} else {
+						self.funding_tx_confirmations = 1;
+						self.short_channel_id = Some(((height as u64)          << (5*8)) |
+						                             ((*index_in_block as u64) << (2*8)) |
+						                             ((self.channel_monitor.get_funding_txo().unwrap().1 as u64) << (2*8)));
+					}
 				}
 			}
 		}

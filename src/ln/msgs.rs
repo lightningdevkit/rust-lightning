@@ -2,7 +2,7 @@ use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1, Signature};
 use bitcoin::util::uint::Uint256;
 use bitcoin::util::hash::Sha256dHash;
-use bitcoin::network::serialize::deserialize;
+use bitcoin::network::serialize::{deserialize,serialize};
 use bitcoin::blockdata::script::Script;
 
 use std::error::Error;
@@ -473,7 +473,7 @@ impl MsgDecodable for LocalFeatures {
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
 		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
 		let mut flags = Vec::with_capacity(len);
-		flags.extend_from_slice(&v[2..]);
+		flags.extend_from_slice(&v[2..2 + len]);
 		Ok(Self {
 			flags: flags
 		})
@@ -495,7 +495,7 @@ impl MsgDecodable for GlobalFeatures {
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
 		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
 		let mut flags = Vec::with_capacity(len);
-		flags.extend_from_slice(&v[2..]);
+		flags.extend_from_slice(&v[2..2 + len]);
 		Ok(Self {
 			flags: flags
 		})
@@ -619,7 +619,29 @@ impl MsgDecodable for AcceptChannel {
 }
 impl MsgEncodable for AcceptChannel {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = match &self.shutdown_scriptpubkey {
+			&Some(ref script) => Vec::with_capacity(270 + 2 + script.len()),
+			&None => Vec::with_capacity(270),
+		};
+		res.extend_from_slice(&serialize(&self.temporary_channel_id).unwrap()[..]);
+		res.extend_from_slice(&byte_utils::be64_to_array(self.dust_limit_satoshis));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.max_htlc_value_in_flight_msat));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.channel_reserve_satoshis));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_minimum_msat));
+		res.extend_from_slice(&byte_utils::be32_to_array(self.minimum_depth));
+		res.extend_from_slice(&byte_utils::be16_to_array(self.to_self_delay));
+		res.extend_from_slice(&byte_utils::be16_to_array(self.max_accepted_htlcs));
+		res.extend_from_slice(&self.funding_pubkey.serialize());
+		res.extend_from_slice(&self.revocation_basepoint.serialize());
+		res.extend_from_slice(&self.payment_basepoint.serialize());
+		res.extend_from_slice(&self.delayed_payment_basepoint.serialize());
+		res.extend_from_slice(&self.htlc_basepoint.serialize());
+		res.extend_from_slice(&self.first_per_commitment_point.serialize());
+		if let &Some(ref script) = &self.shutdown_scriptpubkey {
+			res.extend_from_slice(&byte_utils::be16_to_array(script.len() as u16));
+			res.extend_from_slice(&script[..]);
+		}
+		res
 	}
 }
 
@@ -639,7 +661,13 @@ impl MsgDecodable for FundingCreated {
 }
 impl MsgEncodable for FundingCreated {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+32+2+64);
+		res.extend_from_slice(&serialize(&self.temporary_channel_id).unwrap()[..]);
+		res.extend_from_slice(&serialize(&self.funding_txid).unwrap()[..]);
+		res.extend_from_slice(&byte_utils::be16_to_array(self.funding_output_index));
+		let secp_ctx = Secp256k1::without_caps();
+		res.extend_from_slice(&self.signature.serialize_compact(&secp_ctx));
+		res
 	}
 }
 
@@ -675,7 +703,10 @@ impl MsgDecodable for FundingLocked {
 }
 impl MsgEncodable for FundingLocked {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+33);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&self.next_per_commitment_point.serialize());
+		res
 	}
 }
 
@@ -893,7 +924,13 @@ impl MsgDecodable for AnnouncementSignatures {
 }
 impl MsgEncodable for AnnouncementSignatures {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+8+64*2);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
+		let secp_ctx = Secp256k1::without_caps();
+		res.extend_from_slice(&self.node_signature.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&self.bitcoin_signature.serialize_compact(&secp_ctx));
+		res
 	}
 }
 

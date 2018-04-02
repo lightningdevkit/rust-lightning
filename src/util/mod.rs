@@ -7,5 +7,8 @@ pub(crate) mod internal_traits;
 pub(crate) mod rng;
 pub(crate) mod sha2;
 
+#[cfg(feature = "fuzztarget")]
+pub use self::rng::reset_rng_state;
+
 #[cfg(test)]
 pub(crate) mod test_utils;

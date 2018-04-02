@@ -27,17 +27,13 @@ Assorted random TODOs:
    a timer. By default we should provide an implementation of this which uses
    some newfangled rusty promise-y library, but should generally ensure a
    client can simply integrate this into whatever existing timer interface
-   they use.
-
- * Networking...having a simple bytes-in-bytes-out interface which does message
-   handling and calls our encryption layer is probably the right approach. We
-   should then also probably use the same promise-y library we use for timers
-   to do socket selection and reading/writing.
+   they use. (This is partially complete, but the events stuff needs to also
+   exist in Channel, which has a few inline TODOs to set up timers).
 
  * Figure out how to expose when-to-connect and who-to-connect-to.
 
  * Implement when-to-connect and who-to-connect-to based on route/node rumoring
-   and channelmanager state.
+   and channelmanager state (and some concept of available value in wallet).
 
  * Some kind of serialization format for on-disk storage of things like
    channels, channelmonitors, routing db, etc.
@@ -49,8 +45,6 @@ Assorted random TODOs:
    handled.
 
  * All the random TODOs and unimplemented!()s across the codebase.
-
- * BOLT 11 (invoice/address creation/generation) implementation
 
  * Type-ify our somewhat random usage of Uint256/[u8; 32]. Use Sha256dHash
    where appropriate, create our own types for everything else.

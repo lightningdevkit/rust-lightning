@@ -3,7 +3,7 @@ extern crate lightning;
 extern crate secp256k1;
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::network::serialize::{serialize, BitcoinHash};
 
@@ -12,6 +12,7 @@ use lightning::ln::channelmanager::PendingForwardHTLCInfo;
 use lightning::ln::msgs;
 use lightning::ln::msgs::MsgDecodable;
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
+use lightning::util::reset_rng_state;
 
 use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
@@ -89,6 +90,8 @@ impl<'a> FeeEstimator for FuzzEstimator<'a> {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
+	reset_rng_state();
+
 	let input = InputData {
 		data,
 		read_pos: AtomicUsize::new(0),
@@ -163,11 +166,11 @@ pub fn do_test(data: &[u8]) {
 
 	let their_pubkey = get_pubkey!();
 
-	let tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
-	let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+	let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 
 	let mut channel = if get_slice!(1)[0] != 0 {
-		let mut chan = Channel::new_outbound(&fee_est, their_pubkey, slice_to_be24(get_slice!(3)), get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)));
+		let chan_value = slice_to_be24(get_slice!(3));
+		let mut chan = Channel::new_outbound(&fee_est, their_pubkey, chan_value, get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)));
 		chan.get_open_channel(Sha256dHash::from(get_slice!(32)), &fee_est).unwrap();
 		let accept_chan = if get_slice!(1)[0] == 0 {
 			decode_msg_with_len16!(msgs::AcceptChannel, 270, 1)
@@ -175,6 +178,10 @@ pub fn do_test(data: &[u8]) {
 			decode_msg!(msgs::AcceptChannel, 270)
 		};
 		return_err!(chan.accept_channel(&accept_chan));
+
+		tx.output.push(TxOut{ value: chan_value, script_pubkey: chan.get_funding_redeemscript().to_v0_p2wsh() });
+		let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+
 		chan.get_outbound_funding_created(funding_output.0.clone(), funding_output.1).unwrap();
 		let funding_signed = decode_msg!(msgs::FundingSigned, 32+64);
 		return_err!(chan.funding_signed(&funding_signed));
@@ -190,6 +197,10 @@ pub fn do_test(data: &[u8]) {
 			Err(_) => return,
 		};
 		chan.get_accept_channel().unwrap();
+
+		tx.output.push(TxOut{ value: open_chan.funding_satoshis, script_pubkey: chan.get_funding_redeemscript().to_v0_p2wsh() });
+		let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+
 		let mut funding_created = decode_msg!(msgs::FundingCreated, 32+32+2+64);
 		funding_created.funding_txid = funding_output.0.clone();
 		funding_created.funding_output_index = funding_output.1;
