@@ -2,10 +2,11 @@ extern crate bitcoin;
 extern crate lightning;
 extern crate secp256k1;
 
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::Sha256dHash;
 
-use lightning::chain::chaininterface::{ConfirmationTarget,FeeEstimator,ChainWatchInterfaceUtil};
+use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::ln::{channelmonitor,msgs};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
@@ -73,6 +74,11 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 	}
 }
 
+struct TestBroadcaster {}
+impl BroadcasterInterface for TestBroadcaster {
+	fn broadcast_transaction(&self, _tx: &Transaction) {}
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Peer {
 	id: u8,
@@ -120,8 +126,9 @@ pub fn do_test(data: &[u8]) {
 
 	let monitor = Arc::new(TestChannelMonitor{});
 	let watch = Arc::new(ChainWatchInterfaceUtil::new());
+	let broadcast = Arc::new(TestBroadcaster{});
 
-	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone()).unwrap();
+	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone()).unwrap();
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key).unwrap()));
 
 	let handler = PeerManager::new(MessageHandler {

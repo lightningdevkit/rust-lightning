@@ -163,7 +163,7 @@ pub fn do_test(data: &[u8]) {
 
 	let their_pubkey = get_pubkey!();
 
-	let tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new(), witness: Vec::new() };
+	let tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 	let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
 	let mut channel = if get_slice!(1)[0] != 0 {
@@ -247,6 +247,14 @@ pub fn do_test(data: &[u8]) {
 			8 => {
 				let update_fee = decode_msg!(msgs::UpdateFee, 32+4);
 				return_err!(channel.update_fee(&fee_est, &update_fee));
+			},
+			9 => {
+				let shutdown = decode_msg_with_len16!(msgs::Shutdown, 32, 1);
+				return_err!(channel.shutdown(&fee_est, &shutdown));
+			},
+			10 => {
+				let closing_signed = decode_msg!(msgs::ClosingSigned, 32+8+64);
+				return_err!(channel.closing_signed(&fee_est, &closing_signed));
 			},
 			_ => return,
 		}

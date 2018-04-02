@@ -323,6 +323,7 @@ impl ChannelMonitor {
 						prev_index: per_commitment_data.revoked_output_index,
 						script_sig: Script::new(),
 						sequence: 0xffffffff,
+						witness: Vec::new(),
 					});
 					values.push(tx.output[per_commitment_data.revoked_output_index as usize].value);
 					total_value += tx.output[per_commitment_data.revoked_output_index as usize].value;
@@ -340,6 +341,7 @@ impl ChannelMonitor {
 								prev_index: htlc.transaction_output_index,
 								script_sig: Script::new(),
 								sequence: 0xffffffff,
+								witness: Vec::new(),
 							});
 							values.push(tx.output[htlc.transaction_output_index as usize].value);
 							total_value += htlc.amount_msat / 1000;
@@ -358,6 +360,7 @@ impl ChannelMonitor {
 								prev_index: idx as u32,
 								script_sig: Script::new(),
 								sequence: 0xffffffff,
+								witness: Vec::new(),
 							});
 							values.push(outp.value);
 							total_value += outp.value;
@@ -378,18 +381,16 @@ impl ChannelMonitor {
 				lock_time: 0,
 				input: inputs,
 				output: outputs,
-				witness: Vec::new(),
 			};
 
 			let mut values_drain = values.drain(..);
 
 			// First input is the generic revokeable_redeemscript
-			// TODO: Make one SighashComponents and use that throughout instead of re-building it
-			// each time.
+			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
 			{
 				let sig = match self.revocation_base_key {
 					RevocationStorage::PrivMode { ref revocation_base_key } => {
-						let sighash = ignore_error!(Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx, 0, &revokeable_redeemscript, values_drain.next().unwrap())[..]));
+						let sighash = ignore_error!(Message::from_slice(&sighash_parts.sighash_all(&spend_tx.input[0], &revokeable_redeemscript, values_drain.next().unwrap())[..]));
 						let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &revocation_base_key));
 						ignore_error!(self.secp_ctx.sign(&sighash, &revocation_key))
 					},
@@ -398,17 +399,16 @@ impl ChannelMonitor {
 					}
 				};
 
-				spend_tx.witness.push(Vec::new());
-				spend_tx.witness[0].push(sig.serialize_der(&self.secp_ctx).to_vec());
-				spend_tx.witness[0][0].push(SigHashType::All as u8);
-				spend_tx.witness[0].push(vec!(1)); // First if branch is revocation_key
+				spend_tx.input[0].witness.push(sig.serialize_der(&self.secp_ctx).to_vec());
+				spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+				spend_tx.input[0].witness.push(vec!(1)); // First if branch is revocation_key
 			}
 
 			match self.claimable_outpoints.get(&commitment_txid) {
 				None => {},
 				Some(per_commitment_data) => {
 					let mut htlc_idx = 0;
-					for (idx, _) in spend_tx.input.iter().enumerate() {
+					for (idx, input) in spend_tx.input.iter_mut().enumerate() {
 						if idx == 0 { continue; } // We already signed the first input
 
 						let mut htlc;
@@ -421,7 +421,7 @@ impl ChannelMonitor {
 						let sig = match self.revocation_base_key {
 							RevocationStorage::PrivMode { ref revocation_base_key } => {
 								let htlc_redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey, htlc.offered);
-								let sighash = ignore_error!(Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx, idx, &htlc_redeemscript, values_drain.next().unwrap())[..]));
+								let sighash = ignore_error!(Message::from_slice(&sighash_parts.sighash_all(&input, &htlc_redeemscript, values_drain.next().unwrap())[..]));
 
 								let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &revocation_base_key));
 								ignore_error!(self.secp_ctx.sign(&sighash, &revocation_key))
@@ -431,10 +431,9 @@ impl ChannelMonitor {
 							}
 						};
 
-						spend_tx.witness.push(Vec::new());
-						spend_tx.witness[0].push(revocation_pubkey.serialize().to_vec()); // First if branch is revocation_key
-						spend_tx.witness[0].push(sig.serialize_der(&self.secp_ctx).to_vec());
-						spend_tx.witness[0][0].push(SigHashType::All as u8);
+						input.witness.push(revocation_pubkey.serialize().to_vec()); // First if branch is revocation_key
+						input.witness.push(sig.serialize_der(&self.secp_ctx).to_vec());
+						input.witness[0].push(SigHashType::All as u8);
 					}
 				}
 			}
