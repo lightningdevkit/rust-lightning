@@ -838,7 +838,7 @@ impl ChannelManager {
 				false
 			},
 			PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, .. } => {
-				let (node_id, fulfill_msg) = {
+				let (node_id, fulfill_msg, monitor) = {
 					let chan_id = match channel_state.short_to_id.get(&source_short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => return false
@@ -846,7 +846,7 @@ impl ChannelManager {
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
 					match chan.get_update_fulfill_htlc(payment_preimage) {
-						Ok(msg) => (chan.get_their_node_id(), msg),
+						Ok(msg) => (chan.get_their_node_id(), msg, if from_user { Some(chan.channel_monitor()) } else { None }),
 						Err(_e) => {
 							//TODO: Do something with e?
 							return false;
@@ -854,14 +854,23 @@ impl ChannelManager {
 					}
 				};
 
-				mem::drop(channel_state);
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::SendFulfillHTLC {
-					node_id: node_id,
-					msg: fulfill_msg
-				});
+				{
+					mem::drop(channel_state);
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::SendFulfillHTLC {
+						node_id: node_id,
+						msg: fulfill_msg
+					});
+				}
 
-				true
+				//TODO: It may not be possible to handle add_update_monitor fails gracefully, maybe
+				//it should return no Err? Sadly, panic!()s instead doesn't help much :(
+				if from_user {
+					match self.monitor.add_update_monitor(monitor.as_ref().unwrap().get_funding_txo().unwrap(), monitor.unwrap()) {
+						Ok(()) => true,
+						Err(_) => true,
+					}
+				} else { true }
 			},
 		}
 	}
@@ -1319,7 +1328,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
-		{
+		let monitor = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -1327,12 +1336,14 @@ impl ChannelMessageHandler for ChannelManager {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 					}
 					chan.update_fulfill_htlc(&msg)?;
+					chan.channel_monitor()
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
-		}
+		};
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		self.claim_funds_internal(msg.payment_preimage.clone(), false);
+		self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor)?;
 		Ok(())
 	}
 

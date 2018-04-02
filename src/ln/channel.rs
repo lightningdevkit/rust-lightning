@@ -874,6 +874,7 @@ impl Channel {
 		if htlc_amount_msat == 0 {
 			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
 		}
+		self.channel_monitor.provide_payment_preimage(&payment_preimage);
 
 		//TODO: This is racy af, they may have pending messages in flight to us that will not have
 		//received this yet!
@@ -1220,6 +1221,7 @@ impl Channel {
 				self.value_to_self_msat -= htlc.amount_msat;
 			}
 		}
+		self.channel_monitor.provide_payment_preimage(&msg.payment_preimage);
 		Ok(())
 	}
 

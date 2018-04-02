@@ -270,6 +270,12 @@ impl ChannelMonitor {
 		min
 	}
 
+	pub fn provide_payment_preimage(&mut self, payment_preimage: &[u8; 32]) {
+		//TODO: Some kind of timeout here or ability to mark all states containing this preimage
+		//revoked?
+		self.payment_preimages.push(payment_preimage.clone());
+	}
+
 	#[inline]
 	fn check_spend_transaction(&self, tx: &Transaction, height: u32) -> Vec<Transaction> {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
