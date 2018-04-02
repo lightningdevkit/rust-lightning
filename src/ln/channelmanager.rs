@@ -1706,18 +1706,17 @@ mod tests {
 		assert_eq!(onion_packet_5.data, hex_bytes("9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d").unwrap());
 	}
 
-	static mut CHAN_COUNT: u16 = 0;
-	fn confirm_transaction(chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction) {
+	fn confirm_transaction(chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		let chan_id = unsafe { CHAN_COUNT };
-		chain.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as u32; 1]);
+		chain.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
 		for i in 2..100 {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			chain.block_connected_checked(&header, i, &[tx; 0], &[0; 0]);
 		}
 	}
 
-	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, monitor_a: &test_utils::TestChannelMonitor, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil, monitor_b: &test_utils::TestChannelMonitor) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256) {
+	static mut CHAN_COUNT: u32 = 0;
+	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, monitor_a: &test_utils::TestChannelMonitor, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil, monitor_b: &test_utils::TestChannelMonitor) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
 		let open_chan = node_a.create_channel(node_b.get_our_node_id(), 100000, 42).unwrap();
 		let accept_chan = node_b.handle_open_channel(&node_a.get_our_node_id(), &open_chan).unwrap();
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
@@ -1774,7 +1773,7 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		confirm_transaction(&chain_a, &tx);
+		confirm_transaction(&chain_a, &tx, chan_id);
 		let events_4 = node_a.get_and_clear_pending_events();
 		assert_eq!(events_4.len(), 1);
 		match events_4[0] {
@@ -1788,7 +1787,7 @@ mod tests {
 
 		let channel_id;
 
-		confirm_transaction(&chain_b, &tx);
+		confirm_transaction(&chain_b, &tx, chan_id);
 		let events_5 = node_b.get_and_clear_pending_events();
 		assert_eq!(events_5.len(), 1);
 		let as_announcement_sigs = match events_5[0] {
@@ -1826,10 +1825,10 @@ mod tests {
 			CHAN_COUNT += 1;
 		}
 
-		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id)
+		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id, tx)
 	}
 
-	fn close_channel(outbound_node: &ChannelManager, outbound_broadcaster: &test_utils::TestBroadcaster, inbound_node: &ChannelManager, inbound_broadcaster: &test_utils::TestBroadcaster, channel_id: &Uint256, close_inbound_first: bool) {
+	fn close_channel(outbound_node: &ChannelManager, outbound_broadcaster: &test_utils::TestBroadcaster, inbound_node: &ChannelManager, inbound_broadcaster: &test_utils::TestBroadcaster, channel_id: &Uint256, funding_tx: Transaction, close_inbound_first: bool) {
 		let (node_a, broadcaster_a) = if close_inbound_first { (inbound_node, inbound_broadcaster) } else { (outbound_node, outbound_broadcaster) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (outbound_node, outbound_broadcaster) } else { (inbound_node, inbound_broadcaster) };
 		let (tx_a, tx_b);
@@ -1862,6 +1861,9 @@ mod tests {
 			tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
 		}
 		assert_eq!(tx_a, tx_b);
+		let mut funding_tx_map = HashMap::new();
+		funding_tx_map.insert(funding_tx.txid(), funding_tx);
+		tx_a.verify(&funding_tx_map).unwrap();
 	}
 
 	struct SendEvent {
@@ -2274,10 +2276,10 @@ mod tests {
 		claim_payment(&node_1, &chan_monitor_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], payment_preimage_5);
 
 		// Close down the channels...
-		close_channel(&node_1, &tx_broadcaster_1, &node_2, &tx_broadcaster_2, &chan_announcement_1.3, true);
-		close_channel(&node_2, &tx_broadcaster_2, &node_3, &tx_broadcaster_3, &chan_announcement_2.3, false);
-		close_channel(&node_3, &tx_broadcaster_3, &node_4, &tx_broadcaster_4, &chan_announcement_3.3, true);
-		close_channel(&node_2, &tx_broadcaster_2, &node_4, &tx_broadcaster_4, &chan_announcement_4.3, false);
+		close_channel(&node_1, &tx_broadcaster_1, &node_2, &tx_broadcaster_2, &chan_announcement_1.3, chan_announcement_1.4, true);
+		close_channel(&node_2, &tx_broadcaster_2, &node_3, &tx_broadcaster_3, &chan_announcement_2.3, chan_announcement_2.4, false);
+		close_channel(&node_3, &tx_broadcaster_3, &node_4, &tx_broadcaster_4, &chan_announcement_3.3, chan_announcement_3.4, true);
+		close_channel(&node_2, &tx_broadcaster_2, &node_4, &tx_broadcaster_4, &chan_announcement_4.3, chan_announcement_4.4, false);
 
 		// Check that we processed all pending events
 		for node in vec!(&node_1, &node_2, &node_3, &node_4) {

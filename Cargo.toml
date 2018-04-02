@@ -19,3 +19,7 @@ bitcoin = "0.13"
 rust-crypto = "0.2"
 rand = "0.4"
 secp256k1 = "0.9"
+
+[dev-dependencies.bitcoin]
+version = "0.13"
+features = ["bitcoinconsensus"]
