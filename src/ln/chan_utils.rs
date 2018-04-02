@@ -230,6 +230,6 @@ pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a
 /// note here that 'a_revocation_key' is generated using b_revocation_basepoint and a's
 /// commitment secret. 'htlc' does *not* need to have its previous_output_index filled.
 #[inline]
-pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys, offered: bool) -> Script {
-	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, offered)
+pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Script {
+	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, htlc.offered)
 }

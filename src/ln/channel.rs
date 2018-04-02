@@ -555,7 +555,7 @@ impl Channel {
 					if htlc.amount_msat / 1000 >= dust_limit_satoshis + (self.feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
 						let htlc_in_tx = htlc.get_in_commitment(true);
 						txouts.push((TxOut {
-							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys, true).to_v0_p2wsh(),
+							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
 							value: htlc.amount_msat / 1000
 						}, Some(htlc_in_tx)));
 					}
@@ -563,7 +563,7 @@ impl Channel {
 					if htlc.amount_msat / 1000 >= dust_limit_satoshis + (self.feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
 						let htlc_in_tx = htlc.get_in_commitment(false);
 						txouts.push((TxOut { // "received HTLC output"
-							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys, false).to_v0_p2wsh(),
+							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
 							value: htlc.amount_msat / 1000
 						}, Some(htlc_in_tx)));
 					}
@@ -812,7 +812,7 @@ impl Channel {
 			panic!("Tried to re-sign HTLC transaction");
 		}
 
-		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys, htlc.offered);
+		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 
 		let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, &self.local_keys.htlc_base_key));
 		let sighash = Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
@@ -1274,7 +1274,7 @@ impl Channel {
 
 		for (idx, ref htlc) in local_commitment_tx.1.iter().enumerate() {
 			let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys)?;
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys, htlc.offered);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer");
 		}
@@ -1935,7 +1935,7 @@ impl Channel {
 
 		for ref htlc in remote_commitment_tx.1.iter() {
 			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys)?;
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys, htlc.offered);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 			let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
 			htlc_sigs.push(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key).unwrap());
@@ -2090,7 +2090,7 @@ mod tests {
 
 				let ref htlc = unsigned_tx.1[$htlc_idx];
 				let mut htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys).unwrap();
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys, htlc.offered);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 				secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
 
