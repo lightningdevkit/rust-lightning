@@ -1,6 +1,6 @@
 #!/bin/bash
-cargo install honggfuzz
-set +e
+set -e
+cargo install --force honggfuzz
 for TARGET in fuzz_targets/*; do
     FILENAME=$(basename $TARGET)
 	FILE="${FILENAME%.*}"

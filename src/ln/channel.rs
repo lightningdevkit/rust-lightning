@@ -247,21 +247,20 @@ const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
 
 macro_rules! secp_call {
-	( $res : expr ) => {
+	( $res: expr, $err: expr ) => {
 		match $res {
 			Ok(key) => key,
 			//TODO: make the error a parameter
-			Err(_) => return Err(HandleError{err: "Secp call failed - probably bad signature or evil data generated a bad pubkey/privkey", msg: None})
+			Err(_) => return Err(HandleError{err: $err, msg: Some(msgs::ErrorAction::DisconnectPeer{})})
 		}
 	};
 }
 
-macro_rules! get_key {
-	( $ctx : expr, $slice : expr ) => {
-		secp_call! (SecretKey::from_slice($ctx, $slice))
-	};
+macro_rules! secp_derived_key {
+	( $res: expr ) => {
+		secp_call!($res, "Derived invalid key, peer is maliciously selecting parameters")
+	}
 }
-
 impl Channel {
 	// Convert constants + channel value to limits:
 	fn get_our_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
@@ -360,48 +359,50 @@ impl Channel {
 
 	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background) * 250 {
-			return Err(HandleError{err: "Peer's feerate much too low", msg: None});
+			return Err(HandleError{err: "Peer's feerate much too low", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::HighPriority) * 375 { // 375 = 250 * 1.5x
-			return Err(HandleError{err: "Peer's feerate much too high", msg: None});
+			return Err(HandleError{err: "Peer's feerate much too high", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		Ok(())
 	}
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
+	/// Generally prefers to take the DisconnectPeer action on failure, as a notice to the sender
+	/// that we're rejecting the new channel.
 	pub fn new_from_req(fee_estimator: &FeeEstimator, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= (1 << 24) {
-			return Err(HandleError{err: "funding value > 2^24", msg: None});
+			return Err(HandleError{err: "funding value > 2^24", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.funding_satoshis > 21000000 * 100000000 {
-			return Err(HandleError{err: "More funding_satoshis than there are satoshis!", msg: None});
+			return Err(HandleError{err: "More funding_satoshis than there are satoshis!", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", msg: None});
+			return Err(HandleError{err: "Bogus channel_reserve_satoshis", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "push_msat more than highest possible value", msg: None});
+			return Err(HandleError{err: "push_msat more than highest possible value", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
-		if msg.dust_limit_satoshis > 21000000 * 100000000 {
-			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
+		if msg.dust_limit_satoshis > msg.funding_satoshis {
+			return Err(HandleError{err: "Peer never wants payout outputs?", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.max_htlc_value_in_flight_msat > msg.funding_satoshis * 1000 {
-			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: None});
+			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", msg: None});
+			return Err(HandleError{err: "Minimum htlc value is full channel value", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", msg: None});
+			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", msg: None});
+			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if (msg.channel_flags & 254) != 0 {
-			return Err(HandleError{err: "unknown channel_flags", msg: None});
+			return Err(HandleError{err: "unknown channel_flags", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -484,9 +485,9 @@ impl Channel {
 
 	// Utilities to derive keys:
 
-	fn build_local_commitment_secret(&self, idx: u64) -> Result<SecretKey, HandleError> {
+	fn build_local_commitment_secret(&self, idx: u64) -> SecretKey {
 		let res = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, idx);
-		Ok(get_key!(&self.secp_ctx, &res))
+		SecretKey::from_slice(&self.secp_ctx, &res).unwrap()
 	}
 
 	// Utilities to build transactions:
@@ -527,7 +528,7 @@ impl Channel {
 	/// generated by the peer which proposed adding the HTLCs, and thus we need to understand both
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
-	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool) -> Result<(Transaction, Vec<HTLCOutputInCommitment>), HandleError> {
+	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool) -> (Transaction, Vec<HTLCOutputInCommitment>) {
 		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ commitment_number;
 
 		let txins = {
@@ -554,7 +555,7 @@ impl Channel {
 					if htlc.amount_msat / 1000 >= dust_limit_satoshis + (self.feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
 						let htlc_in_tx = htlc.get_in_commitment(true);
 						txouts.push((TxOut {
-							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys, true).to_v0_p2wsh(),
+							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
 							value: htlc.amount_msat / 1000
 						}, Some(htlc_in_tx)));
 					}
@@ -562,7 +563,7 @@ impl Channel {
 					if htlc.amount_msat / 1000 >= dust_limit_satoshis + (self.feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
 						let htlc_in_tx = htlc.get_in_commitment(false);
 						txouts.push((TxOut { // "received HTLC output"
-							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys, false).to_v0_p2wsh(),
+							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
 							value: htlc.amount_msat / 1000
 						}, Some(htlc_in_tx)));
 					}
@@ -615,12 +616,12 @@ impl Channel {
 			}
 		}
 
-		Ok((Transaction {
+		(Transaction {
 			version: 2,
 			lock_time: ((0x20 as u32) << 8*3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
 			input: txins,
 			output: outputs,
-		}, htlcs_used))
+		}, htlcs_used)
 	}
 
 	#[inline]
@@ -699,11 +700,11 @@ impl Channel {
 	/// The result is a transaction which we can revoke ownership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_local_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, HandleError> {
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number)?).unwrap();
+		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number)).unwrap();
 		let delayed_payment_base = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.delayed_payment_base_key).unwrap();
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key).unwrap();
 
-		Ok(secp_call!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &self.their_revocation_basepoint, &self.their_payment_basepoint, &self.their_htlc_basepoint)))
+		Ok(secp_derived_key!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &self.their_revocation_basepoint, &self.their_payment_basepoint, &self.their_htlc_basepoint)))
 	}
 
 	#[inline]
@@ -716,7 +717,7 @@ impl Channel {
 		let revocation_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.revocation_base_key).unwrap();
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key).unwrap();
 
-		Ok(secp_call!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point, &self.their_delayed_payment_basepoint, &self.their_htlc_basepoint, &revocation_basepoint, &payment_basepoint, &htlc_basepoint)))
+		Ok(secp_derived_key!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point, &self.their_delayed_payment_basepoint, &self.their_htlc_basepoint, &revocation_basepoint, &payment_basepoint, &htlc_basepoint)))
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -811,11 +812,11 @@ impl Channel {
 			panic!("Tried to re-sign HTLC transaction");
 		}
 
-		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys, htlc.offered);
+		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 
-		let our_htlc_key = secp_call!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, &self.local_keys.htlc_base_key));
-		let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
-		let our_sig = secp_call!(self.secp_ctx.sign(&sighash, &our_htlc_key));
+		let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, &self.local_keys.htlc_base_key));
+		let sighash = Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+		let our_sig = self.secp_ctx.sign(&sighash, &our_htlc_key).unwrap();
 
 		let local_tx = PublicKey::from_secret_key(&self.secp_ctx, &our_htlc_key).unwrap() == keys.a_htlc_key;
 
@@ -843,8 +844,12 @@ impl Channel {
 	}
 
 	pub fn get_update_fulfill_htlc(&mut self, payment_preimage: [u8; 32]) -> Result<msgs::UpdateFulfillHTLC, HandleError> {
+		// Either ChannelFunded got set (which means it wont bet unset) or there is no way any
+		// caller thought we could have something claimed (cause we wouldn't have accepted in an
+		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
+		// either.
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Was asked to fulfill an HTLC when channel was not in an operational state", msg: None});
+			panic!("Was asked to fulfill an HTLC when channel was not in an operational state");
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
@@ -970,18 +975,18 @@ impl Channel {
 		let funding_script = self.get_funding_redeemscript();
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)?.0;
-		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
+		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false).0;
+		let remote_sighash = Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?.0;
-		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
+		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false).0;
+		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
-		secp_call!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey));
+		secp_call!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey), "Invalid funding_created signature from peer");
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
-		Ok((remote_initial_commitment_tx, secp_call!(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key))))
+		Ok((remote_initial_commitment_tx, self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key).unwrap()))
 	}
 
 	pub fn funding_created(&mut self, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
@@ -1036,11 +1041,11 @@ impl Channel {
 		let funding_script = self.get_funding_redeemscript();
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?.0;
-		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
+		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false).0;
+		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
-		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey));
+		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey), "Invalid funding_signed signature from peer");
 
 		self.channel_state = ChannelState::FundingSent as u32;
 
@@ -1258,10 +1263,10 @@ impl Channel {
 		let funding_script = self.get_funding_redeemscript();
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false)?;
+		let local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false);
 		let local_commitment_txid = local_commitment_tx.0.txid();
-		let local_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]));
-		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey));
+		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
+		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey), "Invalid commitment tx signature from peer");
 
 		if msg.htlc_signatures.len() != local_commitment_tx.1.len() {
 			return Err(HandleError{err: "Got wrong number of HTLC signatures from remote", msg: None});
@@ -1269,12 +1274,12 @@ impl Channel {
 
 		for (idx, ref htlc) in local_commitment_tx.1.iter().enumerate() {
 			let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys)?;
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys, htlc.offered);
-			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
-			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key));
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
+			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer");
 		}
 
-		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1)?).unwrap();
+		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1)).unwrap();
 		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number);
 
 		//TODO: Store htlc keys in our channel_watcher
@@ -1307,7 +1312,7 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", msg: None});
 		}
-		if PublicKey::from_secret_key(&self.secp_ctx, &get_key!(&self.secp_ctx, &msg.per_commitment_secret)).unwrap() != self.their_cur_commitment_point {
+		if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")).unwrap() != self.their_cur_commitment_point {
 			return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
 		}
 		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number, msg.per_commitment_secret)?;
@@ -1379,9 +1384,9 @@ impl Channel {
 
 			let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
 			let funding_redeemscript = self.get_funding_redeemscript();
-			let sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+			let sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
 
-			(Some(proposed_feerate), Some(total_fee_satoshis), Some(secp_call!(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key))))
+			(Some(proposed_feerate), Some(total_fee_satoshis), Some(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key).unwrap()))
 		} else { (None, None, None) };
 
 		// From here on out, we may not fail!
@@ -1441,7 +1446,7 @@ impl Channel {
 		if used_total_fee != msg.fee_satoshis {
 			return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", msg: None});
 		}
-		let mut sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+		let mut sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
 
 		match self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey) {
 			Ok(_) => {},
@@ -1449,8 +1454,8 @@ impl Channel {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
-				sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
-				secp_call!(self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey));
+				sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
+				secp_call!(self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey), "Invalid closing tx signature from peer");
 			},
 		};
 
@@ -1466,7 +1471,7 @@ impl Channel {
 			($new_feerate: expr) => {
 				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
 				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 4, false);
-				sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]));
+				sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
 				let our_sig = self.secp_ctx.sign(&sighash, &self.local_keys.funding_key).unwrap();
 				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee));
 				return Ok((Some(msgs::ClosingSigned {
@@ -1623,11 +1628,7 @@ impl Channel {
 					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
 					//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
 					//a protocol oversight, but I assume I'm just missing something.
-					let next_per_commitment_secret = match self.build_local_commitment_secret(self.cur_local_commitment_transaction_number) {
-						Ok(secret) => secret,
-						Err(_) => return None
-					};
-
+					let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 					let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret).unwrap();
 					return Some(msgs::FundingLocked {
 						channel_id: self.channel_id,
@@ -1686,7 +1687,7 @@ impl Channel {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number)?;
+		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 
 		Ok(msgs::OpenChannel {
 			chain_hash: chain_hash,
@@ -1722,7 +1723,7 @@ impl Channel {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
-		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number)?;
+		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 
 		Ok(msgs::AcceptChannel {
 			temporary_channel_id: self.channel_id,
@@ -1747,11 +1748,11 @@ impl Channel {
 		let funding_script = self.get_funding_redeemscript();
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false)?.0;
-		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]));
+		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false).0;
+		let remote_sighash = Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
-		Ok(secp_call!(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key)))
+		Ok(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key).unwrap())
 	}
 
 	/// Updates channel state with knowledge of the funding transaction's txid/index, and generates
@@ -1826,7 +1827,7 @@ impl Channel {
 		};
 
 		let msghash = Message::from_slice(&Sha256dHash::from_data(&msg.encode()[..])[..]).unwrap();
-		let sig = secp_call!(self.secp_ctx.sign(&msghash, &self.local_keys.funding_key));
+		let sig = self.secp_ctx.sign(&msghash, &self.local_keys.funding_key).unwrap();
 
 		Ok((msg, sig))
 	}
@@ -1925,19 +1926,19 @@ impl Channel {
 		let funding_script = self.get_funding_redeemscript();
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true)?;
+		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true);
 		let remote_commitment_txid = remote_commitment_tx.0.txid();
-		let remote_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&remote_commitment_tx.0).sighash_all(&remote_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]));
-		let our_sig = secp_call!(self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key));
+		let remote_sighash = Message::from_slice(&bip143::SighashComponents::new(&remote_commitment_tx.0).sighash_all(&remote_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
+		let our_sig = self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key).unwrap();
 
 		let mut htlc_sigs = Vec::new();
 
 		for ref htlc in remote_commitment_tx.1.iter() {
 			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys)?;
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys, htlc.offered);
-			let htlc_sighash = secp_call!(Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]));
-			let our_htlc_key = secp_call!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
-			htlc_sigs.push(secp_call!(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key)));
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys);
+			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+			let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
+			htlc_sigs.push(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key).unwrap());
 		}
 
 		// Update state now that we've passed all the can-fail calls...
@@ -2071,7 +2072,7 @@ mod tests {
 
 		macro_rules! test_commitment {
 			( $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr) => {
-				unsigned_tx = chan.build_commitment_transaction(42, &keys, true, false).unwrap();
+				unsigned_tx = chan.build_commitment_transaction(42, &keys, true, false);
 				let their_signature = Signature::from_der(&secp_ctx, &hex_bytes($their_sig_hex).unwrap()[..]).unwrap();
 				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &chan.get_funding_redeemscript(), chan.channel_value_satoshis)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, &chan.their_funding_pubkey).unwrap();
@@ -2089,7 +2090,7 @@ mod tests {
 
 				let ref htlc = unsigned_tx.1[$htlc_idx];
 				let mut htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys).unwrap();
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys, htlc.offered);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 				secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
 

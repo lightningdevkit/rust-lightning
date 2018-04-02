@@ -1121,7 +1121,7 @@ impl ChannelMessageHandler for ChannelManager {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				return Err(msgs::HandleError {
 					err: $msg,
-					msg: Some(msgs::ErrorMessage::UpdateFailHTLC {
+					msg: Some(msgs::ErrorAction::UpdateFailHTLC {
 						msg: msgs::UpdateFailHTLC {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
@@ -1480,6 +1480,37 @@ impl ChannelMessageHandler for ChannelManager {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::Event::BroadcastChannelAnnouncement { msg: chan_announcement, update_msg: chan_update });
 		Ok(())
+	}
+
+	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
+		let short_to_id = channel_state.short_to_id;
+		if no_connection_possible {
+			channel_state.by_id.retain(move |_, chan| {
+				if chan.get_their_node_id() == *their_node_id {
+					match chan.get_short_channel_id() {
+						Some(short_id) => {
+							short_to_id.remove(&short_id);
+						},
+						None => {},
+					}
+					//TODO: get the latest commitment tx, any HTLC txn built on top of it, etc out
+					//of the channel and throw those into the announcement blackhole.
+					false
+				} else {
+					true
+				}
+			});
+		} else {
+			for chan in channel_state.by_id {
+				if chan.1.get_their_node_id() == *their_node_id {
+					//TODO: mark channel disabled (and maybe announce such after a timeout). Also
+					//fail and wipe any uncommitted outbound HTLCs as those are considered after
+					//reconnect.
+				}
+			}
+		}
 	}
 }
 
