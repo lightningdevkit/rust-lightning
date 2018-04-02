@@ -6,7 +6,7 @@ use ln::msgs::HandleError;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::hash::Sha256dHash;
 
-use std::sync::Mutex;
+use std::sync::{Arc,Mutex};
 
 pub struct TestFeeEstimator {
 	pub sat_per_vbyte: u64,
@@ -18,12 +18,21 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct TestChannelMonitor {
-
+	pub added_monitors: Mutex<Vec<((Sha256dHash, u16), channelmonitor::ChannelMonitor)>>,
+	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<(Sha256dHash, u16)>>,
+}
+impl TestChannelMonitor {
+	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>) -> Self {
+		Self {
+			added_monitors: Mutex::new(Vec::new()),
+			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster),
+		}
+	}
 }
 impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, _funding_txo: (Sha256dHash, u16), _monitor: channelmonitor::ChannelMonitor) -> Result<(), HandleError> {
-		//TODO!
-		Ok(())
+	fn add_update_monitor(&self, funding_txo: (Sha256dHash, u16), monitor: channelmonitor::ChannelMonitor) -> Result<(), HandleError> {
+		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
+		self.simple_monitor.add_update_monitor(funding_txo, monitor)
 	}
 }
 
