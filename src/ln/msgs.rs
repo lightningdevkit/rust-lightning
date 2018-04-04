@@ -746,7 +746,11 @@ impl MsgDecodable for Shutdown {
 }
 impl MsgEncodable for Shutdown {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32 + 2 + self.scriptpubkey.len());
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be16_to_array(self.scriptpubkey.len() as u16));
+		res.extend_from_slice(&self.scriptpubkey[..]);
+		res
 	}
 }
 
@@ -765,7 +769,12 @@ impl MsgDecodable for ClosingSigned {
 }
 impl MsgEncodable for ClosingSigned {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+8+64);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.fee_satoshis));
+		let secp_ctx = Secp256k1::without_caps();
+		res.extend_from_slice(&self.signature.serialize_compact(&secp_ctx));
+		res
 	}
 }
 
