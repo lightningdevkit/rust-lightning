@@ -37,12 +37,12 @@ mod channel_held_info {
 
 	/// Stores the info we will need to send when we want to forward an HTLC onwards
 	pub struct PendingForwardHTLCInfo {
-		onion_packet: Option<msgs::OnionPacket>,
-		payment_hash: [u8; 32],
-		short_channel_id: u64,
-		prev_short_channel_id: u64,
-		amt_to_forward: u64,
-		outgoing_cltv_value: u32,
+		pub(super) onion_packet: Option<msgs::OnionPacket>,
+		pub(super) payment_hash: [u8; 32],
+		pub(super) short_channel_id: u64,
+		pub(super) prev_short_channel_id: u64,
+		pub(super) amt_to_forward: u64,
+		pub(super) outgoing_cltv_value: u32,
 	}
 
 	#[cfg(feature = "fuzztarget")]
@@ -59,6 +59,7 @@ mod channel_held_info {
 		}
 	}
 
+	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 	pub enum HTLCFailReason {
 		ErrorPacket {
 			err: msgs::OnionErrorPacket,
@@ -66,6 +67,15 @@ mod channel_held_info {
 		Reason {
 			failure_code: u16,
 			data: Vec<u8>,
+		}
+	}
+
+	#[cfg(feature = "fuzztarget")]
+	impl HTLCFailReason {
+		pub fn dummy() -> Self {
+			HTLCFailReason::Reason {
+				failure_code: 0, data: Vec::new(),
+			}
 		}
 	}
 }
@@ -770,14 +780,14 @@ impl ChannelManager {
 					}
 				};
 
-				let (node_id, fail_msg) = {
+				let (node_id, fail_msgs) = {
 					let chan_id = match channel_state.short_to_id.get(&source_short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => return false
 					};
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-					match chan.get_update_fail_htlc(payment_hash, err_packet) {
+					match chan.get_update_fail_htlc_and_commit(payment_hash, err_packet) {
 						Ok(msg) => (chan.get_their_node_id(), msg),
 						Err(_e) => {
 							//TODO: Do something with e?
@@ -786,12 +796,18 @@ impl ChannelManager {
 					}
 				};
 
-				mem::drop(channel_state);
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::SendFailHTLC {
-					node_id,
-					msg: fail_msg
-				});
+				match fail_msgs {
+					Some(msgs) => {
+						mem::drop(channel_state);
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push(events::Event::SendFailHTLC {
+							node_id,
+							msg: msgs.0,
+							commitment_msg: msgs.1,
+						});
+					},
+					None => {},
+				}
 
 				true
 			},
@@ -847,14 +863,14 @@ impl ChannelManager {
 				false
 			},
 			PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, .. } => {
-				let (node_id, fulfill_msg, monitor) = {
+				let (node_id, fulfill_msgs, monitor) = {
 					let chan_id = match channel_state.short_to_id.get(&source_short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => return false
 					};
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-					match chan.get_update_fulfill_htlc(payment_preimage) {
+					match chan.get_update_fulfill_htlc_and_commit(payment_preimage) {
 						Ok(msg) => (chan.get_their_node_id(), msg, if from_user { Some(chan.channel_monitor()) } else { None }),
 						Err(_e) => {
 							//TODO: Do something with e?
@@ -863,13 +879,17 @@ impl ChannelManager {
 					}
 				};
 
-				{
-					mem::drop(channel_state);
-					let mut pending_events = self.pending_events.lock().unwrap();
-					pending_events.push(events::Event::SendFulfillHTLC {
-						node_id: node_id,
-						msg: fulfill_msg
-					});
+				mem::drop(channel_state);
+				match fulfill_msgs {
+					Some(msgs) => {
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push(events::Event::SendFulfillHTLC {
+							node_id: node_id,
+							msg: msgs.0,
+							commitment_msg: msgs.1,
+						});
+					},
+					None => {},
 				}
 
 				//TODO: It may not be possible to handle add_update_monitor fails gracefully, maybe
@@ -1361,40 +1381,34 @@ impl ChannelMessageHandler for ChannelManager {
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
+		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 				}
-				chan.update_fail_htlc(&msg)?
+				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() })
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
-		};
-		self.fail_htlc_backwards_internal(channel_state, &payment_hash, HTLCFailReason::ErrorPacket { err: msg.reason.clone() });
-		Ok(())
+		}
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
+		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
 				}
-				chan.update_fail_malformed_htlc(&msg)?
+				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() })
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
-		};
-		self.fail_htlc_backwards_internal(channel_state, &payment_hash, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() });
-		Ok(())
+		}
 	}
 
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<msgs::RevokeAndACK, HandleError> {
-		let mut forward_event = None;
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), HandleError> {
 		let (res, monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
-
-			let ((res, mut forwarding_infos), monitor) = match channel_state.by_id.get_mut(&msg.channel_id) {
+			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
@@ -1402,43 +1416,16 @@ impl ChannelMessageHandler for ChannelManager {
 					(chan.commitment_signed(&msg)?, chan.channel_monitor())
 				},
 				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
-			};
-
-			if channel_state.forward_htlcs.is_empty() {
-				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
-				channel_state.next_forward = forward_event.unwrap();
 			}
-			for forward_info in forwarding_infos.drain(..) {
-				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(forward_info);
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(forward_info));
-					}
-				}
-			}
-
-			(res, monitor)
 		};
 		//TODO: Only if we store HTLC sigs
 		self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor)?;
 
-		match forward_event {
-			Some(time) => {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PendingHTLCsForwardable {
-					time_forwardable: time
-				});
-			}
-			None => {},
-		}
-
 		Ok(res)
 	}
 
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
-		let (res, monitor) = {
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, HandleError> {
+		let ((res, mut pending_forwards, mut pending_failures), monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -1451,6 +1438,38 @@ impl ChannelMessageHandler for ChannelManager {
 			}
 		};
 		self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor)?;
+		for failure in pending_failures.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failure.0, failure.1);
+		}
+
+		let mut forward_event = None;
+		if !pending_forwards.is_empty() {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			if channel_state.forward_htlcs.is_empty() {
+				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+				channel_state.next_forward = forward_event.unwrap();
+			}
+			for forward_info in pending_forwards.drain(..) {
+				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(forward_info);
+					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec!(forward_info));
+					}
+				}
+			}
+		}
+		match forward_event {
+			Some(time) => {
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push(events::Event::PendingHTLCsForwardable {
+					time_forwardable: time
+				});
+			}
+			None => {},
+		}
+
 		Ok(res)
 	}
 
@@ -1564,8 +1583,9 @@ mod tests {
 
 	use rand::{thread_rng,Rng};
 
-	use std::sync::{Arc, Mutex};
+	use std::collections::HashMap;
 	use std::default::Default;
+	use std::sync::{Arc, Mutex};
 	use std::time::Instant;
 
 	fn build_test_onion_keys() -> Vec<OnionKeys> {
@@ -1931,9 +1951,17 @@ mod tests {
 				assert_eq!(added_monitors.len(), 1);
 				added_monitors.clear();
 			}
-			assert!(prev_node.0.handle_revoke_and_ack(&node.get_our_node_id(), &revoke_and_ack).unwrap().is_none());
+			assert!(prev_node.0.handle_revoke_and_ack(&node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
+			let prev_revoke_and_ack = prev_node.0.handle_commitment_signed(&node.get_our_node_id(), &revoke_and_ack.1.unwrap()).unwrap();
 			{
 				let mut added_monitors = prev_node.1.added_monitors.lock().unwrap();
+				assert_eq!(added_monitors.len(), 2);
+				added_monitors.clear();
+			}
+			assert!(node.handle_revoke_and_ack(&prev_node.0.get_our_node_id(), &prev_revoke_and_ack.0).unwrap().is_none());
+			assert!(prev_revoke_and_ack.1.is_none());
+			{
+				let mut added_monitors = monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				added_monitors.clear();
 			}
@@ -1979,42 +2007,58 @@ mod tests {
 			added_monitors.clear();
 		}
 
-		let mut expected_next_node = expected_route.last().unwrap().0.get_our_node_id();
-		let mut prev_node = expected_route.last().unwrap().0;
-		let mut next_msg = None;
-		for &(node, monitor) in expected_route.iter().rev() {
-			assert_eq!(expected_next_node, node.get_our_node_id());
-			match next_msg {
-				Some(msg) => {
-					node.handle_update_fulfill_htlc(&prev_node.get_our_node_id(), &msg).unwrap();
+		let mut next_msgs: Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)> = None;
+		macro_rules! update_fulfill_dance {
+			($node: expr, $monitor: expr, $prev_node: expr, $prev_monitor: expr) => {
+				{
+					$node.handle_update_fulfill_htlc(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
+					let revoke_and_commit = $node.handle_commitment_signed(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
 					{
-						let mut added_monitors = monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						assert_eq!(added_monitors.len(), 2);
+						added_monitors.clear();
+					}
+					assert!($prev_node.handle_revoke_and_ack(&$node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
+					let revoke_and_ack = $prev_node.handle_commitment_signed(&$node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
+					assert!(revoke_and_ack.1.is_none());
+					{
+						let mut added_monitors = $prev_monitor.added_monitors.lock().unwrap();
+						assert_eq!(added_monitors.len(), 2);
+						added_monitors.clear();
+					}
+					assert!($node.handle_revoke_and_ack(&$prev_node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
+					{
+						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 1);
 						added_monitors.clear();
 					}
-				}, None => {}
+				}
+			}
+		}
+
+		let mut expected_next_node = expected_route.last().unwrap().0.get_our_node_id();
+		let mut prev_node = (expected_route.last().unwrap().0, expected_route.last().unwrap().1);
+		for &(node, monitor) in expected_route.iter().rev() {
+			assert_eq!(expected_next_node, node.get_our_node_id());
+			if next_msgs.is_some() {
+				update_fulfill_dance!(node, monitor, prev_node.0, prev_node.1);
 			}
 
 			let events = node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::SendFulfillHTLC { ref node_id, ref msg } => {
+				Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
 					expected_next_node = node_id.clone();
-					next_msg = Some(msg.clone());
+					next_msgs = Some((msg.clone(), commitment_msg.clone()));
 				},
 				_ => panic!("Unexpected event"),
 			};
 
-			prev_node = node;
+			prev_node = (node, monitor);
 		}
 
 		assert_eq!(expected_next_node, origin_node.get_our_node_id());
-		origin_node.handle_update_fulfill_htlc(&expected_route.first().unwrap().0.get_our_node_id(), &next_msg.unwrap()).unwrap();
-		{
-			let mut added_monitors = origin_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
-		}
+		update_fulfill_dance!(origin_node, origin_monitor, expected_route.first().unwrap().0, expected_route.first().unwrap().1);
 
 		let events = origin_node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -2072,32 +2116,58 @@ mod tests {
 
 		assert!(expected_route.last().unwrap().0.fail_htlc_backwards(&our_payment_hash));
 
+		let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
+		macro_rules! update_fail_dance {
+			($node: expr, $monitor: expr, $prev_node: expr, $prev_monitor: expr) => {
+				{
+					$node.handle_update_fail_htlc(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
+					let revoke_and_commit = $node.handle_commitment_signed(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
+					{
+						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						assert_eq!(added_monitors.len(), 1);
+						added_monitors.clear();
+					}
+					assert!($prev_node.handle_revoke_and_ack(&$node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
+					let revoke_and_ack = $prev_node.handle_commitment_signed(&$node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
+					assert!(revoke_and_ack.1.is_none());
+					{
+						let mut added_monitors = $prev_monitor.added_monitors.lock().unwrap();
+						assert_eq!(added_monitors.len(), 2);
+						added_monitors.clear();
+					}
+					assert!($node.handle_revoke_and_ack(&$prev_node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
+					{
+						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						assert_eq!(added_monitors.len(), 1);
+						added_monitors.clear();
+					}
+				}
+			}
+		}
+
 		let mut expected_next_node = expected_route.last().unwrap().0.get_our_node_id();
-		let mut prev_node = expected_route.last().unwrap().0;
-		let mut next_msg = None;
-		for &(node, _) in expected_route.iter().rev() {
+		let mut prev_node = (expected_route.last().unwrap().0, expected_route.last().unwrap().1);
+		for &(node, monitor) in expected_route.iter().rev() {
 			assert_eq!(expected_next_node, node.get_our_node_id());
-			match next_msg {
-				Some(msg) => {
-					node.handle_update_fail_htlc(&prev_node.get_our_node_id(), &msg).unwrap();
-				}, None => {}
+			if next_msgs.is_some() {
+				update_fail_dance!(node, monitor, prev_node.0, prev_node.1);
 			}
 
 			let events = node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::SendFailHTLC { ref node_id, ref msg } => {
+				Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
 					expected_next_node = node_id.clone();
-					next_msg = Some(msg.clone());
+					next_msgs = Some((msg.clone(), commitment_msg.clone()));
 				},
 				_ => panic!("Unexpected event"),
 			};
 
-			prev_node = node;
+			prev_node = (node, monitor);
 		}
 
 		assert_eq!(expected_next_node, origin_node.get_our_node_id());
-		origin_node.handle_update_fail_htlc(&expected_route.first().unwrap().0.get_our_node_id(), &next_msg.unwrap()).unwrap();
+		update_fail_dance!(origin_node, origin_monitor, expected_route.first().unwrap().0, expected_route.first().unwrap().1);
 
 		let events = origin_node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);

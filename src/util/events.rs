@@ -76,11 +76,13 @@ pub enum Event {
 	SendFulfillHTLC {
 		node_id: PublicKey,
 		msg: msgs::UpdateFulfillHTLC,
+		commitment_msg: msgs::CommitmentSigned,
 	},
 	/// Used to indicate that we need to fail an htlc from the peer with the given node_id.
 	SendFailHTLC {
 		node_id: PublicKey,
 		msg: msgs::UpdateFailHTLC,
+		commitment_msg: msgs::CommitmentSigned,
 	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).

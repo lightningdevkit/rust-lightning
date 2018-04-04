@@ -357,6 +357,15 @@ pub struct HandleError { //TODO: rename me
 	pub msg: Option<ErrorAction>, //TODO: Make this required and rename it
 }
 
+/// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
+/// transaction updates if they were pending.
+pub struct CommitmentUpdate {
+	pub update_add_htlcs: Vec<UpdateAddHTLC>,
+	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
+	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
+	pub commitment_signed: CommitmentSigned,
+}
+
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in
 /// paralell when they originate from different their_node_ids, however they MUST NOT be called in
 /// paralell when the two calls have the same their_node_id.
@@ -377,8 +386,8 @@ pub trait ChannelMessageHandler : events::EventsProvider {
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), HandleError>;
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<RevokeAndACK, HandleError>;
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<(Vec<UpdateAddHTLC>, CommitmentSigned)>, HandleError>;
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
 

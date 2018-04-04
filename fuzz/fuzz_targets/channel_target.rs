@@ -8,7 +8,7 @@ use bitcoin::util::hash::Sha256dHash;
 use bitcoin::network::serialize::{serialize, BitcoinHash};
 
 use lightning::ln::channel::Channel;
-use lightning::ln::channelmanager::PendingForwardHTLCInfo;
+use lightning::ln::channelmanager::{HTLCFailReason, PendingForwardHTLCInfo};
 use lightning::ln::msgs;
 use lightning::ln::msgs::MsgDecodable;
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
@@ -241,11 +241,11 @@ pub fn do_test(data: &[u8]) {
 			},
 			4 => {
 				let update_fail_htlc = decode_msg_with_len16!(msgs::UpdateFailHTLC, 32 + 8, 1);
-				return_err!(channel.update_fail_htlc(&update_fail_htlc));
+				return_err!(channel.update_fail_htlc(&update_fail_htlc, HTLCFailReason::dummy()));
 			},
 			5 => {
 				let update_fail_malformed_htlc = decode_msg!(msgs::UpdateFailMalformedHTLC, 32+8+32+2);
-				return_err!(channel.update_fail_malformed_htlc(&update_fail_malformed_htlc));
+				return_err!(channel.update_fail_malformed_htlc(&update_fail_malformed_htlc, HTLCFailReason::dummy()));
 			},
 			6 => {
 				let commitment_signed = decode_msg_with_len16!(msgs::CommitmentSigned, 32+64, 64);
