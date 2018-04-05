@@ -1747,17 +1747,27 @@ mod tests {
 		}
 	}
 
+	struct Node {
+		feeest: Arc<test_utils::TestFeeEstimator>,
+		chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
+		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
+		chan_monitor: Arc<test_utils::TestChannelMonitor>,
+		node_id: SecretKey,
+		node: Arc<ChannelManager>,
+		router: Router,
+	}
+
 	static mut CHAN_COUNT: u32 = 0;
-	fn create_chan_between_nodes(node_a: &ChannelManager, chain_a: &chaininterface::ChainWatchInterfaceUtil, monitor_a: &test_utils::TestChannelMonitor, node_b: &ChannelManager, chain_b: &chaininterface::ChainWatchInterfaceUtil, monitor_b: &test_utils::TestChannelMonitor) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
-		let open_chan = node_a.create_channel(node_b.get_our_node_id(), 100000, 42).unwrap();
-		let accept_chan = node_b.handle_open_channel(&node_a.get_our_node_id(), &open_chan).unwrap();
-		node_a.handle_accept_channel(&node_b.get_our_node_id(), &accept_chan).unwrap();
+	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
+		let open_chan = node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 42).unwrap();
+		let accept_chan = node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &open_chan).unwrap();
+		node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_chan).unwrap();
 
 		let chan_id = unsafe { CHAN_COUNT };
 		let tx;
 		let funding_output;
 
-		let events_1 = node_a.get_and_clear_pending_events();
+		let events_1 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_1.len(), 1);
 		match events_1[0] {
 			Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
@@ -1769,8 +1779,8 @@ mod tests {
 				}]};
 				funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
-				node_a.funding_transaction_generated(&temporary_channel_id, funding_output.clone());
-				let mut added_monitors = monitor_a.added_monitors.lock().unwrap();
+				node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output.clone());
+				let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				assert_eq!(added_monitors[0].0, funding_output);
 				added_monitors.clear();
@@ -1778,13 +1788,13 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
-		let events_2 = node_a.get_and_clear_pending_events();
+		let events_2 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_2.len(), 1);
 		let funding_signed = match events_2[0] {
 			Event::SendFundingCreated { ref node_id, ref msg } => {
-				assert_eq!(*node_id, node_b.get_our_node_id());
-				let res = node_b.handle_funding_created(&node_a.get_our_node_id(), msg).unwrap();
-				let mut added_monitors = monitor_b.added_monitors.lock().unwrap();
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				let res = node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), msg).unwrap();
+				let mut added_monitors = node_b.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				assert_eq!(added_monitors[0].0, funding_output);
 				added_monitors.clear();
@@ -1793,9 +1803,9 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		node_a.handle_funding_signed(&node_b.get_our_node_id(), &funding_signed).unwrap();
+		node_a.node.handle_funding_signed(&node_b.node.get_our_node_id(), &funding_signed).unwrap();
 
-		let events_3 = node_a.get_and_clear_pending_events();
+		let events_3 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_3.len(), 1);
 		match events_3[0] {
 			Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
@@ -1805,35 +1815,35 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		confirm_transaction(&chain_a, &tx, chan_id);
-		let events_4 = node_a.get_and_clear_pending_events();
+		confirm_transaction(&node_a.chain_monitor, &tx, chan_id);
+		let events_4 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_4.len(), 1);
 		match events_4[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
-				assert_eq!(*node_id, node_b.get_our_node_id());
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
 				assert!(announcement_sigs.is_none());
-				node_b.handle_funding_locked(&node_a.get_our_node_id(), msg).unwrap()
+				node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), msg).unwrap()
 			},
 			_ => panic!("Unexpected event"),
 		};
 
 		let channel_id;
 
-		confirm_transaction(&chain_b, &tx, chan_id);
-		let events_5 = node_b.get_and_clear_pending_events();
+		confirm_transaction(&node_b.chain_monitor, &tx, chan_id);
+		let events_5 = node_b.node.get_and_clear_pending_events();
 		assert_eq!(events_5.len(), 1);
 		let as_announcement_sigs = match events_5[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
-				assert_eq!(*node_id, node_a.get_our_node_id());
+				assert_eq!(*node_id, node_a.node.get_our_node_id());
 				channel_id = msg.channel_id.clone();
-				let as_announcement_sigs = node_a.handle_funding_locked(&node_b.get_our_node_id(), msg).unwrap().unwrap();
-				node_a.handle_announcement_signatures(&node_b.get_our_node_id(), &(*announcement_sigs).clone().unwrap()).unwrap();
+				let as_announcement_sigs = node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), msg).unwrap().unwrap();
+				node_a.node.handle_announcement_signatures(&node_b.node.get_our_node_id(), &(*announcement_sigs).clone().unwrap()).unwrap();
 				as_announcement_sigs
 			},
 			_ => panic!("Unexpected event"),
 		};
 
-		let events_6 = node_a.get_and_clear_pending_events();
+		let events_6 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_6.len(), 1);
 		let (announcement, as_update) = match events_6[0] {
 			Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
@@ -1842,8 +1852,8 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		node_b.handle_announcement_signatures(&node_a.get_our_node_id(), &as_announcement_sigs).unwrap();
-		let events_7 = node_b.get_and_clear_pending_events();
+		node_b.node.handle_announcement_signatures(&node_a.node.get_our_node_id(), &as_announcement_sigs).unwrap();
+		let events_7 = node_b.node.get_and_clear_pending_events();
 		assert_eq!(events_7.len(), 1);
 		let bs_update = match events_7[0] {
 			Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
@@ -1860,9 +1870,19 @@ mod tests {
 		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id, tx)
 	}
 
-	fn close_channel(outbound_node: &ChannelManager, outbound_broadcaster: &test_utils::TestBroadcaster, inbound_node: &ChannelManager, inbound_broadcaster: &test_utils::TestBroadcaster, channel_id: &Uint256, funding_tx: Transaction, close_inbound_first: bool) {
-		let (node_a, broadcaster_a) = if close_inbound_first { (inbound_node, inbound_broadcaster) } else { (outbound_node, outbound_broadcaster) };
-		let (node_b, broadcaster_b) = if close_inbound_first { (outbound_node, outbound_broadcaster) } else { (inbound_node, inbound_broadcaster) };
+	fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
+		let chan_announcement = create_chan_between_nodes(&nodes[a], &nodes[b]);
+		for node in nodes {
+			assert!(node.router.handle_channel_announcement(&chan_announcement.0).unwrap());
+			node.router.handle_channel_update(&chan_announcement.1).unwrap();
+			node.router.handle_channel_update(&chan_announcement.2).unwrap();
+		}
+		(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
+	}
+
+	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &Uint256, funding_tx: Transaction, close_inbound_first: bool) {
+		let (node_a, broadcaster_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster) } else { (&outbound_node.node, &outbound_node.tx_broadcaster) };
+		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 		let (tx_a, tx_b);
 
 		let shutdown_a = node_a.close_channel(channel_id).unwrap();
@@ -1915,7 +1935,7 @@ mod tests {
 	}
 
 	static mut PAYMENT_COUNT: u8 = 0;
-	fn send_along_route(origin_node: &ChannelManager, origin_monitor: &test_utils::TestChannelMonitor, route: Route, expected_route: &[(&ChannelManager, &test_utils::TestChannelMonitor)], recv_value: u64) -> ([u8; 32], [u8; 32]) {
+	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
 		let our_payment_preimage = unsafe { [PAYMENT_COUNT; 32] };
 		unsafe { PAYMENT_COUNT += 1 };
 		let our_payment_hash = {
@@ -1927,56 +1947,56 @@ mod tests {
 		};
 
 		let mut payment_event = {
-			let msgs = origin_node.send_payment(route, our_payment_hash).unwrap().unwrap();
+			let msgs = origin_node.node.send_payment(route, our_payment_hash).unwrap().unwrap();
 			SendEvent {
-				node_id: expected_route[0].0.get_our_node_id(),
+				node_id: expected_route[0].node.get_our_node_id(),
 				msgs: vec!(msgs.0),
 				commitment_msg: msgs.1,
 			}
 		};
-		let mut prev_node = (origin_node, origin_monitor);
+		let mut prev_node = origin_node;
 
-		for (idx, &(node, monitor)) in expected_route.iter().enumerate() {
-			assert_eq!(node.get_our_node_id(), payment_event.node_id);
+		for (idx, &node) in expected_route.iter().enumerate() {
+			assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
 
-			node.handle_update_add_htlc(&prev_node.0.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+			node.node.handle_update_add_htlc(&prev_node.node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
 			{
-				let added_monitors = monitor.added_monitors.lock().unwrap();
+				let added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 0);
 			}
 
-			let revoke_and_ack = node.handle_commitment_signed(&prev_node.0.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+			let revoke_and_ack = node.node.handle_commitment_signed(&prev_node.node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
 			{
-				let mut added_monitors = monitor.added_monitors.lock().unwrap();
+				let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				added_monitors.clear();
 			}
-			assert!(prev_node.0.handle_revoke_and_ack(&node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-			let prev_revoke_and_ack = prev_node.0.handle_commitment_signed(&node.get_our_node_id(), &revoke_and_ack.1.unwrap()).unwrap();
+			assert!(prev_node.node.handle_revoke_and_ack(&node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
+			let prev_revoke_and_ack = prev_node.node.handle_commitment_signed(&node.node.get_our_node_id(), &revoke_and_ack.1.unwrap()).unwrap();
 			{
-				let mut added_monitors = prev_node.1.added_monitors.lock().unwrap();
+				let mut added_monitors = prev_node.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 2);
 				added_monitors.clear();
 			}
-			assert!(node.handle_revoke_and_ack(&prev_node.0.get_our_node_id(), &prev_revoke_and_ack.0).unwrap().is_none());
+			assert!(node.node.handle_revoke_and_ack(&prev_node.node.get_our_node_id(), &prev_revoke_and_ack.0).unwrap().is_none());
 			assert!(prev_revoke_and_ack.1.is_none());
 			{
-				let mut added_monitors = monitor.added_monitors.lock().unwrap();
+				let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				added_monitors.clear();
 			}
 
-			let events_1 = node.get_and_clear_pending_events();
+			let events_1 = node.node.get_and_clear_pending_events();
 			assert_eq!(events_1.len(), 1);
 			match events_1[0] {
 				Event::PendingHTLCsForwardable { .. } => { },
 				_ => panic!("Unexpected event"),
 			};
 
-			node.channel_state.lock().unwrap().next_forward = Instant::now();
-			node.process_pending_htlc_forward();
+			node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+			node.node.process_pending_htlc_forward();
 
-			let mut events_2 = node.get_and_clear_pending_events();
+			let mut events_2 = node.node.get_and_clear_pending_events();
 			assert_eq!(events_2.len(), 1);
 			if idx == expected_route.len() - 1 {
 				match events_2[0] {
@@ -1993,42 +2013,42 @@ mod tests {
 				assert_eq!(payment_event.msgs.len(), 1);
 			}
 
-			prev_node = (node, monitor);
+			prev_node = node;
 		}
 
 		(our_payment_preimage, our_payment_hash)
 	}
 
-	fn claim_payment(origin_node: &ChannelManager, origin_monitor: &test_utils::TestChannelMonitor, expected_route: &[(&ChannelManager, &test_utils::TestChannelMonitor)], our_payment_preimage: [u8; 32]) {
-		assert!(expected_route.last().unwrap().0.claim_funds(our_payment_preimage));
+	fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: [u8; 32]) {
+		assert!(expected_route.last().unwrap().node.claim_funds(our_payment_preimage));
 		{
-			let mut added_monitors = expected_route.last().unwrap().1.added_monitors.lock().unwrap();
+			let mut added_monitors = expected_route.last().unwrap().chan_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();
 		}
 
 		let mut next_msgs: Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)> = None;
 		macro_rules! update_fulfill_dance {
-			($node: expr, $monitor: expr, $prev_node: expr, $prev_monitor: expr) => {
+			($node: expr, $prev_node: expr) => {
 				{
-					$node.handle_update_fulfill_htlc(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
-					let revoke_and_commit = $node.handle_commitment_signed(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
+					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
+					let revoke_and_commit = $node.node.handle_commitment_signed(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
 					{
-						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 2);
 						added_monitors.clear();
 					}
-					assert!($prev_node.handle_revoke_and_ack(&$node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
-					let revoke_and_ack = $prev_node.handle_commitment_signed(&$node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
+					assert!($prev_node.node.handle_revoke_and_ack(&$node.node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
+					let revoke_and_ack = $prev_node.node.handle_commitment_signed(&$node.node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
 					assert!(revoke_and_ack.1.is_none());
 					{
-						let mut added_monitors = $prev_monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 2);
 						added_monitors.clear();
 					}
-					assert!($node.handle_revoke_and_ack(&$prev_node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
+					assert!($node.node.handle_revoke_and_ack(&$prev_node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
 					{
-						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 1);
 						added_monitors.clear();
 					}
@@ -2036,15 +2056,15 @@ mod tests {
 			}
 		}
 
-		let mut expected_next_node = expected_route.last().unwrap().0.get_our_node_id();
-		let mut prev_node = (expected_route.last().unwrap().0, expected_route.last().unwrap().1);
-		for &(node, monitor) in expected_route.iter().rev() {
-			assert_eq!(expected_next_node, node.get_our_node_id());
+		let mut expected_next_node = expected_route.last().unwrap().node.get_our_node_id();
+		let mut prev_node = expected_route.last().unwrap();
+		for node in expected_route.iter().rev() {
+			assert_eq!(expected_next_node, node.node.get_our_node_id());
 			if next_msgs.is_some() {
-				update_fulfill_dance!(node, monitor, prev_node.0, prev_node.1);
+				update_fulfill_dance!(node, prev_node);
 			}
 
-			let events = node.get_and_clear_pending_events();
+			let events = node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
 				Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
@@ -2054,13 +2074,13 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			};
 
-			prev_node = (node, monitor);
+			prev_node = node;
 		}
 
-		assert_eq!(expected_next_node, origin_node.get_our_node_id());
-		update_fulfill_dance!(origin_node, origin_monitor, expected_route.first().unwrap().0, expected_route.first().unwrap().1);
+		assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
+		update_fulfill_dance!(origin_node, expected_route.first().unwrap());
 
-		let events = origin_node.get_and_clear_pending_events();
+		let events = origin_node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentSent { payment_preimage } => {
@@ -2070,21 +2090,21 @@ mod tests {
 		}
 	}
 
-	fn route_payment(origin_node: &ChannelManager, origin_monitor: &test_utils::TestChannelMonitor, origin_router: &Router, expected_route: &[(&ChannelManager, &test_utils::TestChannelMonitor)], recv_value: u64) -> ([u8; 32], [u8; 32]) {
-		let route = origin_router.get_route(&expected_route.last().unwrap().0.get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
-		assert_eq!(route.hops.len(), expected_route.len());
-		for (&(node, _), hop) in expected_route.iter().zip(route.hops.iter()) {
-			assert_eq!(hop.pubkey, node.get_our_node_id());
-		}
-
-		send_along_route(origin_node, origin_monitor, route, expected_route, recv_value)
-	}
-
-	fn route_over_limit(origin_node: &ChannelManager, origin_router: &Router, expected_route: &[&ChannelManager], recv_value: u64) {
-		let route = origin_router.get_route(&expected_route.last().unwrap().get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
+	fn route_payment(origin_node: &Node, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
+		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
 		assert_eq!(route.hops.len(), expected_route.len());
 		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
-			assert_eq!(hop.pubkey, node.get_our_node_id());
+			assert_eq!(hop.pubkey, node.node.get_our_node_id());
+		}
+
+		send_along_route(origin_node, route, expected_route, recv_value)
+	}
+
+	fn route_over_limit(origin_node: &Node, expected_route: &[&Node], recv_value: u64) {
+		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), &Vec::new(), recv_value, 142).unwrap();
+		assert_eq!(route.hops.len(), expected_route.len());
+		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
+			assert_eq!(hop.pubkey, node.node.get_our_node_id());
 		}
 
 		let our_payment_preimage = unsafe { [PAYMENT_COUNT; 32] };
@@ -2097,47 +2117,47 @@ mod tests {
 			ret
 		};
 
-		let err = origin_node.send_payment(route, our_payment_hash).err().unwrap();
+		let err = origin_node.node.send_payment(route, our_payment_hash).err().unwrap();
 		assert_eq!(err.err, "Cannot send value that would put us over our max HTLC value in flight");
 	}
 
-	fn send_payment(origin_node: &ChannelManager, origin_monitor: &test_utils::TestChannelMonitor, origin_router: &Router, expected_route: &[(&ChannelManager, &test_utils::TestChannelMonitor)], recv_value: u64) {
-		let our_payment_preimage = route_payment(origin_node, origin_monitor, origin_router, expected_route, recv_value).0;
-		claim_payment(origin_node, origin_monitor, expected_route, our_payment_preimage);
+	fn send_payment(origin: &Node, expected_route: &[&Node], recv_value: u64) {
+		let our_payment_preimage = route_payment(&origin, expected_route, recv_value).0;
+		claim_payment(&origin, expected_route, our_payment_preimage);
 	}
 
-	fn send_failed_payment(origin_node: &ChannelManager, origin_monitor: &test_utils::TestChannelMonitor, origin_router: &Router, expected_route: &[(&ChannelManager, &test_utils::TestChannelMonitor)]) {
-		let route = origin_router.get_route(&expected_route.last().unwrap().0.get_our_node_id(), &Vec::new(), 1000000, 142).unwrap();
+	fn send_failed_payment(origin_node: &Node, expected_route: &[&Node]) {
+		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), &Vec::new(), 1000000, 142).unwrap();
 		assert_eq!(route.hops.len(), expected_route.len());
-		for (&(node, _), hop) in expected_route.iter().zip(route.hops.iter()) {
-			assert_eq!(hop.pubkey, node.get_our_node_id());
+		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
+			assert_eq!(hop.pubkey, node.node.get_our_node_id());
 		}
-		let our_payment_hash = send_along_route(origin_node, origin_monitor, route, expected_route, 1000000).1;
+		let our_payment_hash = send_along_route(origin_node, route, expected_route, 1000000).1;
 
-		assert!(expected_route.last().unwrap().0.fail_htlc_backwards(&our_payment_hash));
+		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
 
 		let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
 		macro_rules! update_fail_dance {
-			($node: expr, $monitor: expr, $prev_node: expr, $prev_monitor: expr) => {
+			($node: expr, $prev_node: expr) => {
 				{
-					$node.handle_update_fail_htlc(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
-					let revoke_and_commit = $node.handle_commitment_signed(&$prev_node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
+					$node.node.handle_update_fail_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
+					let revoke_and_commit = $node.node.handle_commitment_signed(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
 					{
-						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 1);
 						added_monitors.clear();
 					}
-					assert!($prev_node.handle_revoke_and_ack(&$node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
-					let revoke_and_ack = $prev_node.handle_commitment_signed(&$node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
+					assert!($prev_node.node.handle_revoke_and_ack(&$node.node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
+					let revoke_and_ack = $prev_node.node.handle_commitment_signed(&$node.node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
 					assert!(revoke_and_ack.1.is_none());
 					{
-						let mut added_monitors = $prev_monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 2);
 						added_monitors.clear();
 					}
-					assert!($node.handle_revoke_and_ack(&$prev_node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
+					assert!($node.node.handle_revoke_and_ack(&$prev_node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
 					{
-						let mut added_monitors = $monitor.added_monitors.lock().unwrap();
+						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
 						assert_eq!(added_monitors.len(), 1);
 						added_monitors.clear();
 					}
@@ -2145,15 +2165,15 @@ mod tests {
 			}
 		}
 
-		let mut expected_next_node = expected_route.last().unwrap().0.get_our_node_id();
-		let mut prev_node = (expected_route.last().unwrap().0, expected_route.last().unwrap().1);
-		for &(node, monitor) in expected_route.iter().rev() {
-			assert_eq!(expected_next_node, node.get_our_node_id());
+		let mut expected_next_node = expected_route.last().unwrap().node.get_our_node_id();
+		let mut prev_node = expected_route.last().unwrap();
+		for node in expected_route.iter().rev() {
+			assert_eq!(expected_next_node, node.node.get_our_node_id());
 			if next_msgs.is_some() {
-				update_fail_dance!(node, monitor, prev_node.0, prev_node.1);
+				update_fail_dance!(node, prev_node);
 			}
 
-			let events = node.get_and_clear_pending_events();
+			let events = node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
 				Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
@@ -2163,13 +2183,13 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			};
 
-			prev_node = (node, monitor);
+			prev_node = node;
 		}
 
-		assert_eq!(expected_next_node, origin_node.get_our_node_id());
-		update_fail_dance!(origin_node, origin_monitor, expected_route.first().unwrap().0, expected_route.first().unwrap().1);
+		assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
+		update_fail_dance!(origin_node, expected_route.first().unwrap());
 
-		let events = origin_node.get_and_clear_pending_events();
+		let events = origin_node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentFailed { payment_hash } => {
@@ -2179,196 +2199,143 @@ mod tests {
 		}
 	}
 
+	fn create_network(node_count: usize) -> Vec<Node> {
+		let mut nodes = Vec::new();
+		let mut rng = thread_rng();
+		let secp_ctx = Secp256k1::new();
+
+		for _ in 0..node_count {
+			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
+			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
+			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
+			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
+			let node_id = {
+				let mut key_slice = [0; 32];
+				rng.fill_bytes(&mut key_slice);
+				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
+			};
+			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone()).unwrap();
+			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id).unwrap());
+			nodes.push(Node { feeest, chain_monitor, tx_broadcaster, chan_monitor, node_id, node, router });
+		}
+
+		nodes
+	}
+
 	#[test]
 	fn fake_network_test() {
 		// Simple test which builds a network of ChannelManagers, connects them to each other, and
 		// tests that payments get routed and transactions broadcast in semi-reasonable ways.
-		let mut rng = thread_rng();
-		let secp_ctx = Secp256k1::new();
-
-		let feeest_1 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_1 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
-		let tx_broadcaster_1 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
-		let chan_monitor_1 = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor_1.clone(), tx_broadcaster_1.clone()));
-		let node_id_1 = {
-			let mut key_slice = [0; 32];
-			rng.fill_bytes(&mut key_slice);
-			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
-		};
-		let node_1 = ChannelManager::new(node_id_1.clone(), 0, true, Network::Testnet, feeest_1.clone(), chan_monitor_1.clone(), chain_monitor_1.clone(), tx_broadcaster_1.clone()).unwrap();
-		let router_1 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_1).unwrap());
-
-		let feeest_2 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_2 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
-		let tx_broadcaster_2 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
-		let chan_monitor_2 = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor_2.clone(), tx_broadcaster_2.clone()));
-		let node_id_2 = {
-			let mut key_slice = [0; 32];
-			rng.fill_bytes(&mut key_slice);
-			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
-		};
-		let node_2 = ChannelManager::new(node_id_2.clone(), 0, true, Network::Testnet, feeest_2.clone(), chan_monitor_2.clone(), chain_monitor_2.clone(), tx_broadcaster_2.clone()).unwrap();
-		let router_2 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_2).unwrap());
-
-		let feeest_3 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_3 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
-		let tx_broadcaster_3 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
-		let chan_monitor_3 = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor_3.clone(), tx_broadcaster_3.clone()));
-		let node_id_3 = {
-			let mut key_slice = [0; 32];
-			rng.fill_bytes(&mut key_slice);
-			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
-		};
-		let node_3 = ChannelManager::new(node_id_3.clone(), 0, true, Network::Testnet, feeest_3.clone(), chan_monitor_3.clone(), chain_monitor_3.clone(), tx_broadcaster_3.clone()).unwrap();
-		let router_3 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_3).unwrap());
-
-		let feeest_4 = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
-		let chain_monitor_4 = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
-		let tx_broadcaster_4 = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
-		let chan_monitor_4 = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor_4.clone(), tx_broadcaster_4.clone()));
-		let node_id_4 = {
-			let mut key_slice = [0; 32];
-			rng.fill_bytes(&mut key_slice);
-			SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
-		};
-		let node_4 = ChannelManager::new(node_id_4.clone(), 0, true, Network::Testnet, feeest_4.clone(), chan_monitor_4.clone(), chain_monitor_4.clone(), tx_broadcaster_4.clone()).unwrap();
-		let router_4 = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id_4).unwrap());
+		let nodes = create_network(4);
 
 		// Create some initial channels
-		let chan_announcement_1 = create_chan_between_nodes(&node_1, &chain_monitor_1, &chan_monitor_1, &node_2, &chain_monitor_2, &chan_monitor_2);
-		for router in vec!(&router_1, &router_2, &router_3, &router_4) {
-			assert!(router.handle_channel_announcement(&chan_announcement_1.0).unwrap());
-			router.handle_channel_update(&chan_announcement_1.1).unwrap();
-			router.handle_channel_update(&chan_announcement_1.2).unwrap();
-		}
-		let chan_announcement_2 = create_chan_between_nodes(&node_2, &chain_monitor_2, &chan_monitor_2, &node_3, &chain_monitor_3, &chan_monitor_3);
-		for router in vec!(&router_1, &router_2, &router_3, &router_4) {
-			assert!(router.handle_channel_announcement(&chan_announcement_2.0).unwrap());
-			router.handle_channel_update(&chan_announcement_2.1).unwrap();
-			router.handle_channel_update(&chan_announcement_2.2).unwrap();
-		}
-		let chan_announcement_3 = create_chan_between_nodes(&node_3, &chain_monitor_3, &chan_monitor_3, &node_4, &chain_monitor_4, &chan_monitor_4);
-		for router in vec!(&router_1, &router_2, &router_3, &router_4) {
-			assert!(router.handle_channel_announcement(&chan_announcement_3.0).unwrap());
-			router.handle_channel_update(&chan_announcement_3.1).unwrap();
-			router.handle_channel_update(&chan_announcement_3.2).unwrap();
-		}
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+		let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 3);
 
 		// Rebalance the network a bit by relaying one payment through all the channels...
-		send_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000);
 
 		// Send some more payments
-		send_payment(&node_2, &chan_monitor_2, &router_2, &vec!((&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..], 1000000);
-		send_payment(&node_4, &chan_monitor_4, &router_4, &vec!((&*node_3, &*chan_monitor_3), (&*node_2, &*chan_monitor_2), (&*node_1, &*chan_monitor_1))[..], 1000000);
-		send_payment(&node_4, &chan_monitor_4, &router_4, &vec!((&*node_3, &*chan_monitor_3), (&*node_2, &*chan_monitor_2))[..], 1000000);
+		send_payment(&nodes[1], &vec!(&nodes[2], &nodes[3])[..], 1000000);
+		send_payment(&nodes[3], &vec!(&nodes[2], &nodes[1], &nodes[0])[..], 1000000);
+		send_payment(&nodes[3], &vec!(&nodes[2], &nodes[1])[..], 1000000);
 
 		// Test failure packets
-		send_failed_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4))[..]);
+		send_failed_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..]);
 
 		// Add a new channel that skips 3
-		let chan_announcement_4 = create_chan_between_nodes(&node_2, &chain_monitor_2, &chan_monitor_2, &node_4, &chain_monitor_4, &chan_monitor_4);
-		for router in vec!(&router_1, &router_2, &router_3, &router_4) {
-			assert!(router.handle_channel_announcement(&chan_announcement_4.0).unwrap());
-			router.handle_channel_update(&chan_announcement_4.1).unwrap();
-			router.handle_channel_update(&chan_announcement_4.2).unwrap();
-		}
+		let chan_4 = create_announced_chan_between_nodes(&nodes, 1, 3);
 
-		send_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], 1000000);
-		send_payment(&node_3, &chan_monitor_3, &router_3, &vec!((&*node_4, &*chan_monitor_4))[..], 1000000);
-		send_payment(&node_2, &chan_monitor_2, &router_2, &vec!((&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_2, &chan_monitor_2, &router_2, &vec!((&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_2, &chan_monitor_2, &router_2, &vec!((&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_2, &chan_monitor_2, &router_2, &vec!((&*node_4, &*chan_monitor_4))[..], 8000000);
-		send_payment(&node_2, &chan_monitor_2, &router_2, &vec!((&*node_4, &*chan_monitor_4))[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 1000000);
+		send_payment(&nodes[2], &vec!(&nodes[3])[..], 1000000);
+		send_payment(&nodes[1], &vec!(&nodes[3])[..], 8000000);
+		send_payment(&nodes[1], &vec!(&nodes[3])[..], 8000000);
+		send_payment(&nodes[1], &vec!(&nodes[3])[..], 8000000);
+		send_payment(&nodes[1], &vec!(&nodes[3])[..], 8000000);
+		send_payment(&nodes[1], &vec!(&nodes[3])[..], 8000000);
 
 		// Do some rebalance loop payments, simultaneously
 		let mut hops = Vec::with_capacity(3);
 		hops.push(RouteHop {
-			pubkey: node_3.get_our_node_id(),
-			short_channel_id: chan_announcement_2.1.contents.short_channel_id,
+			pubkey: nodes[2].node.get_our_node_id(),
+			short_channel_id: chan_2.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_announcement_3.1.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32
 		});
 		hops.push(RouteHop {
-			pubkey: node_4.get_our_node_id(),
-			short_channel_id: chan_announcement_3.1.contents.short_channel_id,
+			pubkey: nodes[3].node.get_our_node_id(),
+			short_channel_id: chan_3.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_announcement_4.2.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32
 		});
 		hops.push(RouteHop {
-			pubkey: node_2.get_our_node_id(),
-			short_channel_id: chan_announcement_4.1.contents.short_channel_id,
+			pubkey: nodes[1].node.get_our_node_id(),
+			short_channel_id: chan_4.0.contents.short_channel_id,
 			fee_msat: 1000000,
 			cltv_expiry_delta: 142,
 		});
-		hops[1].fee_msat = chan_announcement_4.2.contents.fee_base_msat as u64 + chan_announcement_4.2.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
-		hops[0].fee_msat = chan_announcement_3.1.contents.fee_base_msat as u64 + chan_announcement_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-		let payment_preimage_1 = send_along_route(&node_2, &chan_monitor_2, Route { hops }, &vec!((&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4), (&*node_2, &*chan_monitor_2))[..], 1000000).0;
+		hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
+		hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
+		let payment_preimage_1 = send_along_route(&nodes[1], Route { hops }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 		let mut hops = Vec::with_capacity(3);
 		hops.push(RouteHop {
-			pubkey: node_4.get_our_node_id(),
-			short_channel_id: chan_announcement_4.1.contents.short_channel_id,
+			pubkey: nodes[3].node.get_our_node_id(),
+			short_channel_id: chan_4.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_announcement_3.2.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32
 		});
 		hops.push(RouteHop {
-			pubkey: node_3.get_our_node_id(),
-			short_channel_id: chan_announcement_3.1.contents.short_channel_id,
+			pubkey: nodes[2].node.get_our_node_id(),
+			short_channel_id: chan_3.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_announcement_2.2.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32
 		});
 		hops.push(RouteHop {
-			pubkey: node_2.get_our_node_id(),
-			short_channel_id: chan_announcement_2.1.contents.short_channel_id,
+			pubkey: nodes[1].node.get_our_node_id(),
+			short_channel_id: chan_2.0.contents.short_channel_id,
 			fee_msat: 1000000,
 			cltv_expiry_delta: 142,
 		});
-		hops[1].fee_msat = chan_announcement_2.2.contents.fee_base_msat as u64 + chan_announcement_2.2.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
-		hops[0].fee_msat = chan_announcement_3.2.contents.fee_base_msat as u64 + chan_announcement_3.2.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-		let payment_preimage_2 = send_along_route(&node_2, &chan_monitor_2, Route { hops }, &vec!((&*node_4, &*chan_monitor_4), (&*node_3, &*chan_monitor_3), (&*node_2, &*chan_monitor_2))[..], 1000000).0;
+		hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
+		hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
+		let payment_preimage_2 = send_along_route(&nodes[1], Route { hops }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).0;
 
 		// Claim the rebalances...
-		claim_payment(&node_2, &chan_monitor_2, &vec!((&*node_4, &*chan_monitor_4), (&*node_3, &*chan_monitor_3), (&*node_2, &*chan_monitor_2))[..], payment_preimage_2);
-		claim_payment(&node_2, &chan_monitor_2, &vec!((&*node_3, &*chan_monitor_3), (&*node_4, &*chan_monitor_4), (&*node_2, &*chan_monitor_2))[..], payment_preimage_1);
+		claim_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_preimage_2);
+		claim_payment(&nodes[1], &vec!(&nodes[2], &nodes[3], &nodes[1])[..], payment_preimage_1);
 
 		// Add a duplicate new channel from 2 to 4
-		let chan_announcement_5 = create_chan_between_nodes(&node_2, &chain_monitor_2, &chan_monitor_2, &node_4, &chain_monitor_4, &chan_monitor_4);
-		for router in vec!(&router_1, &router_2, &router_3, &router_4) {
-			assert!(router.handle_channel_announcement(&chan_announcement_5.0).unwrap());
-			router.handle_channel_update(&chan_announcement_5.1).unwrap();
-			router.handle_channel_update(&chan_announcement_5.2).unwrap();
-		}
+		let chan_5 = create_announced_chan_between_nodes(&nodes, 1, 3);
 
 		// Send some payments across both channels
-		let payment_preimage_3 = route_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], 3000000).0;
-		let payment_preimage_4 = route_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], 3000000).0;
-		let payment_preimage_5 = route_payment(&node_1, &chan_monitor_1, &router_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], 3000000).0;
+		let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
+		let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
+		let payment_preimage_5 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
 
-		route_over_limit(&node_1, &router_1, &vec!(&*node_2, &*node_4)[..], 3000000);
+		route_over_limit(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000);
 
 		//TODO: Test that routes work again here as we've been notified that the channel is full
 
-		claim_payment(&node_1, &chan_monitor_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], payment_preimage_3);
-		claim_payment(&node_1, &chan_monitor_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], payment_preimage_4);
-		claim_payment(&node_1, &chan_monitor_1, &vec!((&*node_2, &*chan_monitor_2), (&*node_4, &*chan_monitor_4))[..], payment_preimage_5);
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], payment_preimage_3);
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], payment_preimage_4);
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], payment_preimage_5);
 
 		// Close down the channels...
-		close_channel(&node_1, &tx_broadcaster_1, &node_2, &tx_broadcaster_2, &chan_announcement_1.3, chan_announcement_1.4, true);
-		close_channel(&node_2, &tx_broadcaster_2, &node_3, &tx_broadcaster_3, &chan_announcement_2.3, chan_announcement_2.4, false);
-		close_channel(&node_3, &tx_broadcaster_3, &node_4, &tx_broadcaster_4, &chan_announcement_3.3, chan_announcement_3.4, true);
-		close_channel(&node_2, &tx_broadcaster_2, &node_4, &tx_broadcaster_4, &chan_announcement_4.3, chan_announcement_4.4, false);
+		close_channel(&nodes[0], &nodes[1], &chan_1.2, chan_1.3, true);
+		close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, false);
+		close_channel(&nodes[2], &nodes[3], &chan_3.2, chan_3.3, true);
+		close_channel(&nodes[1], &nodes[3], &chan_4.2, chan_4.3, false);
+		close_channel(&nodes[1], &nodes[3], &chan_5.2, chan_5.3, false);
 
 		// Check that we processed all pending events
-		for node in vec!(&node_1, &node_2, &node_3, &node_4) {
-			assert_eq!(node.get_and_clear_pending_events().len(), 0);
-		}
-		for chan_monitor in vec!(&chan_monitor_1, &chan_monitor_2, &chan_monitor_3, &chan_monitor_4) {
-			assert_eq!(chan_monitor.added_monitors.lock().unwrap().len(), 0);
+		for node in nodes {
+			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
+			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
 		}
 	}
 }
