@@ -285,6 +285,8 @@ pub struct Channel {
 	their_delayed_payment_basepoint: PublicKey,
 	their_htlc_basepoint: PublicKey,
 	their_cur_commitment_point: PublicKey,
+
+	their_prev_commitment_point: Option<PublicKey>,
 	their_node_id: PublicKey,
 
 	their_shutdown_scriptpubkey: Option<Script>,
@@ -413,6 +415,8 @@ impl Channel {
 			their_delayed_payment_basepoint: PublicKey::new(),
 			their_htlc_basepoint: PublicKey::new(),
 			their_cur_commitment_point: PublicKey::new(),
+
+			their_prev_commitment_point: None,
 			their_node_id: their_node_id,
 
 			their_shutdown_scriptpubkey: None,
@@ -534,6 +538,8 @@ impl Channel {
 			their_delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			their_htlc_basepoint: msg.htlc_basepoint,
 			their_cur_commitment_point: msg.first_per_commitment_point,
+
+			their_prev_commitment_point: None,
 			their_node_id: their_node_id,
 
 			their_shutdown_scriptpubkey: None,
@@ -1183,6 +1189,8 @@ impl Channel {
 		self.channel_state = ChannelState::FundingSent as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
+		self.cur_remote_commitment_transaction_number -= 1;
+		self.cur_local_commitment_transaction_number -= 1;
 
 		Ok(msgs::FundingSigned {
 			channel_id: self.channel_id,
@@ -1199,7 +1207,7 @@ impl Channel {
 		if self.channel_state != ChannelState::FundingCreated as u32 {
 			return Err(HandleError{err: "Received funding_signed in strange state!", msg: None});
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 1 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 2 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -1213,6 +1221,7 @@ impl Channel {
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey), "Invalid funding_signed signature from peer");
 
 		self.channel_state = ChannelState::FundingSent as u32;
+		self.cur_local_commitment_transaction_number -= 1;
 
 		Ok(())
 	}
@@ -1227,13 +1236,7 @@ impl Channel {
 			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", msg: None});
 		}
 
-		//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-		//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
-		//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
-		//a protocol oversight, but I assume I'm just missing something.
-		if self.their_cur_commitment_point != msg.next_per_commitment_point {
-			return Err(HandleError{err: "Non-duplicate next_per_commitment_point in funding_locked", msg: None});
-		}
+		self.their_prev_commitment_point = Some(self.their_cur_commitment_point);
 		self.their_cur_commitment_point = msg.next_per_commitment_point;
 		Ok(())
 	}
@@ -1407,9 +1410,7 @@ impl Channel {
 		}
 
 		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1)).unwrap();
-		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number);
-
-		//TODO: Store htlc keys in our channel_watcher
+		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
 
@@ -1527,16 +1528,19 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", msg: None});
 		}
-		if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")).unwrap() != self.their_cur_commitment_point {
-			return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
+		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
+			if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")).unwrap() != their_prev_commitment_point {
+				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
+			}
 		}
-		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number, msg.per_commitment_secret)?;
+		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)?;
 
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
 		// OK, we step the channel here and *then* if the new generation fails we can fail the
 		// channel based on that, but stepping stuff here should be safe either way.
 		self.channel_state &= !(ChannelState::AwaitingRemoteRevoke as u32);
+		self.their_prev_commitment_point = Some(self.their_cur_commitment_point);
 		self.their_cur_commitment_point = msg.next_per_commitment_point;
 		self.cur_remote_commitment_transaction_number -= 1;
 
@@ -2058,6 +2062,7 @@ impl Channel {
 		self.channel_state = ChannelState::FundingCreated as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
+		self.cur_remote_commitment_transaction_number -= 1;
 
 		Ok(msgs::FundingCreated {
 			temporary_channel_id: temporary_channel_id,
