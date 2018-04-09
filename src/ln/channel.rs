@@ -43,7 +43,7 @@ impl ChannelKeys {
 	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
 		let mut prk = [0; 32];
 		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
-		let secp_ctx = Secp256k1::new();
+		let secp_ctx = Secp256k1::without_caps();
 
 		let mut okm = [0; 32];
 		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);

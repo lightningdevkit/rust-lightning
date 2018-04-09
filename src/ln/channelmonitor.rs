@@ -335,7 +335,7 @@ impl ChannelMonitor {
 					total_value += tx.output[per_commitment_data.revoked_output_index as usize].value;
 
 					for &(ref htlc, ref _next_tx_sig) in per_commitment_data.htlcs.iter() {
-						let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey, htlc.offered);
+						let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 						if htlc.transaction_output_index as usize >= tx.output.len() ||
 								tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
 								tx.output[htlc.transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
@@ -426,7 +426,7 @@ impl ChannelMonitor {
 
 						let sig = match self.revocation_base_key {
 							RevocationStorage::PrivMode { ref revocation_base_key } => {
-								let htlc_redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey, htlc.offered);
+								let htlc_redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 								let sighash = ignore_error!(Message::from_slice(&sighash_parts.sighash_all(&input, &htlc_redeemscript, values_drain.next().unwrap())[..]));
 
 								let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &revocation_base_key));

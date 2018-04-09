@@ -307,6 +307,7 @@ impl ChannelManager {
 		res
 	}
 
+	#[inline]
 	fn gen_ammag_from_shared_secret(shared_secret: &SharedSecret) -> [u8; 32] {
 		let mut hmac = Hmac::new(Sha256::new(), &[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
 		hmac.input(&shared_secret[..]);
@@ -505,6 +506,7 @@ impl ChannelManager {
 		packet
 	}
 
+	#[inline]
 	fn build_first_hop_failure_packet(shared_secret: &SharedSecret, failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
 		let failure_packet = ChannelManager::build_failure_packet(shared_secret, failure_type, failure_data);
 		ChannelManager::encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
