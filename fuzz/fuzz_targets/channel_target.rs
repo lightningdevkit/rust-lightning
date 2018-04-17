@@ -7,14 +7,14 @@ use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::network::serialize::{serialize, BitcoinHash};
 
-use lightning::ln::channel::Channel;
+use lightning::ln::channel::{Channel, ChannelKeys};
 use lightning::ln::channelmanager::{HTLCFailReason, PendingForwardHTLCInfo};
 use lightning::ln::msgs;
 use lightning::ln::msgs::MsgDecodable;
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
 use lightning::util::reset_rng_state;
 
-use secp256k1::key::PublicKey;
+use secp256k1::key::{PublicKey, SecretKey};
 use secp256k1::Secp256k1;
 
 use std::sync::atomic::{AtomicUsize,Ordering};
@@ -164,13 +164,29 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
+	macro_rules! chan_keys {
+		() => {
+			ChannelKeys {
+				funding_key:               SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				revocation_base_key:       SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				payment_base_key:          SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				delayed_payment_base_key:  SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				htlc_base_key:             SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				channel_close_key:         SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+			}
+		}
+	}
+
 	let their_pubkey = get_pubkey!();
 
 	let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 
 	let mut channel = if get_slice!(1)[0] != 0 {
 		let chan_value = slice_to_be24(get_slice!(3));
-		let mut chan = Channel::new_outbound(&fee_est, their_pubkey, chan_value, get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)));
+
+		let mut chan = Channel::new_outbound(&fee_est, chan_keys!(), their_pubkey, chan_value, get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)));
 		chan.get_open_channel(Sha256dHash::from(get_slice!(32)), &fee_est).unwrap();
 		let accept_chan = if get_slice!(1)[0] == 0 {
 			decode_msg_with_len16!(msgs::AcceptChannel, 270, 1)
@@ -192,7 +208,7 @@ pub fn do_test(data: &[u8]) {
 		} else {
 			decode_msg!(msgs::OpenChannel, 2*32+6*8+4+2*2+6*33+1)
 		};
-		let mut chan = match Channel::new_from_req(&fee_est, their_pubkey, &open_chan, slice_to_be64(get_slice!(8)), get_slice!(1)[0] == 0) {
+		let mut chan = match Channel::new_from_req(&fee_est, chan_keys!(), their_pubkey, &open_chan, slice_to_be64(get_slice!(8)), get_slice!(1)[0] == 0) {
 			Ok(chan) => chan,
 			Err(_) => return,
 		};

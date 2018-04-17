@@ -349,20 +349,13 @@ impl Channel {
 	// Constructors:
 
 	/// panics if channel_value_satoshis is >= (1 << 24)
-	pub fn new_outbound(fee_estimator: &FeeEstimator, their_node_id: PublicKey, channel_value_satoshis: u64, announce_publicly: bool, user_id: u64) -> Channel {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, announce_publicly: bool, user_id: u64) -> Channel {
 		if channel_value_satoshis >= (1 << 24) {
 			panic!("funding value > 2^24");
 		}
 
 		let feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Normal);
 		let background_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
-
-		let mut key_seed = [0u8; 32];
-		rng::fill_bytes(&mut key_seed);
-		let chan_keys = match ChannelKeys::new_from_seed(&key_seed) {
-			Ok(key) => key,
-			Err(_) => panic!("RNG is busted!")
-		};
 
 		let secp_ctx = Secp256k1::new();
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
@@ -439,7 +432,7 @@ impl Channel {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	/// Generally prefers to take the DisconnectPeer action on failure, as a notice to the sender
 	/// that we're rejecting the new channel.
-	pub fn new_from_req(fee_estimator: &FeeEstimator, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= (1 << 24) {
 			return Err(HandleError{err: "funding value > 2^24", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
@@ -478,13 +471,6 @@ impl Channel {
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 
 		let background_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
-
-		let mut key_seed = [0u8; 32];
-		rng::fill_bytes(&mut key_seed);
-		let chan_keys = match ChannelKeys::new_from_seed(&key_seed) {
-			Ok(key) => key,
-			Err(_) => panic!("RNG is busted!")
-		};
 
 		let secp_ctx = Secp256k1::new();
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
@@ -2303,7 +2289,7 @@ mod tests {
 	use bitcoin::util::bip143;
 	use bitcoin::network::serialize::serialize;
 	use bitcoin::blockdata::transaction::Transaction;
-	use ln::channel::{Channel,HTLCOutput,HTLCState,HTLCOutputInCommitment,TxCreationKeys};
+	use ln::channel::{Channel,ChannelKeys,HTLCOutput,HTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::chan_utils;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use secp256k1::{Secp256k1,Message,Signature};
@@ -2324,20 +2310,26 @@ mod tests {
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendix C:
 		let feeest = TestFeeEstimator{fee_est: 15000/250};
-		let mut chan = Channel::new_outbound(&feeest, PublicKey::new(), 10000000, false, 42); // Nothing uses their network key in this test
-		chan.their_to_self_delay = 144;
-		chan.our_dust_limit_satoshis = 546;
-
 		let secp_ctx = Secp256k1::new();
 
-		chan.local_keys.funding_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap();
-		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan.local_keys.funding_key).unwrap().serialize()[..],
+		let chan_keys = ChannelKeys {
+			funding_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
+			payment_base_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
+			delayed_payment_base_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap(),
+			htlc_base_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
+
+			// These aren't set in the test vectors:
+			revocation_base_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
+			channel_close_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
+			channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &hex_bytes("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
+			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+		};
+		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan_keys.funding_key).unwrap().serialize()[..],
 				hex_bytes("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 
-		chan.local_keys.payment_base_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
-		chan.local_keys.delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap();
-		chan.local_keys.htlc_base_key = SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
-		// chan.local_keys.commitment_seed isn't derived in the test vectors :(
+		let mut chan = Channel::new_outbound(&feeest, chan_keys, PublicKey::new(), 10000000, false, 42); // Nothing uses their network key in this test
+		chan.their_to_self_delay = 144;
+		chan.our_dust_limit_satoshis = 546;
 
 		chan.channel_monitor.set_funding_info(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
 
