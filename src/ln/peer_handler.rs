@@ -433,18 +433,27 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 											132 => {
 												let msg = try_potential_decodeerror!(msgs::CommitmentSigned::decode(&msg_data[2..]));
-												let resp = try_potential_handleerror!(self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg));
-												encode_and_send_msg!(resp, 133);
+												let resps = try_potential_handleerror!(self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg));
+												encode_and_send_msg!(resps.0, 133);
+												if let Some(resp) = resps.1 {
+													encode_and_send_msg!(resp, 132);
+												}
 											},
 											133 => {
 												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::decode(&msg_data[2..]));
 												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
 												match resp_option {
 													Some(resps) => {
-														for resp in resps.0 {
+														for resp in resps.update_add_htlcs {
 															encode_and_send_msg!(resp, 128);
 														}
-														encode_and_send_msg!(resps.1, 132);
+														for resp in resps.update_fulfill_htlcs {
+															encode_and_send_msg!(resp, 130);
+														}
+														for resp in resps.update_fail_htlcs {
+															encode_and_send_msg!(resp, 131);
+														}
+														encode_and_send_msg!(resps.commitment_signed, 132);
 													},
 													None => {},
 												}
@@ -581,19 +590,21 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
-					Event::SendFulfillHTLC { ref node_id, ref msg } => {
+					Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 130)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_msg, 132)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
-					Event::SendFailHTLC { ref node_id, ref msg } => {
+					Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_msg, 132)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},

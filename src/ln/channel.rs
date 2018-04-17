@@ -17,7 +17,7 @@ use crypto::hkdf::{hkdf_extract,hkdf_expand};
 use ln::msgs;
 use ln::msgs::{HandleError, MsgEncodable};
 use ln::channelmonitor::ChannelMonitor;
-use ln::channelmanager::PendingForwardHTLCInfo;
+use ln::channelmanager::{PendingForwardHTLCInfo, HTLCFailReason};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -25,7 +25,7 @@ use util::{transaction_utils,rng};
 use util::sha2::Sha256;
 
 use std::default::Default;
-use std::cmp;
+use std::{cmp,mem};
 use std::time::Instant;
 
 pub struct ChannelKeys {
@@ -43,7 +43,7 @@ impl ChannelKeys {
 	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
 		let mut prk = [0; 32];
 		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
-		let secp_ctx = Secp256k1::new();
+		let secp_ctx = Secp256k1::without_caps();
 
 		let mut okm = [0; 32];
 		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);
@@ -84,19 +84,73 @@ impl ChannelKeys {
 
 #[derive(PartialEq)]
 enum HTLCState {
+	/// Added by remote, to be included in next local commitment tx.
 	RemoteAnnounced,
+	/// Included in a received commitment_signed message (implying we've revoke_and_ack'ed it), but
+	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
+	/// accept this HTLC. Implies AwaitingRemoteRevoke.
+	/// We also have not yet included this HTLC in a commitment_signed message, and are waiting on
+	/// a remote revoke_and_ack on a previous state before we can do so.
+	AwaitingRemoteRevokeToAnnounce,
+	/// Included in a received commitment_signed message (implying we've revoke_and_ack'ed it), but
+	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
+	/// accept this HTLC. Implies AwaitingRemoteRevoke.
+	/// We have included this HTLC in our latest commitment_signed and are now just waiting on a
+	/// revoke_and_ack.
+	AwaitingAnnouncedRemoteRevoke,
+	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
+	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
+	/// we will promote to Committed (note that they may not accept it until the next time we
+	/// revoke, but we dont really care about that:
+	///  * they've revoked, so worst case we can announce an old state and get our (option on)
+	///    money back (though we wont), and,
+	///  * we'll send them a revoke when they send a commitment_signed, and since only they're
+	///    allowed to remove it, the "can only be removed once committed on both sides" requirement
+	///    doesn't matter to us and its up to them to enforce it, worst-case they jump ahead but
+	///    we'll never get out of sync).
 	LocalAnnounced,
 	Committed,
+	/// Remote removed this (outbound) HTLC. We're waiting on their commitment_signed to finalize
+	/// the change (though they'll need to revoke before we fail the payment).
+	RemoteRemoved,
+	/// Remote removed this and sent a commitment_signed (implying we've revoke_and_ack'ed it), but
+	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
+	/// can do any backwards failing. Implies AwaitingRemoteRevoke.
+	/// We also have not yet removed this HTLC in a commitment_signed message, and are waiting on a
+	/// remote revoke_and_ack on a previous state before we can do so.
+	AwaitingRemoteRevokeToRemove,
+	/// Remote removed this and sent a commitment_signed (implying we've revoke_and_ack'ed it), but
+	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
+	/// can do any backwards failing. Implies AwaitingRemoteRevoke.
+	/// We have removed this HTLC in our latest commitment_signed and are now just waiting on a
+	/// revoke_and_ack to drop completely.
+	AwaitingRemovedRemoteRevoke,
+	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
+	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
+	/// we'll promote to LocalRemovedAwaitingCommitment if we fulfilled, otherwise we'll drop at
+	/// that point.
+	/// Note that we have to keep an eye on the HTLC until we've received a broadcastable
+	/// commitment transaction without it as otherwise we'll have to force-close the channel to
+	/// claim it before the timeout (obviously doesn't apply to revoked HTLCs that we can't claim
+	/// anyway).
+	LocalRemoved,
+	/// Removed by us, sent a new commitment_signed and got a revoke_and_ack. Just waiting on an
+	/// updated local commitment transaction.
+	LocalRemovedAwaitingCommitment,
 }
 
-struct HTLCOutput {
+struct HTLCOutput { //TODO: Refactor into Outbound/InboundHTLCOutput (will save memory and fewer panics)
 	outbound: bool, // ie to an HTLC-Timeout transaction
 	htlc_id: u64,
 	amount_msat: u64,
 	cltv_expiry: u32,
 	payment_hash: [u8; 32],
 	state: HTLCState,
-	// state == RemoteAnnounced implies pending_forward_state, otherwise it must be None
+	/// If we're in a Remote* removed state, set if they failed, otherwise None
+	fail_reason: Option<HTLCFailReason>,
+	/// If we're in LocalRemoved*, set to true if we fulfilled the HTLC, and can claim money
+	local_removed_fulfilled: bool,
+	/// state pre-committed Remote* implies pending_forward_state, otherwise it must be None
 	pending_forward_state: Option<PendingForwardHTLCInfo>,
 }
 
@@ -113,13 +167,23 @@ impl HTLCOutput {
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
-struct HTLCOutputAwaitingACK {
-	// always outbound
-	amount_msat: u64,
-	cltv_expiry: u32,
-	payment_hash: [u8; 32],
-	onion_routing_packet: msgs::OnionPacket,
-	time_created: Instant, //TODO: Some kind of timeout thing-a-majig
+enum HTLCUpdateAwaitingACK {
+	AddHTLC {
+		// always outbound
+		amount_msat: u64,
+		cltv_expiry: u32,
+		payment_hash: [u8; 32],
+		onion_routing_packet: msgs::OnionPacket,
+		time_created: Instant, //TODO: Some kind of timeout thing-a-majig
+	},
+	ClaimHTLC {
+		payment_preimage: [u8; 32],
+		payment_hash: [u8; 32], // Only here for effecient duplicate detection
+	},
+	FailHTLC {
+		payment_hash: [u8; 32],
+		err_packet: msgs::OnionErrorPacket,
+	},
 }
 
 enum ChannelState {
@@ -184,7 +248,7 @@ pub struct Channel {
 	cur_remote_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
 	pending_htlcs: Vec<HTLCOutput>,
-	holding_cell_htlcs: Vec<HTLCOutputAwaitingACK>,
+	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
 	next_local_htlc_id: u64,
 	next_remote_htlc_id: u64,
 	channel_update_count: u32,
@@ -221,6 +285,8 @@ pub struct Channel {
 	their_delayed_payment_basepoint: PublicKey,
 	their_htlc_basepoint: PublicKey,
 	their_cur_commitment_point: PublicKey,
+
+	their_prev_commitment_point: Option<PublicKey>,
 	their_node_id: PublicKey,
 
 	their_shutdown_scriptpubkey: Option<Script>,
@@ -321,7 +387,7 @@ impl Channel {
 			cur_remote_commitment_transaction_number: (1 << 48) - 1,
 			value_to_self_msat: channel_value_satoshis * 1000, //TODO: give them something on open? Parameterize it?
 			pending_htlcs: Vec::new(),
-			holding_cell_htlcs: Vec::new(),
+			holding_cell_htlc_updates: Vec::new(),
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
 			channel_update_count: 0,
@@ -349,6 +415,8 @@ impl Channel {
 			their_delayed_payment_basepoint: PublicKey::new(),
 			their_htlc_basepoint: PublicKey::new(),
 			their_cur_commitment_point: PublicKey::new(),
+
+			their_prev_commitment_point: None,
 			their_node_id: their_node_id,
 
 			their_shutdown_scriptpubkey: None,
@@ -441,7 +509,7 @@ impl Channel {
 			cur_remote_commitment_transaction_number: (1 << 48) - 1,
 			value_to_self_msat: msg.push_msat,
 			pending_htlcs: Vec::new(),
-			holding_cell_htlcs: Vec::new(),
+			holding_cell_htlc_updates: Vec::new(),
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
 			channel_update_count: 0,
@@ -470,6 +538,8 @@ impl Channel {
 			their_delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			their_htlc_basepoint: msg.htlc_basepoint,
 			their_cur_commitment_point: msg.first_per_commitment_point,
+
+			their_prev_commitment_point: None,
 			their_node_id: their_node_id,
 
 			their_shutdown_scriptpubkey: None,
@@ -548,9 +618,23 @@ impl Channel {
 		let dust_limit_satoshis = if local { self.our_dust_limit_satoshis } else { self.their_dust_limit_satoshis };
 		let mut remote_htlc_total_msat = 0;
 		let mut local_htlc_total_msat = 0;
+		let mut value_to_self_msat_offset = 0;
 
 		for ref htlc in self.pending_htlcs.iter() {
-			if htlc.state == HTLCState::Committed || htlc.state == (if generated_by_local { HTLCState::LocalAnnounced } else { HTLCState::RemoteAnnounced }) {
+			let include = match htlc.state {
+				HTLCState::RemoteAnnounced => !generated_by_local,
+				HTLCState::AwaitingRemoteRevokeToAnnounce => !generated_by_local,
+				HTLCState::AwaitingAnnouncedRemoteRevoke => true,
+				HTLCState::LocalAnnounced => generated_by_local,
+				HTLCState::Committed => true,
+				HTLCState::RemoteRemoved => generated_by_local,
+				HTLCState::AwaitingRemoteRevokeToRemove => generated_by_local,
+				HTLCState::AwaitingRemovedRemoteRevoke => false,
+				HTLCState::LocalRemoved => !generated_by_local,
+				HTLCState::LocalRemovedAwaitingCommitment => false,
+			};
+
+			if include {
 				if htlc.outbound == local { // "offered HTLC output"
 					if htlc.amount_msat / 1000 >= dust_limit_satoshis + (self.feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
 						let htlc_in_tx = htlc.get_in_commitment(true);
@@ -573,12 +657,29 @@ impl Channel {
 				} else {
 					remote_htlc_total_msat += htlc.amount_msat;
 				}
+			} else {
+				match htlc.state {
+					HTLCState::AwaitingRemoteRevokeToRemove|HTLCState::AwaitingRemovedRemoteRevoke => {
+						if generated_by_local && htlc.fail_reason.is_none() {
+							value_to_self_msat_offset -= htlc.amount_msat as i64;
+						}
+					},
+					HTLCState::LocalRemoved => {
+						if !generated_by_local && htlc.local_removed_fulfilled {
+							value_to_self_msat_offset += htlc.amount_msat as i64;
+						}
+					},
+					HTLCState::LocalRemovedAwaitingCommitment => {
+						value_to_self_msat_offset += htlc.amount_msat as i64;
+					},
+					_ => {},
+				}
 			}
 		}
 
 		let total_fee: u64 = self.feerate_per_kw * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-		let value_to_self: i64 = ((self.value_to_self_msat - local_htlc_total_msat) as i64) / 1000 - if self.channel_outbound { total_fee as i64 } else { 0 };
-		let value_to_remote: i64 = (((self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) / 1000) as i64) - if self.channel_outbound { 0 } else { total_fee as i64 };
+		let value_to_self: i64 = ((self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset) / 1000 - if self.channel_outbound { total_fee as i64 } else { 0 };
+		let value_to_remote: i64 = (((self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) as i64 - value_to_self_msat_offset) / 1000) - if self.channel_outbound { 0 } else { total_fee as i64 };
 
 		let value_to_a = if local { value_to_self } else { value_to_remote };
 		let value_to_b = if local { value_to_remote } else { value_to_self };
@@ -607,12 +708,9 @@ impl Channel {
 		let mut htlcs_used: Vec<HTLCOutputInCommitment> = Vec::new();
 		for (idx, out) in txouts.drain(..).enumerate() {
 			outputs.push(out.0);
-			match out.1 {
-				Some(out_htlc) => {
-					htlcs_used.push(out_htlc);
-					htlcs_used.last_mut().unwrap().transaction_output_index = idx as u32;
-				},
-				None => {}
+			if let Some(out_htlc) = out.1 {
+				htlcs_used.push(out_htlc);
+				htlcs_used.last_mut().unwrap().transaction_output_index = idx as u32;
 			}
 		}
 
@@ -770,7 +868,7 @@ impl Channel {
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
-	fn build_htlc_transaction(&self, prev_hash: &Sha256dHash, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys) -> Result<Transaction, HandleError> {
+	fn build_htlc_transaction(&self, prev_hash: &Sha256dHash, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys) -> Transaction {
 		let mut txins: Vec<TxIn> = Vec::new();
 		txins.push(TxIn {
 			prev_hash: prev_hash.clone(),
@@ -794,12 +892,12 @@ impl Channel {
 			value: htlc.amount_msat / 1000 - total_fee //TODO: BOLT 3 does not specify if we should add amount_msat before dividing or if we should divide by 1000 before subtracting (as we do here)
 		});
 
-		Ok(Transaction {
+		Transaction {
 			version: 2,
 			lock_time: if htlc.offered { htlc.cltv_expiry } else { 0 },
 			input: txins,
 			output: txouts,
-		})
+		}
 	}
 
 	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
@@ -843,7 +941,7 @@ impl Channel {
 		Ok(())
 	}
 
-	pub fn get_update_fulfill_htlc(&mut self, payment_preimage: [u8; 32]) -> Result<msgs::UpdateFulfillHTLC, HandleError> {
+	pub fn get_update_fulfill_htlc(&mut self, payment_preimage_arg: [u8; 32]) -> Result<Option<msgs::UpdateFulfillHTLC>, HandleError> {
 		// Either ChannelFunded got set (which means it wont bet unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
@@ -854,68 +952,141 @@ impl Channel {
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		let mut sha = Sha256::new();
-		sha.input(&payment_preimage);
-		let mut payment_hash = [0; 32];
-		sha.result(&mut payment_hash);
+		sha.input(&payment_preimage_arg);
+		let mut payment_hash_calc = [0; 32];
+		sha.result(&mut payment_hash_calc);
+
+		// Now update local state:
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+			for pending_update in self.holding_cell_htlc_updates.iter() {
+				match pending_update {
+					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, .. } => {
+						if payment_preimage_arg == *payment_preimage {
+							return Ok(None);
+						}
+					},
+					&HTLCUpdateAwaitingACK::FailHTLC { ref payment_hash, .. } => {
+						if payment_hash_calc == *payment_hash {
+							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+						}
+					},
+					_ => {}
+				}
+			}
+			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
+				payment_preimage: payment_preimage_arg, payment_hash: payment_hash_calc,
+			});
+			return Ok(None);
+		}
 
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
-		//TODO: swap_remove since we dont need to maintain ordering here
-		self.pending_htlcs.retain(|ref htlc| {
-			if !htlc.outbound && htlc.payment_hash == payment_hash {
+		for htlc in self.pending_htlcs.iter_mut() {
+			if !htlc.outbound && htlc.payment_hash == payment_hash_calc {
 				if htlc_id != 0 {
 					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
 				}
 				htlc_id = htlc.htlc_id;
 				htlc_amount_msat += htlc.amount_msat;
-				false
-			} else { true }
-		});
+				if htlc.state == HTLCState::Committed {
+					htlc.state = HTLCState::LocalRemoved;
+					htlc.local_removed_fulfilled = true;
+				} else if htlc.state == HTLCState::RemoteAnnounced {
+					panic!("Somehow forwarded HTLC prior to remote revocation!");
+				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
+					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+				} else {
+					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
+				}
+			}
+		}
 		if htlc_amount_msat == 0 {
 			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
 		}
+		self.channel_monitor.provide_payment_preimage(&payment_preimage_arg);
 
-		//TODO: This is racy af, they may have pending messages in flight to us that will not have
-		//received this yet!
-		self.value_to_self_msat += htlc_amount_msat;
-		Ok(msgs::UpdateFulfillHTLC {
+		Ok(Some(msgs::UpdateFulfillHTLC {
 			channel_id: self.channel_id(),
 			htlc_id: htlc_id,
-			payment_preimage: payment_preimage,
-		})
+			payment_preimage: payment_preimage_arg,
+		}))
 	}
 
-	pub fn get_update_fail_htlc(&mut self, payment_hash: &[u8; 32], err_packet: msgs::OnionErrorPacket) -> Result<msgs::UpdateFailHTLC, HandleError> {
+	pub fn get_update_fulfill_htlc_and_commit(&mut self, payment_preimage: [u8; 32]) -> Result<Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)>, HandleError> {
+		match self.get_update_fulfill_htlc(payment_preimage)? {
+			Some(update_fulfill_htlc) =>
+				Ok(Some((update_fulfill_htlc, self.send_commitment_no_status_check()?))),
+			None => Ok(None)
+		}
+	}
+
+	pub fn get_update_fail_htlc(&mut self, payment_hash_arg: &[u8; 32], err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Was asked to fail an HTLC when channel was not in an operational state", msg: None});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
+		// Now update local state:
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+			for pending_update in self.holding_cell_htlc_updates.iter() {
+				match pending_update {
+					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_hash, .. } => {
+						if *payment_hash_arg == *payment_hash {
+							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+						}
+					},
+					&HTLCUpdateAwaitingACK::FailHTLC { ref payment_hash, .. } => {
+						if *payment_hash_arg == *payment_hash {
+							return Ok(None);
+						}
+					},
+					_ => {}
+				}
+			}
+			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
+				payment_hash: payment_hash_arg.clone(),
+				err_packet,
+			});
+			return Ok(None);
+		}
+
 		let mut htlc_id = 0;
 		let mut htlc_amount_msat = 0;
-		//TODO: swap_remove since we dont need to maintain ordering here
-		self.pending_htlcs.retain(|ref htlc| {
-			if !htlc.outbound && htlc.payment_hash == *payment_hash {
+		for htlc in self.pending_htlcs.iter_mut() {
+			if !htlc.outbound && htlc.payment_hash == *payment_hash_arg {
 				if htlc_id != 0 {
 					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
 				}
 				htlc_id = htlc.htlc_id;
 				htlc_amount_msat += htlc.amount_msat;
-				false
-			} else { true }
-		});
+				if htlc.state == HTLCState::Committed {
+					htlc.state = HTLCState::LocalRemoved;
+				} else if htlc.state == HTLCState::RemoteAnnounced {
+					panic!("Somehow forwarded HTLC prior to remote revocation!");
+				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
+					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+				} else {
+					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
+				}
+			}
+		}
 		if htlc_amount_msat == 0 {
 			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
 		}
 
-		//TODO: This is racy af, they may have pending messages in flight to us that will not have
-		//received this yet!
-
-		Ok(msgs::UpdateFailHTLC {
+		Ok(Some(msgs::UpdateFailHTLC {
 			channel_id: self.channel_id(),
 			htlc_id,
 			reason: err_packet
-		})
+		}))
+	}
+
+	pub fn get_update_fail_htlc_and_commit(&mut self, payment_hash: &[u8; 32], err_packet: msgs::OnionErrorPacket) -> Result<Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)>, HandleError> {
+		match self.get_update_fail_htlc(payment_hash, err_packet)? {
+			Some(update_fail_htlc) =>
+				Ok(Some((update_fail_htlc, self.send_commitment_no_status_check()?))),
+			None => Ok(None)
+		}
 	}
 
 	// Message handlers:
@@ -1018,6 +1189,8 @@ impl Channel {
 		self.channel_state = ChannelState::FundingSent as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
+		self.cur_remote_commitment_transaction_number -= 1;
+		self.cur_local_commitment_transaction_number -= 1;
 
 		Ok(msgs::FundingSigned {
 			channel_id: self.channel_id,
@@ -1034,7 +1207,7 @@ impl Channel {
 		if self.channel_state != ChannelState::FundingCreated as u32 {
 			return Err(HandleError{err: "Received funding_signed in strange state!", msg: None});
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 1 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 2 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -1048,6 +1221,7 @@ impl Channel {
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey), "Invalid funding_signed signature from peer");
 
 		self.channel_state = ChannelState::FundingSent as u32;
+		self.cur_local_commitment_transaction_number -= 1;
 
 		Ok(())
 	}
@@ -1062,24 +1236,35 @@ impl Channel {
 			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", msg: None});
 		}
 
-		//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-		//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
-		//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
-		//a protocol oversight, but I assume I'm just missing something.
-		if self.their_cur_commitment_point != msg.next_per_commitment_point {
-			return Err(HandleError{err: "Non-duplicate next_per_commitment_point in funding_locked", msg: None});
-		}
+		self.their_prev_commitment_point = Some(self.their_cur_commitment_point);
 		self.their_cur_commitment_point = msg.next_per_commitment_point;
 		Ok(())
 	}
 
 	/// Returns (inbound_htlc_count, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat)
-	fn get_pending_htlc_stats(&self) -> (u32, u32, u64, u64) {
+	/// If its for a remote update check, we need to be more lax about checking against messages we
+	/// sent but they may not have received/processed before they sent this message. Further, for
+	/// our own sends, we're more conservative and even consider things they've removed against
+	/// totals, though there is little reason to outside of further avoiding any race condition
+	/// issues.
+	fn get_pending_htlc_stats(&self, for_remote_update_check: bool) -> (u32, u32, u64, u64) {
 		let mut inbound_htlc_count: u32 = 0;
 		let mut outbound_htlc_count: u32 = 0;
 		let mut htlc_outbound_value_msat = 0;
 		let mut htlc_inbound_value_msat = 0;
 		for ref htlc in self.pending_htlcs.iter() {
+			match htlc.state {
+				HTLCState::RemoteAnnounced => {},
+				HTLCState::AwaitingRemoteRevokeToAnnounce => {},
+				HTLCState::AwaitingAnnouncedRemoteRevoke => {},
+				HTLCState::LocalAnnounced => { if for_remote_update_check { continue; } },
+				HTLCState::Committed => {},
+				HTLCState::RemoteRemoved =>  { if for_remote_update_check { continue; } },
+				HTLCState::AwaitingRemoteRevokeToRemove =>  { if for_remote_update_check { continue; } },
+				HTLCState::AwaitingRemovedRemoteRevoke =>  { if for_remote_update_check { continue; } },
+				HTLCState::LocalRemoved =>  {},
+				HTLCState::LocalRemovedAwaitingCommitment =>  { if for_remote_update_check { continue; } },
+			}
 			if !htlc.outbound {
 				inbound_htlc_count += 1;
 				htlc_inbound_value_msat += htlc.amount_msat;
@@ -1102,7 +1287,7 @@ impl Channel {
 			return Err(HandleError{err: "Remote side tried to send less than our minimum HTLC value", msg: None});
 		}
 
-		let (inbound_htlc_count, _, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats();
+		let (inbound_htlc_count, _, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(true);
 		if inbound_htlc_count + 1 > OUR_MAX_HTLCS as u32 {
 			return Err(HandleError{err: "Remote tried to push more than our max accepted HTLCs", msg: None});
 		}
@@ -1135,6 +1320,8 @@ impl Channel {
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
 			state: HTLCState::RemoteAnnounced,
+			fail_reason: None,
+			local_removed_fulfilled: false,
 			pending_forward_state: Some(pending_forward_state),
 		});
 
@@ -1142,9 +1329,8 @@ impl Channel {
 	}
 
 	/// Removes an outbound HTLC which has been commitment_signed by the remote end
-	fn remove_outbound_htlc(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>) -> Result<HTLCOutput, HandleError> {
-		let mut found_idx = None;
-		for (idx, ref htlc) in self.pending_htlcs.iter().enumerate() {
+	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<(), HandleError> {
+		for mut htlc in self.pending_htlcs.iter_mut() {
 			if htlc.outbound && htlc.htlc_id == htlc_id {
 				match check_preimage {
 					None => {},
@@ -1153,53 +1339,20 @@ impl Channel {
 							return Err(HandleError{err: "Remote tried to fulfill HTLC with an incorrect preimage", msg: None});
 						}
 				};
-				found_idx = Some(idx);
-				break;
-			}
-		}
-		match found_idx {
-			None => Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", msg: None}),
-			Some(idx) => {
-				Ok(self.pending_htlcs.swap_remove(idx))
-			}
-		}
-	}
-
-	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
-	/// fulfilling or failing the last pending HTLC)
-	fn free_holding_cell_htlcs(&mut self) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
-		if self.holding_cell_htlcs.len() != 0 {
-			let mut new_htlcs = self.holding_cell_htlcs.split_off(0);
-			let mut update_add_msgs = Vec::with_capacity(new_htlcs.len());
-			let mut err = None;
-			for new_htlc in new_htlcs.drain(..) {
-				// Note that this *can* fail, though it should be due to rather-rare conditions on
-				// fee races with adding too many outputs which push our total payments just over
-				// the limit. In case its less rare than I anticipate, we may want to revisit
-				// handling this case better and maybe fufilling some of the HTLCs while attempting
-				// to rebalance channels.
-				if self.holding_cell_htlcs.len() != 0 {
-					self.holding_cell_htlcs.push(new_htlc);
+				if htlc.state == HTLCState::LocalAnnounced {
+					return Err(HandleError{err: "Remote tried to fulfill HTLC before it had been committed", msg: None});
+				} else if htlc.state == HTLCState::Committed {
+					htlc.state = HTLCState::RemoteRemoved;
+					htlc.fail_reason = fail_reason;
+				} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove || htlc.state == HTLCState::AwaitingRemovedRemoteRevoke || htlc.state == HTLCState::RemoteRemoved {
+					return Err(HandleError{err: "Remote tried to fulfill HTLC that they'd already fulfilled", msg: None});
 				} else {
-					match self.send_htlc(new_htlc.amount_msat, new_htlc.payment_hash, new_htlc.cltv_expiry, new_htlc.onion_routing_packet.clone()) {
-						Ok(update_add_msg_option) => update_add_msgs.push(update_add_msg_option.unwrap()),
-						Err(e) => {
-							self.holding_cell_htlcs.push(new_htlc);
-							err = Some(e);
-						}
-					}
+					panic!("Got a non-outbound state on an outbound HTLC");
 				}
+				return Ok(());
 			}
-			//TODO: Need to examine the type of err - if its a fee issue or similar we may want to
-			//fail it back the route, if its a temporary issue we can ignore it...
-			if update_add_msgs.len() > 0 {
-				Ok(Some((update_add_msgs, self.send_commitment()?)))
-			} else {
-				Err(err.unwrap())
-			}
-		} else {
-			Ok(None)
 		}
+		Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", msg: None})
 	}
 
 	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
@@ -1212,50 +1365,27 @@ impl Channel {
 		let mut payment_hash = [0; 32];
 		sha.result(&mut payment_hash);
 
-		match self.remove_outbound_htlc(msg.htlc_id, Some(payment_hash)) {
-			Err(e) => return Err(e),
-			Ok(htlc) => {
-				//TODO: Double-check that we didn't exceed some limits (or value_to_self went
-				//negative here?)
-				self.value_to_self_msat -= htlc.amount_msat;
-			}
-		}
-		Ok(())
+		self.channel_monitor.provide_payment_preimage(&msg.payment_preimage);
+		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None)
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC) -> Result<[u8; 32], HandleError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
 
-		let payment_hash = match self.remove_outbound_htlc(msg.htlc_id, None) {
-			Err(e) => return Err(e),
-			Ok(htlc) => {
-				//TODO: Double-check that we didn't exceed some limits (or value_to_self went
-				//negative here?)
-				htlc.payment_hash
-			}
-		};
-		Ok(payment_hash)
+		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
 
-	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC) -> Result<[u8; 32], HandleError> {
+	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
 
-		let payment_hash = match self.remove_outbound_htlc(msg.htlc_id, None) {
-			Err(e) => return Err(e),
-			Ok(htlc) => {
-				//TODO: Double-check that we didn't exceed some limits (or value_to_self went
-				//negative here?)
-				htlc.payment_hash
-			}
-		};
-		Ok(payment_hash)
+		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
 
-	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Vec<PendingForwardHTLCInfo>), HandleError> {
+	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got commitment signed message when channel was not in an operational state", msg: None});
 		}
@@ -1273,34 +1403,120 @@ impl Channel {
 		}
 
 		for (idx, ref htlc) in local_commitment_tx.1.iter().enumerate() {
-			let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys)?;
+			let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer");
 		}
 
 		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1)).unwrap();
-		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number);
-
-		//TODO: Store htlc keys in our channel_watcher
+		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
 
-		let mut to_forward_infos = Vec::new();
-		for ref mut htlc in self.pending_htlcs.iter_mut() {
+		let mut need_our_commitment = false;
+		for htlc in self.pending_htlcs.iter_mut() {
 			if htlc.state == HTLCState::RemoteAnnounced {
-				htlc.state = HTLCState::Committed;
-				to_forward_infos.push(htlc.pending_forward_state.take().unwrap());
+				htlc.state = HTLCState::AwaitingRemoteRevokeToAnnounce;
+				need_our_commitment = true;
+			} else if htlc.state == HTLCState::RemoteRemoved {
+				htlc.state = HTLCState::AwaitingRemoteRevokeToRemove;
+				need_our_commitment = true;
 			}
 		}
+		// Finally delete all the LocalRemovedAwaitingCommitment HTLCs
+		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
+		let mut claimed_value_msat = 0;
+		self.pending_htlcs.retain(|htlc| {
+			if htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
+				claimed_value_msat += htlc.amount_msat;
+				false
+			} else { true }
+		});
+		self.value_to_self_msat += claimed_value_msat;
 
 		self.cur_local_commitment_transaction_number -= 1;
+
+		let our_commitment_signed = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
+			// we'll send one right away when we get the revoke_and_ack when we
+			// free_holding_cell_htlcs().
+			Some(self.send_commitment_no_status_check()?)
+		} else { None };
 
 		Ok((msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret: per_commitment_secret,
 			next_per_commitment_point: next_per_commitment_point,
-		}, to_forward_infos))
+		}, our_commitment_signed))
+	}
+
+	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
+	/// fulfilling or failing the last pending HTLC)
+	fn free_holding_cell_htlcs(&mut self) -> Result<Option<msgs::CommitmentUpdate>, HandleError> {
+		if self.holding_cell_htlc_updates.len() != 0 {
+			let mut htlc_updates = Vec::new();
+			mem::swap(&mut htlc_updates, &mut self.holding_cell_htlc_updates);
+			let mut update_add_htlcs = Vec::with_capacity(htlc_updates.len());
+			let mut update_fulfill_htlcs = Vec::with_capacity(htlc_updates.len());
+			let mut update_fail_htlcs = Vec::with_capacity(htlc_updates.len());
+			let mut err = None;
+			for htlc_update in htlc_updates.drain(..) {
+				// Note that this *can* fail, though it should be due to rather-rare conditions on
+				// fee races with adding too many outputs which push our total payments just over
+				// the limit. In case its less rare than I anticipate, we may want to revisit
+				// handling this case better and maybe fufilling some of the HTLCs while attempting
+				// to rebalance channels.
+				if err.is_some() { // We're back to AwaitingRemoteRevoke (or are about to fail the channel)
+					self.holding_cell_htlc_updates.push(htlc_update);
+				} else {
+					match &htlc_update {
+						&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, payment_hash, ref onion_routing_packet, ..} => {
+							match self.send_htlc(amount_msat, payment_hash, cltv_expiry, onion_routing_packet.clone()) {
+								Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
+								Err(e) => {
+									err = Some(e);
+								}
+							}
+						},
+						&HTLCUpdateAwaitingACK::ClaimHTLC { payment_preimage, .. } => {
+							match self.get_update_fulfill_htlc(payment_preimage) {
+								Ok(update_fulfill_msg_option) => update_fulfill_htlcs.push(update_fulfill_msg_option.unwrap()),
+								Err(e) => {
+									err = Some(e);
+								}
+							}
+						},
+						&HTLCUpdateAwaitingACK::FailHTLC { payment_hash, ref err_packet } => {
+							match self.get_update_fail_htlc(&payment_hash, err_packet.clone()) {
+								Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
+								Err(e) => {
+									err = Some(e);
+								}
+							}
+						},
+					}
+					if err.is_some() {
+						self.holding_cell_htlc_updates.push(htlc_update);
+					}
+				}
+			}
+			//TODO: Need to examine the type of err - if its a fee issue or similar we may want to
+			//fail it back the route, if its a temporary issue we can ignore it...
+			match err {
+				None => {
+					Ok(Some(msgs::CommitmentUpdate {
+						update_add_htlcs,
+						update_fulfill_htlcs,
+						update_fail_htlcs,
+						commitment_signed: self.send_commitment_no_status_check()?
+					}))
+				},
+				Some(e) => Err(e)
+			}
+		} else {
+			Ok(None)
+		}
 	}
 
 	/// Handles receiving a remote's revoke_and_ack. Note that we may return a new
@@ -1308,35 +1524,86 @@ impl Channel {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK) -> Result<Option<(Vec<msgs::UpdateAddHTLC>, msgs::CommitmentSigned)>, HandleError> {
+	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK) -> Result<(Option<msgs::CommitmentUpdate>, Vec<PendingForwardHTLCInfo>, Vec<([u8; 32], HTLCFailReason)>), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", msg: None});
 		}
-		if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")).unwrap() != self.their_cur_commitment_point {
-			return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
+		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
+			if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")).unwrap() != their_prev_commitment_point {
+				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
+			}
 		}
-		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number, msg.per_commitment_secret)?;
+		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)?;
 
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
 		// OK, we step the channel here and *then* if the new generation fails we can fail the
 		// channel based on that, but stepping stuff here should be safe either way.
 		self.channel_state &= !(ChannelState::AwaitingRemoteRevoke as u32);
+		self.their_prev_commitment_point = Some(self.their_cur_commitment_point);
 		self.their_cur_commitment_point = msg.next_per_commitment_point;
 		self.cur_remote_commitment_transaction_number -= 1;
+
+		let mut to_forward_infos = Vec::new();
+		let mut revoked_htlcs = Vec::new();
+		let mut require_commitment = false;
+		let mut value_to_self_msat_diff: i64 = 0;
+		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
+		self.pending_htlcs.retain(|htlc| {
+			if htlc.state == HTLCState::LocalRemoved {
+				if htlc.local_removed_fulfilled { true } else { false }
+			} else if htlc.state == HTLCState::AwaitingRemovedRemoteRevoke {
+				if let Some(reason) = htlc.fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
+					revoked_htlcs.push((htlc.payment_hash, reason));
+				} else {
+					// They fulfilled, so we sent them money
+					value_to_self_msat_diff -= htlc.amount_msat as i64;
+				}
+				false
+			} else { true }
+		});
 		for htlc in self.pending_htlcs.iter_mut() {
 			if htlc.state == HTLCState::LocalAnnounced {
 				htlc.state = HTLCState::Committed;
+			} else if htlc.state == HTLCState::AwaitingRemoteRevokeToAnnounce {
+				htlc.state = HTLCState::AwaitingAnnouncedRemoteRevoke;
+				require_commitment = true;
+			} else if htlc.state == HTLCState::AwaitingAnnouncedRemoteRevoke {
+				htlc.state = HTLCState::Committed;
+				to_forward_infos.push(htlc.pending_forward_state.take().unwrap());
+			} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove {
+				htlc.state = HTLCState::AwaitingRemovedRemoteRevoke;
+				require_commitment = true;
+			} else if htlc.state == HTLCState::LocalRemoved {
+				assert!(htlc.local_removed_fulfilled);
+				htlc.state = HTLCState::LocalRemovedAwaitingCommitment;
 			}
 		}
+		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
-		self.free_holding_cell_htlcs()
+		match self.free_holding_cell_htlcs()? {
+			Some(commitment_update) => {
+				Ok((Some(commitment_update), to_forward_infos, revoked_htlcs))
+			},
+			None => {
+				if require_commitment {
+					Ok((Some(msgs::CommitmentUpdate {
+						update_add_htlcs: Vec::new(),
+						update_fulfill_htlcs: Vec::new(),
+						update_fail_htlcs: Vec::new(),
+						commitment_signed: self.send_commitment_no_status_check()?
+					}), to_forward_infos, revoked_htlcs))
+				} else {
+					Ok((None, to_forward_infos, revoked_htlcs))
+				}
+			}
+		}
 	}
 
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
-        if self.channel_outbound {
+		if self.channel_outbound {
 			return Err(HandleError{err: "Non-funding remote tried to update channel fee", msg: None});
-        }
+		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.feerate_per_kw = msg.feerate_per_kw as u64;
 		Ok(())
@@ -1396,10 +1663,16 @@ impl Channel {
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
 		// cell HTLCs and return them to fail the payment.
-		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlcs.len());
-		for htlc in self.holding_cell_htlcs.drain(..) {
-			dropped_outbound_htlcs.push(htlc.payment_hash);
-		}
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
+		self.holding_cell_htlc_updates.retain(|htlc_update| {
+			match htlc_update {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, .. } => {
+					dropped_outbound_htlcs.push(payment_hash.clone());
+					false
+				},
+				_ => true
+			}
+		});
 		for htlc in self.pending_htlcs.iter() {
 			if htlc.state == HTLCState::LocalAnnounced {
 				return Ok((None, None, dropped_outbound_htlcs));
@@ -1789,6 +2062,7 @@ impl Channel {
 		self.channel_state = ChannelState::FundingCreated as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
+		self.cur_remote_commitment_transaction_number -= 1;
 
 		Ok(msgs::FundingCreated {
 			temporary_channel_id: temporary_channel_id,
@@ -1852,7 +2126,7 @@ impl Channel {
 			return Err(HandleError{err: "Cannot send less than their minimum HTLC value", msg: None});
 		}
 
-		let (_, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats();
+		let (_, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(false);
 		if outbound_htlc_count + 1 > self.their_max_accepted_htlcs as u32 {
 			return Err(HandleError{err: "Cannot push more than their max accepted HTLCs", msg: None});
 		}
@@ -1871,7 +2145,7 @@ impl Channel {
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
 			//TODO: Check the limits *including* other pending holding cell HTLCs!
-			self.holding_cell_htlcs.push(HTLCOutputAwaitingACK {
+			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
 				amount_msat: amount_msat,
 				payment_hash: payment_hash,
 				cltv_expiry: cltv_expiry,
@@ -1888,6 +2162,8 @@ impl Channel {
 			payment_hash: payment_hash.clone(),
 			cltv_expiry: cltv_expiry,
 			state: HTLCState::LocalAnnounced,
+			fail_reason: None,
+			local_removed_fulfilled: false,
 			pending_forward_state: None
 		});
 
@@ -1922,8 +2198,22 @@ impl Channel {
 		if !have_updates {
 			return Err(HandleError{err: "Cannot create commitment tx until we have some updates to send", msg: None});
 		}
-
+		self.send_commitment_no_status_check()
+	}
+	/// Only fails in case of bad keys
+	fn send_commitment_no_status_check(&mut self) -> Result<msgs::CommitmentSigned, HandleError> {
 		let funding_script = self.get_funding_redeemscript();
+
+		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
+		// fail to generate this, we still are at least at a position where upgrading their status
+		// is acceptable.
+		for htlc in self.pending_htlcs.iter_mut() {
+			if htlc.state == HTLCState::AwaitingRemoteRevokeToAnnounce {
+				htlc.state = HTLCState::AwaitingAnnouncedRemoteRevoke;
+			} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove {
+				htlc.state = HTLCState::AwaitingRemovedRemoteRevoke;
+			}
+		}
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true);
@@ -1934,7 +2224,7 @@ impl Channel {
 		let mut htlc_sigs = Vec::new();
 
 		for ref htlc in remote_commitment_tx.1.iter() {
-			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys)?;
+			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 			let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
@@ -1958,7 +2248,7 @@ impl Channel {
 	pub fn send_htlc_and_commit(&mut self, amount_msat: u64, payment_hash: [u8; 32], cltv_expiry: u32, onion_routing_packet: msgs::OnionPacket) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned)>, HandleError> {
 		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, onion_routing_packet)? {
 			Some(update_add_htlc) =>
-				Ok(Some((update_add_htlc, self.send_commitment()?))),
+				Ok(Some((update_add_htlc, self.send_commitment_no_status_check()?))),
 			None => Ok(None)
 		}
 	}
@@ -1988,10 +2278,16 @@ impl Channel {
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
 		// cell HTLCs and return them to fail the payment.
-		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlcs.len());
-		for htlc in self.holding_cell_htlcs.drain(..) {
-			dropped_outbound_htlcs.push(htlc.payment_hash);
-		}
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
+		self.holding_cell_htlc_updates.retain(|htlc_update| {
+			match htlc_update {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, .. } => {
+					dropped_outbound_htlcs.push(payment_hash.clone());
+					false
+				},
+				_ => true
+			}
+		});
 
 		Ok((msgs::Shutdown {
 			channel_id: self.channel_id,
@@ -2089,7 +2385,7 @@ mod tests {
 				let remote_signature = Signature::from_der(&secp_ctx, &hex_bytes($their_sig_hex).unwrap()[..]).unwrap();
 
 				let ref htlc = unsigned_tx.1[$htlc_idx];
-				let mut htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys).unwrap();
+				let mut htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 				secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
@@ -2134,6 +2430,8 @@ mod tests {
 				cltv_expiry: 500,
 				payment_hash: [0; 32],
 				state: HTLCState::Committed,
+				fail_reason: None,
+				local_removed_fulfilled: false,
 				pending_forward_state: None,
 			};
 			let mut sha = Sha256::new();
@@ -2149,6 +2447,8 @@ mod tests {
 				cltv_expiry: 501,
 				payment_hash: [0; 32],
 				state: HTLCState::Committed,
+				fail_reason: None,
+				local_removed_fulfilled: false,
 				pending_forward_state: None,
 			};
 			let mut sha = Sha256::new();
@@ -2164,6 +2464,8 @@ mod tests {
 				cltv_expiry: 502,
 				payment_hash: [0; 32],
 				state: HTLCState::Committed,
+				fail_reason: None,
+				local_removed_fulfilled: false,
 				pending_forward_state: None,
 			};
 			let mut sha = Sha256::new();
@@ -2179,6 +2481,8 @@ mod tests {
 				cltv_expiry: 503,
 				payment_hash: [0; 32],
 				state: HTLCState::Committed,
+				fail_reason: None,
+				local_removed_fulfilled: false,
 				pending_forward_state: None,
 			};
 			let mut sha = Sha256::new();
@@ -2194,6 +2498,8 @@ mod tests {
 				cltv_expiry: 504,
 				payment_hash: [0; 32],
 				state: HTLCState::Committed,
+				fail_reason: None,
+				local_removed_fulfilled: false,
 				pending_forward_state: None,
 			};
 			let mut sha = Sha256::new();

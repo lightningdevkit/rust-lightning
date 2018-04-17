@@ -3,6 +3,10 @@ name = "lightning-fuzz"
 version = "0.0.1"
 authors = ["Automatically generated"]
 publish = false
+# Because the function is unused it gets dropped before we link lightning, so
+# we have to duplicate build.rs here. Note that this is only required for
+# fuzztarget mode.
+build = "../build.rs"
 
 [package.metadata]
 cargo-fuzz = true
@@ -13,11 +17,14 @@ honggfuzz_fuzz = ["honggfuzz"]
 
 [dependencies]
 lightning = { path = "..", features = ["fuzztarget"] }
-bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", features = ["fuzztarget"] }
+bitcoin = { version = "0.13", features = ["fuzztarget"] }
 secp256k1 = { version = "0.9", features = ["fuzztarget"] }
 rust-crypto = "0.2"
 honggfuzz = { version = "0.5", optional = true }
 afl = { version = "0.3", optional = true }
+
+[build-dependencies]
+gcc = "0.3"
 
 # Prevent this from interfering with workspaces
 [workspace]

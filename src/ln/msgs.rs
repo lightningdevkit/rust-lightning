@@ -357,6 +357,15 @@ pub struct HandleError { //TODO: rename me
 	pub msg: Option<ErrorAction>, //TODO: Make this required and rename it
 }
 
+/// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
+/// transaction updates if they were pending.
+pub struct CommitmentUpdate {
+	pub update_add_htlcs: Vec<UpdateAddHTLC>,
+	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
+	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
+	pub commitment_signed: CommitmentSigned,
+}
+
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in
 /// paralell when they originate from different their_node_ids, however they MUST NOT be called in
 /// paralell when the two calls have the same their_node_id.
@@ -377,8 +386,8 @@ pub trait ChannelMessageHandler : events::EventsProvider {
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), HandleError>;
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<RevokeAndACK, HandleError>;
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<(Vec<UpdateAddHTLC>, CommitmentSigned)>, HandleError>;
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
 
@@ -737,7 +746,11 @@ impl MsgDecodable for Shutdown {
 }
 impl MsgEncodable for Shutdown {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32 + 2 + self.scriptpubkey.len());
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be16_to_array(self.scriptpubkey.len() as u16));
+		res.extend_from_slice(&self.scriptpubkey[..]);
+		res
 	}
 }
 
@@ -756,7 +769,12 @@ impl MsgDecodable for ClosingSigned {
 }
 impl MsgEncodable for ClosingSigned {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+8+64);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.fee_satoshis));
+		let secp_ctx = Secp256k1::without_caps();
+		res.extend_from_slice(&self.signature.serialize_compact(&secp_ctx));
+		res
 	}
 }
 

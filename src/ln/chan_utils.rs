@@ -157,7 +157,7 @@ pub struct HTLCOutputInCommitment {
 }
 
 #[inline]
-pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey, offered: bool) -> Script {
+pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
 	let payment_hash160 = {
 		let mut ripemd = Ripemd160::new();
 		ripemd.input(&htlc.payment_hash);
@@ -165,7 +165,7 @@ pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a
 		ripemd.result(&mut res);
 		res
 	};
-	if offered {
+	if htlc.offered {
 		Builder::new().push_opcode(opcodes::All::OP_DUP)
 		              .push_opcode(opcodes::All::OP_HASH160)
 		              .push_slice(&Hash160::from_data(&revocation_key.serialize())[..])
@@ -231,5 +231,5 @@ pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a
 /// commitment secret. 'htlc' does *not* need to have its previous_output_index filled.
 #[inline]
 pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Script {
-	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, htlc.offered)
+	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key)
 }

@@ -8,6 +8,7 @@ description = """
 A Bitcoin Lightning implementation in Rust.
 Still super-early code-dump quality and is missing large chunks. See README in git repo for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to finish building it to even try.
 """
+build = "build.rs"
 
 [features]
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
@@ -15,7 +16,14 @@ non_bitcoin_chain_hash_routing = []
 fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget"]
 
 [dependencies]
-bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin" }
+bitcoin = "0.13"
 rust-crypto = "0.2"
 rand = "0.4"
 secp256k1 = "0.9"
+
+[build-dependencies]
+gcc = "0.3"
+
+[dev-dependencies.bitcoin]
+version = "0.13"
+features = ["bitcoinconsensus"]
