@@ -1,6 +1,7 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::hash::Hash160;
+use bitcoin::blockdata::transaction::{TxIn,TxOut,Transaction};
+use bitcoin::util::hash::{Hash160,Sha256dHash};
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
@@ -10,6 +11,9 @@ use crypto::digest::Digest;
 use crypto::ripemd160::Ripemd160;
 
 use util::sha2::Sha256;
+
+pub const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
+pub const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 
 // Various functions for key derivation and transaction creation for use within channels. Primarily
 // used in Channel and ChannelMonitor.
@@ -232,4 +236,34 @@ pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a
 #[inline]
 pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Script {
 	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key)
+}
+
+pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+	let mut txins: Vec<TxIn> = Vec::new();
+	txins.push(TxIn {
+		prev_hash: prev_hash.clone(),
+		prev_index: htlc.transaction_output_index,
+		script_sig: Script::new(),
+		sequence: 0,
+		witness: Vec::new(),
+	});
+
+	let total_fee = if htlc.offered {
+			feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000
+		} else {
+			feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000
+		};
+
+	let mut txouts: Vec<TxOut> = Vec::new();
+	txouts.push(TxOut {
+		script_pubkey: get_revokeable_redeemscript(revocation_key, to_self_delay, a_delayed_payment_key).to_v0_p2wsh(),
+		value: htlc.amount_msat / 1000 - total_fee //TODO: BOLT 3 does not specify if we should add amount_msat before dividing or if we should divide by 1000 before subtracting (as we do here)
+	});
+
+	Transaction {
+		version: 2,
+		lock_time: if htlc.offered { htlc.cltv_expiry } else { 0 },
+		input: txins,
+		output: txouts,
+	}
 }

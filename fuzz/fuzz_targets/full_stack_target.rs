@@ -15,7 +15,7 @@ use crypto::sha2::Sha256;
 use crypto::digest::Digest;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
-use lightning::ln::{channelmonitor,msgs};
+use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
@@ -93,7 +93,7 @@ impl FeeEstimator for FuzzEstimator {
 
 struct TestChannelMonitor {}
 impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, _funding_txo: (Sha256dHash, u16), _monitor: channelmonitor::ChannelMonitor) -> Result<(), msgs::HandleError> {
+	fn add_update_monitor(&self, _funding_txo: (Sha256dHash, u16), _monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		//TODO!
 		Ok(())
 	}

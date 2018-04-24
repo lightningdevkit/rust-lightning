@@ -1,7 +1,6 @@
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
 use ln::channelmonitor;
-use ln::msgs::HandleError;
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::hash::Sha256dHash;
@@ -30,7 +29,7 @@ impl TestChannelMonitor {
 	}
 }
 impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, funding_txo: (Sha256dHash, u16), monitor: channelmonitor::ChannelMonitor) -> Result<(), HandleError> {
+	fn add_update_monitor(&self, funding_txo: (Sha256dHash, u16), monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		self.simple_monitor.add_update_monitor(funding_txo, monitor)
 	}
