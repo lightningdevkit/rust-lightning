@@ -284,11 +284,16 @@ impl ChannelManager {
 	/// pending HTLCs, the channel will be closed on chain.
 	pub fn close_channel(&self, channel_id: &Uint256) -> Result<msgs::Shutdown, HandleError> {
 		let res = {
-			let mut channel_state = self.channel_state.lock().unwrap();
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
+
 			match channel_state.by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					let res = chan_entry.get_mut().get_shutdown()?;
 					if chan_entry.get().is_shutdown() {
+						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
+							channel_state.short_to_id.remove(&short_id);
+						}
 						chan_entry.remove_entry();
 					}
 					res
@@ -1140,7 +1145,8 @@ impl ChannelMessageHandler for ChannelManager {
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), HandleError> {
 		let res = {
-			let mut channel_state = self.channel_state.lock().unwrap();
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
 
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
@@ -1149,6 +1155,9 @@ impl ChannelMessageHandler for ChannelManager {
 					}
 					let res = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg)?;
 					if chan_entry.get().is_shutdown() {
+						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
+							channel_state.short_to_id.remove(&short_id);
+						}
 						chan_entry.remove_entry();
 					}
 					res
@@ -1165,7 +1174,8 @@ impl ChannelMessageHandler for ChannelManager {
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
 		let res = {
-			let mut channel_state = self.channel_state.lock().unwrap();
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
@@ -1178,6 +1188,9 @@ impl ChannelMessageHandler for ChannelManager {
 						// also implies there are no pending HTLCs left on the channel, so we can
 						// fully delete it from tracking (the channel monitor is still around to
 						// watch for old state broadcasts)!
+						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
+							channel_state.short_to_id.remove(&short_id);
+						}
 						chan_entry.remove_entry();
 					}
 					res
@@ -1657,11 +1670,8 @@ impl ChannelMessageHandler for ChannelManager {
 		if no_connection_possible {
 			channel_state.by_id.retain(move |_, chan| {
 				if chan.get_their_node_id() == *their_node_id {
-					match chan.get_short_channel_id() {
-						Some(short_id) => {
-							short_to_id.remove(&short_id);
-						},
-						None => {},
+					if let Some(short_id) = chan.get_short_channel_id() {
+						short_to_id.remove(&short_id);
 					}
 					//TODO: get the latest commitment tx, any HTLC txn built on top of it, etc out
 					//of the channel and throw those into the announcement blackhole.
