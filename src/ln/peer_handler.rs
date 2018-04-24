@@ -424,7 +424,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											131 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
+												let chan_update = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
+												if let Some(update) = chan_update {
+													self.message_handler.route_handler.handle_htlc_fail_channel_update(&update);
+												}
 											},
 											135 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::decode(&msg_data[2..]));

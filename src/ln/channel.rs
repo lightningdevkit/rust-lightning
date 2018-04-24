@@ -1315,7 +1315,8 @@ impl Channel {
 	}
 
 	/// Removes an outbound HTLC which has been commitment_signed by the remote end
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<(), HandleError> {
+	#[inline]
+	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<[u8; 32], HandleError> {
 		for mut htlc in self.pending_htlcs.iter_mut() {
 			if htlc.outbound && htlc.htlc_id == htlc_id {
 				match check_preimage {
@@ -1335,7 +1336,7 @@ impl Channel {
 				} else {
 					panic!("Got a non-outbound state on an outbound HTLC");
 				}
-				return Ok(());
+				return Ok(htlc.payment_hash.clone());
 			}
 		}
 		Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", msg: None})
@@ -1352,10 +1353,11 @@ impl Channel {
 		sha.result(&mut payment_hash);
 
 		self.channel_monitor.provide_payment_preimage(&msg.payment_preimage);
-		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None)
+		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None)?;
+		Ok(())
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), HandleError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<[u8; 32], HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
@@ -1368,7 +1370,8 @@ impl Channel {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
+		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
+		Ok(())
 	}
 
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), HandleError> {

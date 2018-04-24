@@ -14,12 +14,13 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use ln::channel::{Channel, ChannelKeys};
 use ln::channelmonitor::ManyChannelMonitor;
-use ln::router::Route;
+use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable,MsgDecodable};
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 
+use crypto;
 use crypto::mac::{Mac,MacResult};
 use crypto::hmac::Hmac;
 use crypto::digest::Digest;
@@ -91,12 +92,14 @@ enum PendingOutboundHTLC {
 	},
 	OutboundRoute {
 		route: Route,
+		session_priv: SecretKey,
 	},
 	/// Used for channel rebalancing
 	CycledRoute {
 		source_short_channel_id: u64,
 		incoming_packet_shared_secret: SharedSecret,
 		route: Route,
+		session_priv: SecretKey,
 	}
 }
 
@@ -336,8 +339,9 @@ impl ChannelManager {
 		res
 	}
 
-	fn construct_onion_keys(secp_ctx: &Secp256k1, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, HandleError> {
-		let mut res = Vec::with_capacity(route.hops.len());
+	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
+	#[inline]
+	fn construct_onion_keys_callback<FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), HandleError> {
 		let mut blinded_priv = session_priv.clone();
 		let mut blinded_pub = secp_call!(PublicKey::from_secret_key(secp_ctx, &blinded_priv));
 		let mut first_iteration = true;
@@ -360,18 +364,29 @@ impl ChannelManager {
 			secp_call!(blinded_priv.mul_assign(secp_ctx, &secp_call!(SecretKey::from_slice(secp_ctx, &blinding_factor))));
 			blinded_pub = secp_call!(PublicKey::from_secret_key(secp_ctx, &blinded_priv));
 
+			callback(shared_secret, blinding_factor, ephemeral_pubkey, hop);
+		}
+
+		Ok(())
+	}
+
+	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
+	fn construct_onion_keys(secp_ctx: &Secp256k1, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, HandleError> {
+		let mut res = Vec::with_capacity(route.hops.len());
+
+		Self::construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
 			let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
 
 			res.push(OnionKeys {
 				#[cfg(test)]
-				shared_secret: shared_secret,
+				shared_secret,
 				#[cfg(test)]
-				blinding_factor: blinding_factor,
-				ephemeral_pubkey: ephemeral_pubkey,
-				rho: rho,
-				mu: mu,
+				blinding_factor: _blinding_factor,
+				ephemeral_pubkey,
+				rho,
+				mu,
 			});
-		}
+		})?;
 
 		Ok(res)
 	}
@@ -602,7 +617,8 @@ impl ChannelManager {
 		};
 
 		if channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::OutboundRoute {
-			route: route,
+			route,
+			session_priv,
 		}).is_some() {
 			// TODO: We need to track these better, we're not generating these, so a
 			// third-party might make this happen:
@@ -747,7 +763,7 @@ impl ChannelManager {
 		for failed_forward in failed_forwards.drain(..) {
 			match failed_forward.2 {
 				None => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: Vec::new() }),
-				Some(chan_update) => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: chan_update.encode() }),
+				Some(chan_update) => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: chan_update.encode_with_len() }),
 			};
 		}
 
@@ -774,7 +790,11 @@ impl ChannelManager {
 		};
 
 		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { source_short_channel_id, incoming_packet_shared_secret, .. } => {
+			PendingOutboundHTLC::CycledRoute { source_short_channel_id, incoming_packet_shared_secret, route, session_priv } => {
+				channel_state.claimable_htlcs.insert(payment_hash.clone(), PendingOutboundHTLC::OutboundRoute {
+					route,
+					session_priv,
+				});
 				pending_htlc = PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret };
 			},
 			_ => {}
@@ -783,8 +803,8 @@ impl ChannelManager {
 		match pending_htlc {
 			PendingOutboundHTLC::CycledRoute { .. } => { panic!("WAT"); },
 			PendingOutboundHTLC::OutboundRoute { .. } => {
-				//TODO: DECRYPT route from OutboundRoute
 				mem::drop(channel_state);
+
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push(events::Event::PaymentFailed {
 					payment_hash: payment_hash.clone()
@@ -858,13 +878,13 @@ impl ChannelManager {
 		};
 
 		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { source_short_channel_id, incoming_packet_shared_secret, route } => {
+			PendingOutboundHTLC::CycledRoute { source_short_channel_id, incoming_packet_shared_secret, route, session_priv } => {
 				if from_user { // This was the end hop back to us
 					pending_htlc = PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret };
-					channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::OutboundRoute { route });
+					channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::OutboundRoute { route, session_priv });
 				} else { // This came from the first upstream node
 					// Bank error in our favor! Maybe we should tell the user this somehow???
-					pending_htlc = PendingOutboundHTLC::OutboundRoute { route };
+					pending_htlc = PendingOutboundHTLC::OutboundRoute { route, session_priv };
 					channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret });
 				}
 			},
@@ -1332,7 +1352,7 @@ impl ChannelMessageHandler for ChannelManager {
 			let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
 			if !chan.is_live() {
 				let chan_update = self.get_channel_update(chan).unwrap();
-				return_err!("Forwarding channel is not in a ready state.", 0x4000 | 10, &chan_update.encode()[..]);
+				return_err!("Forwarding channel is not in a ready state.", 0x4000 | 7, &chan_update.encode_with_len()[..]);
 			}
 		}
 
@@ -1376,16 +1396,17 @@ impl ChannelMessageHandler for ChannelManager {
 		match claimable_htlcs_entry {
 			hash_map::Entry::Occupied(mut e) => {
 				let outbound_route = e.get_mut();
-				let route = match outbound_route {
-					&mut PendingOutboundHTLC::OutboundRoute { ref route } => {
-						route.clone()
+				let (route, session_priv) = match outbound_route {
+					&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+						(route.clone(), session_priv.clone())
 					},
 					_ => { panic!("WAT") },
 				};
 				*outbound_route = PendingOutboundHTLC::CycledRoute {
 					source_short_channel_id,
 					incoming_packet_shared_secret: shared_secret,
-					route
+					route,
+					session_priv,
 				};
 			},
 			hash_map::Entry::Vacant(e) => {
@@ -1422,9 +1443,9 @@ impl ChannelMessageHandler for ChannelManager {
 		Ok(())
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
+		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
@@ -1432,6 +1453,68 @@ impl ChannelMessageHandler for ChannelManager {
 				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() })
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+		}?;
+
+		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
+			match pending_htlc {
+				&PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+					// Handle packed channel/node updates for passing back for the route handler
+					let mut packet_decrypted = msg.reason.data.clone();
+					let mut res = None;
+					Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
+						if res.is_some() { return; }
+
+						let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+
+						let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
+						decryption_tmp.resize(packet_decrypted.len(), 0);
+						let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+						chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
+						packet_decrypted = decryption_tmp;
+
+						if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
+							if err_packet.failuremsg.len() >= 2 {
+								let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+
+								let mut hmac = Hmac::new(Sha256::new(), &um);
+								hmac.input(&err_packet.encode()[32..]);
+								let mut calc_tag =  [0u8; 32];
+								hmac.raw_result(&mut calc_tag);
+								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
+									const UNKNOWN_CHAN: u16 = 0x4000|10;
+									const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
+									match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
+										TEMP_CHAN_FAILURE => {
+											if err_packet.failuremsg.len() >= 4 {
+												let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
+												if err_packet.failuremsg.len() >= 4 + update_len {
+													if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
+														res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
+															msg: chan_update,
+														});
+													}
+												}
+											}
+										},
+										UNKNOWN_CHAN => {
+											// No such next-hop. We know this came from the
+											// current node as the HMAC validated.
+											res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
+												short_channel_id: route_hop.short_channel_id
+											});
+										},
+										_ => {}, //TODO: Enumerate all of these!
+									}
+								}
+							}
+						}
+					}).unwrap();
+					Ok(res)
+				},
+				_ => { Ok(None) },
+			}
+		} else {
+			Ok(None)
 		}
 	}
 
@@ -2169,14 +2252,7 @@ mod tests {
 		claim_payment(&origin, expected_route, our_payment_preimage);
 	}
 
-	fn send_failed_payment(origin_node: &Node, expected_route: &[&Node]) {
-		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), &Vec::new(), 1000000, 142).unwrap();
-		assert_eq!(route.hops.len(), expected_route.len());
-		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
-			assert_eq!(hop.pubkey, node.node.get_our_node_id());
-		}
-		let our_payment_hash = send_along_route(origin_node, route, expected_route, 1000000).1;
-
+	fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_hash: [u8; 32]) {
 		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
 
 		let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
@@ -2288,7 +2364,8 @@ mod tests {
 		send_payment(&nodes[3], &vec!(&nodes[2], &nodes[1])[..], 1000000);
 
 		// Test failure packets
-		send_failed_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..]);
+		let payment_hash_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 1000000).1;
+		fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], payment_hash_1);
 
 		// Add a new channel that skips 3
 		let chan_4 = create_announced_chan_between_nodes(&nodes, 1, 3);
@@ -2346,10 +2423,10 @@ mod tests {
 		});
 		hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 		hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-		let payment_preimage_2 = send_along_route(&nodes[1], Route { hops }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).0;
+		let payment_hash_2 = send_along_route(&nodes[1], Route { hops }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 		// Claim the rebalances...
-		claim_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_preimage_2);
+		fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
 		claim_payment(&nodes[1], &vec!(&nodes[2], &nodes[3], &nodes[1])[..], payment_preimage_1);
 
 		// Add a duplicate new channel from 2 to 4
