@@ -283,10 +283,9 @@ impl ChannelManager {
 	/// will be accepted on the given channel, and after additional timeout/the closing of all
 	/// pending HTLCs, the channel will be closed on chain.
 	pub fn close_channel(&self, channel_id: &Uint256) -> Result<msgs::Shutdown, HandleError> {
-		let res = {
+		let (res, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
-
 			match channel_state.by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					let res = chan_entry.get_mut().get_shutdown()?;
@@ -294,9 +293,8 @@ impl ChannelManager {
 						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
 							channel_state.short_to_id.remove(&short_id);
 						}
-						chan_entry.remove_entry();
-					}
-					res
+						(res, Some(chan_entry.remove_entry().1))
+					} else { (res, None) }
 				},
 				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", msg: None})
 			}
@@ -304,6 +302,14 @@ impl ChannelManager {
 		for payment_hash in res.1 {
 			// unknown_next_peer...I dunno who that is anymore....
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+		}
+		if let Some(chan) = chan_option {
+			if let Ok(update) = self.get_channel_update(&chan) {
+				let mut events = self.pending_events.lock().unwrap();
+				events.push(events::Event::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
 		}
 		Ok(res.0)
 	}
@@ -553,7 +559,7 @@ impl ChannelManager {
 	}
 
 	/// only fails if the channel does not yet have an assigned short_id
-	fn get_channel_update(&self, chan: &mut Channel) -> Result<msgs::ChannelUpdate, HandleError> {
+	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, HandleError> {
 		let short_channel_id = match chan.get_short_channel_id() {
 			None => return Err(HandleError{err: "Channel not yet established", msg: None}),
 			Some(id) => id,
@@ -581,11 +587,12 @@ impl ChannelManager {
 		})
 	}
 
-	/// Sends a payment along a given route, returning the UpdateAddHTLC message to give to the
-	/// first hop in route. Value parameters are provided via the last hop in route, see
-	/// documentation for RouteHop fields for more info.
+	/// Sends a payment along a given route.
+	/// Value parameters are provided via the last hop in route, see documentation for RouteHop
+	/// fields for more info.
 	/// See-also docs on Channel::send_htlc_and_commit.
-	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned)>, HandleError> {
+	/// May generate a SendHTLCs event on success, which should be relayed.
+	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), HandleError> {
 		if route.hops.len() < 1 || route.hops.len() > 20 {
 			return Err(HandleError{err: "Route didn't go anywhere/had bogus size", msg: None});
 		}
@@ -608,7 +615,7 @@ impl ChannelManager {
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, associated_data)?;
 
-		let (update_add, commitment_signed, chan_monitor) = {
+		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
 				None => return Err(HandleError{err: "No channel available with first hop!", msg: None}),
@@ -622,6 +629,8 @@ impl ChannelManager {
 				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, onion_packet)?
 			};
 
+			let first_hop_node_id = route.hops.first().unwrap().pubkey;
+
 			if channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::OutboundRoute {
 				route,
 				session_priv,
@@ -632,15 +641,22 @@ impl ChannelManager {
 			}
 
 			match res {
-				Some(msgs) => msgs,
-				None => return Ok(None),
+				Some(msgs) => (first_hop_node_id, msgs),
+				None => return Ok(()),
 			}
 		};
 
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 			unimplemented!(); // maybe remove from claimable_htlcs?
 		}
-		Ok(Some((update_add, commitment_signed)))
+
+		let mut events = self.pending_events.lock().unwrap();
+		events.push(events::Event::SendHTLCs {
+			node_id: first_hop_node_id,
+			msgs: vec![update_add],
+			commitment_msg: commitment_signed,
+		});
+		Ok(())
 	}
 
 	/// Call this upon creation of a funding transaction for the given channel.
@@ -989,7 +1005,7 @@ impl events::EventsProvider for ChannelManager {
 
 impl ChainListener for ChannelManager {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
-		let mut new_funding_locked_messages = Vec::new();
+		let mut new_events = Vec::new();
 		{
 			let mut channel_state = self.channel_state.lock().unwrap();
 			let mut short_to_ids_to_insert = Vec::new();
@@ -1003,7 +1019,7 @@ impl ChainListener for ChannelManager {
 							return true;
 						}
 					};
-					new_funding_locked_messages.push(events::Event::SendFundingLocked {
+					new_events.push(events::Event::SendFundingLocked {
 						node_id: channel.get_their_node_id(),
 						msg: funding_locked,
 						announcement_sigs: announcement_sigs
@@ -1018,6 +1034,11 @@ impl ChainListener for ChannelManager {
 									short_to_ids_to_remove.push(short_id);
 								}
 								channel.force_shutdown();
+								if let Ok(update) = self.get_channel_update(&channel) {
+									new_events.push(events::Event::BroadcastChannelUpdate {
+										msg: update
+									});
+								}
 								return false;
 							}
 						}
@@ -1028,6 +1049,11 @@ impl ChainListener for ChannelManager {
 						short_to_ids_to_remove.push(short_id);
 					}
 					channel.force_shutdown();
+					if let Ok(update) = self.get_channel_update(&channel) {
+						new_events.push(events::Event::BroadcastChannelUpdate {
+							msg: update
+						});
+					}
 					return false;
 				}
 				true
@@ -1040,7 +1066,7 @@ impl ChainListener for ChannelManager {
 			}
 		}
 		let mut pending_events = self.pending_events.lock().unwrap();
-		for funding_locked in new_funding_locked_messages.drain(..) {
+		for funding_locked in new_events.drain(..) {
 			pending_events.push(funding_locked);
 		}
 	}
@@ -1190,7 +1216,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), HandleError> {
-		let res = {
+		let (res, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 
@@ -1204,9 +1230,8 @@ impl ChannelMessageHandler for ChannelManager {
 						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
 							channel_state.short_to_id.remove(&short_id);
 						}
-						chan_entry.remove_entry();
-					}
-					res
+						(res, Some(chan_entry.remove_entry().1))
+					} else { (res, None) }
 				},
 				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
@@ -1215,11 +1240,19 @@ impl ChannelMessageHandler for ChannelManager {
 			// unknown_next_peer...I dunno who that is anymore....
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 		}
+		if let Some(chan) = chan_option {
+			if let Ok(update) = self.get_channel_update(&chan) {
+				let mut events = self.pending_events.lock().unwrap();
+				events.push(events::Event::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
+		}
 		Ok((res.0, res.1))
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
-		let res = {
+		let (res, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
@@ -1237,15 +1270,22 @@ impl ChannelMessageHandler for ChannelManager {
 						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
 							channel_state.short_to_id.remove(&short_id);
 						}
-						chan_entry.remove_entry();
-					}
-					res
+						(res, Some(chan_entry.remove_entry().1))
+					} else { (res, None) }
 				},
 				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
 			}
 		};
 		if let Some(broadcast_tx) = res.1 {
 			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
+		}
+		if let Some(chan) = chan_option {
+			if let Ok(update) = self.get_channel_update(&chan) {
+				let mut events = self.pending_events.lock().unwrap();
+				events.push(events::Event::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
 		}
 		Ok(res.0)
 	}
@@ -1714,31 +1754,45 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = channel_state_lock.borrow_parts();
-		let short_to_id = channel_state.short_to_id;
-		if no_connection_possible {
-			channel_state.by_id.retain(move |_, chan| {
-				if chan.get_their_node_id() == *their_node_id {
-					if let Some(short_id) = chan.get_short_channel_id() {
-						short_to_id.remove(&short_id);
+		let mut new_events = Vec::new();
+		{
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
+			let short_to_id = channel_state.short_to_id;
+			if no_connection_possible {
+				channel_state.by_id.retain(|_, chan| {
+					if chan.get_their_node_id() == *their_node_id {
+						if let Some(short_id) = chan.get_short_channel_id() {
+							short_to_id.remove(&short_id);
+						}
+						let txn_to_broadcast = chan.force_shutdown();
+						for tx in txn_to_broadcast {
+							self.tx_broadcaster.broadcast_transaction(&tx);
+						}
+						if let Ok(update) = self.get_channel_update(&chan) {
+							new_events.push(events::Event::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+						false
+					} else {
+						true
 					}
-					let txn_to_broadcast = chan.force_shutdown();
-					for tx in txn_to_broadcast {
-						self.tx_broadcaster.broadcast_transaction(&tx);
+				});
+			} else {
+				for chan in channel_state.by_id {
+					if chan.1.get_their_node_id() == *their_node_id {
+						//TODO: mark channel disabled (and maybe announce such after a timeout). Also
+						//fail and wipe any uncommitted outbound HTLCs as those are considered after
+						//reconnect.
 					}
-					false
-				} else {
-					true
 				}
-			});
-		} else {
-			for chan in channel_state.by_id {
-				if chan.1.get_their_node_id() == *their_node_id {
-					//TODO: mark channel disabled (and maybe announce such after a timeout). Also
-					//fail and wipe any uncommitted outbound HTLCs as those are considered after
-					//reconnect.
-				}
+			}
+		}
+		if !new_events.is_empty() {
+			let mut pending_events = self.pending_events.lock().unwrap();
+			for event in new_events.drain(..) {
+				pending_events.push(event);
 			}
 		}
 	}
@@ -2075,7 +2129,7 @@ mod tests {
 		(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 	}
 
-	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &Uint256, funding_tx: Transaction, close_inbound_first: bool) {
+	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &Uint256, funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
 		let (node_a, broadcaster_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster) } else { (&outbound_node.node, &outbound_node.tx_broadcaster) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 		let (tx_a, tx_b);
@@ -2111,6 +2165,26 @@ mod tests {
 		let mut funding_tx_map = HashMap::new();
 		funding_tx_map.insert(funding_tx.txid(), funding_tx);
 		tx_a.verify(&funding_tx_map).unwrap();
+
+		let events_1 = node_a.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		let as_update = match events_1[0] {
+			Event::BroadcastChannelUpdate { ref msg } => {
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		let events_2 = node_b.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let bs_update = match events_2[0] {
+			Event::BroadcastChannelUpdate { ref msg } => {
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		(as_update, bs_update)
 	}
 
 	struct SendEvent {
@@ -2142,17 +2216,16 @@ mod tests {
 		};
 
 		let mut payment_event = {
-			let msgs = origin_node.node.send_payment(route, our_payment_hash).unwrap().unwrap();
+			origin_node.node.send_payment(route, our_payment_hash).unwrap();
 			{
 				let mut added_monitors = origin_node.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				added_monitors.clear();
 			}
-			SendEvent {
-				node_id: expected_route[0].node.get_our_node_id(),
-				msgs: vec!(msgs.0),
-				commitment_msg: msgs.1,
-			}
+
+			let mut events = origin_node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
 		};
 		let mut prev_node = origin_node;
 
@@ -2212,9 +2285,7 @@ mod tests {
 					assert_eq!(added_monitors.len(), 1);
 					added_monitors.clear();
 				}
-				for event in events_2.drain(..) {
-					payment_event = SendEvent::from_event(event);
-				}
+				payment_event = SendEvent::from_event(events_2.remove(0));
 				assert_eq!(payment_event.msgs.len(), 1);
 			}
 
@@ -2637,6 +2708,31 @@ mod tests {
 		res
 	}
 
+	fn get_announce_close_broadcast_events(nodes: &Vec<Node>, a: usize, b: usize) {
+		let events_1 = nodes[a].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		let as_update = match events_1[0] {
+			Event::BroadcastChannelUpdate { ref msg } => {
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		let events_2 = nodes[b].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let bs_update = match events_2[0] {
+			Event::BroadcastChannelUpdate { ref msg } => {
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		for node in nodes {
+			node.router.handle_channel_update(&as_update).unwrap();
+			node.router.handle_channel_update(&bs_update).unwrap();
+		}
+	}
+
 	#[test]
 	fn channel_monitor_network_test() {
 		// Simple test which builds a network of ChannelManagers, connects them to each other, and
@@ -2663,6 +2759,7 @@ mod tests {
 			nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0]; 1], &[4; 1]);
 			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 		}
+		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 		assert_eq!(nodes[1].node.list_channels().len(), 1);
 
@@ -2677,6 +2774,7 @@ mod tests {
 			nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0]; 1], &[4; 1]);
 			assert_eq!(nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 		}
+		get_announce_close_broadcast_events(&nodes, 1, 2);
 		assert_eq!(nodes[1].node.list_channels().len(), 0);
 		assert_eq!(nodes[2].node.list_channels().len(), 1);
 
@@ -2716,6 +2814,7 @@ mod tests {
 
 			check_preimage_claim(&nodes[3], &node_txn);
 		}
+		get_announce_close_broadcast_events(&nodes, 2, 3);
 		assert_eq!(nodes[2].node.list_channels().len(), 0);
 		assert_eq!(nodes[3].node.list_channels().len(), 1);
 
@@ -2749,12 +2848,12 @@ mod tests {
 
 			check_preimage_claim(&nodes[4], &node_txn);
 		}
+		get_announce_close_broadcast_events(&nodes, 3, 4);
 		assert_eq!(nodes[3].node.list_channels().len(), 0);
 		assert_eq!(nodes[4].node.list_channels().len(), 0);
 
-		// TODO: Need to reenable this when we fix local route tracking
 		// Create some new channels:
-		/*let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 		// A pending HTLC which will be revoked:
 		let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
@@ -2787,7 +2886,7 @@ mod tests {
 		}
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
-		assert_eq!(nodes[1].node.list_channels().len(), 0);*/
+		assert_eq!(nodes[1].node.list_channels().len(), 0);
 
 		// Check that we processed all pending events
 		for node in nodes {

@@ -387,7 +387,7 @@ impl Channel {
 			holding_cell_htlc_updates: Vec::new(),
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
-			channel_update_count: 0,
+			channel_update_count: 1,
 
 			last_local_commitment_txn: Vec::new(),
 
@@ -505,7 +505,7 @@ impl Channel {
 			holding_cell_htlc_updates: Vec::new(),
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
-			channel_update_count: 0,
+			channel_update_count: 1,
 
 			last_local_commitment_txn: Vec::new(),
 
@@ -1212,6 +1212,7 @@ impl Channel {
 			self.channel_state |= ChannelState::TheirFundingLocked as u32;
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
+			self.channel_update_count += 1;
 		} else {
 			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", msg: None});
 		}
@@ -1606,6 +1607,7 @@ impl Channel {
 			return Err(HandleError{err: "Non-funding remote tried to update channel fee", msg: None});
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		self.channel_update_count += 1;
 		self.feerate_per_kw = msg.feerate_per_kw as u64;
 		Ok(())
 	}
@@ -1613,6 +1615,7 @@ impl Channel {
 	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<[u8; 32]>), HandleError> {
 		if self.channel_state < ChannelState::FundingSent as u32 {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
+			self.channel_update_count += 1;
 			return Ok((None, None, Vec::new()));
 		}
 		for htlc in self.pending_htlcs.iter() {
@@ -1660,6 +1663,7 @@ impl Channel {
 		// From here on out, we may not fail!
 
 		self.channel_state |= ChannelState::RemoteShutdownSent as u32;
+		self.channel_update_count += 1;
 
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
@@ -1690,6 +1694,7 @@ impl Channel {
 		};
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
+		self.channel_update_count += 1;
 		if self.pending_htlcs.is_empty() && self.channel_outbound {
 			// There are no more HTLCs and we're the funder, this means we start the closing_signed
 			// dance with an initial fee proposal!
@@ -1737,6 +1742,7 @@ impl Channel {
 			if last_fee == msg.fee_satoshis {
 				self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
 				self.channel_state = ChannelState::ShutdownComplete as u32;
+				self.channel_update_count += 1;
 				return Ok((None, Some(closing_tx)));
 			}
 		}
@@ -1781,6 +1787,7 @@ impl Channel {
 
 		let our_sig = self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
 		self.channel_state = ChannelState::ShutdownComplete as u32;
+		self.channel_update_count += 1;
 
 		Ok((Some(msgs::ClosingSigned {
 			channel_id: self.channel_id,
@@ -1832,8 +1839,7 @@ impl Channel {
 		self.channel_value_satoshis
 	}
 
-	pub fn get_channel_update_count(&mut self) -> u32 {
-		self.channel_update_count += 1; //TODO: This should be base on updates, not updates *sent*
+	pub fn get_channel_update_count(&self) -> u32 {
 		self.channel_update_count
 	}
 
@@ -1892,6 +1898,7 @@ impl Channel {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
 					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
 						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
+						self.channel_update_count += 1;
 						//TODO: Something about a state where we "lost confirmation"
 					} else if self.channel_state < ChannelState::ChannelFunded as u32 {
 						panic!("Started confirming a channel in a state pre-FundingSent?");
@@ -1918,6 +1925,7 @@ impl Channel {
 					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
 						tx.output[txo_idx].value != self.channel_value_satoshis {
 						self.channel_state = ChannelState::ShutdownComplete as u32;
+						self.channel_update_count += 1;
 					} else {
 						self.funding_tx_confirmations = 1;
 						self.short_channel_id = Some(((height as u64)          << (5*8)) |
@@ -2278,6 +2286,7 @@ impl Channel {
 		} else {
 			self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		}
+		self.channel_update_count += 1;
 
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
@@ -2304,6 +2313,7 @@ impl Channel {
 	pub fn force_shutdown(&mut self) -> Vec<Transaction> {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 		self.channel_state = ChannelState::ShutdownComplete as u32;
+		self.channel_update_count += 1;
 		let mut res = Vec::new();
 		mem::swap(&mut res, &mut self.last_local_commitment_txn);
 		res
