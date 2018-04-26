@@ -4,33 +4,31 @@ pub use crypto::sha2::Sha256;
 #[cfg(feature = "fuzztarget")]
 mod fuzzy_sha {
 	use crypto::digest::Digest;
-	use crypto::sha2;
 
-	#[derive(Clone, Copy)]
 	pub struct Sha256 {
-		state: sha2::Sha256,
+		state: u8,
 	}
 
 	impl Sha256 {
 		pub fn new() -> Sha256 {
 			Sha256 {
-				state: sha2::Sha256::new(),
+				state: 0,
 			}
 		}
 	}
 
 	impl Digest for Sha256 {
 		fn result(&mut self, data: &mut [u8]) {
-			self.state.result(data);
+			data[0] = self.state;
 			for i in 1..32 {
 				data[i] = 0;
 			}
 		}
 
-		fn input(&mut self, data: &[u8]) { self.state.input(data); }
-		fn reset(&mut self) { self.state.reset(); }
-		fn output_bits(&self) -> usize { self.state.output_bits() }
-		fn block_size(&self) -> usize { self.state.block_size() }
+		fn input(&mut self, data: &[u8]) { for i in data { self.state ^= i; } }
+		fn reset(&mut self) { self.state = 0; }
+		fn output_bits(&self) -> usize { 256 }
+		fn block_size(&self) -> usize { 64 }
 	}
 }
 #[cfg(feature = "fuzztarget")]
