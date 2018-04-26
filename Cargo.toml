@@ -3,7 +3,7 @@ name = "lightning"
 version = "0.0.3"
 authors = ["Matt Corallo"]
 license = "Apache-2.0"
-repository = "https://github.com/TheBlueMatt/rust-lightning/"
+repository = "https://github.com/rust-bitcoin/rust-lightning/"
 description = """
 A Bitcoin Lightning implementation in Rust.
 Still super-early code-dump quality and is missing large chunks. See README in git repo for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to finish building it to even try.
