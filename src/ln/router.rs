@@ -51,9 +51,9 @@ struct ChannelInfo {
 
 struct NodeInfo {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-    channels: Vec<(u64, Sha256dHash)>,
+	channels: Vec<(u64, Sha256dHash)>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-    channels: Vec<u64>,
+	channels: Vec<u64>,
 
 	lowest_inbound_channel_fee_base_msat: u32,
 	lowest_inbound_channel_fee_proportional_millionths: u32,
@@ -212,6 +212,18 @@ impl RoutingMessageHandler for Router {
 		add_channel_to_node!(msg.contents.node_id_2);
 
 		Ok(!msg.contents.features.supports_unknown_bits())
+	}
+
+	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
+		match update {
+			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
+				let _ = self.handle_channel_update(msg);
+			},
+			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id } => {
+				let mut network = self.network_map.write().unwrap();
+				network.channels.remove(short_channel_id);
+			},
+		}
 	}
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<(), HandleError> {

@@ -15,6 +15,14 @@ pub trait MsgEncodable {
 	fn encode(&self) -> Vec<u8>;
 	#[inline]
 	fn encoded_len(&self) -> usize { self.encode().len() }
+	#[inline]
+	fn encode_with_len(&self) -> Vec<u8> {
+		let enc = self.encode();
+		let mut res = Vec::with_capacity(enc.len() + 2);
+		res.extend_from_slice(&byte_utils::be16_to_array(enc.len() as u16));
+		res.extend_from_slice(&enc);
+		res
+	}
 }
 #[derive(Debug)]
 pub enum DecodeError {
@@ -366,6 +374,15 @@ pub struct CommitmentUpdate {
 	pub commitment_signed: CommitmentSigned,
 }
 
+pub enum HTLCFailChannelUpdate {
+	ChannelUpdateMessage {
+		msg: ChannelUpdate,
+	},
+	ChannelClosed {
+		short_channel_id: u64,
+	},
+}
+
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in
 /// paralell when they originate from different their_node_ids, however they MUST NOT be called in
 /// paralell when the two calls have the same their_node_id.
@@ -384,7 +401,7 @@ pub trait ChannelMessageHandler : events::EventsProvider {
 	// HTLC handling:
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC) -> Result<(), HandleError>;
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), HandleError>;
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<Option<HTLCFailChannelUpdate>, HandleError>;
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
@@ -408,6 +425,7 @@ pub trait RoutingMessageHandler {
 	/// or returning an Err otherwise.
 	fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, HandleError>;
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<(), HandleError>;
+	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 }
 
 pub struct OnionRealm0HopData {
@@ -1316,8 +1334,26 @@ impl MsgEncodable for OnionPacket {
 }
 
 impl MsgDecodable for DecodedOnionErrorPacket {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32 + 4 {
+			return Err(DecodeError::WrongLength);
+		}
+		let failuremsg_len = byte_utils::slice_to_be16(&v[32..34]) as usize;
+		if v.len() < 32 + 4 + failuremsg_len {
+			return Err(DecodeError::WrongLength);
+		}
+		let padding_len = byte_utils::slice_to_be16(&v[34 + failuremsg_len..]) as usize;
+		if v.len() < 32 + 4 + failuremsg_len + padding_len {
+			return Err(DecodeError::WrongLength);
+		}
+
+		let mut hmac = [0; 32];
+		hmac.copy_from_slice(&v[0..32]);
+		Ok(Self {
+			hmac,
+			failuremsg: v[34..34 + failuremsg_len].to_vec(),
+			pad: v[36 + failuremsg_len..36 + failuremsg_len + padding_len].to_vec(),
+		})
 	}
 }
 impl MsgEncodable for DecodedOnionErrorPacket {

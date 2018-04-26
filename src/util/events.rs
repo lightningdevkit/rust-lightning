@@ -90,6 +90,10 @@ pub enum Event {
 		msg: msgs::ChannelAnnouncement,
 		update_msg: msgs::ChannelUpdate,
 	},
+	/// Used to indicate that a channel_update should be broadcast to all peers.
+	BroadcastChannelUpdate {
+		msg: msgs::ChannelUpdate,
+	},
 }
 
 pub trait EventsProvider {

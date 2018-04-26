@@ -424,7 +424,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											131 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
+												let chan_update = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
+												if let Some(update) = chan_update {
+													self.message_handler.route_handler.handle_htlc_fail_channel_update(&update);
+												}
 											},
 											135 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::decode(&msg_data[2..]));
@@ -609,24 +612,40 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
-						let encoded_msg = encode_msg!(msg, 256);
-						let encoded_update_msg = encode_msg!(update_msg, 258);
+						if self.message_handler.route_handler.handle_channel_announcement(msg).is_ok() && self.message_handler.route_handler.handle_channel_update(update_msg).is_ok() {
+							let encoded_msg = encode_msg!(msg, 256);
+							let encoded_update_msg = encode_msg!(update_msg, 258);
 
-						for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-							if !peer.channel_encryptor.is_ready_for_encryption() {
-								continue
-							}
-							match peer.their_node_id {
-								None => continue,
-								Some(their_node_id) => {
-									if their_node_id == msg.contents.node_id_1 || their_node_id == msg.contents.node_id_2 {
-										continue
+							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
+								if !peer.channel_encryptor.is_ready_for_encryption() {
+									continue
+								}
+								match peer.their_node_id {
+									None => continue,
+									Some(their_node_id) => {
+										if their_node_id == msg.contents.node_id_1 || their_node_id == msg.contents.node_id_2 {
+											continue
+										}
 									}
 								}
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_update_msg[..]));
+								Self::do_attempt_write_data(&mut (*descriptor).clone(), peer);
 							}
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_update_msg[..]));
-							Self::do_attempt_write_data(&mut (*descriptor).clone(), peer);
+						}
+						continue;
+					},
+					Event::BroadcastChannelUpdate { ref msg } => {
+						if self.message_handler.route_handler.handle_channel_update(msg).is_ok() {
+							let encoded_msg = encode_msg!(msg, 258);
+
+							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
+								if !peer.channel_encryptor.is_ready_for_encryption() {
+									continue
+								}
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
+								Self::do_attempt_write_data(&mut (*descriptor).clone(), peer);
+							}
 						}
 						continue;
 					},
