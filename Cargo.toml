@@ -19,7 +19,7 @@ fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget"]
 bitcoin = "0.13"
 rust-crypto = "0.2"
 rand = "0.4"
-secp256k1 = "0.9"
+secp256k1 = { git = "https://github.com/rust-bitcoin/rust-secp256k1", branch = "master" }
 
 [build-dependencies]
 gcc = "0.3"
