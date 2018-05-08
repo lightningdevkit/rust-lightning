@@ -613,7 +613,33 @@ impl MsgDecodable for OpenChannel {
 }
 impl MsgEncodable for OpenChannel {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = match &self.shutdown_scriptpubkey {
+			&Some(ref script) => Vec::with_capacity(319 + 2 + script.len()),
+			&None => Vec::with_capacity(319),
+		};
+		res.extend_from_slice(&serialize(&self.chain_hash).unwrap());
+		res.extend_from_slice(&serialize(&self.temporary_channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.funding_satoshis));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.push_msat));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.dust_limit_satoshis));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.max_htlc_value_in_flight_msat));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.channel_reserve_satoshis));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_minimum_msat));
+		res.extend_from_slice(&byte_utils::be32_to_array(self.feerate_per_kw));
+		res.extend_from_slice(&byte_utils::be16_to_array(self.to_self_delay));
+		res.extend_from_slice(&byte_utils::be16_to_array(self.max_accepted_htlcs));
+		res.extend_from_slice(&self.funding_pubkey.serialize());
+		res.extend_from_slice(&self.revocation_basepoint.serialize());
+		res.extend_from_slice(&self.payment_basepoint.serialize());
+		res.extend_from_slice(&self.delayed_payment_basepoint.serialize());
+		res.extend_from_slice(&self.htlc_basepoint.serialize());
+		res.extend_from_slice(&self.first_per_commitment_point.serialize());
+		res.push(self.channel_flags);
+		if let &Some(ref script) = &self.shutdown_scriptpubkey {
+			res.extend_from_slice(&byte_utils::be16_to_array(script.len() as u16));
+			res.extend_from_slice(&script[..]);
+		}
+		res
 	}
 }
 
@@ -722,7 +748,10 @@ impl MsgDecodable for FundingSigned {
 }
 impl MsgEncodable for FundingSigned {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+64);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&self.signature.serialize_compact(&Secp256k1::without_caps()));
+		res
 	}
 }
 
@@ -809,13 +838,20 @@ impl MsgDecodable for UpdateAddHTLC {
 			amount_msat: byte_utils::slice_to_be64(&v[40..48]),
 			payment_hash,
 			cltv_expiry: byte_utils::slice_to_be32(&v[80..84]),
-			onion_routing_packet: OnionPacket::decode(&v[84..])?,
+			onion_routing_packet: OnionPacket::decode(&v[84..84+1366])?,
 		})
 	}
 }
 impl MsgEncodable for UpdateAddHTLC {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+8+8+32+4+1+1366);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.amount_msat));
+		res.extend_from_slice(&self.payment_hash);
+		res.extend_from_slice(&byte_utils::be32_to_array(self.cltv_expiry));
+		res.extend_from_slice(&self.onion_routing_packet.encode()[..]);
+		res
 	}
 }
 
@@ -835,7 +871,11 @@ impl MsgDecodable for UpdateFulfillHTLC {
 }
 impl MsgEncodable for UpdateFulfillHTLC {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+8+32);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
+		res.extend_from_slice(&self.payment_preimage);
+		res
 	}
 }
 
@@ -853,7 +893,12 @@ impl MsgDecodable for UpdateFailHTLC {
 }
 impl MsgEncodable for UpdateFailHTLC {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let reason = self.reason.encode();
+		let mut res = Vec::with_capacity(32+8+reason.len());
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
+		res.extend_from_slice(&reason[..]);
+		res
 	}
 }
 
@@ -874,7 +919,12 @@ impl MsgDecodable for UpdateFailMalformedHTLC {
 }
 impl MsgEncodable for UpdateFailMalformedHTLC {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+8+32+2);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
+		res.extend_from_slice(&self.sha256_of_onion);
+		res.extend_from_slice(&byte_utils::be16_to_array(self.failure_code));
+		res
 	}
 }
 
@@ -901,7 +951,15 @@ impl MsgDecodable for CommitmentSigned {
 }
 impl MsgEncodable for CommitmentSigned {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+64+2+self.htlc_signatures.len()*64);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		let secp_ctx = Secp256k1::without_caps();
+		res.extend_from_slice(&self.signature.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&byte_utils::be16_to_array(self.htlc_signatures.len() as u16));
+		for i in 0..self.htlc_signatures.len() {
+			res.extend_from_slice(&self.htlc_signatures[i].serialize_compact(&secp_ctx));
+		}
+		res
 	}
 }
 
@@ -922,7 +980,11 @@ impl MsgDecodable for RevokeAndACK {
 }
 impl MsgEncodable for RevokeAndACK {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+32+33);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&self.per_commitment_secret);
+		res.extend_from_slice(&self.next_per_commitment_point.serialize());
+		res
 	}
 }
 
@@ -939,7 +1001,10 @@ impl MsgDecodable for UpdateFee {
 }
 impl MsgEncodable for UpdateFee {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(32+4);
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
+		res.extend_from_slice(&byte_utils::be32_to_array(self.feerate_per_kw));
+		res
 	}
 }
 
@@ -1141,7 +1206,12 @@ impl MsgDecodable for NodeAnnouncement {
 }
 impl MsgEncodable for NodeAnnouncement {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let contents = self.contents.encode();
+		let mut res = Vec::with_capacity(64 + contents.len());
+		let secp_ctx = Secp256k1::without_caps();
+		res.extend_from_slice(&self.signature.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&contents);
+		res
 	}
 }
 
@@ -1196,7 +1266,15 @@ impl MsgDecodable for ChannelAnnouncement {
 }
 impl MsgEncodable for ChannelAnnouncement {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let secp_ctx = Secp256k1::without_caps();
+		let contents = self.contents.encode();
+		let mut res = Vec::with_capacity(64 + contents.len());
+		res.extend_from_slice(&self.node_signature_1.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&self.node_signature_2.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&self.bitcoin_signature_1.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&self.bitcoin_signature_2.serialize_compact(&secp_ctx));
+		res.extend_from_slice(&contents);
+		res
 	}
 }
 
@@ -1384,7 +1462,9 @@ impl MsgDecodable for OnionErrorPacket {
 }
 impl MsgEncodable for OnionErrorPacket {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(2 + self.data.len());
+		res.extend_from_slice(&byte_utils::be16_to_array(self.data.len() as u16));
+		res.extend_from_slice(&self.data);
+		res
 	}
 }
-
