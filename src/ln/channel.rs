@@ -608,7 +608,7 @@ impl Channel {
 			ins
 		};
 
-		let mut txouts: Vec<(TxOut, Option<HTLCOutputInCommitment>)> = Vec::new();
+		let mut txouts: Vec<(TxOut, Option<HTLCOutputInCommitment>)> = Vec::with_capacity(self.pending_htlcs.len() + 2);
 
 		let dust_limit_satoshis = if local { self.our_dust_limit_satoshis } else { self.their_dust_limit_satoshis };
 		let mut remote_htlc_total_msat = 0;
@@ -699,8 +699,8 @@ impl Channel {
 
 		transaction_utils::sort_outputs(&mut txouts);
 
-		let mut outputs: Vec<TxOut> = Vec::new();
-		let mut htlcs_used: Vec<HTLCOutputInCommitment> = Vec::new();
+		let mut outputs: Vec<TxOut> = Vec::with_capacity(txouts.len());
+		let mut htlcs_used: Vec<HTLCOutputInCommitment> = Vec::with_capacity(txouts.len());
 		for (idx, out) in txouts.drain(..).enumerate() {
 			outputs.push(out.0);
 			if let Some(out_htlc) = out.1 {
