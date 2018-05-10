@@ -158,7 +158,7 @@ pub fn do_test(data: &[u8]) {
 	macro_rules! return_err {
 		($expr: expr) => {
 			match $expr {
-				Ok(_) => {},
+				Ok(r) => r,
 				Err(_) => return,
 			}
 		}
@@ -278,10 +278,14 @@ pub fn do_test(data: &[u8]) {
 			9 => {
 				let shutdown = decode_msg_with_len16!(msgs::Shutdown, 32, 1);
 				return_err!(channel.shutdown(&fee_est, &shutdown));
+				if channel.is_shutdown() { return; }
 			},
 			10 => {
 				let closing_signed = decode_msg!(msgs::ClosingSigned, 32+8+64);
-				return_err!(channel.closing_signed(&fee_est, &closing_signed));
+				if return_err!(channel.closing_signed(&fee_est, &closing_signed)).1.is_some() {
+					assert!(channel.is_shutdown());
+					return;
+				}
 			},
 			_ => return,
 		}
