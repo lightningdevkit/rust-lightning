@@ -18,7 +18,7 @@ honggfuzz_fuzz = ["honggfuzz"]
 [dependencies]
 lightning = { path = "..", features = ["fuzztarget"] }
 bitcoin = { version = "0.13", features = ["fuzztarget"] }
-secp256k1 = { version = "0.9", features = ["fuzztarget"] }
+secp256k1 = { git = "https://github.com/rust-bitcoin/rust-secp256k1", branch = "master" , features=["fuzztarget"]}
 rust-crypto = "0.2"
 honggfuzz = { version = "0.5", optional = true }
 afl = { version = "0.3", optional = true }
@@ -41,3 +41,60 @@ path = "fuzz_targets/channel_target.rs"
 [[bin]]
 name = "full_stack_target"
 path = "fuzz_targets/full_stack_target.rs"
+
+# message fuzz targets
+[[bin]]
+name = "msg_accept_channel_target"
+path = "fuzz_targets/msg_targets/msg_accept_channel_target.rs"
+
+[[bin]]
+name = "msg_closing_signed_target"
+path = "fuzz_targets/msg_targets/msg_closing_signed_target.rs"
+
+[[bin]]
+name = "msg_commitment_signed_target"
+path = "fuzz_targets/msg_targets/msg_commitment_signed_target.rs"
+
+[[bin]]
+name = "msg_funding_created_target"
+path = "fuzz_targets/msg_targets/msg_funding_created_target.rs"
+
+[[bin]]
+name = "msg_funding_locked_target"
+path = "fuzz_targets/msg_targets/msg_funding_locked_target.rs"
+
+[[bin]]
+name = "msg_funding_signed_target"
+path = "fuzz_targets/msg_targets/msg_funding_signed_target.rs"
+
+[[bin]]
+name = "msg_open_channel_target"
+path = "fuzz_targets/msg_targets/msg_open_channel_target.rs"
+
+[[bin]]
+name = "msg_revoke_and_ack_target"
+path = "fuzz_targets/msg_targets/msg_revoke_and_ack_target.rs"
+
+[[bin]]
+name = "msg_shutdown_target"
+path = "fuzz_targets/msg_targets/msg_shutdown_target.rs"
+
+[[bin]]
+name = "msg_update_add_htlc_target"
+path = "fuzz_targets/msg_targets/msg_update_add_htlc_target.rs"
+
+[[bin]]
+name = "msg_update_fail_malformed_htlc_target"
+path = "fuzz_targets/msg_targets/msg_update_fail_malformed_htlc_target.rs"
+
+[[bin]]
+name = "msg_update_fee_target"
+path = "fuzz_targets/msg_targets/msg_update_fee_target.rs"
+
+[[bin]]
+name = "msg_update_fulfill_htlc_target"
+path = "fuzz_targets/msg_targets/msg_update_fulfill_htlc_target.rs"
+
+[[bin]]
+name = "msg_update_fail_htlc_target"
+path = "fuzz_targets/msg_targets/msg_update_fail_htlc_target.rs"
