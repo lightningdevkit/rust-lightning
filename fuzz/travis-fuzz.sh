@@ -1,5 +1,12 @@
 #!/bin/bash
 set -e
+
+pushd fuzz_targets/msg_targets
+rm *_target.rs
+./gen_target.sh
+[ "$(git diff)" != "" ] && exit 1
+popd
+
 cargo install --force honggfuzz
 for TARGET in fuzz_targets/*.rs fuzz_targets/msg_targets/*_target.rs; do
 	FILENAME=$(basename $TARGET)
