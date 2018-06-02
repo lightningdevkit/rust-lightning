@@ -1,4 +1,8 @@
 Rust-Lightning, not Rusty's Lightning!
+===
+
+![Apache-2.0 licensed](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
+[![Crates.io](https://img.shields.io/crates/v/lightning.svg)](https://crates.io/crates/lightning)
 
 Currently somewhere near 5% towards usable, published to see if there is any
 real interest from folks in either contributing to or using a lightning rust
@@ -20,7 +24,7 @@ non-optional/non-test/non-library dependencies. Really really do not add
 dependencies with dependencies. Do convince Andrew to cut down dependency usage
 in rust-bitcoin.
 
-Assorted random TODOs:
+### Assorted random TODOs:
 
  * Create a general timer interface - this should be passed around in reference
    form to most objects to allow them to register functions which are called on
@@ -51,8 +55,10 @@ Assorted random TODOs:
 
  * Some kind of logging subsystem/API.
 
-Notes on coding style:
+### Notes on coding style:
  * Use tabs. If you want to align lines, use spaces. Any desired alignment
    should display fine at any tab-length display setting.
 
-License is Apache-2.0.
+### License
+
+Apache-2.0.
