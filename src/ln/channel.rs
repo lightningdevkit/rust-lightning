@@ -1162,7 +1162,7 @@ impl Channel {
 
 		// Now that we're past error-generating stuff, update our local state:
 
-		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new());
+		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number);
 		self.channel_state = ChannelState::FundingSent as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
@@ -2067,7 +2067,7 @@ impl Channel {
 		let temporary_channel_id = self.channel_id;
 
 		// Now that we're past error-generating stuff, update our local state:
-		self.channel_monitor.provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new());
+		self.channel_monitor.provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number);
 		self.channel_state = ChannelState::FundingCreated as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
@@ -2241,7 +2241,7 @@ impl Channel {
 		}
 
 		// Update state now that we've passed all the can-fail calls...
-		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_commitment_tx.0, remote_commitment_tx.1);
+		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_commitment_tx.0, remote_commitment_tx.1, self.cur_remote_commitment_transaction_number);
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 
 		Ok((msgs::CommitmentSigned {

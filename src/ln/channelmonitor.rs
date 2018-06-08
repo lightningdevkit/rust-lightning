@@ -155,6 +155,9 @@ pub struct ChannelMonitor {
 	old_secrets: [([u8; 32], u64); 49],
 	remote_claimable_outpoints: HashMap<Sha256dHash, Vec<HTLCOutputInCommitment>>,
 	remote_htlc_outputs_on_chain: Mutex<HashMap<Sha256dHash, u64>>,
+	//hash to commitment number mapping use to determine the state of transaction owning it
+	// (revoked/non-revoked) and so lightnen pruning
+	remote_hash_commitment_number: HashMap<[u8; 32], u64>,
 
 	// We store two local commitment transactions to avoid any race conditions where we may update
 	// some monitors (potentially on watchtowers) but then fail to update others, resulting in the
@@ -185,6 +188,7 @@ impl Clone for ChannelMonitor {
 			old_secrets: self.old_secrets.clone(),
 			remote_claimable_outpoints: self.remote_claimable_outpoints.clone(),
 			remote_htlc_outputs_on_chain: Mutex::new((*self.remote_htlc_outputs_on_chain.lock().unwrap()).clone()),
+			remote_hash_commitment_number: self.remote_hash_commitment_number.clone(),
 
 			prev_local_signed_commitment_tx: self.prev_local_signed_commitment_tx.clone(),
 			current_local_signed_commitment_tx: self.current_local_signed_commitment_tx.clone(),
@@ -217,6 +221,7 @@ impl ChannelMonitor {
 			old_secrets: [([0; 32], 1 << 48); 49],
 			remote_claimable_outpoints: HashMap::new(),
 			remote_htlc_outputs_on_chain: Mutex::new(HashMap::new()),
+			remote_hash_commitment_number: HashMap::new(),
 
 			prev_local_signed_commitment_tx: None,
 			current_local_signed_commitment_tx: None,
@@ -255,7 +260,9 @@ impl ChannelMonitor {
 
 	/// Inserts a revocation secret into this channel monitor. Also optionally tracks the next
 	/// revocation point which may be required to claim HTLC outputs which we know the preimage of
-	/// in case the remote end force-closes using their latest state.
+	/// in case the remote end force-closes using their latest state. Prunes old preimages if neither
+	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
+	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
 	pub fn provide_secret(&mut self, idx: u64, secret: [u8; 32], their_next_revocation_point: Option<(u64, PublicKey)>) -> Result<(), HandleError> {
 		let pos = ChannelMonitor::place_secret(idx);
 		for i in 0..pos {
@@ -286,20 +293,46 @@ impl ChannelMonitor {
 				}
 			}
 		}
-		// TODO: Prune payment_preimages no longer needed by the revocation (just have to check
-		// that non-revoked remote commitment tx(n) do not need it, and our latest local commitment
-		// tx does not need it.
+
+		let mut waste_hash_state : Vec<[u8;32]> = Vec::new();
+		{
+			let local_signed_commitment_tx = &self.current_local_signed_commitment_tx;
+			let remote_hash_commitment_number = &self.remote_hash_commitment_number;
+			let min_idx = self.get_min_seen_secret();
+			self.payment_preimages.retain(|&k, _| {
+					for &(ref htlc, _s1, _s2) in &local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !").htlc_outputs {
+						if k == htlc.payment_hash {
+							return true
+						}
+					}
+					if let Some(cn) = remote_hash_commitment_number.get(&k) {
+						if *cn < min_idx {
+							return true
+						}
+					}
+					waste_hash_state.push(k);
+					false
+				});
+		}
+		for h in waste_hash_state {
+			self.remote_hash_commitment_number.remove(&h);
+		}
+
 		Ok(())
 	}
 
 	/// Informs this monitor of the latest remote (ie non-broadcastable) commitment transaction.
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
-	pub fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>) {
+	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
+	pub fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64) {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
 		// timeouts)
+		for htlc in &htlc_outputs {
+			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
+		}
 		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), htlc_outputs);
 	}
 
@@ -796,9 +829,15 @@ impl ChannelMonitor {
 mod tests {
 	use bitcoin::util::misc::hex_bytes;
 	use bitcoin::blockdata::script::Script;
+	use bitcoin::util::hash::{Hash160,Sha256dHash};
+	use bitcoin::blockdata::transaction::Transaction;
 	use ln::channelmonitor::ChannelMonitor;
+	use ln::channelmonitor::LocalSignedTx;
+	use ln::chan_utils::HTLCOutputInCommitment;
 	use secp256k1::key::{SecretKey,PublicKey};
-	use secp256k1::Secp256k1;
+	use secp256k1::{Secp256k1, Signature};
+	use rand::{thread_rng,Rng};
+	use std::collections::HashMap;
 
 	#[test]
 	fn test_per_commitment_storage() {
@@ -1151,6 +1190,164 @@ mod tests {
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
 			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
 					"Previous secret did not match new one");
+		}
+	}
+
+	macro_rules! gen_local_tx {
+		($hex : expr, $monitor : expr, $htlcs : expr, $rng : expr, $preimage : expr, $hash : expr) => {
+			{
+
+				let mut htlcs = Vec::new();
+
+				for _i in 0..$htlcs {
+					$rng.fill_bytes(&mut $preimage);
+					$hash[0..20].clone_from_slice(&Hash160::from_data(&$preimage)[0..20]);
+					$monitor.provide_payment_preimage(&$hash, &$preimage);
+					htlcs.push((HTLCOutputInCommitment {
+						offered : true,
+						amount_msat : 0,
+						cltv_expiry : 0,
+						payment_hash : $hash.clone(),
+						transaction_output_index : 0,
+					}, Signature::from_der(&Secp256k1::new(), $hex).unwrap(),
+					Signature::from_der(&Secp256k1::new(), $hex).unwrap()))
+				}
+
+				Some(LocalSignedTx {
+					txid: Sha256dHash::from_data(&[]),
+					tx: Transaction {
+						version: 0,
+						lock_time: 0,
+						input: Vec::new(),
+						output: Vec::new(),
+					},
+					revocation_key: PublicKey::new(),
+					a_htlc_key: PublicKey::new(),
+					b_htlc_key: PublicKey::new(),
+					delayed_payment_key: PublicKey::new(),
+					feerate_per_kw: 0,
+					htlc_outputs: htlcs,
+				})
+			}
+		}
+	}
+
+	macro_rules! gen_remote_outpoints {
+		($monitor : expr, $tx : expr, $htlcs : expr, $rng : expr, $preimage : expr, $hash: expr, $number : expr) => {
+			{
+				let mut commitment_number = $number;
+
+				for i in 0..$tx {
+
+					let tx_zero = Transaction {
+						version : 0,
+						lock_time : i,
+						input : Vec::new(),
+						output: Vec::new(),
+					};
+
+					let mut htlcs = Vec::new();
+
+					for _i in 0..$htlcs {
+						$rng.fill_bytes(&mut $preimage);
+						$hash[0..20].clone_from_slice(&Hash160::from_data(&$preimage)[0..20]);
+						$monitor.provide_payment_preimage(&$hash, &$preimage);
+						htlcs.push(HTLCOutputInCommitment {
+							offered : true,
+							amount_msat : 0,
+							cltv_expiry : 0,
+							payment_hash : $hash.clone(),
+							transaction_output_index : 0,
+						});
+					}
+					commitment_number -= 1;
+					$monitor.provide_latest_remote_commitment_tx_info(&tx_zero, htlcs, commitment_number);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn test_prune_preimages() {
+
+		let mut monitor: ChannelMonitor;
+		let mut secrets: Vec<[u8; 32]> = Vec::new();
+		let secp_ctx = Secp256k1::new();
+		let mut preimage: [u8;32] = [0;32];
+		let mut hash: [u8;32] = [0;32];
+		let mut rng  = thread_rng();
+
+		{
+			// insert 30 random hash, 10 from local, 10 from remote, prune 30/50
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+
+			for _i in 0..30 {
+				rng.fill_bytes(&mut preimage);
+				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
+				monitor.provide_payment_preimage(&hash, &preimage);
+			}
+			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 10, rng, preimage, hash);
+			gen_remote_outpoints!(monitor, 1, 10, rng, preimage, hash, 281474976710654);
+			secrets.clear();
+			secrets.push([0; 32]);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			assert_eq!(monitor.payment_preimages.len(), 20);
+		}
+
+
+		{
+			// insert 30 random hash, prune 30/30
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+
+			for _i in 0..30 {
+				rng.fill_bytes(&mut preimage);
+				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
+				monitor.provide_payment_preimage(&hash, &preimage);
+			}
+			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 0, rng, preimage, hash);
+			gen_remote_outpoints!(monitor, 0, 0, rng, preimage, hash, 281474976710655);
+			secrets.clear();
+			secrets.push([0; 32]);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			assert_eq!(monitor.payment_preimages.len(), 0);
+		}
+
+		{
+			// insert 30 random hash, 25 on 5 remotes, prune 30/55
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+
+			for _i in 0..30 {
+				rng.fill_bytes(&mut preimage);
+				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
+				monitor.provide_payment_preimage(&hash, &preimage);
+			}
+			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 0, rng, preimage, hash);
+			gen_remote_outpoints!(monitor, 5, 5, rng, preimage, hash, 281474976710654);
+			secrets.clear();
+			secrets.push([0; 32]);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			assert_eq!(monitor.payment_preimages.len(), 25);
+		}
+
+		{
+			// insert 30 random hash, 25 from local, prune 30/55
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+
+			for _i in 0..30 {
+				rng.fill_bytes(&mut preimage);
+				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
+				monitor.provide_payment_preimage(&hash, &preimage);
+			}
+			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 25, rng, preimage, hash);
+			gen_remote_outpoints!(monitor, 0, 0, rng, preimage, hash, 281474976710655);
+			secrets.clear();
+			secrets.push([0; 32]);
+			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			assert_eq!(monitor.payment_preimages.len(), 25);
 		}
 	}
 
