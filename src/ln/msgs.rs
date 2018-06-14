@@ -386,7 +386,7 @@ pub enum HTLCFailChannelUpdate {
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in
 /// paralell when they originate from different their_node_ids, however they MUST NOT be called in
 /// paralell when the two calls have the same their_node_id.
-pub trait ChannelMessageHandler : events::EventsProvider {
+pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	//Channel init:
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<AcceptChannel, HandleError>;
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
@@ -419,7 +419,7 @@ pub trait ChannelMessageHandler : events::EventsProvider {
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 }
 
-pub trait RoutingMessageHandler {
+pub trait RoutingMessageHandler : Send + Sync {
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<(), HandleError>;
 	/// Handle a channel_announcement message, returning true if it should be forwarded on, false
 	/// or returning an Err otherwise.
