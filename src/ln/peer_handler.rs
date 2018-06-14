@@ -8,7 +8,7 @@ use util::events::{EventsProvider,Event};
 
 use std::collections::{HashMap,LinkedList};
 use std::sync::{Arc, Mutex};
-use std::{cmp,mem,hash,fmt};
+use std::{cmp,error,mem,hash,fmt};
 
 pub struct MessageHandler {
 	pub chan_handler: Arc<msgs::ChannelMessageHandler>,
@@ -46,6 +46,16 @@ pub struct PeerHandleError {
 impl fmt::Debug for PeerHandleError {
 	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		formatter.write_str("Peer Sent Invalid Data")
+	}
+}
+impl fmt::Display for PeerHandleError {
+	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		formatter.write_str("Peer Sent Invalid Data")
+	}
+}
+impl error::Error for PeerHandleError {
+	fn description(&self) -> &str {
+		"Peer Sent Invalid Data"
 	}
 }
 
