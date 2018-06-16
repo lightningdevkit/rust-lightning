@@ -357,7 +357,9 @@ pub enum ErrorAction {
 		msg: UpdateFailHTLC
 	},
 	/// The peer took some action which made us think they were useless. Disconnect them.
-	DisconnectPeer {},
+	DisconnectPeer,
+	/// The peer did something harmless that we weren't able to process, just log and ignore
+	IgnoreError,
 }
 
 pub struct HandleError { //TODO: rename me
@@ -506,7 +508,7 @@ macro_rules! secp_signature {
 
 impl MsgDecodable for LocalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 3 { return Err(DecodeError::WrongLength); }
+		if v.len() < 2 { return Err(DecodeError::WrongLength); }
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
 		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
 		let mut flags = Vec::with_capacity(len);
@@ -528,7 +530,7 @@ impl MsgEncodable for LocalFeatures {
 
 impl MsgDecodable for GlobalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 3 { return Err(DecodeError::WrongLength); }
+		if v.len() < 2 { return Err(DecodeError::WrongLength); }
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
 		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
 		let mut flags = Vec::with_capacity(len);

@@ -272,15 +272,18 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									match $thing {
 										Ok(x) => x,
 										Err(e) => {
-											// TODO: Log e.err
+											println!("Got error handling message: {}!", e.err);
 											if let Some(action) = e.msg {
 												match action {
 													msgs::ErrorAction::UpdateFailHTLC { msg } => {
 														encode_and_send_msg!(msg, 131);
 														continue;
 													},
-													msgs::ErrorAction::DisconnectPeer {} => {
+													msgs::ErrorAction::DisconnectPeer => {
 														return Err(PeerHandleError{ no_connection_possible: false });
+													},
+													msgs::ErrorAction::IgnoreError => {
+														continue;
 													},
 												}
 											} else {
@@ -296,6 +299,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									match $thing {
 										Ok(x) => x,
 										Err(_e) => {
+											println!("Error decoding message");
 											//TODO: Handle e?
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}

@@ -3,7 +3,7 @@ use secp256k1::{Secp256k1,Message};
 
 use bitcoin::util::hash::Sha256dHash;
 
-use ln::msgs::{HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
+use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
 use ln::msgs;
 
 use std::cmp;
@@ -122,10 +122,10 @@ impl RoutingMessageHandler for Router {
 
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
-			None => Err(HandleError{err: "No existing channels for node_announcement", msg: None}),
+			None => Err(HandleError{err: "No existing channels for node_announcement", msg: Some(ErrorAction::IgnoreError)}),
 			Some(node) => {
 				if node.last_update >= msg.contents.timestamp {
-					return Err(HandleError{err: "Update older than last processed update", msg: None});
+					return Err(HandleError{err: "Update older than last processed update", msg: Some(ErrorAction::IgnoreError)});
 				}
 
 				node.features = msg.contents.features.clone();
@@ -159,7 +159,7 @@ impl RoutingMessageHandler for Router {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though its unclear
 				//exactly how...
-				return Err(HandleError{err: "Already have knowledge of channel", msg: None})
+				return Err(HandleError{err: "Already have knowledge of channel", msg: Some(ErrorAction::IgnoreError)})
 			},
 			Entry::Vacant(entry) => {
 				entry.insert(ChannelInfo {
@@ -233,12 +233,12 @@ impl RoutingMessageHandler for Router {
 		let chan_was_enabled;
 
 		match network.channels.get_mut(&NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
-			None => return Err(HandleError{err: "Couldn't find channel for update", msg: None}),
+			None => return Err(HandleError{err: "Couldn't find channel for update", msg: Some(ErrorAction::IgnoreError)}),
 			Some(channel) => {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr) => {
 						if $target.last_update >= msg.contents.timestamp {
-							return Err(HandleError{err: "Update older than last processed update", msg: None});
+							return Err(HandleError{err: "Update older than last processed update", msg: Some(ErrorAction::IgnoreError)});
 						}
 						chan_was_enabled = $target.enabled;
 						$target.last_update = msg.contents.timestamp;
