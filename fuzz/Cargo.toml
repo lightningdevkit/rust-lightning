@@ -44,6 +44,14 @@ path = "fuzz_targets/full_stack_target.rs"
 
 # message fuzz targets
 [[bin]]
+name = "msg_ping_target"
+path = "fuzz_targets/msg_ping_target.rs"
+
+[[bin]]
+name = "msg_pong_target"
+path = "fuzz_targets/msg_pong_target.rs"
+
+[[bin]]
 name = "msg_accept_channel_target"
 path = "fuzz_targets/msg_targets/msg_accept_channel_target.rs"
 
