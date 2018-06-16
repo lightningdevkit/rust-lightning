@@ -307,6 +307,18 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								}
 							}
 
+							macro_rules! try_ignore_potential_decodeerror {
+								($thing: expr) => {
+									match $thing {
+										Ok(x) => x,
+										Err(_e) => {
+											println!("Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
+											continue;
+										}
+									};
+								}
+							}
+
 							let next_step = peer.channel_encryptor.get_noise_step();
 							match next_step {
 								NextNoiseStep::ActOne => {
@@ -495,7 +507,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											257 => {
-												let msg = try_potential_decodeerror!(msgs::NodeAnnouncement::decode(&msg_data[2..]));
+												let msg = try_ignore_potential_decodeerror!(msgs::NodeAnnouncement::decode(&msg_data[2..]));
 												try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
 											},
 											258 => {
