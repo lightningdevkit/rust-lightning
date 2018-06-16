@@ -132,6 +132,15 @@ pub struct Init {
 	pub local_features: LocalFeatures,
 }
 
+pub struct Ping {
+	pub ponglen: u16,
+	pub byteslen: u16,
+}
+
+pub struct Pong {
+	pub byteslen: u16,
+}
+
 pub struct OpenChannel {
 	pub chain_hash: Sha256dHash,
 	pub temporary_channel_id: Uint256,
@@ -568,6 +577,54 @@ impl MsgEncodable for Init {
 		let mut res = Vec::with_capacity(self.global_features.flags.len() + self.local_features.flags.len());
 		res.extend_from_slice(&self.global_features.encode()[..]);
 		res.extend_from_slice(&self.local_features.encode()[..]);
+		res
+	}
+}
+
+impl MsgDecodable for Ping {
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 4 {
+			return Err(DecodeError::WrongLength);
+		}
+		let ponglen = byte_utils::slice_to_be16(&v[0..2]);
+		let byteslen = byte_utils::slice_to_be16(&v[2..4]);
+		if v.len() < 4 + byteslen as usize {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self {
+			ponglen,
+			byteslen,
+		})
+	}
+}
+impl MsgEncodable for Ping {
+	fn encode(&self) -> Vec<u8> {
+		let mut res = Vec::with_capacity(self.byteslen as usize + 2);
+		res.extend_from_slice(&byte_utils::be16_to_array(self.byteslen));
+		res.resize(2 + self.byteslen as usize, 0);
+		res
+	}
+}
+
+impl MsgDecodable for Pong {
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 2 {
+			return Err(DecodeError::WrongLength);
+		}
+		let byteslen = byte_utils::slice_to_be16(&v[0..2]);
+		if v.len() < 2 + byteslen as usize {
+			return Err(DecodeError::WrongLength);
+		}
+		Ok(Self {
+			byteslen
+		})
+	}
+}
+impl MsgEncodable for Pong {
+	fn encode(&self) -> Vec<u8> {
+		let mut res = Vec::with_capacity(self.byteslen as usize + 2);
+		res.extend_from_slice(&byte_utils::be16_to_array(self.byteslen));
+		res.resize(2 + self.byteslen as usize, 0);
 		res
 	}
 }

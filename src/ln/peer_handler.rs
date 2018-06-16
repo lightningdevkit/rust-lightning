@@ -390,8 +390,15 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											17 => {
 												// Error msg
 											},
-											18 => { }, // ping
-											19 => { }, // pong
+
+											18 => {
+												let msg = try_potential_decodeerror!(msgs::Ping::decode(&msg_data[2..]));
+												let resp = msgs::Pong { byteslen: msg.ponglen };
+												encode_and_send_msg!(resp, 19);
+											},
+											19 => {
+												try_potential_decodeerror!(msgs::Pong::decode(&msg_data[2..]));
+											},
 
 											// Channel control:
 											32 => {
