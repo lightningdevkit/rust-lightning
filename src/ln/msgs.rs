@@ -61,8 +61,15 @@ impl LocalFeatures {
 		self.flags.len() > 0 && (self.flags[0] & 1) != 0
 	}
 
-	pub fn supports_initial_routing_sync(&self) -> bool {
+	pub fn initial_routing_sync(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
+	}
+	pub fn set_initial_routing_sync(&mut self) {
+		if self.flags.len() == 0 {
+			self.flags.resize(1, 1 << 3);
+		} else {
+			self.flags[0] |= 1 << 3;
+		}
 	}
 
 	pub fn supports_upfront_shutdown_script(&self) -> bool {

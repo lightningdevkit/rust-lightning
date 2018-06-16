@@ -8,6 +8,7 @@ use util::events::{EventsProvider,Event};
 
 use std::collections::{HashMap,LinkedList};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,mem,hash,fmt};
 
 pub struct MessageHandler {
@@ -86,6 +87,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor> {
 	peers: Mutex<PeerHolder<Descriptor>>,
 	pending_events: Mutex<Vec<Event>>,
 	our_node_secret: SecretKey,
+	initial_syncs_sent: AtomicUsize,
 }
 
 
@@ -101,6 +103,9 @@ macro_rules! encode_msg {
 	}
 }
 
+//TODO: Really should do something smarter for this
+const INITIAL_SYNCS_TO_SEND: usize = 5;
+
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
 /// PeerIds may repeat, but only after disconnect_event() has been called.
 impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
@@ -110,6 +115,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			peers: Mutex::new(PeerHolder { peers: HashMap::new(), node_id_to_descriptor: HashMap::new() }),
 			pending_events: Mutex::new(Vec::new()),
 			our_node_secret: our_node_secret,
+			initial_syncs_sent: AtomicUsize::new(0),
 		}
 	}
 
@@ -333,9 +339,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									peer.pending_read_is_header = true;
 
 									insert_node_id = Some(peer.their_node_id.unwrap());
+									let mut local_features = msgs::LocalFeatures::new();
+									if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
+										self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
+										local_features.set_initial_routing_sync();
+									}
 									encode_and_send_msg!(msgs::Init {
 										global_features: msgs::GlobalFeatures::new(),
-										local_features: msgs::LocalFeatures::new(),
+										local_features,
 									}, 16);
 								},
 								NextNoiseStep::ActThree => {
@@ -381,9 +392,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												peer.their_local_features = Some(msg.local_features);
 
 												if !peer.outbound {
+													let mut local_features = msgs::LocalFeatures::new();
+													if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
+														self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
+														local_features.set_initial_routing_sync();
+													}
 													encode_and_send_msg!(msgs::Init {
 														global_features: msgs::GlobalFeatures::new(),
-														local_features: msgs::LocalFeatures::new(),
+														local_features,
 													}, 16);
 												}
 											},
