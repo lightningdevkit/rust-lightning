@@ -9,15 +9,11 @@ use lightning::util::reset_rng_state;
 use lightning::ln::msgs::{MsgEncodable, MsgDecodable};
 
 mod utils;
-use utils::slice_to_be16;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	let mut read_pos = 0;
-	loop {
-		test_msg!(msgs::UpdateFulfillHTLC, data, read_pos);
-	}
+	test_msg!(msgs::UpdateFulfillHTLC, data);
 }
 
 #[cfg(feature = "afl")]
