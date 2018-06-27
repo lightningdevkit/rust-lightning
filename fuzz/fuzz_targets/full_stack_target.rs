@@ -15,6 +15,7 @@ use crypto::sha2::Sha256;
 use crypto::digest::Digest;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
+use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
@@ -93,7 +94,7 @@ impl FeeEstimator for FuzzEstimator {
 
 struct TestChannelMonitor {}
 impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, _funding_txo: (Sha256dHash, u16), _monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn add_update_monitor(&self, _funding_txo: OutPoint, _monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		//TODO!
 		Ok(())
 	}
@@ -280,7 +281,7 @@ pub fn do_test(data: &[u8]) {
 					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 							value: funding_generation.1, script_pubkey: funding_generation.2,
 						}] };
-					let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+					let funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 					channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
 					pending_funding_signatures.insert(funding_output, tx);
 				}

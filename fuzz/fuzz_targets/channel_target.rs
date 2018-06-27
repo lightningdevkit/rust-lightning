@@ -12,6 +12,7 @@ use lightning::ln::channelmanager::{HTLCFailReason, PendingForwardHTLCInfo};
 use lightning::ln::msgs;
 use lightning::ln::msgs::MsgDecodable;
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
+use lightning::chain::transaction::OutPoint;
 use lightning::util::reset_rng_state;
 
 use secp256k1::key::{PublicKey, SecretKey};
@@ -196,9 +197,9 @@ pub fn do_test(data: &[u8]) {
 		return_err!(chan.accept_channel(&accept_chan));
 
 		tx.output.push(TxOut{ value: chan_value, script_pubkey: chan.get_funding_redeemscript().to_v0_p2wsh() });
-		let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+		let funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
-		chan.get_outbound_funding_created(funding_output.0.clone(), funding_output.1).unwrap();
+		chan.get_outbound_funding_created(funding_output).unwrap();
 		let funding_signed = decode_msg!(msgs::FundingSigned, 32+64);
 		return_err!(chan.funding_signed(&funding_signed));
 		chan
@@ -215,11 +216,11 @@ pub fn do_test(data: &[u8]) {
 		chan.get_accept_channel().unwrap();
 
 		tx.output.push(TxOut{ value: open_chan.funding_satoshis, script_pubkey: chan.get_funding_redeemscript().to_v0_p2wsh() });
-		let funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+		let funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
 		let mut funding_created = decode_msg!(msgs::FundingCreated, 32+32+2+64);
-		funding_created.funding_txid = funding_output.0.clone();
-		funding_created.funding_output_index = funding_output.1;
+		funding_created.funding_txid = funding_output.txid.clone();
+		funding_created.funding_output_index = funding_output.index;
 		return_err!(chan.funding_created(&funding_created));
 		chan
 	};

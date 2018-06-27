@@ -1,4 +1,4 @@
-use bitcoin::blockdata::block::BlockHeader;
+ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
@@ -12,6 +12,7 @@ use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
+use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelKeys};
 use ln::channelmonitor::ManyChannelMonitor;
 use ln::router::{Route,RouteHop};
@@ -661,12 +662,12 @@ impl ChannelManager {
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &Uint256, funding_txo: (Sha256dHash, u16)) {
+	pub fn funding_transaction_generated(&self, temporary_channel_id: &Uint256, funding_txo: OutPoint) {
 		let (chan, msg, chan_monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.remove(&temporary_channel_id) {
 				Some(mut chan) => {
-					match chan.get_outbound_funding_created(funding_txo.0, funding_txo.1) {
+					match chan.get_outbound_funding_created(funding_txo) {
 						Ok(funding_msg) => {
 							(chan, funding_msg.0, funding_msg.1)
 						},
@@ -1029,7 +1030,7 @@ impl ChainListener for ChannelManager {
 				if let Some(funding_txo) = channel.get_funding_txo() {
 					for tx in txn_matched {
 						for inp in tx.input.iter() {
-							if inp.prev_hash == funding_txo.0 && inp.prev_index == funding_txo.1 as u32 {
+							if inp.prev_hash == funding_txo.txid && inp.prev_index == funding_txo.index as u32 {
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_ids_to_remove.push(short_id);
 								}
@@ -1578,7 +1579,7 @@ impl ChannelMessageHandler for ChannelManager {
 
 								let mut hmac = Hmac::new(Sha256::new(), &um);
 								hmac.input(&err_packet.encode()[32..]);
-								let mut calc_tag =  [0u8; 32];
+								let mut calc_tag = [0u8; 32];
 								hmac.raw_result(&mut calc_tag);
 								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
 									const UNKNOWN_CHAN: u16 = 0x4000|10;
@@ -1801,6 +1802,7 @@ impl ChannelMessageHandler for ChannelManager {
 #[cfg(test)]
 mod tests {
 	use chain::chaininterface;
+	use chain::transaction::OutPoint;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
@@ -2020,9 +2022,9 @@ mod tests {
 				tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 					value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 				}]};
-				funding_output = (Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+				funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
 
-				node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output.clone());
+				node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
 				let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
 				assert_eq!(added_monitors[0].0, funding_output);
