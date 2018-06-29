@@ -834,7 +834,6 @@ mod tests {
 	use secp256k1::key::{SecretKey,PublicKey};
 	use secp256k1::{Secp256k1, Signature};
 	use rand::{thread_rng,Rng};
-	use std::collections::HashMap;
 
 	#[test]
 	fn test_per_commitment_storage() {
@@ -1193,9 +1192,7 @@ mod tests {
 	macro_rules! gen_local_tx {
 		($hex : expr, $monitor : expr, $htlcs : expr, $rng : expr, $preimage : expr, $hash : expr) => {
 			{
-
 				let mut htlcs = Vec::new();
-
 				for _i in 0..$htlcs {
 					$rng.fill_bytes(&mut $preimage);
 					$hash[0..20].clone_from_slice(&Hash160::from_data(&$preimage)[0..20]);
@@ -1233,9 +1230,7 @@ mod tests {
 		($monitor : expr, $tx : expr, $htlcs : expr, $rng : expr, $preimage : expr, $hash: expr, $number : expr) => {
 			{
 				let mut commitment_number = $number;
-
 				for i in 0..$tx {
-
 					let tx_zero = Transaction {
 						version : 0,
 						lock_time : i,
@@ -1244,7 +1239,6 @@ mod tests {
 					};
 
 					let mut htlcs = Vec::new();
-
 					for _i in 0..$htlcs {
 						$rng.fill_bytes(&mut $preimage);
 						$hash[0..20].clone_from_slice(&Hash160::from_data(&$preimage)[0..20]);
@@ -1266,9 +1260,8 @@ mod tests {
 
 	#[test]
 	fn test_prune_preimages() {
-
-		let mut monitor: ChannelMonitor;
-		let mut secrets: Vec<[u8; 32]> = Vec::new();
+		let mut secret = [0; 32];
+		secret[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
 		let secp_ctx = Secp256k1::new();
 		let mut preimage: [u8;32] = [0;32];
 		let mut hash: [u8;32] = [0;32];
@@ -1276,7 +1269,7 @@ mod tests {
 
 		{
 			// insert 30 random hash, 10 from local, 10 from remote, prune 30/50
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+			let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
 
 			for _i in 0..30 {
 				rng.fill_bytes(&mut preimage);
@@ -1285,17 +1278,13 @@ mod tests {
 			}
 			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 10, rng, preimage, hash);
 			gen_remote_outpoints!(monitor, 1, 10, rng, preimage, hash, 281474976710654);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
 			assert_eq!(monitor.payment_preimages.len(), 20);
 		}
 
-
 		{
 			// insert 30 random hash, prune 30/30
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+			let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
 
 			for _i in 0..30 {
 				rng.fill_bytes(&mut preimage);
@@ -1304,16 +1293,13 @@ mod tests {
 			}
 			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 0, rng, preimage, hash);
 			gen_remote_outpoints!(monitor, 0, 0, rng, preimage, hash, 281474976710655);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
 			assert_eq!(monitor.payment_preimages.len(), 0);
 		}
 
 		{
 			// insert 30 random hash, 25 on 5 remotes, prune 30/55
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+			let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
 
 			for _i in 0..30 {
 				rng.fill_bytes(&mut preimage);
@@ -1322,16 +1308,13 @@ mod tests {
 			}
 			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 0, rng, preimage, hash);
 			gen_remote_outpoints!(monitor, 5, 5, rng, preimage, hash, 281474976710654);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
 			assert_eq!(monitor.payment_preimages.len(), 25);
 		}
 
 		{
 			// insert 30 random hash, 25 from local, prune 30/55
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+			let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
 
 			for _i in 0..30 {
 				rng.fill_bytes(&mut preimage);
@@ -1340,10 +1323,7 @@ mod tests {
 			}
 			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 25, rng, preimage, hash);
 			gen_remote_outpoints!(monitor, 0, 0, rng, preimage, hash, 281474976710655);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
+			monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
 			assert_eq!(monitor.payment_preimages.len(), 25);
 		}
 	}
