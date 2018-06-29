@@ -295,28 +295,36 @@ impl ChannelMonitor {
 			}
 		}
 
-		let mut waste_hash_state : Vec<[u8;32]> = Vec::new();
-		{
-			let local_signed_commitment_tx = &self.current_local_signed_commitment_tx;
-			let remote_hash_commitment_number = &self.remote_hash_commitment_number;
+		if !self.payment_preimages.is_empty() {
+			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
+			let prev_local_signed_commitment_tx = self.prev_local_signed_commitment_tx.as_ref();
 			let min_idx = self.get_min_seen_secret();
+			let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
+
 			self.payment_preimages.retain(|&k, _| {
-					for &(ref htlc, _s1, _s2) in &local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !").htlc_outputs {
+				for &(ref htlc, _, _) in &local_signed_commitment_tx.htlc_outputs {
+					if k == htlc.payment_hash {
+						return true
+					}
+				}
+				if let Some(prev_local_commitment_tx) = prev_local_signed_commitment_tx {
+					for &(ref htlc, _, _) in prev_local_commitment_tx.htlc_outputs.iter() {
 						if k == htlc.payment_hash {
 							return true
 						}
 					}
-					if let Some(cn) = remote_hash_commitment_number.get(&k) {
-						if *cn < min_idx {
-							return true
-						}
+				}
+				let contains = if let Some(cn) = remote_hash_commitment_number.get(&k) {
+					if *cn < min_idx {
+						return true
 					}
-					waste_hash_state.push(k);
-					false
-				});
-		}
-		for h in waste_hash_state {
-			self.remote_hash_commitment_number.remove(&h);
+					true
+				} else { false };
+				if contains {
+					remote_hash_commitment_number.remove(&k);
+				}
+				false
+			});
 		}
 
 		Ok(())
@@ -830,15 +838,14 @@ impl ChannelMonitor {
 mod tests {
 	use bitcoin::util::misc::hex_bytes;
 	use bitcoin::blockdata::script::Script;
-	use bitcoin::util::hash::{Hash160,Sha256dHash};
 	use bitcoin::blockdata::transaction::Transaction;
+	use crypto::digest::Digest;
 	use ln::channelmonitor::ChannelMonitor;
-	use ln::channelmonitor::LocalSignedTx;
-	use ln::chan_utils::HTLCOutputInCommitment;
+	use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys};
+	use util::sha2::Sha256;
 	use secp256k1::key::{SecretKey,PublicKey};
 	use secp256k1::{Secp256k1, Signature};
 	use rand::{thread_rng,Rng};
-	use std::collections::HashMap;
 
 	#[test]
 	fn test_per_commitment_storage() {
@@ -1194,162 +1201,118 @@ mod tests {
 		}
 	}
 
-	macro_rules! gen_local_tx {
-		($hex : expr, $monitor : expr, $htlcs : expr, $rng : expr, $preimage : expr, $hash : expr) => {
-			{
+	#[test]
+	fn test_prune_preimages() {
+		let secp_ctx = Secp256k1::new();
+		let dummy_sig = Signature::from_der(&secp_ctx, &hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..]).unwrap();
 
-				let mut htlcs = Vec::new();
-
-				for _i in 0..$htlcs {
-					$rng.fill_bytes(&mut $preimage);
-					$hash[0..20].clone_from_slice(&Hash160::from_data(&$preimage)[0..20]);
-					$monitor.provide_payment_preimage(&$hash, &$preimage);
-					htlcs.push((HTLCOutputInCommitment {
-						offered : true,
-						amount_msat : 0,
-						cltv_expiry : 0,
-						payment_hash : $hash.clone(),
-						transaction_output_index : 0,
-					}, Signature::from_der(&Secp256k1::new(), $hex).unwrap(),
-					Signature::from_der(&Secp256k1::new(), $hex).unwrap()))
-				}
-
-				Some(LocalSignedTx {
-					txid: Sha256dHash::from_data(&[]),
-					tx: Transaction {
-						version: 0,
-						lock_time: 0,
-						input: Vec::new(),
-						output: Vec::new(),
-					},
+		macro_rules! dummy_keys {
+			() => {
+				TxCreationKeys {
+					per_commitment_point: PublicKey::new(),
 					revocation_key: PublicKey::new(),
 					a_htlc_key: PublicKey::new(),
 					b_htlc_key: PublicKey::new(),
-					delayed_payment_key: PublicKey::new(),
-					feerate_per_kw: 0,
-					htlc_outputs: htlcs,
-				})
-			}
-		}
-	}
-
-	macro_rules! gen_remote_outpoints {
-		($monitor : expr, $tx : expr, $htlcs : expr, $rng : expr, $preimage : expr, $hash: expr, $number : expr) => {
-			{
-				let mut commitment_number = $number;
-
-				for i in 0..$tx {
-
-					let tx_zero = Transaction {
-						version : 0,
-						lock_time : i,
-						input : Vec::new(),
-						output: Vec::new(),
-					};
-
-					let mut htlcs = Vec::new();
-
-					for _i in 0..$htlcs {
-						$rng.fill_bytes(&mut $preimage);
-						$hash[0..20].clone_from_slice(&Hash160::from_data(&$preimage)[0..20]);
-						$monitor.provide_payment_preimage(&$hash, &$preimage);
-						htlcs.push(HTLCOutputInCommitment {
-							offered : true,
-							amount_msat : 0,
-							cltv_expiry : 0,
-							payment_hash : $hash.clone(),
-							transaction_output_index : 0,
-						});
-					}
-					commitment_number -= 1;
-					$monitor.provide_latest_remote_commitment_tx_info(&tx_zero, htlcs, commitment_number);
+					a_delayed_payment_key: PublicKey::new(),
+					b_payment_key: PublicKey::new(),
 				}
 			}
 		}
-	}
+		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 
-	#[test]
-	fn test_prune_preimages() {
-
-		let mut monitor: ChannelMonitor;
-		let mut secrets: Vec<[u8; 32]> = Vec::new();
-		let secp_ctx = Secp256k1::new();
-		let mut preimage: [u8;32] = [0;32];
-		let mut hash: [u8;32] = [0;32];
-		let mut rng  = thread_rng();
-
+		let mut preimages = Vec::new();
 		{
-			// insert 30 random hash, 10 from local, 10 from remote, prune 30/50
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
-
-			for _i in 0..30 {
+			let mut rng  = thread_rng();
+			for _ in 0..20 {
+				let mut preimage = [0; 32];
 				rng.fill_bytes(&mut preimage);
-				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
-				monitor.provide_payment_preimage(&hash, &preimage);
+				let mut sha = Sha256::new();
+				sha.input(&preimage);
+				let mut hash = [0; 32];
+				sha.result(&mut hash);
+				preimages.push((preimage, hash));
 			}
-			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 10, rng, preimage, hash);
-			gen_remote_outpoints!(monitor, 1, 10, rng, preimage, hash, 281474976710654);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
-			assert_eq!(monitor.payment_preimages.len(), 20);
 		}
 
-
-		{
-			// insert 30 random hash, prune 30/30
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
-
-			for _i in 0..30 {
-				rng.fill_bytes(&mut preimage);
-				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
-				monitor.provide_payment_preimage(&hash, &preimage);
+		macro_rules! preimages_slice_to_htlc_outputs {
+			($preimages_slice: expr) => {
+				{
+					let mut res = Vec::new();
+					for (idx, preimage) in $preimages_slice.iter().enumerate() {
+						res.push(HTLCOutputInCommitment {
+							offered: true,
+							amount_msat: 0,
+							cltv_expiry: 0,
+							payment_hash: preimage.1.clone(),
+							transaction_output_index: idx as u32,
+						});
+					}
+					res
+				}
 			}
-			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 0, rng, preimage, hash);
-			gen_remote_outpoints!(monitor, 0, 0, rng, preimage, hash, 281474976710655);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
-			assert_eq!(monitor.payment_preimages.len(), 0);
+		}
+		macro_rules! preimages_to_local_htlcs {
+			($preimages_slice: expr) => {
+				{
+					let mut inp = preimages_slice_to_htlc_outputs!($preimages_slice);
+					let res: Vec<_> = inp.drain(..).map(|e| { (e, dummy_sig.clone(), dummy_sig.clone()) }).collect();
+					res
+				}
+			}
 		}
 
-		{
-			// insert 30 random hash, 25 on 5 remotes, prune 30/55
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
-
-			for _i in 0..30 {
-				rng.fill_bytes(&mut preimage);
-				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
-				monitor.provide_payment_preimage(&hash, &preimage);
+		macro_rules! test_preimages_exist {
+			($preimages_slice: expr, $monitor: expr) => {
+				for preimage in $preimages_slice {
+					assert!($monitor.payment_preimages.contains_key(&preimage.1));
+				}
 			}
-			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 0, rng, preimage, hash);
-			gen_remote_outpoints!(monitor, 5, 5, rng, preimage, hash, 281474976710654);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
-			assert_eq!(monitor.payment_preimages.len(), 25);
 		}
 
-		{
-			// insert 30 random hash, 25 from local, prune 30/55
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+		// Prune with one old state and a local commitment tx holding a few overlaps with the
+		// old state.
+		let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &PublicKey::new(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), 0, Script::new());
+		monitor.set_their_to_self_delay(10);
 
-			for _i in 0..30 {
-				rng.fill_bytes(&mut preimage);
-				hash[0..20].clone_from_slice(&Hash160::from_data(&preimage)[0..20]);
-				monitor.provide_payment_preimage(&hash, &preimage);
-			}
-			monitor.current_local_signed_commitment_tx = gen_local_tx!(&hex_bytes("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..], monitor, 25, rng, preimage, hash);
-			gen_remote_outpoints!(monitor, 0, 0, rng, preimage, hash, 281474976710655);
-			secrets.clear();
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None);
-			assert_eq!(monitor.payment_preimages.len(), 25);
+		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652);
+		for &(ref preimage, ref hash) in preimages.iter() {
+			monitor.provide_payment_preimage(hash, preimage);
 		}
+
+		// Now provide a secret, pruning preimages 10-15
+		let mut secret = [0; 32];
+		secret[0..32].clone_from_slice(&hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+		monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
+		assert_eq!(monitor.payment_preimages.len(), 15);
+		test_preimages_exist!(&preimages[0..10], monitor);
+		test_preimages_exist!(&preimages[15..20], monitor);
+
+		// Now provide a further secret, pruning preimages 15-17
+		secret[0..32].clone_from_slice(&hex_bytes("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+		monitor.provide_secret(281474976710654, secret.clone(), None).unwrap();
+		assert_eq!(monitor.payment_preimages.len(), 13);
+		test_preimages_exist!(&preimages[0..10], monitor);
+		test_preimages_exist!(&preimages[17..20], monitor);
+
+		// Now update local commitment tx info, pruning only element 18 as we still care about the
+		// previous commitment tx's preimages too
+		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5]));
+		secret[0..32].clone_from_slice(&hex_bytes("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
+		monitor.provide_secret(281474976710653, secret.clone(), None).unwrap();
+		assert_eq!(monitor.payment_preimages.len(), 12);
+		test_preimages_exist!(&preimages[0..10], monitor);
+		test_preimages_exist!(&preimages[18..20], monitor);
+
+		// But if we do it again, we'll prune 5-10
+		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3]));
+		secret[0..32].clone_from_slice(&hex_bytes("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
+		monitor.provide_secret(281474976710652, secret.clone(), None).unwrap();
+		assert_eq!(monitor.payment_preimages.len(), 5);
+		test_preimages_exist!(&preimages[0..5], monitor);
 	}
 
 	// Further testing is done in the ChannelManager integration tests.

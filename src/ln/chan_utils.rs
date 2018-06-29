@@ -140,15 +140,15 @@ impl TxCreationKeys {
 /// the revocation key
 pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u16, delayed_payment_key: &PublicKey) -> Script {
 	Builder::new().push_opcode(opcodes::All::OP_IF)
-	                             .push_slice(&revocation_key.serialize())
-	                             .push_opcode(opcodes::All::OP_ELSE)
-	                             .push_int(to_self_delay as i64)
-	                             .push_opcode(opcodes::OP_CSV)
-	                             .push_opcode(opcodes::All::OP_DROP)
-	                             .push_slice(&delayed_payment_key.serialize())
-	                             .push_opcode(opcodes::All::OP_ENDIF)
-	                             .push_opcode(opcodes::All::OP_CHECKSIG)
-	                             .into_script()
+	              .push_slice(&revocation_key.serialize())
+	              .push_opcode(opcodes::All::OP_ELSE)
+	              .push_int(to_self_delay as i64)
+	              .push_opcode(opcodes::OP_CSV)
+	              .push_opcode(opcodes::All::OP_DROP)
+	              .push_slice(&delayed_payment_key.serialize())
+	              .push_opcode(opcodes::All::OP_ENDIF)
+	              .push_opcode(opcodes::All::OP_CHECKSIG)
+	              .into_script()
 }
 
 #[derive(Clone)]
