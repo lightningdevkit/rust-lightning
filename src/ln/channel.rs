@@ -1313,7 +1313,7 @@ impl Channel {
 	/// Removes an outbound HTLC which has been commitment_signed by the remote end
 	#[inline]
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<[u8; 32], HandleError> {
-		for mut htlc in self.pending_htlcs.iter_mut() {
+		for htlc in self.pending_htlcs.iter_mut() {
 			if htlc.outbound && htlc.htlc_id == htlc_id {
 				match check_preimage {
 					None => {},
