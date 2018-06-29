@@ -21,6 +21,7 @@ use ln::channelmanager::{PendingForwardHTLCInfo, HTLCFailReason};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
+use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
 use util::sha2::Sha256;
 
@@ -482,9 +483,9 @@ impl Channel {
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
 		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let mut channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key,
-		                                          &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key).unwrap(),
-		                                          &chan_keys.htlc_base_key,
-		                                          BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
+		                                              &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key).unwrap(),
+		                                              &chan_keys.htlc_base_key,
+		                                              BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
 		channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
 
@@ -599,8 +600,8 @@ impl Channel {
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
-				prev_hash: self.channel_monitor.get_funding_txo().unwrap().0,
-				prev_index: self.channel_monitor.get_funding_txo().unwrap().1 as u32,
+				prev_hash: self.channel_monitor.get_funding_txo().unwrap().txid,
+				prev_index: self.channel_monitor.get_funding_txo().unwrap().index as u32,
 				script_sig: Script::new(),
 				sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32),
 				witness: Vec::new(),
@@ -733,8 +734,8 @@ impl Channel {
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
-				prev_hash: self.channel_monitor.get_funding_txo().unwrap().0,
-				prev_index: self.channel_monitor.get_funding_txo().unwrap().1 as u32,
+				prev_hash: self.channel_monitor.get_funding_txo().unwrap().txid,
+				prev_index: self.channel_monitor.get_funding_txo().unwrap().index as u32,
 				script_sig: Script::new(),
 				sequence: 0xffffffff,
 				witness: Vec::new(),
@@ -1150,7 +1151,8 @@ impl Channel {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		self.channel_monitor.set_funding_info(msg.funding_txid, msg.funding_output_index);
+		let funding_info = OutPoint::new(msg.funding_txid, msg.funding_output_index);
+		self.channel_monitor.set_funding_info(funding_info);
 
 		let (remote_initial_commitment_tx, our_signature) = match self.funding_created_signature(&msg.signature) {
 			Ok(res) => res,
@@ -1165,7 +1167,7 @@ impl Channel {
 		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number);
 		self.channel_state = ChannelState::FundingSent as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
-		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
+		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
 		self.cur_local_commitment_transaction_number -= 1;
 
@@ -1240,11 +1242,11 @@ impl Channel {
 				HTLCState::AwaitingAnnouncedRemoteRevoke => {},
 				HTLCState::LocalAnnounced => { if for_remote_update_check { continue; } },
 				HTLCState::Committed => {},
-				HTLCState::RemoteRemoved =>  { if for_remote_update_check { continue; } },
-				HTLCState::AwaitingRemoteRevokeToRemove =>  { if for_remote_update_check { continue; } },
-				HTLCState::AwaitingRemovedRemoteRevoke =>  { if for_remote_update_check { continue; } },
-				HTLCState::LocalRemoved =>  {},
-				HTLCState::LocalRemovedAwaitingCommitment =>  { if for_remote_update_check { continue; } },
+				HTLCState::RemoteRemoved => { if for_remote_update_check { continue; } },
+				HTLCState::AwaitingRemoteRevokeToRemove => { if for_remote_update_check { continue; } },
+				HTLCState::AwaitingRemovedRemoteRevoke => { if for_remote_update_check { continue; } },
+				HTLCState::LocalRemoved => {},
+				HTLCState::LocalRemovedAwaitingCommitment => { if for_remote_update_check { continue; } },
 			}
 			if !htlc.outbound {
 				inbound_htlc_count += 1;
@@ -1823,7 +1825,7 @@ impl Channel {
 
 	/// Returns the funding_txo we either got from our peer, or were given by
 	/// get_outbound_funding_created.
-	pub fn get_funding_txo(&self) -> Option<(Sha256dHash, u16)> {
+	pub fn get_funding_txo(&self) -> Option<OutPoint> {
 		self.channel_monitor.get_funding_txo()
 	}
 
@@ -1920,17 +1922,17 @@ impl Channel {
 		}
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for (ref tx, index_in_block) in txn_matched.iter().zip(indexes_of_txn_matched) {
-				if tx.txid() == self.channel_monitor.get_funding_txo().unwrap().0 {
-					let txo_idx = self.channel_monitor.get_funding_txo().unwrap().1 as usize;
+				if tx.txid() == self.channel_monitor.get_funding_txo().unwrap().txid {
+					let txo_idx = self.channel_monitor.get_funding_txo().unwrap().index as usize;
 					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
 						tx.output[txo_idx].value != self.channel_value_satoshis {
 						self.channel_state = ChannelState::ShutdownComplete as u32;
 						self.channel_update_count += 1;
 					} else {
 						self.funding_tx_confirmations = 1;
-						self.short_channel_id = Some(((height as u64)          << (5*8)) |
+						self.short_channel_id = Some(((height as u64)		   << (5*8)) |
 						                             ((*index_in_block as u64) << (2*8)) |
-						                             ((self.channel_monitor.get_funding_txo().unwrap().1 as u64) << (2*8)));
+						                             ((self.channel_monitor.get_funding_txo().unwrap().index as u64) << (2*8)));
 					}
 				}
 			}
@@ -2043,7 +2045,7 @@ impl Channel {
 	/// or if called on an inbound channel.
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
-	pub fn get_outbound_funding_created(&mut self, funding_txid: Sha256dHash, funding_output_index: u16) -> Result<(msgs::FundingCreated, ChannelMonitor), HandleError> {
+	pub fn get_outbound_funding_created(&mut self, funding_txo: OutPoint) -> Result<(msgs::FundingCreated, ChannelMonitor), HandleError> {
 		if !self.channel_outbound {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
@@ -2054,7 +2056,7 @@ impl Channel {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		self.channel_monitor.set_funding_info(funding_txid, funding_output_index);
+		self.channel_monitor.set_funding_info(funding_txo);
 
 		let (our_signature, commitment_tx) = match self.get_outbound_funding_created_signature() {
 			Ok(res) => res,
@@ -2070,13 +2072,13 @@ impl Channel {
 		self.channel_monitor.provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number);
 		self.channel_state = ChannelState::FundingCreated as u32;
 		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
-		self.channel_id = funding_txo.0.into_be() ^ Uint256::from_u64(funding_txo.1 as u64).unwrap(); //TODO: or le?
+		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
 
 		Ok((msgs::FundingCreated {
 			temporary_channel_id: temporary_channel_id,
-			funding_txid: funding_txid,
-			funding_output_index: funding_output_index,
+			funding_txid: funding_txo.txid,
+			funding_output_index: funding_txo.index,
 			signature: our_signature
 		}, self.channel_monitor.clone()))
 	}
@@ -2330,6 +2332,7 @@ mod tests {
 	use ln::channel::{Channel,ChannelKeys,HTLCOutput,HTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::chan_utils;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
+    use chain::transaction::OutPoint;
 	use secp256k1::{Secp256k1,Message,Signature};
 	use secp256k1::key::{SecretKey,PublicKey};
 	use crypto::sha2::Sha256;
@@ -2369,7 +2372,8 @@ mod tests {
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
-		chan.channel_monitor.set_funding_info(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
+		let funding_info = OutPoint::new(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
+		chan.channel_monitor.set_funding_info(funding_info);
 
 		chan.their_payment_basepoint = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("4444444444444444444444444444444444444444444444444444444444444444").unwrap()[..]).unwrap()).unwrap();
 		assert_eq!(chan.their_payment_basepoint.serialize()[..],
@@ -2868,17 +2872,17 @@ mod tests {
 
 		seed[0..32].clone_from_slice(&hex_bytes("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF").unwrap());
 		assert_eq!(chan_utils::build_commitment_secret(seed, 281474976710655),
-				hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap()[..]);
+		           hex_bytes("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap()[..]);
 
 		assert_eq!(chan_utils::build_commitment_secret(seed, 0xaaaaaaaaaaa),
-				hex_bytes("56f4008fb007ca9acf0e15b054d5c9fd12ee06cea347914ddbaed70d1c13a528").unwrap()[..]);
+		           hex_bytes("56f4008fb007ca9acf0e15b054d5c9fd12ee06cea347914ddbaed70d1c13a528").unwrap()[..]);
 
 		assert_eq!(chan_utils::build_commitment_secret(seed, 0x555555555555),
-				hex_bytes("9015daaeb06dba4ccc05b91b2f73bd54405f2be9f217fbacd3c5ac2e62327d31").unwrap()[..]);
+		           hex_bytes("9015daaeb06dba4ccc05b91b2f73bd54405f2be9f217fbacd3c5ac2e62327d31").unwrap()[..]);
 
 		seed[0..32].clone_from_slice(&hex_bytes("0101010101010101010101010101010101010101010101010101010101010101").unwrap());
 		assert_eq!(chan_utils::build_commitment_secret(seed, 1),
-				hex_bytes("915c75942a26bb3a433a8ce2cb0427c29ec6c1775cfc78328b57f6ba7bfeaa9c").unwrap()[..]);
+		           hex_bytes("915c75942a26bb3a433a8ce2cb0427c29ec6c1775cfc78328b57f6ba7bfeaa9c").unwrap()[..]);
 	}
 
 	#[test]

@@ -13,6 +13,7 @@ use ln::msgs::HandleError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
+use chain::transaction::OutPoint;
 use util::sha2::Sha256;
 
 use std::collections::HashMap;
@@ -42,8 +43,8 @@ pub enum ChannelMonitorUpdateErr {
 /// an update occurs and a remote watchtower is left with old state, it may broadcast transactions
 /// which we have revoked, allowing our counterparty to claim all funds in the channel!
 pub trait ManyChannelMonitor: Send + Sync {
-	/// Adds or updates a monitor for the given funding_txid+funding_output_index.
-	fn add_update_monitor(&self, funding_txo: (Sha256dHash, u16), monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr>;
+	/// Adds or updates a monitor for the given `funding_txo`.
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
 /// A simple implementation of a ManyChannelMonitor and ChainListener. Can be used to create a
@@ -53,7 +54,7 @@ pub trait ManyChannelMonitor: Send + Sync {
 /// users cannot overwrite a given channel by providing a duplicate key. ie you should probably
 /// index by a PublicKey which is required to sign any updates.
 /// If you're using this for local monitoring of your own channels, you probably want to use
-/// (Sha256dHash, u16) as the key, which will give you a ManyChannelMonitor implementation.
+/// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
 pub struct SimpleManyChannelMonitor<Key> {
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	chain_monitor: Arc<ChainWatchInterface>,
@@ -91,15 +92,15 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 		};
 		match monitor.funding_txo {
 			None => self.chain_monitor.watch_all_txn(),
-			Some((funding_txid, funding_output_index)) => self.chain_monitor.install_watch_outpoint((funding_txid, funding_output_index as u32)),
+			Some(outpoint) => self.chain_monitor.install_watch_outpoint((outpoint.txid, outpoint.index as u32)),
 		}
 		monitors.insert(key, monitor);
 		Ok(())
 	}
 }
 
-impl ManyChannelMonitor for SimpleManyChannelMonitor<(Sha256dHash, u16)> {
-	fn add_update_monitor(&self, funding_txo: (Sha256dHash, u16), monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr> {
+impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.add_update_monitor_by_key(funding_txo, monitor) {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
@@ -140,7 +141,7 @@ struct LocalSignedTx {
 }
 
 pub struct ChannelMonitor {
-	funding_txo: Option<(Sha256dHash, u16)>,
+	funding_txo: Option<OutPoint>,
 	commitment_transaction_number_obscure_factor: u64,
 
 	key_storage: KeyStorage,
@@ -402,8 +403,8 @@ impl ChannelMonitor {
 	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
 	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
 	/// provides slightly better privacy.
-	pub fn set_funding_info(&mut self, funding_txid: Sha256dHash, funding_output_index: u16) {
-		self.funding_txo = Some((funding_txid, funding_output_index));
+	pub fn set_funding_info(&mut self, funding_info: OutPoint) {
+		self.funding_txo = Some(funding_info);
 	}
 
 	pub fn set_their_htlc_base_key(&mut self, their_htlc_base_key: &PublicKey) {
@@ -418,7 +419,7 @@ impl ChannelMonitor {
 		self.funding_txo = None;
 	}
 
-	pub fn get_funding_txo(&self) -> Option<(Sha256dHash, u16)> {
+	pub fn get_funding_txo(&self) -> Option<OutPoint> {
 		self.funding_txo
 	}
 
@@ -781,7 +782,7 @@ impl ChannelMonitor {
 	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface) {
 		for tx in txn_matched {
 			for txin in tx.input.iter() {
-				if self.funding_txo.is_none() || (txin.prev_hash == self.funding_txo.unwrap().0 && txin.prev_index == self.funding_txo.unwrap().1 as u32) {
+				if self.funding_txo.is_none() || (txin.prev_hash == self.funding_txo.unwrap().txid && txin.prev_index == self.funding_txo.unwrap().index as u32) {
 					let mut txn = self.check_spend_remote_transaction(tx, height);
 					if txn.is_empty() {
 						txn = self.check_spend_local_transaction(tx, height);

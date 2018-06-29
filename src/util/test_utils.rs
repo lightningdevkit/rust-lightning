@@ -1,9 +1,9 @@
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
+use chain::transaction::OutPoint;
 use ln::channelmonitor;
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::util::hash::Sha256dHash;
 
 use std::sync::{Arc,Mutex};
 
@@ -17,8 +17,8 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct TestChannelMonitor {
-	pub added_monitors: Mutex<Vec<((Sha256dHash, u16), channelmonitor::ChannelMonitor)>>,
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<(Sha256dHash, u16)>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor)>>,
+	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
 }
 impl TestChannelMonitor {
 	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>) -> Self {
@@ -29,7 +29,7 @@ impl TestChannelMonitor {
 	}
 }
 impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, funding_txo: (Sha256dHash, u16), monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		self.simple_monitor.add_update_monitor(funding_txo, monitor)
 	}

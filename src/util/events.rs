@@ -1,8 +1,8 @@
 use ln::msgs;
+use chain::transaction::OutPoint;
 
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::uint::Uint256;
-use bitcoin::util::hash::Sha256dHash;
 
 use secp256k1::key::PublicKey;
 
@@ -24,7 +24,7 @@ pub enum Event {
 	/// channel. Broadcasting such a transaction prior to this event may lead to our counterparty
 	/// trivially stealing all funds in the funding transaction!
 	FundingBroadcastSafe {
-		funding_txo: (Sha256dHash, u16),
+		funding_txo: OutPoint,
 		/// The value passed in to ChannelManager::create_channel
 		user_channel_id: u64,
 	},
