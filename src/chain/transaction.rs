@@ -2,6 +2,8 @@ use bitcoin::util::hash::Sha256dHash;
 use bitcoin::util::uint::Uint256;
 
 /// A reference to a transaction output.
+/// Differs from bitcoin::blockdata::transaction::TxOutRef as the index is a u16 instead of usize
+/// due to LN's restrictions on index values. Should reduce (possibly) unsafe conversions this way.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct OutPoint {
 	/// The referenced transaction's txid.
@@ -16,9 +18,9 @@ impl OutPoint {
 		OutPoint { txid, index }
 	}
 
-    /// Convert an `OutPoint` to a lightning channel id.
-    pub fn to_channel_id(&self) -> Uint256 {
-        // TODO: or le?
-        self.txid.into_be() ^ Uint256::from_u64(self.index as u64).unwrap()
-    }
+	/// Convert an `OutPoint` to a lightning channel id.
+	pub fn to_channel_id(&self) -> Uint256 {
+		// TODO: or le?
+		self.txid.into_be() ^ Uint256::from_u64(self.index as u64).unwrap()
+	}
 }

@@ -1151,8 +1151,8 @@ impl Channel {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		let funding_info = OutPoint::new(msg.funding_txid, msg.funding_output_index);
-		self.channel_monitor.set_funding_info(funding_info);
+		let funding_txo = OutPoint::new(msg.funding_txid, msg.funding_output_index);
+		self.channel_monitor.set_funding_info(funding_txo);
 
 		let (remote_initial_commitment_tx, our_signature) = match self.funding_created_signature(&msg.signature) {
 			Ok(res) => res,
@@ -1166,7 +1166,6 @@ impl Channel {
 
 		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number);
 		self.channel_state = ChannelState::FundingSent as u32;
-		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
 		self.cur_local_commitment_transaction_number -= 1;
@@ -1930,9 +1929,9 @@ impl Channel {
 						self.channel_update_count += 1;
 					} else {
 						self.funding_tx_confirmations = 1;
-						self.short_channel_id = Some(((height as u64)		   << (5*8)) |
+						self.short_channel_id = Some(((height as u64)          << (5*8)) |
 						                             ((*index_in_block as u64) << (2*8)) |
-						                             ((self.channel_monitor.get_funding_txo().unwrap().index as u64) << (2*8)));
+						                             ((txo_idx as u64)         << (0*8)));
 					}
 				}
 			}
@@ -2071,7 +2070,6 @@ impl Channel {
 		// Now that we're past error-generating stuff, update our local state:
 		self.channel_monitor.provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number);
 		self.channel_state = ChannelState::FundingCreated as u32;
-		let funding_txo = self.channel_monitor.get_funding_txo().unwrap();
 		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
 
@@ -2332,7 +2330,7 @@ mod tests {
 	use ln::channel::{Channel,ChannelKeys,HTLCOutput,HTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::chan_utils;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-    use chain::transaction::OutPoint;
+	use chain::transaction::OutPoint;
 	use secp256k1::{Secp256k1,Message,Signature};
 	use secp256k1::key::{SecretKey,PublicKey};
 	use crypto::sha2::Sha256;
@@ -2868,7 +2866,7 @@ mod tests {
 		let mut seed = [0; 32];
 		seed[0..32].clone_from_slice(&hex_bytes("0000000000000000000000000000000000000000000000000000000000000000").unwrap());
 		assert_eq!(chan_utils::build_commitment_secret(seed, 281474976710655),
-				hex_bytes("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap()[..]);
+		           hex_bytes("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap()[..]);
 
 		seed[0..32].clone_from_slice(&hex_bytes("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF").unwrap());
 		assert_eq!(chan_utils::build_commitment_secret(seed, 281474976710655),
