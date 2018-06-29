@@ -294,29 +294,26 @@ impl ChannelMonitor {
 			}
 		}
 
-		let mut waste_hash_state : Vec<[u8;32]> = Vec::new();
-		{
-			let local_signed_commitment_tx = &self.current_local_signed_commitment_tx;
-			let remote_hash_commitment_number = &self.remote_hash_commitment_number;
-			let min_idx = self.get_min_seen_secret();
-			self.payment_preimages.retain(|&k, _| {
-					for &(ref htlc, _s1, _s2) in &local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !").htlc_outputs {
-						if k == htlc.payment_hash {
-							return true
-						}
-					}
-					if let Some(cn) = remote_hash_commitment_number.get(&k) {
-						if *cn < min_idx {
-							return true
-						}
-					}
-					waste_hash_state.push(k);
-					false
-				});
-		}
-		for h in waste_hash_state {
-			self.remote_hash_commitment_number.remove(&h);
-		}
+		let local_signed_commitment_tx = &self.current_local_signed_commitment_tx;
+		let min_idx = self.get_min_seen_secret();
+		let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
+		self.payment_preimages.retain(|&k, _| {
+			for &(ref htlc, _s1, _s2) in &local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !").htlc_outputs {
+				if k == htlc.payment_hash {
+					return true
+				}
+			}
+			let contains = if let Some(cn) = remote_hash_commitment_number.get(&k) {
+				if *cn < min_idx {
+					return true
+				}
+				true
+			} else { false };
+			if contains {
+				remote_hash_commitment_number.remove(&k);
+			}
+			false
+		});
 
 		Ok(())
 	}
