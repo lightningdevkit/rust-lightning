@@ -1,4 +1,4 @@
- use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
