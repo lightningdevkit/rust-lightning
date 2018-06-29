@@ -294,26 +294,37 @@ impl ChannelMonitor {
 			}
 		}
 
-		let local_signed_commitment_tx = &self.current_local_signed_commitment_tx;
-		let min_idx = self.get_min_seen_secret();
-		let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
-		self.payment_preimages.retain(|&k, _| {
-			for &(ref htlc, _s1, _s2) in &local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !").htlc_outputs {
-				if k == htlc.payment_hash {
-					return true
+		if !self.payment_preimages.is_empty() {
+			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
+			let prev_local_signed_commitment_tx = self.prev_local_signed_commitment_tx.as_ref();
+			let min_idx = self.get_min_seen_secret();
+			let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
+
+			self.payment_preimages.retain(|&k, _| {
+				for &(ref htlc, _, _) in &local_signed_commitment_tx.htlc_outputs {
+					if k == htlc.payment_hash {
+						return true
+					}
 				}
-			}
-			let contains = if let Some(cn) = remote_hash_commitment_number.get(&k) {
-				if *cn < min_idx {
-					return true
+				if let Some(prev_local_commitment_tx) = prev_local_signed_commitment_tx {
+					for &(ref htlc, _, _) in prev_local_commitment_tx.htlc_outputs.iter() {
+						if k == htlc.payment_hash {
+							return true
+						}
+					}
 				}
-				true
-			} else { false };
-			if contains {
-				remote_hash_commitment_number.remove(&k);
-			}
-			false
-		});
+				let contains = if let Some(cn) = remote_hash_commitment_number.get(&k) {
+					if *cn < min_idx {
+						return true
+					}
+					true
+				} else { false };
+				if contains {
+					remote_hash_commitment_number.remove(&k);
+				}
+				false
+			});
+		}
 
 		Ok(())
 	}
