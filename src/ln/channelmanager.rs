@@ -202,7 +202,7 @@ impl ChannelManager {
 	/// the main "logic hub" for all channel-related actions, and implements ChannelMessageHandler.
 	/// fee_proportional_millionths is an optional fee to charge any payments routed through us.
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
-	/// panics if channel_value_satoshis is >= (1 << 24)!
+	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 

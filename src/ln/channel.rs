@@ -316,6 +316,9 @@ const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
 const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
+/// Maximmum `funding_satoshis` value, according to the BOLT #2 specification
+/// it's 2^24.
+pub const MAX_FUNDING_SATOSHIS: u64 = (1 << 24);
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
@@ -353,9 +356,9 @@ impl Channel {
 
 	// Constructors:
 
-	/// panics if channel_value_satoshis is >= (1 << 24)
+	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`
 	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, announce_publicly: bool, user_id: u64) -> Channel {
-		if channel_value_satoshis >= (1 << 24) {
+		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			panic!("funding value > 2^24");
 		}
 
@@ -441,11 +444,8 @@ impl Channel {
 	/// that we're rejecting the new channel.
 	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
-		if msg.funding_satoshis >= (1 << 24) {
+		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(HandleError{err: "funding value > 2^24", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
-		}
-		if msg.funding_satoshis > 21000000 * 100000000 {
-			return Err(HandleError{err: "More funding_satoshis than there are satoshis!", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
 			return Err(HandleError{err: "Bogus channel_reserve_satoshis", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
@@ -2328,6 +2328,7 @@ mod tests {
 	use bitcoin::network::serialize::serialize;
 	use bitcoin::blockdata::transaction::Transaction;
 	use ln::channel::{Channel,ChannelKeys,HTLCOutput,HTLCState,HTLCOutputInCommitment,TxCreationKeys};
+	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::chan_utils;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::transaction::OutPoint;
@@ -2343,6 +2344,12 @@ mod tests {
 		fn get_est_sat_per_vbyte(&self, _: ConfirmationTarget) -> u64 {
 			self.fee_est
 		}
+	}
+
+	#[test]
+	fn test_max_funding_satoshis() {
+		assert!(MAX_FUNDING_SATOSHIS <= 21_000_000 * 100_000_000,
+		        "MAX_FUNDING_SATOSHIS is greater than all satoshis on existence");
 	}
 
 	#[test]
