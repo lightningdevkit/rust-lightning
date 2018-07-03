@@ -21,7 +21,9 @@ pub struct MessageHandler {
 /// implement Hash to meet the PeerManager API.
 /// For efficiency, Clone should be relatively cheap for this type.
 /// You probably want to just extend an int and put a file descriptor in a struct and implement
-/// send_data.
+/// send_data. Note that if you are using a higher-level net library that may close() itself, be
+/// careful to ensure you don't have races whereby you might register a new connection with an fd
+/// the same as a yet-to-be-disconnect_event()-ed.
 pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// Attempts to send some data from the given Vec starting at the given offset to the peer.
 	/// Returns the amount of data which was sent, possibly 0 if the socket has since disconnected.
