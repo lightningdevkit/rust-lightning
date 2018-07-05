@@ -1,5 +1,5 @@
-use ln::msgs;
 use chain::transaction::OutPoint;
+use ln::msgs;
 
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::uint::Uint256;
@@ -32,28 +32,19 @@ pub enum Event {
 	/// ChannelManager::claim_funds to get it....
 	/// Note that if the preimage is not known, you must call ChannelManager::fail_htlc_backwards
 	/// to free up resources for this HTLC.
-	PaymentReceived {
-		payment_hash: [u8; 32],
-		amt: u64,
-	},
+	PaymentReceived { payment_hash: [u8; 32], amt: u64 },
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
 	/// and we got back the payment preimage for it). payment_preimage serves as a payment receipt,
 	/// if you wish to have such a thing, you must store it somehow!
-	PaymentSent {
-		payment_preimage: [u8; 32],
-	},
+	PaymentSent { payment_preimage: [u8; 32] },
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
-	PaymentFailed {
-		payment_hash: [u8; 32],
-	},
+	PaymentFailed { payment_hash: [u8; 32] },
 
 	// Events indicating the network loop should send a message to a peer:
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
-	PendingHTLCsForwardable {
-		time_forwardable: Instant,
-	},
+	PendingHTLCsForwardable { time_forwardable: Instant },
 	/// Used to indicate that a funding_created message should be sent to the peer with the given node_id.
 	SendFundingCreated {
 		node_id: PublicKey,
@@ -91,9 +82,7 @@ pub enum Event {
 		update_msg: msgs::ChannelUpdate,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
-	BroadcastChannelUpdate {
-		msg: msgs::ChannelUpdate,
-	},
+	BroadcastChannelUpdate { msg: msgs::ChannelUpdate },
 }
 
 pub trait EventsProvider {

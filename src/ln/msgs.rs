@@ -1,20 +1,22 @@
+use bitcoin::blockdata::script::Script;
+use bitcoin::network::serialize::{deserialize, serialize};
+use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::uint::Uint256;
 use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1, Signature};
-use bitcoin::util::uint::Uint256;
-use bitcoin::util::hash::Sha256dHash;
-use bitcoin::network::serialize::{deserialize,serialize};
-use bitcoin::blockdata::script::Script;
 
 use std::error::Error;
 use std::fmt;
 use std::result::Result;
 
-use util::{byte_utils, internal_traits, events};
+use util::{byte_utils, events, internal_traits};
 
 pub trait MsgEncodable {
 	fn encode(&self) -> Vec<u8>;
 	#[inline]
-	fn encoded_len(&self) -> usize { self.encode().len() }
+	fn encoded_len(&self) -> usize {
+		self.encode().len()
+	}
 	#[inline]
 	fn encode_with_len(&self) -> Vec<u8> {
 		let enc = self.encode();
@@ -49,9 +51,7 @@ pub struct LocalFeatures {
 
 impl LocalFeatures {
 	pub fn new() -> LocalFeatures {
-		LocalFeatures {
-			flags: Vec::new(),
-		}
+		LocalFeatures { flags: Vec::new() }
 	}
 
 	pub fn supports_data_loss_protect(&self) -> bool {
@@ -110,9 +110,7 @@ pub struct GlobalFeatures {
 
 impl GlobalFeatures {
 	pub fn new() -> GlobalFeatures {
-		GlobalFeatures {
-			flags: Vec::new(),
-		}
+		GlobalFeatures { flags: Vec::new() }
 	}
 
 	pub fn requires_unknown_bits(&self) -> bool {
@@ -306,10 +304,10 @@ pub enum NetAddress {
 impl NetAddress {
 	fn get_id(&self) -> u8 {
 		match self {
-			&NetAddress::IPv4 {..} => { 1 },
-			&NetAddress::IPv6 {..} => { 2 },
-			&NetAddress::OnionV2 {..} => { 3 },
-			&NetAddress::OnionV3 {..} => { 4 },
+			&NetAddress::IPv4 { .. } => 1,
+			&NetAddress::IPv6 { .. } => 2,
+			&NetAddress::OnionV2 { .. } => 3,
+			&NetAddress::OnionV3 { .. } => 4,
 		}
 	}
 }
@@ -369,16 +367,15 @@ pub struct ChannelUpdate {
 pub enum ErrorAction {
 	/// Indicates an inbound HTLC add resulted in a failure, and the UpdateFailHTLC provided in msg
 	/// should be sent back to the sender.
-	UpdateFailHTLC {
-		msg: UpdateFailHTLC
-	},
+	UpdateFailHTLC { msg: UpdateFailHTLC },
 	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer,
 	/// The peer did something harmless that we weren't able to process, just log and ignore
 	IgnoreError,
 }
 
-pub struct HandleError { //TODO: rename me
+pub struct HandleError {
+	//TODO: rename me
 	pub err: &'static str,
 	pub msg: Option<ErrorAction>, //TODO: Make this required and rename it
 }
@@ -393,41 +390,97 @@ pub struct CommitmentUpdate {
 }
 
 pub enum HTLCFailChannelUpdate {
-	ChannelUpdateMessage {
-		msg: ChannelUpdate,
-	},
-	ChannelClosed {
-		short_channel_id: u64,
-	},
+	ChannelUpdateMessage { msg: ChannelUpdate },
+	ChannelClosed { short_channel_id: u64 },
 }
 
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in
 /// paralell when they originate from different their_node_ids, however they MUST NOT be called in
 /// paralell when the two calls have the same their_node_id.
-pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
+pub trait ChannelMessageHandler: events::EventsProvider + Send + Sync {
 	//Channel init:
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<AcceptChannel, HandleError>;
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<FundingSigned, HandleError>;
-	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) -> Result<(), HandleError>;
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<Option<AnnouncementSignatures>, HandleError>;
+	fn handle_open_channel(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &OpenChannel,
+	) -> Result<AcceptChannel, HandleError>;
+	fn handle_accept_channel(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &AcceptChannel,
+	) -> Result<(), HandleError>;
+	fn handle_funding_created(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &FundingCreated,
+	) -> Result<FundingSigned, HandleError>;
+	fn handle_funding_signed(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &FundingSigned,
+	) -> Result<(), HandleError>;
+	fn handle_funding_locked(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &FundingLocked,
+	) -> Result<Option<AnnouncementSignatures>, HandleError>;
 
 	// Channl close:
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(Option<Shutdown>, Option<ClosingSigned>), HandleError>;
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<Option<ClosingSigned>, HandleError>;
+	fn handle_shutdown(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &Shutdown,
+	) -> Result<(Option<Shutdown>, Option<ClosingSigned>), HandleError>;
+	fn handle_closing_signed(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &ClosingSigned,
+	) -> Result<Option<ClosingSigned>, HandleError>;
 
 	// HTLC handling:
-	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC) -> Result<(), HandleError>;
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<Option<HTLCFailChannelUpdate>, HandleError>;
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
+	fn handle_update_add_htlc(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &UpdateAddHTLC,
+	) -> Result<(), HandleError>;
+	fn handle_update_fulfill_htlc(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &UpdateFulfillHTLC,
+	) -> Result<(), HandleError>;
+	fn handle_update_fail_htlc(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &UpdateFailHTLC,
+	) -> Result<Option<HTLCFailChannelUpdate>, HandleError>;
+	fn handle_update_fail_malformed_htlc(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &UpdateFailMalformedHTLC,
+	) -> Result<(), HandleError>;
+	fn handle_commitment_signed(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &CommitmentSigned,
+	) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
+	fn handle_revoke_and_ack(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &RevokeAndACK,
+	) -> Result<Option<CommitmentUpdate>, HandleError>;
 
-	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
+	fn handle_update_fee(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &UpdateFee,
+	) -> Result<(), HandleError>;
 
 	// Channel-to-announce:
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), HandleError>;
+	fn handle_announcement_signatures(
+		&self,
+		their_node_id: &PublicKey,
+		msg: &AnnouncementSignatures,
+	) -> Result<(), HandleError>;
 
 	// Informational:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
@@ -437,7 +490,7 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 }
 
-pub trait RoutingMessageHandler : Send + Sync {
+pub trait RoutingMessageHandler: Send + Sync {
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<(), HandleError>;
 	/// Handle a channel_announcement message, returning true if it should be forwarded on, false
 	/// or returning an Err otherwise.
@@ -458,13 +511,13 @@ pub struct OnionHopData {
 	pub data: OnionRealm0HopData,
 	pub hmac: [u8; 32],
 }
-unsafe impl internal_traits::NoDealloc for OnionHopData{}
+unsafe impl internal_traits::NoDealloc for OnionHopData {}
 
 #[derive(Clone)]
 pub struct OnionPacket {
 	pub version: u8,
 	pub public_key: PublicKey,
-	pub hop_data: [u8; 20*65],
+	pub hop_data: [u8; 20 * 65],
 	pub hmac: [u8; 32],
 }
 
@@ -505,33 +558,35 @@ impl fmt::Debug for HandleError {
 }
 
 macro_rules! secp_pubkey {
-	( $ctx: expr, $slice: expr ) => {
+	($ctx:expr, $slice:expr) => {
 		match PublicKey::from_slice($ctx, $slice) {
 			Ok(key) => key,
-			Err(_) => return Err(DecodeError::BadPublicKey)
-		}
+			Err(_) => return Err(DecodeError::BadPublicKey),
+			}
 	};
 }
 
 macro_rules! secp_signature {
-	( $ctx: expr, $slice: expr ) => {
+	($ctx:expr, $slice:expr) => {
 		match Signature::from_compact($ctx, $slice) {
 			Ok(sig) => sig,
-			Err(_) => return Err(DecodeError::BadSignature)
-		}
+			Err(_) => return Err(DecodeError::BadSignature),
+			}
 	};
 }
 
 impl MsgDecodable for LocalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < 2 {
+			return Err(DecodeError::WrongLength);
+		}
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
-		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < len + 2 {
+			return Err(DecodeError::WrongLength);
+		}
 		let mut flags = Vec::with_capacity(len);
 		flags.extend_from_slice(&v[2..2 + len]);
-		Ok(Self {
-			flags: flags
-		})
+		Ok(Self { flags: flags })
 	}
 }
 impl MsgEncodable for LocalFeatures {
@@ -541,19 +596,23 @@ impl MsgEncodable for LocalFeatures {
 		res.extend_from_slice(&self.flags[..]);
 		res
 	}
-	fn encoded_len(&self) -> usize { self.flags.len() + 2 }
+	fn encoded_len(&self) -> usize {
+		self.flags.len() + 2
+	}
 }
 
 impl MsgDecodable for GlobalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < 2 {
+			return Err(DecodeError::WrongLength);
+		}
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
-		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < len + 2 {
+			return Err(DecodeError::WrongLength);
+		}
 		let mut flags = Vec::with_capacity(len);
 		flags.extend_from_slice(&v[2..2 + len]);
-		Ok(Self {
-			flags: flags
-		})
+		Ok(Self { flags: flags })
 	}
 }
 impl MsgEncodable for GlobalFeatures {
@@ -563,7 +622,9 @@ impl MsgEncodable for GlobalFeatures {
 		res.extend_from_slice(&self.flags[..]);
 		res
 	}
-	fn encoded_len(&self) -> usize { self.flags.len() + 2 }
+	fn encoded_len(&self) -> usize {
+		self.flags.len() + 2
+	}
 }
 
 impl MsgDecodable for Init {
@@ -581,7 +642,8 @@ impl MsgDecodable for Init {
 }
 impl MsgEncodable for Init {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(self.global_features.flags.len() + self.local_features.flags.len());
+		let mut res =
+			Vec::with_capacity(self.global_features.flags.len() + self.local_features.flags.len());
 		res.extend_from_slice(&self.global_features.encode()[..]);
 		res.extend_from_slice(&self.local_features.encode()[..]);
 		res
@@ -598,10 +660,7 @@ impl MsgDecodable for Ping {
 		if v.len() < 4 + byteslen as usize {
 			return Err(DecodeError::WrongLength);
 		}
-		Ok(Self {
-			ponglen,
-			byteslen,
-		})
+		Ok(Self { ponglen, byteslen })
 	}
 }
 impl MsgEncodable for Ping {
@@ -622,9 +681,7 @@ impl MsgDecodable for Pong {
 		if v.len() < 2 + byteslen as usize {
 			return Err(DecodeError::WrongLength);
 		}
-		Ok(Self {
-			byteslen
-		})
+		Ok(Self { byteslen })
 	}
 }
 impl MsgEncodable for Pong {
@@ -638,7 +695,7 @@ impl MsgEncodable for Pong {
 
 impl MsgDecodable for OpenChannel {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 2*32+6*8+4+2*2+6*33+1 {
+		if v.len() < 2 * 32 + 6 * 8 + 4 + 2 * 2 + 6 * 33 + 1 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -646,11 +703,12 @@ impl MsgDecodable for OpenChannel {
 		let mut shutdown_scriptpubkey = None;
 		if v.len() >= 321 {
 			let len = byte_utils::slice_to_be16(&v[319..321]) as usize;
-			if v.len() < 321+len {
+			if v.len() < 321 + len {
 				return Err(DecodeError::WrongLength);
 			}
-			shutdown_scriptpubkey = Some(Script::from(v[321..321+len].to_vec()));
-		} else if v.len() != 2*32+6*8+4+2*2+6*33+1 { // Message cant have 1 extra byte
+			shutdown_scriptpubkey = Some(Script::from(v[321..321 + len].to_vec()));
+		} else if v.len() != 2 * 32 + 6 * 8 + 4 + 2 * 2 + 6 * 33 + 1 {
+			// Message cant have 1 extra byte
 			return Err(DecodeError::WrongLength);
 		}
 
@@ -673,7 +731,7 @@ impl MsgDecodable for OpenChannel {
 			htlc_basepoint: secp_pubkey!(&ctx, &v[252..285]),
 			first_per_commitment_point: secp_pubkey!(&ctx, &v[285..318]),
 			channel_flags: v[318],
-			shutdown_scriptpubkey: shutdown_scriptpubkey
+			shutdown_scriptpubkey: shutdown_scriptpubkey,
 		})
 	}
 }
@@ -688,7 +746,9 @@ impl MsgEncodable for OpenChannel {
 		res.extend_from_slice(&byte_utils::be64_to_array(self.funding_satoshis));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.push_msat));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.dust_limit_satoshis));
-		res.extend_from_slice(&byte_utils::be64_to_array(self.max_htlc_value_in_flight_msat));
+		res.extend_from_slice(&byte_utils::be64_to_array(
+			self.max_htlc_value_in_flight_msat,
+		));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.channel_reserve_satoshis));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_minimum_msat));
 		res.extend_from_slice(&byte_utils::be32_to_array(self.feerate_per_kw));
@@ -711,7 +771,7 @@ impl MsgEncodable for OpenChannel {
 
 impl MsgDecodable for AcceptChannel {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+4*8+4+2*2+6*33 {
+		if v.len() < 32 + 4 * 8 + 4 + 2 * 2 + 6 * 33 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -719,11 +779,12 @@ impl MsgDecodable for AcceptChannel {
 		let mut shutdown_scriptpubkey = None;
 		if v.len() >= 272 {
 			let len = byte_utils::slice_to_be16(&v[270..272]) as usize;
-			if v.len() < 272+len {
+			if v.len() < 272 + len {
 				return Err(DecodeError::WrongLength);
 			}
-			shutdown_scriptpubkey = Some(Script::from(v[272..272+len].to_vec()));
-		} else if v.len() != 32+4*8+4+2*2+6*33 { // Message cant have 1 extra byte
+			shutdown_scriptpubkey = Some(Script::from(v[272..272 + len].to_vec()));
+		} else if v.len() != 32 + 4 * 8 + 4 + 2 * 2 + 6 * 33 {
+			// Message cant have 1 extra byte
 			return Err(DecodeError::WrongLength);
 		}
 
@@ -742,7 +803,7 @@ impl MsgDecodable for AcceptChannel {
 			delayed_payment_basepoint: secp_pubkey!(&ctx, &v[171..204]),
 			htlc_basepoint: secp_pubkey!(&ctx, &v[204..237]),
 			first_per_commitment_point: secp_pubkey!(&ctx, &v[237..270]),
-			shutdown_scriptpubkey: shutdown_scriptpubkey
+			shutdown_scriptpubkey: shutdown_scriptpubkey,
 		})
 	}
 }
@@ -754,7 +815,9 @@ impl MsgEncodable for AcceptChannel {
 		};
 		res.extend_from_slice(&serialize(&self.temporary_channel_id).unwrap()[..]);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.dust_limit_satoshis));
-		res.extend_from_slice(&byte_utils::be64_to_array(self.max_htlc_value_in_flight_msat));
+		res.extend_from_slice(&byte_utils::be64_to_array(
+			self.max_htlc_value_in_flight_msat,
+		));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.channel_reserve_satoshis));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_minimum_msat));
 		res.extend_from_slice(&byte_utils::be32_to_array(self.minimum_depth));
@@ -776,7 +839,7 @@ impl MsgEncodable for AcceptChannel {
 
 impl MsgDecodable for FundingCreated {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+32+2+64 {
+		if v.len() < 32 + 32 + 2 + 64 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -790,7 +853,7 @@ impl MsgDecodable for FundingCreated {
 }
 impl MsgEncodable for FundingCreated {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+32+2+64);
+		let mut res = Vec::with_capacity(32 + 32 + 2 + 64);
 		res.extend_from_slice(&serialize(&self.temporary_channel_id).unwrap()[..]);
 		res.extend_from_slice(&serialize(&self.funding_txid).unwrap()[..]);
 		res.extend_from_slice(&byte_utils::be16_to_array(self.funding_output_index));
@@ -802,7 +865,7 @@ impl MsgEncodable for FundingCreated {
 
 impl MsgDecodable for FundingSigned {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+64 {
+		if v.len() < 32 + 64 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -814,7 +877,7 @@ impl MsgDecodable for FundingSigned {
 }
 impl MsgEncodable for FundingSigned {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+64);
+		let mut res = Vec::with_capacity(32 + 64);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&self.signature.serialize_compact(&Secp256k1::without_caps()));
 		res
@@ -823,7 +886,7 @@ impl MsgEncodable for FundingSigned {
 
 impl MsgDecodable for FundingLocked {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+33 {
+		if v.len() < 32 + 33 {
 			return Err(DecodeError::WrongLength);
 		}
 		let ctx = Secp256k1::without_caps();
@@ -835,7 +898,7 @@ impl MsgDecodable for FundingLocked {
 }
 impl MsgEncodable for FundingLocked {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+33);
+		let mut res = Vec::with_capacity(32 + 33);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&self.next_per_commitment_point.serialize());
 		res
@@ -882,7 +945,7 @@ impl MsgDecodable for ClosingSigned {
 }
 impl MsgEncodable for ClosingSigned {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+8+64);
+		let mut res = Vec::with_capacity(32 + 8 + 64);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be64_to_array(self.fee_satoshis));
 		let secp_ctx = Secp256k1::without_caps();
@@ -893,24 +956,24 @@ impl MsgEncodable for ClosingSigned {
 
 impl MsgDecodable for UpdateAddHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+8+8+32+4+1+33+20*65+32 {
+		if v.len() < 32 + 8 + 8 + 32 + 4 + 1 + 33 + 20 * 65 + 32 {
 			return Err(DecodeError::WrongLength);
 		}
 		let mut payment_hash = [0; 32];
 		payment_hash.copy_from_slice(&v[48..80]);
-		Ok(Self{
+		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
 			amount_msat: byte_utils::slice_to_be64(&v[40..48]),
 			payment_hash,
 			cltv_expiry: byte_utils::slice_to_be32(&v[80..84]),
-			onion_routing_packet: OnionPacket::decode(&v[84..84+1366])?,
+			onion_routing_packet: OnionPacket::decode(&v[84..84 + 1366])?,
 		})
 	}
 }
 impl MsgEncodable for UpdateAddHTLC {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+8+8+32+4+1+1366);
+		let mut res = Vec::with_capacity(32 + 8 + 8 + 32 + 4 + 1 + 1366);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.amount_msat));
@@ -923,12 +986,12 @@ impl MsgEncodable for UpdateAddHTLC {
 
 impl MsgDecodable for UpdateFulfillHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+8+32 {
+		if v.len() < 32 + 8 + 32 {
 			return Err(DecodeError::WrongLength);
 		}
 		let mut payment_preimage = [0; 32];
 		payment_preimage.copy_from_slice(&v[40..72]);
-		Ok(Self{
+		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
 			payment_preimage,
@@ -937,7 +1000,7 @@ impl MsgDecodable for UpdateFulfillHTLC {
 }
 impl MsgEncodable for UpdateFulfillHTLC {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+8+32);
+		let mut res = Vec::with_capacity(32 + 8 + 32);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
 		res.extend_from_slice(&self.payment_preimage);
@@ -947,10 +1010,10 @@ impl MsgEncodable for UpdateFulfillHTLC {
 
 impl MsgDecodable for UpdateFailHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+8 {
+		if v.len() < 32 + 8 {
 			return Err(DecodeError::WrongLength);
 		}
-		Ok(Self{
+		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
 			reason: OnionErrorPacket::decode(&v[40..])?,
@@ -960,7 +1023,7 @@ impl MsgDecodable for UpdateFailHTLC {
 impl MsgEncodable for UpdateFailHTLC {
 	fn encode(&self) -> Vec<u8> {
 		let reason = self.reason.encode();
-		let mut res = Vec::with_capacity(32+8+reason.len());
+		let mut res = Vec::with_capacity(32 + 8 + reason.len());
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
 		res.extend_from_slice(&reason[..]);
@@ -970,12 +1033,12 @@ impl MsgEncodable for UpdateFailHTLC {
 
 impl MsgDecodable for UpdateFailMalformedHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+8+32+2 {
+		if v.len() < 32 + 8 + 32 + 2 {
 			return Err(DecodeError::WrongLength);
 		}
 		let mut sha256_of_onion = [0; 32];
 		sha256_of_onion.copy_from_slice(&v[40..72]);
-		Ok(Self{
+		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			htlc_id: byte_utils::slice_to_be64(&v[32..40]),
 			sha256_of_onion,
@@ -985,7 +1048,7 @@ impl MsgDecodable for UpdateFailMalformedHTLC {
 }
 impl MsgEncodable for UpdateFailMalformedHTLC {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+8+32+2);
+		let mut res = Vec::with_capacity(32 + 8 + 32 + 2);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
 		res.extend_from_slice(&self.sha256_of_onion);
@@ -996,17 +1059,20 @@ impl MsgEncodable for UpdateFailMalformedHTLC {
 
 impl MsgDecodable for CommitmentSigned {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+64+2 {
+		if v.len() < 32 + 64 + 2 {
 			return Err(DecodeError::WrongLength);
 		}
 		let htlcs = byte_utils::slice_to_be16(&v[96..98]) as usize;
-		if v.len() < 32+64+2+htlcs*64 {
+		if v.len() < 32 + 64 + 2 + htlcs * 64 {
 			return Err(DecodeError::WrongLength);
 		}
 		let mut htlc_signatures = Vec::with_capacity(htlcs);
 		let secp_ctx = Secp256k1::without_caps();
 		for i in 0..htlcs {
-			htlc_signatures.push(secp_signature!(&secp_ctx, &v[98+i*64..98+(i+1)*64]));
+			htlc_signatures.push(secp_signature!(
+				&secp_ctx,
+				&v[98 + i * 64..98 + (i + 1) * 64]
+			));
 		}
 		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
@@ -1017,7 +1083,7 @@ impl MsgDecodable for CommitmentSigned {
 }
 impl MsgEncodable for CommitmentSigned {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+64+2+self.htlc_signatures.len()*64);
+		let mut res = Vec::with_capacity(32 + 64 + 2 + self.htlc_signatures.len() * 64);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		let secp_ctx = Secp256k1::without_caps();
 		res.extend_from_slice(&self.signature.serialize_compact(&secp_ctx));
@@ -1031,7 +1097,7 @@ impl MsgEncodable for CommitmentSigned {
 
 impl MsgDecodable for RevokeAndACK {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+32+33 {
+		if v.len() < 32 + 32 + 33 {
 			return Err(DecodeError::WrongLength);
 		}
 		let mut per_commitment_secret = [0; 32];
@@ -1046,7 +1112,7 @@ impl MsgDecodable for RevokeAndACK {
 }
 impl MsgEncodable for RevokeAndACK {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+32+33);
+		let mut res = Vec::with_capacity(32 + 32 + 33);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&self.per_commitment_secret);
 		res.extend_from_slice(&self.next_per_commitment_point.serialize());
@@ -1056,7 +1122,7 @@ impl MsgEncodable for RevokeAndACK {
 
 impl MsgDecodable for UpdateFee {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+4 {
+		if v.len() < 32 + 4 {
 			return Err(DecodeError::WrongLength);
 		}
 		Ok(Self {
@@ -1067,7 +1133,7 @@ impl MsgDecodable for UpdateFee {
 }
 impl MsgEncodable for UpdateFee {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+4);
+		let mut res = Vec::with_capacity(32 + 4);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be32_to_array(self.feerate_per_kw));
 		res
@@ -1087,7 +1153,7 @@ impl MsgEncodable for ChannelReestablish {
 
 impl MsgDecodable for AnnouncementSignatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+8+64*2 {
+		if v.len() < 32 + 8 + 64 * 2 {
 			return Err(DecodeError::WrongLength);
 		}
 		let secp_ctx = Secp256k1::without_caps();
@@ -1101,7 +1167,7 @@ impl MsgDecodable for AnnouncementSignatures {
 }
 impl MsgEncodable for AnnouncementSignatures {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+8+64*2);
+		let mut res = Vec::with_capacity(32 + 8 + 64 * 2);
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap());
 		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
 		let secp_ctx = Secp256k1::without_caps();
@@ -1133,9 +1199,13 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 		let mut addresses = Vec::with_capacity(4);
 		let mut read_pos = start + 74;
 		loop {
-			if v.len() <= read_pos { break; }
+			if v.len() <= read_pos {
+				break;
+			}
 			match v[read_pos] {
-				0 => { read_pos += 1; },
+				0 => {
+					read_pos += 1;
+				}
 				1 => {
 					if v.len() < read_pos + 1 + 6 {
 						return Err(DecodeError::WrongLength);
@@ -1150,7 +1220,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 						port: byte_utils::slice_to_be16(&v[read_pos + 5..read_pos + 7]),
 					});
 					read_pos += 1 + 6;
-				},
+				}
 				2 => {
 					if v.len() < read_pos + 1 + 18 {
 						return Err(DecodeError::WrongLength);
@@ -1165,12 +1235,14 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 						port: byte_utils::slice_to_be16(&v[read_pos + 17..read_pos + 19]),
 					});
 					read_pos += 1 + 18;
-				},
+				}
 				3 => {
 					if v.len() < read_pos + 1 + 12 {
 						return Err(DecodeError::WrongLength);
 					}
-					if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
+					if addresses.len() > 2
+						|| (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2)
+					{
 						return Err(DecodeError::ExtraAddressesPerType);
 					}
 					let mut addr = [0; 10];
@@ -1180,12 +1252,14 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 						port: byte_utils::slice_to_be16(&v[read_pos + 11..read_pos + 13]),
 					});
 					read_pos += 1 + 12;
-				},
+				}
 				4 => {
 					if v.len() < read_pos + 1 + 37 {
 						return Err(DecodeError::WrongLength);
 					}
-					if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
+					if addresses.len() > 3
+						|| (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3)
+					{
 						return Err(DecodeError::ExtraAddressesPerType);
 					}
 					let mut ed25519_pubkey = [0; 32];
@@ -1197,8 +1271,10 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 						port: byte_utils::slice_to_be16(&v[read_pos + 36..read_pos + 38]),
 					});
 					read_pos += 1 + 37;
-				},
-				_ => { break; } // We've read all we can, we dont understand anything higher (and they're sorted)
+				}
+				_ => {
+					break;
+				} // We've read all we can, we dont understand anything higher (and they're sorted)
 			}
 		}
 
@@ -1224,32 +1300,37 @@ impl MsgEncodable for UnsignedNodeAnnouncement {
 		res.extend_from_slice(&self.alias);
 		let mut addr_slice = Vec::with_capacity(self.addresses.len() * 18);
 		let mut addrs_to_encode = self.addresses.clone();
-		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
-		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
+		addrs_to_encode.sort_unstable_by(|a, b| a.get_id().cmp(&b.get_id()));
+		addrs_to_encode.dedup_by(|a, b| a.get_id() == b.get_id());
 		for addr in addrs_to_encode.iter() {
 			match addr {
-				&NetAddress::IPv4{addr, port} => {
+				&NetAddress::IPv4 { addr, port } => {
 					addr_slice.push(1);
 					addr_slice.extend_from_slice(&addr);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::IPv6{addr, port} => {
+				}
+				&NetAddress::IPv6 { addr, port } => {
 					addr_slice.push(2);
 					addr_slice.extend_from_slice(&addr);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::OnionV2{addr, port} => {
+				}
+				&NetAddress::OnionV2 { addr, port } => {
 					addr_slice.push(3);
 					addr_slice.extend_from_slice(&addr);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::OnionV3{ed25519_pubkey, checksum, version, port} => {
+				}
+				&NetAddress::OnionV3 {
+					ed25519_pubkey,
+					checksum,
+					version,
+					port,
+				} => {
 					addr_slice.push(4);
 					addr_slice.extend_from_slice(&ed25519_pubkey);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(checksum));
 					addr_slice.push(version);
 					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
+				}
 			}
 		}
 		res.extend_from_slice(&byte_utils::be16_to_array(addr_slice.len() as u16));
@@ -1284,7 +1365,7 @@ impl MsgEncodable for NodeAnnouncement {
 impl MsgDecodable for UnsignedChannelAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let features = GlobalFeatures::decode(&v[..])?;
-		if v.len() < features.encoded_len() + 32 + 8 + 33*4 {
+		if v.len() < features.encoded_len() + 32 + 8 + 33 * 4 {
 			return Err(DecodeError::WrongLength);
 		}
 		let start = features.encoded_len();
@@ -1317,7 +1398,7 @@ impl MsgEncodable for UnsignedChannelAnnouncement {
 
 impl MsgDecodable for ChannelAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 64*4 {
+		if v.len() < 64 * 4 {
 			return Err(DecodeError::WrongLength);
 		}
 		let secp_ctx = Secp256k1::without_caps();
@@ -1346,7 +1427,7 @@ impl MsgEncodable for ChannelAnnouncement {
 
 impl MsgDecodable for UnsignedChannelUpdate {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+8+4+2+2+8+4+4 {
+		if v.len() < 32 + 8 + 4 + 2 + 2 + 8 + 4 + 4 {
 			return Err(DecodeError::WrongLength);
 		}
 		Ok(Self {
@@ -1450,10 +1531,10 @@ impl MsgEncodable for OnionHopData {
 
 impl MsgDecodable for OnionPacket {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 1+33+20*65+32 {
+		if v.len() < 1 + 33 + 20 * 65 + 32 {
 			return Err(DecodeError::WrongLength);
 		}
-		let mut hop_data = [0; 20*65];
+		let mut hop_data = [0; 20 * 65];
 		hop_data.copy_from_slice(&v[34..1334]);
 		let mut hmac = [0; 32];
 		hmac.copy_from_slice(&v[1334..1366]);
@@ -1468,7 +1549,7 @@ impl MsgDecodable for OnionPacket {
 }
 impl MsgEncodable for OnionPacket {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(1 + 33 + 20*65 + 32);
+		let mut res = Vec::with_capacity(1 + 33 + 20 * 65 + 32);
 		res.push(self.version);
 		res.extend_from_slice(&self.public_key.serialize());
 		res.extend_from_slice(&self.hop_data);
@@ -1504,9 +1585,15 @@ impl MsgEncodable for DecodedOnionErrorPacket {
 	fn encode(&self) -> Vec<u8> {
 		let mut res = Vec::with_capacity(32 + 4 + self.failuremsg.len() + self.pad.len());
 		res.extend_from_slice(&self.hmac);
-		res.extend_from_slice(&[((self.failuremsg.len() >> 8) & 0xff) as u8, (self.failuremsg.len() & 0xff) as u8]);
+		res.extend_from_slice(&[
+			((self.failuremsg.len() >> 8) & 0xff) as u8,
+			(self.failuremsg.len() & 0xff) as u8,
+		]);
 		res.extend_from_slice(&self.failuremsg);
-		res.extend_from_slice(&[((self.pad.len() >> 8) & 0xff) as u8, (self.pad.len() & 0xff) as u8]);
+		res.extend_from_slice(&[
+			((self.pad.len() >> 8) & 0xff) as u8,
+			(self.pad.len() & 0xff) as u8,
+		]);
 		res.extend_from_slice(&self.pad);
 		res
 	}
@@ -1522,7 +1609,7 @@ impl MsgDecodable for OnionErrorPacket {
 			return Err(DecodeError::WrongLength);
 		}
 		Ok(Self {
-			data: v[2..len+2].to_vec(),
+			data: v[2..len + 2].to_vec(),
 		})
 	}
 }

@@ -11,9 +11,7 @@ mod fuzzy_sha {
 
 	impl Sha256 {
 		pub fn new() -> Sha256 {
-			Sha256 {
-				state: 0,
-			}
+			Sha256 { state: 0 }
 		}
 	}
 
@@ -25,10 +23,20 @@ mod fuzzy_sha {
 			}
 		}
 
-		fn input(&mut self, data: &[u8]) { for i in data { self.state ^= i; } }
-		fn reset(&mut self) { self.state = 0; }
-		fn output_bits(&self) -> usize { 256 }
-		fn block_size(&self) -> usize { 64 }
+		fn input(&mut self, data: &[u8]) {
+			for i in data {
+				self.state ^= i;
+			}
+		}
+		fn reset(&mut self) {
+			self.state = 0;
+		}
+		fn output_bits(&self) -> usize {
+			256
+		}
+		fn block_size(&self) -> usize {
+			64
+		}
 	}
 }
 #[cfg(feature = "fuzztarget")]

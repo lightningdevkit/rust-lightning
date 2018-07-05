@@ -5,7 +5,7 @@ extern crate lightning;
 
 use lightning::util::reset_rng_state;
 
-use lightning::ln::msgs::{MsgEncodable, MsgDecodable, Pong};
+use lightning::ln::msgs::{MsgDecodable, MsgEncodable, Pong};
 
 #[inline]
 pub fn do_test(data: &[u8]) {
@@ -25,7 +25,8 @@ fn main() {
 }
 
 #[cfg(feature = "honggfuzz")]
-#[macro_use] extern crate honggfuzz;
+#[macro_use]
+extern crate honggfuzz;
 #[cfg(feature = "honggfuzz")]
 fn main() {
 	loop {

@@ -5,7 +5,7 @@ use ln::channelmonitor;
 
 use bitcoin::blockdata::transaction::Transaction;
 
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc, Mutex};
 
 pub struct TestFeeEstimator {
 	pub sat_per_vbyte: u64,
@@ -21,16 +21,29 @@ pub struct TestChannelMonitor {
 	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
 }
 impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>) -> Self {
+	pub fn new(
+		chain_monitor: Arc<chaininterface::ChainWatchInterface>,
+		broadcaster: Arc<chaininterface::BroadcasterInterface>,
+	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
-			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster),
+			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(
+				chain_monitor,
+				broadcaster,
+			),
 		}
 	}
 }
 impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
+	fn add_update_monitor(
+		&self,
+		funding_txo: OutPoint,
+		monitor: channelmonitor::ChannelMonitor,
+	) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+		self.added_monitors
+			.lock()
+			.unwrap()
+			.push((funding_txo, monitor.clone()));
 		self.simple_monitor.add_update_monitor(funding_txo, monitor)
 	}
 }

@@ -1,9 +1,9 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::hash::Sha256dHash;
-use std::sync::{Mutex,Weak,MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, Weak};
 
 /// An interface to request notification of certain scripts as they appear the
 /// chain.
@@ -39,7 +39,13 @@ pub trait ChainListener: Sync + Send {
 	/// again with the same header and (at least) the new transactions.
 	/// This also means those counting confirmations using block_connected callbacks should watch
 	/// for duplicate headers and not count them towards confirmations!
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
+	fn block_connected(
+		&self,
+		header: &BlockHeader,
+		height: u32,
+		txn_matched: &[&Transaction],
+		indexes_of_txn_matched: &[u32],
+	);
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
 	fn block_disconnected(&self, header: &BlockHeader);
@@ -65,7 +71,7 @@ pub trait FeeEstimator: Sync + Send {
 pub struct ChainWatchInterfaceUtil {
 	watched: Mutex<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>, //TODO: Something clever to optimize this
 	listeners: Mutex<Vec<Weak<ChainListener>>>,
-	reentered: AtomicUsize
+	reentered: AtomicUsize,
 }
 
 /// Register listener
@@ -99,7 +105,7 @@ impl ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
 			watched: Mutex::new((Vec::new(), Vec::new(), false)),
 			listeners: Mutex::new(Vec::new()),
-			reentered: AtomicUsize::new(1)
+			reentered: AtomicUsize::new(1),
 		}
 	}
 
@@ -120,7 +126,12 @@ impl ChainWatchInterfaceUtil {
 					}
 				}
 			}
-			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
+			reentered = self.block_connected_checked(
+				&block.header,
+				height,
+				matched.as_slice(),
+				matched_index.as_slice(),
+			);
 		}
 	}
 
@@ -130,7 +141,7 @@ impl ChainWatchInterfaceUtil {
 		for listener in listeners.iter() {
 			match listener.upgrade() {
 				Some(arc) => arc.block_disconnected(header),
-				None => ()
+				None => (),
 			}
 		}
 	}
@@ -139,14 +150,22 @@ impl ChainWatchInterfaceUtil {
 	/// Returns true if notified listeners registered additional watch data (implying that the
 	/// block must be re-scanned and this function called again prior to further block_connected
 	/// calls, see ChainListener::block_connected for more info).
-	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
+	pub fn block_connected_checked(
+		&self,
+		header: &BlockHeader,
+		height: u32,
+		txn_matched: &[&Transaction],
+		indexes_of_txn_matched: &[u32],
+	) -> bool {
 		let last_seen = self.reentered.load(Ordering::Relaxed);
 
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
 			match listener.upgrade() {
-				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
-				None => ()
+				Some(arc) => {
+					arc.block_connected(header, height, txn_matched, indexes_of_txn_matched)
+				}
+				None => (),
 			}
 		}
 		return last_seen != self.reentered.load(Ordering::Relaxed);
@@ -155,10 +174,14 @@ impl ChainWatchInterfaceUtil {
 	/// Checks if a given transaction matches the current filter.
 	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
 		let watched = self.watched.lock().unwrap();
-		self.does_match_tx_unguarded (tx, &watched)
+		self.does_match_tx_unguarded(tx, &watched)
 	}
 
-	fn does_match_tx_unguarded (&self, tx: &Transaction, watched: &MutexGuard<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>) -> bool {
+	fn does_match_tx_unguarded(
+		&self,
+		tx: &Transaction,
+		watched: &MutexGuard<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>,
+	) -> bool {
 		if watched.2 {
 			return true;
 		}

@@ -6,7 +6,7 @@ extern crate lightning;
 use lightning::ln::msgs;
 use lightning::util::reset_rng_state;
 
-use lightning::ln::msgs::{MsgEncodable, MsgDecodable};
+use lightning::ln::msgs::{MsgDecodable, MsgEncodable};
 
 mod utils;
 
@@ -26,7 +26,8 @@ fn main() {
 }
 
 #[cfg(feature = "honggfuzz")]
-#[macro_use] extern crate honggfuzz;
+#[macro_use]
+extern crate honggfuzz;
 #[cfg(feature = "honggfuzz")]
 fn main() {
 	loop {
