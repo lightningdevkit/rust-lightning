@@ -12,18 +12,18 @@
 
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chachapoly {
-	use crypto::aead::{AeadEncryptor,AeadDecryptor};
+	use crypto::aead::{AeadDecryptor, AeadEncryptor};
 	use crypto::chacha20::ChaCha20;
-	use crypto::symmetriccipher::SynchronousStreamCipher;
-	use crypto::poly1305::Poly1305;
 	use crypto::mac::Mac;
+	use crypto::poly1305::Poly1305;
+	use crypto::symmetriccipher::SynchronousStreamCipher;
 	use crypto::util::fixed_time_eq;
 
 	use util::byte_utils;
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
-		cipher  : ChaCha20,
+		cipher: ChaCha20,
 		mac: Poly1305,
 		finished: bool,
 		data_len: usize,
@@ -73,7 +73,8 @@ mod real_chachapoly {
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.finished = true;
 			self.mac.input(&byte_utils::le64_to_array(self.aad_len));
-			self.mac.input(&byte_utils::le64_to_array(self.data_len as u64));
+			self.mac
+				.input(&byte_utils::le64_to_array(self.data_len as u64));
 			self.mac.raw_result(out_tag);
 		}
 	}
@@ -90,9 +91,10 @@ mod real_chachapoly {
 			self.data_len += input.len();
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.mac.input(&byte_utils::le64_to_array(self.aad_len));
-			self.mac.input(&byte_utils::le64_to_array(self.data_len as u64));
+			self.mac
+				.input(&byte_utils::le64_to_array(self.data_len as u64));
 
-			let mut calc_tag =  [0u8; 16];
+			let mut calc_tag = [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
 				self.cipher.process(input, output);
@@ -108,7 +110,7 @@ pub use self::real_chachapoly::ChaCha20Poly1305RFC;
 
 #[cfg(feature = "fuzztarget")]
 mod fuzzy_chachapoly {
-	use crypto::aead::{AeadEncryptor,AeadDecryptor};
+	use crypto::aead::{AeadDecryptor, AeadEncryptor};
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
@@ -149,7 +151,9 @@ mod fuzzy_chachapoly {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 
-			if tag[..] != self.tag[..] { return false; }
+			if tag[..] != self.tag[..] {
+				return false;
+			}
 			output.copy_from_slice(input);
 			self.finished = true;
 			true

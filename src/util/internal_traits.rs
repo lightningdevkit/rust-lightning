@@ -4,4 +4,4 @@ pub unsafe trait NoDealloc {}
 
 /// Just call with test_no_dealloc::<Type>(None)
 #[inline]
-pub fn test_no_dealloc<T : NoDealloc>(_: Option<T>) { }
+pub fn test_no_dealloc<T: NoDealloc>(_: Option<T>) {}
