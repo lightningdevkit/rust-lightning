@@ -54,6 +54,12 @@ pub enum Event {
 	PendingHTLCsForwardable {
 		time_forwardable: Instant,
 	},
+	/// Used to indicate that we've initialted a channel open and should send the open_channel
+	/// message provided to the given peer
+	SendOpenChannel {
+		node_id: PublicKey,
+		msg: msgs::OpenChannel,
+	},
 	/// Used to indicate that a funding_created message should be sent to the peer with the given node_id.
 	SendFundingCreated {
 		node_id: PublicKey,
