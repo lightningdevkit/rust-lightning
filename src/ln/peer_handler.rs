@@ -614,6 +614,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						//TODO: Handle upstream in some confused form so that upstream just knows
 						//to call us somehow?
 					},
+					Event::SendOpenChannel { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 32)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+						continue;
+					},
 					Event::SendFundingCreated { ref node_id, ref msg } => {
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: generate a DiscardFunding event indicating to the wallet that

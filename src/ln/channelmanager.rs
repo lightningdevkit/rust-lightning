@@ -233,7 +233,14 @@ impl ChannelManager {
 		Ok(res)
 	}
 
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, user_id: u64) -> Result<msgs::OpenChannel, HandleError> {
+	/// Creates a new outbound channel to the given remote node and with the given value.
+	/// user_id will be provided back as user_channel_id in FundingGenerationReady and
+	/// FundingBroadcastSafe events to allow tracking of which events correspond with which
+	/// create_channel call. Note that user_channel_id defaults to 0 for inbound channels, so you
+	/// may wish to avoid using 0 for user_id here.
+	/// If successful, will generate a SendOpenChannel event, so you should probably poll
+	/// PeerManager::process_events afterwards.
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, user_id: u64) -> Result<(), HandleError> {
 		let chan_keys = if cfg!(feature = "fuzztarget") {
 			ChannelKeys {
 				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
@@ -259,8 +266,15 @@ impl ChannelManager {
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.insert(channel.channel_id(), channel) {
 			Some(_) => panic!("RNG is bad???"),
-			None => Ok(res)
+			None => {}
 		}
+
+		let mut events = self.pending_events.lock().unwrap();
+		events.push(events::Event::SendOpenChannel {
+			node_id: their_network_key,
+			msg: res,
+		});
+		Ok(())
 	}
 
 	/// Gets the list of open channels, in random order. See ChannelDetail field documentation for
@@ -2004,17 +2018,27 @@ mod tests {
 
 	static mut CHAN_COUNT: u32 = 0;
 	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
-		let open_chan = node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 42).unwrap();
-		let accept_chan = node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &open_chan).unwrap();
+		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 42).unwrap();
+
+		let events_1 = node_a.node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		let accept_chan = match events_1[0] {
+			Event::SendOpenChannel { ref node_id, ref msg } => {
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), msg).unwrap()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
 		node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_chan).unwrap();
 
 		let chan_id = unsafe { CHAN_COUNT };
 		let tx;
 		let funding_output;
 
-		let events_1 = node_a.node.get_and_clear_pending_events();
-		assert_eq!(events_1.len(), 1);
-		match events_1[0] {
+		let events_2 = node_a.node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		match events_2[0] {
 			Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
 				assert_eq!(*channel_value_satoshis, 100000);
 				assert_eq!(user_channel_id, 42);
@@ -2033,9 +2057,9 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
-		let events_2 = node_a.node.get_and_clear_pending_events();
-		assert_eq!(events_2.len(), 1);
-		let funding_signed = match events_2[0] {
+		let events_3 = node_a.node.get_and_clear_pending_events();
+		assert_eq!(events_3.len(), 1);
+		let funding_signed = match events_3[0] {
 			Event::SendFundingCreated { ref node_id, ref msg } => {
 				assert_eq!(*node_id, node_b.node.get_our_node_id());
 				let res = node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), msg).unwrap();
@@ -2056,9 +2080,9 @@ mod tests {
 			added_monitors.clear();
 		}
 
-		let events_3 = node_a.node.get_and_clear_pending_events();
-		assert_eq!(events_3.len(), 1);
-		match events_3[0] {
+		let events_4 = node_a.node.get_and_clear_pending_events();
+		assert_eq!(events_4.len(), 1);
+		match events_4[0] {
 			Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
 				assert_eq!(user_channel_id, 42);
 				assert_eq!(*funding_txo, funding_output);
@@ -2067,9 +2091,9 @@ mod tests {
 		};
 
 		confirm_transaction(&node_a.chain_monitor, &tx, chan_id);
-		let events_4 = node_a.node.get_and_clear_pending_events();
-		assert_eq!(events_4.len(), 1);
-		match events_4[0] {
+		let events_5 = node_a.node.get_and_clear_pending_events();
+		assert_eq!(events_5.len(), 1);
+		match events_5[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
 				assert_eq!(*node_id, node_b.node.get_our_node_id());
 				assert!(announcement_sigs.is_none());
@@ -2081,9 +2105,9 @@ mod tests {
 		let channel_id;
 
 		confirm_transaction(&node_b.chain_monitor, &tx, chan_id);
-		let events_5 = node_b.node.get_and_clear_pending_events();
-		assert_eq!(events_5.len(), 1);
-		let as_announcement_sigs = match events_5[0] {
+		let events_6 = node_b.node.get_and_clear_pending_events();
+		assert_eq!(events_6.len(), 1);
+		let as_announcement_sigs = match events_6[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
 				assert_eq!(*node_id, node_a.node.get_our_node_id());
 				channel_id = msg.channel_id.clone();
@@ -2094,9 +2118,9 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		let events_6 = node_a.node.get_and_clear_pending_events();
-		assert_eq!(events_6.len(), 1);
-		let (announcement, as_update) = match events_6[0] {
+		let events_7 = node_a.node.get_and_clear_pending_events();
+		assert_eq!(events_7.len(), 1);
+		let (announcement, as_update) = match events_7[0] {
 			Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 				(msg, update_msg)
 			},
@@ -2104,9 +2128,9 @@ mod tests {
 		};
 
 		node_b.node.handle_announcement_signatures(&node_a.node.get_our_node_id(), &as_announcement_sigs).unwrap();
-		let events_7 = node_b.node.get_and_clear_pending_events();
-		assert_eq!(events_7.len(), 1);
-		let bs_update = match events_7[0] {
+		let events_8 = node_b.node.get_and_clear_pending_events();
+		assert_eq!(events_8.len(), 1);
+		let bs_update = match events_8[0] {
 			Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 				assert!(*announcement == *msg);
 				update_msg
