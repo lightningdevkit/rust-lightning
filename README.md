@@ -51,6 +51,11 @@ Assorted random TODOs:
 
  * Some kind of logging subsystem/API.
 
+ * Migrate all our serialize() -> Vec stuff to serialize(byte_writer) so that we
+   can avoid allocating a huge buffer for everything we serialize/deserialize.
+
+ * Migrate the above TODOs to GitHub issues.
+
 Notes on coding style:
  * Use tabs. If you want to align lines, use spaces. Any desired alignment
    should display fine at any tab-length display setting.
