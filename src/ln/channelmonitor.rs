@@ -264,7 +264,7 @@ impl ChannelMonitor {
 	/// in case the remote end force-closes using their latest state. Prunes old preimages if neither
 	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
 	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	pub fn provide_secret(&mut self, idx: u64, secret: [u8; 32], their_next_revocation_point: Option<(u64, PublicKey)>) -> Result<(), HandleError> {
+	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32], their_next_revocation_point: Option<(u64, PublicKey)>) -> Result<(), HandleError> {
 		let pos = ChannelMonitor::place_secret(idx);
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
@@ -334,7 +334,7 @@ impl ChannelMonitor {
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64) {
+	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64) {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
@@ -350,7 +350,7 @@ impl ChannelMonitor {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our local commitment transaction is updated.
 	/// Panics if set_their_to_self_delay has never been called.
-	pub fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>) {
+	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>) {
 		assert!(self.their_to_self_delay.is_some());
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
@@ -367,7 +367,7 @@ impl ChannelMonitor {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	pub fn provide_payment_preimage(&mut self, payment_hash: &[u8; 32], payment_preimage: &[u8; 32]) {
+	pub(super) fn provide_payment_preimage(&mut self, payment_hash: &[u8; 32], payment_preimage: &[u8; 32]) {
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 	}
 
@@ -402,7 +402,7 @@ impl ChannelMonitor {
 	}
 
 	/// Panics if commitment_transaction_number_obscure_factor doesn't fit in 48 bits
-	pub fn set_commitment_obscure_factor(&mut self, commitment_transaction_number_obscure_factor: u64) {
+	pub(super) fn set_commitment_obscure_factor(&mut self, commitment_transaction_number_obscure_factor: u64) {
 		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
 		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
 	}
@@ -411,19 +411,19 @@ impl ChannelMonitor {
 	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
 	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
 	/// provides slightly better privacy.
-	pub fn set_funding_info(&mut self, funding_info: OutPoint) {
+	pub(super) fn set_funding_info(&mut self, funding_info: OutPoint) {
 		self.funding_txo = Some(funding_info);
 	}
 
-	pub fn set_their_htlc_base_key(&mut self, their_htlc_base_key: &PublicKey) {
+	pub(super) fn set_their_htlc_base_key(&mut self, their_htlc_base_key: &PublicKey) {
 		self.their_htlc_base_key = Some(their_htlc_base_key.clone());
 	}
 
-	pub fn set_their_to_self_delay(&mut self, their_to_self_delay: u16) {
+	pub(super) fn set_their_to_self_delay(&mut self, their_to_self_delay: u16) {
 		self.their_to_self_delay = Some(their_to_self_delay);
 	}
 
-	pub fn unset_funding_info(&mut self) {
+	pub(super) fn unset_funding_info(&mut self) {
 		self.funding_txo = None;
 	}
 
