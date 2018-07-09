@@ -1,6 +1,7 @@
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,SigHashType,Transaction};
 use bitcoin::blockdata::script::Script;
+use bitcoin::network::serialize;
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::util::bip143;
 
@@ -15,6 +16,7 @@ use ln::chan_utils::HTLCOutputInCommitment;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 use chain::transaction::OutPoint;
 use util::sha2::Sha256;
+use util::byte_utils;
 
 use std::collections::HashMap;
 use std::sync::{Arc,Mutex};
@@ -140,6 +142,9 @@ struct LocalSignedTx {
 	feerate_per_kw: u64,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>,
 }
+
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 pub struct ChannelMonitor {
 	funding_txo: Option<OutPoint>,
@@ -437,6 +442,385 @@ impl ChannelMonitor {
 
 	pub fn get_funding_txo(&self) -> Option<OutPoint> {
 		self.funding_txo
+	}
+
+	/// Serializes into a vec, with various modes for the exposed pub fns
+	fn serialize(&self, for_local_storage: bool) -> Vec<u8> {
+		let mut res = Vec::new();
+		res.push(SERIALIZATION_VERSION);
+		res.push(MIN_SERIALIZATION_VERSION);
+
+		match self.funding_txo {
+			Some(outpoint) => {
+				res.extend_from_slice(&outpoint.txid[..]);
+				res.extend_from_slice(&byte_utils::be16_to_array(outpoint.index));
+			},
+			None => {
+				// We haven't even been initialized...not sure why anyone is serializing us, but
+				// not much to give them.
+				return res;
+			},
+		}
+
+		// Set in initial Channel-object creation, so should always be set by now:
+		res.extend_from_slice(&byte_utils::be48_to_array(self.commitment_transaction_number_obscure_factor));
+
+		match self.key_storage {
+			KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key } => {
+				res.push(0);
+				res.extend_from_slice(&revocation_base_key[..]);
+				res.extend_from_slice(&htlc_base_key[..]);
+			},
+			KeyStorage::SigsMode { .. } => unimplemented!(),
+		}
+
+		res.extend_from_slice(&self.delayed_payment_base_key.serialize());
+		res.extend_from_slice(&self.their_htlc_base_key.as_ref().unwrap().serialize());
+
+		match self.their_cur_revocation_points {
+			Some((idx, pubkey, second_option)) => {
+				res.extend_from_slice(&byte_utils::be48_to_array(idx));
+				res.extend_from_slice(&pubkey.serialize());
+				match second_option {
+					Some(second_pubkey) => {
+						res.extend_from_slice(&second_pubkey.serialize());
+					},
+					None => {
+						res.extend_from_slice(&[0; 33]);
+					},
+				}
+			},
+			None => {
+				res.extend_from_slice(&byte_utils::be48_to_array(0));
+			},
+		}
+
+		res.extend_from_slice(&byte_utils::be16_to_array(self.our_to_self_delay));
+		res.extend_from_slice(&byte_utils::be16_to_array(self.their_to_self_delay.unwrap()));
+
+		for &(ref secret, ref idx) in self.old_secrets.iter() {
+			res.extend_from_slice(secret);
+			res.extend_from_slice(&byte_utils::be64_to_array(*idx));
+		}
+
+		macro_rules! serialize_htlc_in_commitment {
+			($htlc_output: expr) => {
+				res.push($htlc_output.offered as u8);
+				res.extend_from_slice(&byte_utils::be64_to_array($htlc_output.amount_msat));
+				res.extend_from_slice(&byte_utils::be32_to_array($htlc_output.cltv_expiry));
+				res.extend_from_slice(&$htlc_output.payment_hash);
+				res.extend_from_slice(&byte_utils::be32_to_array($htlc_output.transaction_output_index));
+			}
+		}
+
+		res.extend_from_slice(&byte_utils::be64_to_array(self.remote_claimable_outpoints.len() as u64));
+		for (txid, htlc_outputs) in self.remote_claimable_outpoints.iter() {
+			res.extend_from_slice(&txid[..]);
+			res.extend_from_slice(&byte_utils::be64_to_array(htlc_outputs.len() as u64));
+			for htlc_output in htlc_outputs.iter() {
+				serialize_htlc_in_commitment!(htlc_output);
+			}
+		}
+
+		{
+			let remote_commitment_txn_on_chain = self.remote_commitment_txn_on_chain.lock().unwrap();
+			res.extend_from_slice(&byte_utils::be64_to_array(remote_commitment_txn_on_chain.len() as u64));
+			for (txid, commitment_number) in remote_commitment_txn_on_chain.iter() {
+				res.extend_from_slice(&txid[..]);
+				res.extend_from_slice(&byte_utils::be48_to_array(*commitment_number));
+			}
+		}
+
+		if for_local_storage {
+			res.extend_from_slice(&byte_utils::be64_to_array(self.remote_hash_commitment_number.len() as u64));
+			for (payment_hash, commitment_number) in self.remote_hash_commitment_number.iter() {
+				res.extend_from_slice(payment_hash);
+				res.extend_from_slice(&byte_utils::be48_to_array(*commitment_number));
+			}
+		} else {
+			res.extend_from_slice(&byte_utils::be64_to_array(0));
+		}
+
+		macro_rules! serialize_local_tx {
+			($local_tx: expr) => {
+				let tx_ser = serialize::serialize(&$local_tx.tx).unwrap();
+				res.extend_from_slice(&byte_utils::be64_to_array(tx_ser.len() as u64));
+				res.extend_from_slice(&tx_ser);
+
+				res.extend_from_slice(&$local_tx.revocation_key.serialize());
+				res.extend_from_slice(&$local_tx.a_htlc_key.serialize());
+				res.extend_from_slice(&$local_tx.b_htlc_key.serialize());
+				res.extend_from_slice(&$local_tx.delayed_payment_key.serialize());
+
+				res.extend_from_slice(&byte_utils::be64_to_array($local_tx.feerate_per_kw));
+				res.extend_from_slice(&byte_utils::be64_to_array($local_tx.htlc_outputs.len() as u64));
+				for &(ref htlc_output, ref their_sig, ref our_sig) in $local_tx.htlc_outputs.iter() {
+					serialize_htlc_in_commitment!(htlc_output);
+					res.extend_from_slice(&their_sig.serialize_compact(&self.secp_ctx));
+					res.extend_from_slice(&our_sig.serialize_compact(&self.secp_ctx));
+				}
+			}
+		}
+
+		if let Some(ref prev_local_tx) = self.prev_local_signed_commitment_tx {
+			res.push(1);
+			serialize_local_tx!(prev_local_tx);
+		} else {
+			res.push(0);
+		}
+
+		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
+			res.push(1);
+			serialize_local_tx!(cur_local_tx);
+		} else {
+			res.push(0);
+		}
+
+		res.extend_from_slice(&byte_utils::be64_to_array(self.payment_preimages.len() as u64));
+		for payment_preimage in self.payment_preimages.values() {
+			res.extend_from_slice(payment_preimage);
+		}
+
+		res.extend_from_slice(&byte_utils::be64_to_array(self.destination_script.len() as u64));
+		res.extend_from_slice(&self.destination_script[..]);
+
+		res
+	}
+
+	/// Encodes this monitor into a byte array, suitable for writing to disk.
+	pub fn serialize_for_disk(&self) -> Vec<u8> {
+		self.serialize(true)
+	}
+
+	/// Encodes this monitor into a byte array, suitable for sending to a remote watchtower
+	pub fn serialize_for_watchtower(&self) -> Vec<u8> {
+		self.serialize(false)
+	}
+
+	/// Attempts to decode a serialized monitor
+	pub fn deserialize(data: &[u8]) -> Option<Self> {
+		let mut read_pos = 0;
+		macro_rules! read_bytes {
+			($byte_count: expr) => {
+				{
+					if ($byte_count as usize) + read_pos > data.len() {
+						return None;
+					}
+					read_pos += $byte_count as usize;
+					&data[read_pos - $byte_count as usize..read_pos]
+				}
+			}
+		}
+
+		let secp_ctx = Secp256k1::new();
+		macro_rules! unwrap_obj {
+			($key: expr) => {
+				match $key {
+					Ok(res) => res,
+					Err(_) => return None,
+				}
+			}
+		}
+
+		let _ver = read_bytes!(1)[0];
+		let min_ver = read_bytes!(1)[0];
+		if min_ver > SERIALIZATION_VERSION {
+			return None;
+		}
+
+		// Technically this can fail and serialize fail a round-trip, but only for serialization of
+		// barely-init'd ChannelMonitors that we can't do anything with.
+		let funding_txo = Some(OutPoint {
+			txid: Sha256dHash::from(read_bytes!(32)),
+			index: byte_utils::slice_to_be16(read_bytes!(2)),
+		});
+		let commitment_transaction_number_obscure_factor = byte_utils::slice_to_be48(read_bytes!(6));
+
+		let key_storage = match read_bytes!(1)[0] {
+			0 => {
+				KeyStorage::PrivMode {
+					revocation_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
+					htlc_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
+				}
+			},
+			_ => return None,
+		};
+
+		let delayed_payment_base_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+		let their_htlc_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
+
+		let their_cur_revocation_points = {
+			let first_idx = byte_utils::slice_to_be48(read_bytes!(6));
+			if first_idx == 0 {
+				None
+			} else {
+				let first_point = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+				let second_point_slice = read_bytes!(33);
+				if second_point_slice[0..32] == [0; 32] && second_point_slice[32] == 0 {
+					Some((first_idx, first_point, None))
+				} else {
+					Some((first_idx, first_point, Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, second_point_slice)))))
+				}
+			}
+		};
+
+		let our_to_self_delay = byte_utils::slice_to_be16(read_bytes!(2));
+		let their_to_self_delay = Some(byte_utils::slice_to_be16(read_bytes!(2)));
+
+		let mut old_secrets = [([0; 32], 1 << 48); 49];
+		for &mut (ref mut secret, ref mut idx) in old_secrets.iter_mut() {
+			secret.copy_from_slice(read_bytes!(32));
+			*idx = byte_utils::slice_to_be64(read_bytes!(8));
+		}
+
+		macro_rules! read_htlc_in_commitment {
+			() => {
+				{
+					let offered = match read_bytes!(1)[0] {
+						0 => false, 1 => true,
+						_ => return None,
+					};
+					let amount_msat = byte_utils::slice_to_be64(read_bytes!(8));
+					let cltv_expiry = byte_utils::slice_to_be32(read_bytes!(4));
+					let mut payment_hash = [0; 32];
+					payment_hash[..].copy_from_slice(read_bytes!(32));
+					let transaction_output_index = byte_utils::slice_to_be32(read_bytes!(4));
+
+					HTLCOutputInCommitment {
+						offered, amount_msat, cltv_expiry, payment_hash, transaction_output_index
+					}
+				}
+			}
+		}
+
+		let remote_claimable_outpoints_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if remote_claimable_outpoints_len > data.len() as u64 / 64 { return None; }
+		let mut remote_claimable_outpoints = HashMap::with_capacity(remote_claimable_outpoints_len as usize);
+		for _ in 0..remote_claimable_outpoints_len {
+			let txid = Sha256dHash::from(read_bytes!(32));
+			let outputs_count = byte_utils::slice_to_be64(read_bytes!(8));
+			if outputs_count > data.len() as u64 * 32 { return None; }
+			let mut outputs = Vec::with_capacity(outputs_count as usize);
+			for _ in 0..outputs_count {
+				outputs.push(read_htlc_in_commitment!());
+			}
+			if let Some(_) = remote_claimable_outpoints.insert(txid, outputs) {
+				return None;
+			}
+		}
+
+		let remote_commitment_txn_on_chain_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if remote_commitment_txn_on_chain_len > data.len() as u64 / 32 { return None; }
+		let mut remote_commitment_txn_on_chain = HashMap::with_capacity(remote_commitment_txn_on_chain_len as usize);
+		for _ in 0..remote_commitment_txn_on_chain_len {
+			let txid = Sha256dHash::from(read_bytes!(32));
+			let commitment_number = byte_utils::slice_to_be48(read_bytes!(6));
+			if let Some(_) = remote_commitment_txn_on_chain.insert(txid, commitment_number) {
+				return None;
+			}
+		}
+
+		let remote_hash_commitment_number_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if remote_hash_commitment_number_len > data.len() as u64 / 32 { return None; }
+		let mut remote_hash_commitment_number = HashMap::with_capacity(remote_hash_commitment_number_len as usize);
+		for _ in 0..remote_hash_commitment_number_len {
+			let mut txid = [0; 32];
+			txid[..].copy_from_slice(read_bytes!(32));
+			let commitment_number = byte_utils::slice_to_be48(read_bytes!(6));
+			if let Some(_) = remote_hash_commitment_number.insert(txid, commitment_number) {
+				return None;
+			}
+		}
+
+		macro_rules! read_local_tx {
+			() => {
+				{
+					let tx_len = byte_utils::slice_to_be64(read_bytes!(8));
+					let tx: Transaction = unwrap_obj!(serialize::deserialize(read_bytes!(tx_len)));
+
+					let revocation_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let a_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let b_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let delayed_payment_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let feerate_per_kw = byte_utils::slice_to_be64(read_bytes!(8));
+
+					let htlc_outputs_len = byte_utils::slice_to_be64(read_bytes!(8));
+					if htlc_outputs_len > data.len() as u64 / 128 { return None; }
+					let mut htlc_outputs = Vec::with_capacity(htlc_outputs_len as usize);
+					for _ in 0..htlc_outputs_len {
+						htlc_outputs.push((read_htlc_in_commitment!(),
+								unwrap_obj!(Signature::from_compact(&secp_ctx, read_bytes!(64))),
+								unwrap_obj!(Signature::from_compact(&secp_ctx, read_bytes!(64)))));
+					}
+
+					LocalSignedTx {
+						txid: tx.txid(),
+						tx, revocation_key, a_htlc_key, b_htlc_key, delayed_payment_key, feerate_per_kw, htlc_outputs
+					}
+				}
+			}
+		}
+
+		let prev_local_signed_commitment_tx = match read_bytes!(1)[0] {
+			0 => None,
+			1 => {
+				Some(read_local_tx!())
+			},
+			_ => return None,
+		};
+
+		let current_local_signed_commitment_tx = match read_bytes!(1)[0] {
+			0 => None,
+			1 => {
+				Some(read_local_tx!())
+			},
+			_ => return None,
+		};
+
+		let payment_preimages_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if payment_preimages_len > data.len() as u64 / 32 { return None; }
+		let mut payment_preimages = HashMap::with_capacity(payment_preimages_len as usize);
+		let mut sha = Sha256::new();
+		for _ in 0..payment_preimages_len {
+			let mut preimage = [0; 32];
+			preimage[..].copy_from_slice(read_bytes!(32));
+			sha.reset();
+			sha.input(&preimage);
+			let mut hash = [0; 32];
+			sha.result(&mut hash);
+			if let Some(_) = payment_preimages.insert(hash, preimage) {
+				return None;
+			}
+		}
+
+		let destination_script_len = byte_utils::slice_to_be64(read_bytes!(8));
+		let destination_script = Script::from(read_bytes!(destination_script_len).to_vec());
+
+		Some(ChannelMonitor {
+			funding_txo,
+			commitment_transaction_number_obscure_factor,
+
+			key_storage,
+			delayed_payment_base_key,
+			their_htlc_base_key,
+			their_cur_revocation_points,
+
+			our_to_self_delay,
+			their_to_self_delay,
+
+			old_secrets,
+			remote_claimable_outpoints,
+			remote_commitment_txn_on_chain: Mutex::new(remote_commitment_txn_on_chain),
+			remote_hash_commitment_number,
+
+			prev_local_signed_commitment_tx,
+			current_local_signed_commitment_tx,
+
+			payment_preimages,
+
+			destination_script,
+			secp_ctx,
+		})
 	}
 
 	//TODO: Functions to serialize/deserialize (with different forms depending on which information
