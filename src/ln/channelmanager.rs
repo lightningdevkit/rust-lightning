@@ -744,7 +744,6 @@ impl ChannelManager {
 							for forward_info in pending_forwards {
 								failed_forwards.push((forward_info.payment_hash, 0x4000 | 10, None));
 							}
-							// TODO: Send a failure packet back on each pending_forward
 							continue;
 						}
 					};
