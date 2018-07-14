@@ -1085,13 +1085,25 @@ impl ChainListener for ChannelManager {
 		}
 	}
 
+	/// We force-close the channel without letting our counterparty participate in the shutdown
 	fn block_disconnected(&self, header: &BlockHeader) {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		for channel in channel_state.by_id.values_mut() {
-			if channel.block_disconnected(header) {
-				//TODO Close channel here
+		let mut channel_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_lock.borrow_parts();
+		let short_to_id = channel_state.short_to_id;
+		channel_state.by_id.retain(|_,  v| {
+			if v.block_disconnected(header) {
+				let tx = v.force_shutdown();
+				for broadcast_tx in tx {
+					self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
+				}
+				if let Some(short_id) = v.get_short_channel_id() {
+					short_to_id.remove(&short_id);
+				}
+				false
+			} else {
+				true
 			}
-		}
+		});
 	}
 }
 
@@ -1816,6 +1828,7 @@ impl ChannelMessageHandler for ChannelManager {
 mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
+	use chain::chaininterface::ChainListener;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
@@ -2918,5 +2931,31 @@ mod tests {
 			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
 			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
 		}
+	}
+
+	#[test]
+	fn test_unconf_chan() {
+		// After creating a chan between nodes, we disconnect all blocks previously seen to force a channel close on nodes[0] side
+		let nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let channel_state = nodes[0].node.channel_state.lock().unwrap();
+		assert_eq!(channel_state.by_id.len(), 1);
+		assert_eq!(channel_state.short_to_id.len(), 1);
+		mem::drop(channel_state);
+
+		let mut headers = Vec::new();
+		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		headers.push(header.clone());
+		for _i in 2..100 {
+			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			headers.push(header.clone());
+		}
+		while !headers.is_empty() {
+			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		let channel_state = nodes[0].node.channel_state.lock().unwrap();
+		assert_eq!(channel_state.by_id.len(), 0);
+		assert_eq!(channel_state.short_to_id.len(), 0);
 	}
 }

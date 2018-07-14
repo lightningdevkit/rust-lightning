@@ -231,7 +231,7 @@ const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | 
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
-// calling get_channel_id() before we're set up or things like get_outbound_funding_signed on an
+// calling channel_id() before we're set up or things like get_outbound_funding_signed on an
 // inbound channel.
 pub struct Channel {
 	user_id: u64,
