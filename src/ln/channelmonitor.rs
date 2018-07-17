@@ -117,7 +117,7 @@ const CLTV_SHARED_CLAIM_BUFFER: u32 = 12;
 /// HTLC-Success transaction.
 const CLTV_CLAIM_BUFFER: u32 = 6;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum KeyStorage {
 	PrivMode {
 		revocation_base_key: SecretKey,
@@ -130,7 +130,7 @@ enum KeyStorage {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct LocalSignedTx {
 	/// txid of the transaction in tx, just used to make comparison faster
 	txid: Sha256dHash,
@@ -211,6 +211,40 @@ impl Clone for ChannelMonitor {
 
 			destination_script: self.destination_script.clone(),
 			secp_ctx: self.secp_ctx.clone(),
+		}
+	}
+}
+
+#[cfg(any(test, feature = "fuzztarget"))]
+/// Used only in testing and fuzztarget to check serialization roundtrips don't change the
+/// underlying object
+impl PartialEq for ChannelMonitor {
+	fn eq(&self, other: &Self) -> bool {
+		if self.funding_txo != other.funding_txo ||
+			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
+			self.key_storage != other.key_storage ||
+			self.delayed_payment_base_key != other.delayed_payment_base_key ||
+			self.their_htlc_base_key != other.their_htlc_base_key ||
+			self.their_cur_revocation_points != other.their_cur_revocation_points ||
+			self.our_to_self_delay != other.our_to_self_delay ||
+			self.their_to_self_delay != other.their_to_self_delay ||
+			self.remote_claimable_outpoints != other.remote_claimable_outpoints ||
+			self.remote_hash_commitment_number != other.remote_hash_commitment_number ||
+			self.prev_local_signed_commitment_tx != other.prev_local_signed_commitment_tx ||
+			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
+			self.payment_preimages != other.payment_preimages ||
+			self.destination_script != other.destination_script
+		{
+			false
+		} else {
+			for (&(ref secret, ref idx), &(ref o_secret, ref o_idx)) in self.old_secrets.iter().zip(other.old_secrets.iter()) {
+				if secret != o_secret || idx != o_idx {
+					return false
+				}
+			}
+			let us = self.remote_commitment_txn_on_chain.lock().unwrap();
+			let them = other.remote_commitment_txn_on_chain.lock().unwrap();
+			*us == *them
 		}
 	}
 }
@@ -603,7 +637,7 @@ impl ChannelMonitor {
 		macro_rules! read_bytes {
 			($byte_count: expr) => {
 				{
-					if ($byte_count as usize) + read_pos > data.len() {
+					if ($byte_count as usize) > data.len() - read_pos {
 						return None;
 					}
 					read_pos += $byte_count as usize;
