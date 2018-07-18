@@ -754,7 +754,7 @@ impl ChannelManager {
 						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, forward_info.onion_packet.unwrap()) {
 							Err(_e) => {
 								let chan_update = self.get_channel_update(forward_chan).unwrap();
-								failed_forwards.push((forward_info.payment_hash, 0x4000 | 7, Some(chan_update)));
+								failed_forwards.push((forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
 								continue;
 							},
 							Ok(update_add) => {
@@ -1465,7 +1465,7 @@ impl ChannelMessageHandler for ChannelManager {
 			let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
 			if !chan.is_live() {
 				let chan_update = self.get_channel_update(chan).unwrap();
-				return_err!("Forwarding channel is not in a ready state.", 0x4000 | 7, &chan_update.encode_with_len()[..]);
+				return_err!("Forwarding channel is not in a ready state.", 0x1000 | 7, &chan_update.encode_with_len()[..]);
 			}
 		}
 
