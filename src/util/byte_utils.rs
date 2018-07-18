@@ -11,6 +11,15 @@ pub fn slice_to_be32(v: &[u8]) -> u32 {
 	((v[3] as u32) << 8*0)
 }
 #[inline]
+pub fn slice_to_be48(v: &[u8]) -> u64 {
+	((v[0] as u64) << 8*5) |
+	((v[1] as u64) << 8*4) |
+	((v[2] as u64) << 8*3) |
+	((v[3] as u64) << 8*2) |
+	((v[4] as u64) << 8*1) |
+	((v[5] as u64) << 8*0)
+}
+#[inline]
 pub fn slice_to_be64(v: &[u8]) -> u64 {
 	((v[0] as u64) << 8*7) |
 	((v[1] as u64) << 8*6) |
@@ -36,6 +45,18 @@ pub fn be32_to_array(u: u32) -> [u8; 4] {
 	v[1] = ((u >> 8*2) & 0xff) as u8;
 	v[2] = ((u >> 8*1) & 0xff) as u8;
 	v[3] = ((u >> 8*0) & 0xff) as u8;
+	v
+}
+#[inline]
+pub fn be48_to_array(u: u64) -> [u8; 6] {
+	assert!(u & 0xffff_0000_0000_0000 == 0);
+	let mut v = [0; 6];
+	v[0] = ((u >> 8*5) & 0xff) as u8;
+	v[1] = ((u >> 8*4) & 0xff) as u8;
+	v[2] = ((u >> 8*3) & 0xff) as u8;
+	v[3] = ((u >> 8*2) & 0xff) as u8;
+	v[4] = ((u >> 8*1) & 0xff) as u8;
+	v[5] = ((u >> 8*0) & 0xff) as u8;
 	v
 }
 #[inline]

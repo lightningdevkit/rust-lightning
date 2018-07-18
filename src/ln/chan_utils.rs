@@ -151,7 +151,7 @@ pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u1
 	              .into_script()
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct HTLCOutputInCommitment {
 	pub offered: bool,
 	pub amount_msat: u64,
