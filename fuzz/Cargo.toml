@@ -43,8 +43,8 @@ name = "full_stack_target"
 path = "fuzz_targets/full_stack_target.rs"
 
 [[bin]]
-name = "channelmonitor_deserialize_target"
-path = "fuzz_targets/channelmonitor_deserialize_target.rs"
+name = "chanmon_deser_target"
+path = "fuzz_targets/chanmon_deser_target.rs"
 
 # message fuzz targets
 [[bin]]
