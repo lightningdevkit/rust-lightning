@@ -770,7 +770,14 @@ impl ChannelMonitor {
 			() => {
 				{
 					let tx_len = byte_utils::slice_to_be64(read_bytes!(8));
-					let tx: Transaction = unwrap_obj!(serialize::deserialize(read_bytes!(tx_len)));
+					let tx_ser = read_bytes!(tx_len);
+					let tx: Transaction = unwrap_obj!(serialize::deserialize(tx_ser));
+					if serialize::serialize(&tx).unwrap() != tx_ser {
+						// We check that the tx re-serializes to the same form to ensure there is
+						// no extra data, and as rust-bitcoin doesn't handle the 0-input ambiguity
+						// all that well.
+						return None;
+					}
 
 					let revocation_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
 					let a_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
