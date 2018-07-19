@@ -245,6 +245,10 @@ pub struct Channel {
 
 	local_keys: ChannelKeys,
 
+	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
+	// generation start at 0 and count up...this simplifies some parts of implementation at the
+	// cost of others, but should really just be changed.
+
 	cur_local_commitment_transaction_number: u64,
 	cur_remote_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
@@ -343,7 +347,7 @@ impl Channel {
 
 	/// Guaranteed to return a value no larger than channel_value_satoshis
 	fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
-		cmp::min(channel_value_satoshis, 10) //TODO
+		cmp::min(channel_value_satoshis, 1000) //TODO
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
@@ -456,9 +460,6 @@ impl Channel {
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
 			return Err(HandleError{err: "Peer never wants payout outputs?", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
-		if msg.max_htlc_value_in_flight_msat > msg.funding_satoshis * 1000 {
-			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
-		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(HandleError{err: "Minimum htlc value is full channel value", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
@@ -521,7 +522,7 @@ impl Channel {
 			channel_value_satoshis: msg.funding_satoshis,
 			their_dust_limit_satoshis: msg.dust_limit_satoshis,
 			our_dust_limit_satoshis: Channel::derive_our_dust_limit_satoshis(background_feerate),
-			their_max_htlc_value_in_flight_msat: msg.max_htlc_value_in_flight_msat,
+			their_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			their_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			their_htlc_minimum_msat: msg.htlc_minimum_msat,
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(msg.feerate_per_kw as u64),
@@ -595,7 +596,7 @@ impl Channel {
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
 	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool) -> (Transaction, Vec<HTLCOutputInCommitment>) {
-		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ commitment_number;
+		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (0xffffffffffff - commitment_number);
 
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
@@ -1081,9 +1082,6 @@ impl Channel {
 		if msg.dust_limit_satoshis > 21000000 * 100000000 {
 			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
 		}
-		if msg.max_htlc_value_in_flight_msat > self.channel_value_satoshis * 1000 {
-			return Err(HandleError{err: "Bogus max_htlc_value_in_flight_satoshis", msg: None});
-		}
 		if msg.channel_reserve_satoshis > self.channel_value_satoshis {
 			return Err(HandleError{err: "Bogus channel_reserve_satoshis", msg: None});
 		}
@@ -1101,7 +1099,7 @@ impl Channel {
 		self.channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
-		self.their_max_htlc_value_in_flight_msat = msg.max_htlc_value_in_flight_msat;
+		self.their_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
 		self.their_channel_reserve_satoshis = msg.channel_reserve_satoshis;
 		self.their_htlc_minimum_msat = msg.htlc_minimum_msat;
 		self.their_to_self_delay = msg.to_self_delay;
@@ -2407,7 +2405,7 @@ mod tests {
 
 		macro_rules! test_commitment {
 			( $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr) => {
-				unsigned_tx = chan.build_commitment_transaction(42, &keys, true, false);
+				unsigned_tx = chan.build_commitment_transaction(0xffffffffffff - 42, &keys, true, false);
 				let their_signature = Signature::from_der(&secp_ctx, &hex_bytes($their_sig_hex).unwrap()[..]).unwrap();
 				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &chan.get_funding_redeemscript(), chan.channel_value_satoshis)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, &chan.their_funding_pubkey).unwrap();

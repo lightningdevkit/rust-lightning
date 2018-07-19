@@ -20,7 +20,9 @@ impl OutPoint {
 
 	/// Convert an `OutPoint` to a lightning channel id.
 	pub fn to_channel_id(&self) -> Uint256 {
-		// TODO: or le?
-		self.txid.into_be() ^ Uint256::from_u64(self.index as u64).unwrap()
+		let mut index = [0; 32];
+		index[30] = ((self.index >> 8) & 0xff) as u8;
+		index[31] = ((self.index >> 0) & 0xff) as u8;
+		self.txid.into_le() ^ Sha256dHash::from(&index[..]).into_le()
 	}
 }
