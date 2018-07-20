@@ -1,12 +1,13 @@
 [package]
 name = "lightning"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Matt Corallo"]
 license = "Apache-2.0"
 repository = "https://github.com/rust-bitcoin/rust-lightning/"
 description = """
-A Bitcoin Lightning implementation in Rust.
-Still super-early code-dump quality and is missing large chunks. See README in git repo for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to finish building it to even try.
+A Bitcoin Lightning library in Rust.
+Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
+Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
 """
 build = "build.rs"
 
@@ -22,7 +23,7 @@ rand = "0.4"
 secp256k1 = "0.9"
 
 [build-dependencies]
-gcc = "0.3"
+cc = "1.0"
 
 [dev-dependencies.bitcoin]
 version = "0.13"
