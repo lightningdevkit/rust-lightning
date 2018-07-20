@@ -380,7 +380,7 @@ pub enum ErrorAction {
 
 pub struct HandleError { //TODO: rename me
 	pub err: &'static str,
-	pub msg: Option<ErrorAction>, //TODO: Make this required and rename it
+	pub action: Option<ErrorAction>, //TODO: Make this required
 }
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
