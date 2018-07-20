@@ -338,6 +338,12 @@ impl Router {
 		}
 	}
 
+	/// Get network addresses by node id
+	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
+		let network = self.network_map.read().unwrap();
+		network.nodes.get(pubkey).map(|n| n.addresses.clone())
+	}
+
 	/// Marks a node as having failed a route. This will avoid re-using the node in routes for now,
 	/// with an expotnential decay in node "badness". Note that there is deliberately no
 	/// mark_channel_bad as a node may simply lie and suggest that an upstream channel from it is

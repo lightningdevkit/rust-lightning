@@ -121,6 +121,12 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		}
 	}
 
+	/// Get the list of known node ids
+	pub fn get_peer_node_ids(&self) -> Vec<PublicKey> {
+		let peers = self.peers.lock().unwrap();
+		peers.peers.values().filter_map(|p| p.their_node_id).collect()
+	}
+
 	/// Indicates a new outbound connection has been established to a node with the given node_id.
 	/// Note that if an Err is returned here you MUST NOT call disconnect_event for the new
 	/// descriptor but must disconnect the connection immediately.
