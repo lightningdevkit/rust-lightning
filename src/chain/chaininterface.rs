@@ -16,7 +16,7 @@ pub trait ChainWatchInterface: Sync + Send {
 
 	/// Provides an outpoint which must be watched for, providing any transactions which spend the
 	/// given outpoint.
-	fn install_watch_outpoint(&self, outpoint: (Sha256dHash, u32));
+	fn install_watch_outpoint(&self, outpoint: (Sha256dHash, u32), out_script: &Script);
 
 	/// Indicates that a listener needs to see all transactions.
 	fn watch_all_txn(&self);
@@ -76,7 +76,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		self.reentered.fetch_add(1, Ordering::Relaxed);
 	}
 
-	fn install_watch_outpoint(&self, outpoint: (Sha256dHash, u32)) {
+	fn install_watch_outpoint(&self, outpoint: (Sha256dHash, u32), _out_script: &Script) {
 		let mut watched = self.watched.lock().unwrap();
 		watched.1.push(outpoint);
 		self.reentered.fetch_add(1, Ordering::Relaxed);
@@ -158,7 +158,7 @@ impl ChainWatchInterfaceUtil {
 		self.does_match_tx_unguarded (tx, &watched)
 	}
 
-	fn does_match_tx_unguarded (&self, tx: &Transaction, watched: &MutexGuard<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>) -> bool {
+	fn does_match_tx_unguarded(&self, tx: &Transaction, watched: &MutexGuard<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>) -> bool {
 		if watched.2 {
 			return true;
 		}
