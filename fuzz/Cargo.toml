@@ -24,7 +24,7 @@ honggfuzz = { version = "0.5", optional = true }
 afl = { version = "0.3", optional = true }
 
 [build-dependencies]
-gcc = "0.3"
+cc = "1.0"
 
 # Prevent this from interfering with workspaces
 [workspace]
