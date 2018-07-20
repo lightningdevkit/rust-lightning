@@ -20,42 +20,6 @@ non-optional/non-test/non-library dependencies. Really really do not add
 dependencies with dependencies. Do convince Andrew to cut down dependency usage
 in rust-bitcoin.
 
-Assorted random TODOs:
-
- * Create a general timer interface - this should be passed around in reference
-   form to most objects to allow them to register functions which are called on
-   a timer. By default we should provide an implementation of this which uses
-   some newfangled rusty promise-y library, but should generally ensure a
-   client can simply integrate this into whatever existing timer interface
-   they use. (This is partially complete, but the events stuff needs to also
-   exist in Channel, which has a few inline TODOs to set up timers).
-
- * Figure out how to expose when-to-connect and who-to-connect-to.
-
- * Implement when-to-connect and who-to-connect-to based on route/node rumoring
-   and channelmanager state (and some concept of available value in wallet).
-
- * Some kind of serialization format for on-disk storage of things like
-   channels, channelmonitors, routing db, etc.
-
- * BOLT 10/network bootstrapping implementation.
-
- * Some kind of DoS thing including ban tracking and putting that info in
-   HandleError (and also rename HandleError) to be propagated up...and then
-   handled.
-
- * All the random TODOs and unimplemented!()s across the codebase.
-
- * Type-ify our somewhat random usage of Uint256/[u8; 32]. Use Sha256dHash
-   where appropriate, create our own types for everything else.
-
- * Some kind of logging subsystem/API.
-
- * Migrate all our serialize() -> Vec stuff to serialize(byte_writer) so that we
-   can avoid allocating a huge buffer for everything we serialize/deserialize.
-
- * Migrate the above TODOs to GitHub issues.
-
 Notes on coding style:
  * Use tabs. If you want to align lines, use spaces. Any desired alignment
    should display fine at any tab-length display setting.

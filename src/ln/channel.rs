@@ -1150,7 +1150,8 @@ impl Channel {
 		}
 
 		let funding_txo = OutPoint::new(msg.funding_txid, msg.funding_output_index);
-		self.channel_monitor.set_funding_info(funding_txo);
+		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
+		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
 
 		let (remote_initial_commitment_tx, our_signature) = match self.funding_created_signature(&msg.signature) {
 			Ok(res) => res,
@@ -2053,7 +2054,8 @@ impl Channel {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		self.channel_monitor.set_funding_info(funding_txo);
+		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
+		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
 
 		let (our_signature, commitment_tx) = match self.get_outbound_funding_created_signature() {
 			Ok(res) => res,
@@ -2324,6 +2326,7 @@ mod tests {
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::util::bip143;
 	use bitcoin::network::serialize::serialize;
+	use bitcoin::blockdata::script::Script;
 	use bitcoin::blockdata::transaction::Transaction;
 	use ln::channel::{Channel,ChannelKeys,HTLCOutput,HTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
@@ -2376,7 +2379,7 @@ mod tests {
 		chan.our_dust_limit_satoshis = 546;
 
 		let funding_info = OutPoint::new(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
-		chan.channel_monitor.set_funding_info(funding_info);
+		chan.channel_monitor.set_funding_info((funding_info, Script::new()));
 
 		chan.their_payment_basepoint = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("4444444444444444444444444444444444444444444444444444444444444444").unwrap()[..]).unwrap()).unwrap();
 		assert_eq!(chan.their_payment_basepoint.serialize()[..],
