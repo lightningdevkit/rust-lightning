@@ -110,7 +110,7 @@ macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr ) => {
 		match $secp_ctx.verify($msg, $sig, $pubkey) {
 			Ok(_) => {},
-			Err(_) => return Err(HandleError{err: "Invalid signature from remote node", msg: None}),
+			Err(_) => return Err(HandleError{err: "Invalid signature from remote node", action: None}),
 		}
 	};
 }
@@ -122,10 +122,10 @@ impl RoutingMessageHandler for Router {
 
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
-			None => Err(HandleError{err: "No existing channels for node_announcement", msg: Some(ErrorAction::IgnoreError)}),
+			None => Err(HandleError{err: "No existing channels for node_announcement", action: Some(ErrorAction::IgnoreError)}),
 			Some(node) => {
 				if node.last_update >= msg.contents.timestamp {
-					return Err(HandleError{err: "Update older than last processed update", msg: Some(ErrorAction::IgnoreError)});
+					return Err(HandleError{err: "Update older than last processed update", action: Some(ErrorAction::IgnoreError)});
 				}
 
 				node.features = msg.contents.features.clone();
@@ -149,7 +149,7 @@ impl RoutingMessageHandler for Router {
 		//TODO: Only allow bitcoin chain_hash
 
 		if msg.contents.features.requires_unknown_bits() {
-			return Err(HandleError{err: "Channel announcement required unknown feature flags", msg: None});
+			return Err(HandleError{err: "Channel announcement required unknown feature flags", action: None});
 		}
 
 		let mut network = self.network_map.write().unwrap();
@@ -159,7 +159,7 @@ impl RoutingMessageHandler for Router {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though its unclear
 				//exactly how...
-				return Err(HandleError{err: "Already have knowledge of channel", msg: Some(ErrorAction::IgnoreError)})
+				return Err(HandleError{err: "Already have knowledge of channel", action: Some(ErrorAction::IgnoreError)})
 			},
 			Entry::Vacant(entry) => {
 				entry.insert(ChannelInfo {
@@ -233,12 +233,12 @@ impl RoutingMessageHandler for Router {
 		let chan_was_enabled;
 
 		match network.channels.get_mut(&NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
-			None => return Err(HandleError{err: "Couldn't find channel for update", msg: Some(ErrorAction::IgnoreError)}),
+			None => return Err(HandleError{err: "Couldn't find channel for update", action: Some(ErrorAction::IgnoreError)}),
 			Some(channel) => {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr) => {
 						if $target.last_update >= msg.contents.timestamp {
-							return Err(HandleError{err: "Update older than last processed update", msg: Some(ErrorAction::IgnoreError)});
+							return Err(HandleError{err: "Update older than last processed update", action: Some(ErrorAction::IgnoreError)});
 						}
 						chan_was_enabled = $target.enabled;
 						$target.last_update = msg.contents.timestamp;
@@ -360,7 +360,7 @@ impl Router {
 		let network = self.network_map.read().unwrap();
 
 		if *target == network.our_node_id {
-			return Err(HandleError{err: "Cannot generate a route to ourselves", msg: None});
+			return Err(HandleError{err: "Cannot generate a route to ourselves", action: None});
 		}
 
 		// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
@@ -474,7 +474,7 @@ impl Router {
 			}
 		}
 
-		Err(HandleError{err: "Failed to find a path to the given destination", msg: None})
+		Err(HandleError{err: "Failed to find a path to the given destination", action: None})
 	}
 }
 

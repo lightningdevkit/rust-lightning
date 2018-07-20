@@ -281,7 +281,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										Ok(x) => x,
 										Err(e) => {
 											println!("Got error handling message: {}!", e.err);
-											if let Some(action) = e.msg {
+											if let Some(action) = e.action {
 												match action {
 													msgs::ErrorAction::UpdateFailHTLC { msg } => {
 														encode_and_send_msg!(msg, 131);

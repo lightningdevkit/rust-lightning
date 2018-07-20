@@ -316,7 +316,7 @@ impl ChannelMonitor {
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
 			if ChannelMonitor::derive_secret(secret, pos, old_idx) != old_secret {
-				return Err(HandleError{err: "Previous secret did not match new one", msg: None})
+				return Err(HandleError{err: "Previous secret did not match new one", action: None})
 			}
 		}
 		self.old_secrets[pos as usize] = (secret, idx);
@@ -421,7 +421,7 @@ impl ChannelMonitor {
 	pub fn insert_combine(&mut self, mut other: ChannelMonitor) -> Result<(), HandleError> {
 		if self.funding_txo.is_some() {
 			if other.funding_txo.is_some() && other.funding_txo.as_ref().unwrap() != self.funding_txo.as_ref().unwrap() {
-				return Err(HandleError{err: "Funding transaction outputs are not identical!", msg: None});
+				return Err(HandleError{err: "Funding transaction outputs are not identical!", action: None});
 			}
 		} else {
 			self.funding_txo = other.funding_txo.take();
@@ -882,7 +882,7 @@ impl ChannelMonitor {
 			}
 		}
 		assert!(idx < self.get_min_seen_secret());
-		Err(HandleError{err: "idx too low", msg: None})
+		Err(HandleError{err: "idx too low", action: None})
 	}
 
 	pub fn get_min_seen_secret(&self) -> u64 {

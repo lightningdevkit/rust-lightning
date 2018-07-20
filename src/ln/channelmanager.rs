@@ -167,7 +167,7 @@ macro_rules! secp_call {
 		match $res {
 			Ok(key) => key,
 			//TODO: Make the err a parameter!
-			Err(_) => return Err(HandleError{err: "Key error", msg: None})
+			Err(_) => return Err(HandleError{err: "Key error", action: None})
 		}
 	};
 }
@@ -311,7 +311,7 @@ impl ChannelManager {
 						(res, Some(chan_entry.remove_entry().1))
 					} else { (res, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", msg: None})
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", action: None})
 			}
 		};
 		for payment_hash in res.1 {
@@ -443,11 +443,11 @@ impl ChannelManager {
 			};
 			cur_value_msat += hop.fee_msat;
 			if cur_value_msat >= 21000000 * 100000000 * 1000 {
-				return Err(HandleError{err: "Channel fees overflowed?!", msg: None});
+				return Err(HandleError{err: "Channel fees overflowed?!", action: None});
 			}
 			cur_cltv += hop.cltv_expiry_delta as u32;
 			if cur_cltv >= 500000000 {
-				return Err(HandleError{err: "Channel CLTV overflowed?!", msg: None});
+				return Err(HandleError{err: "Channel CLTV overflowed?!", action: None});
 			}
 			last_short_channel_id = hop.short_channel_id;
 		}
@@ -576,7 +576,7 @@ impl ChannelManager {
 	/// only fails if the channel does not yet have an assigned short_id
 	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, HandleError> {
 		let short_channel_id = match chan.get_short_channel_id() {
-			None => return Err(HandleError{err: "Channel not yet established", msg: None}),
+			None => return Err(HandleError{err: "Channel not yet established", action: None}),
 			Some(id) => id,
 		};
 
@@ -609,12 +609,12 @@ impl ChannelManager {
 	/// May generate a SendHTLCs event on success, which should be relayed.
 	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), HandleError> {
 		if route.hops.len() < 1 || route.hops.len() > 20 {
-			return Err(HandleError{err: "Route didn't go anywhere/had bogus size", msg: None});
+			return Err(HandleError{err: "Route didn't go anywhere/had bogus size", action: None});
 		}
 		let our_node_id = self.get_our_node_id();
 		for (idx, hop) in route.hops.iter().enumerate() {
 			if idx != route.hops.len() - 1 && hop.pubkey == our_node_id {
-				return Err(HandleError{err: "Route went through us but wasn't a simple rebalance loop to us", msg: None});
+				return Err(HandleError{err: "Route went through us but wasn't a simple rebalance loop to us", action: None});
 			}
 		}
 
@@ -633,13 +633,13 @@ impl ChannelManager {
 		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
-				None => return Err(HandleError{err: "No channel available with first hop!", msg: None}),
+				None => return Err(HandleError{err: "No channel available with first hop!", action: None}),
 				Some(id) => id.clone()
 			};
 			let res = {
 				let chan = channel_state.by_id.get_mut(&id).unwrap();
 				if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
-					return Err(HandleError{err: "Node ID mismatch on first hop!", msg: None});
+					return Err(HandleError{err: "Node ID mismatch on first hop!", action: None});
 				}
 				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, onion_packet)?
 			};
@@ -1099,11 +1099,11 @@ impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, HandleError> {
 		if msg.chain_hash != self.genesis_hash {
-			return Err(HandleError{err: "Unknown genesis block hash", msg: None});
+			return Err(HandleError{err: "Unknown genesis block hash", action: None});
 		}
 		let mut channel_state = self.channel_state.lock().unwrap();
 		if channel_state.by_id.contains_key(&msg.temporary_channel_id) {
-			return Err(HandleError{err: "temporary_channel_id collision!", msg: None});
+			return Err(HandleError{err: "temporary_channel_id collision!", action: None});
 		}
 
 		let chan_keys = if cfg!(feature = "fuzztarget") {
@@ -1138,12 +1138,12 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.temporary_channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					chan.accept_channel(&msg)?;
 					(chan.get_value_satoshis(), chan.get_funding_redeemscript().to_v0_p2wsh(), chan.get_user_id())
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -1165,7 +1165,7 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.remove(&msg.temporary_channel_id) {
 				Some(mut chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					match chan.funding_created(msg) {
 						Ok((funding_msg, monitor_update)) => {
@@ -1176,7 +1176,7 @@ impl ChannelMessageHandler for ChannelManager {
 						}
 					}
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		}; // Release channel lock for install_watch_outpoint call,
 		   // note that this means if the remote end is misbehaving and sends a message for the same
@@ -1196,12 +1196,12 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					let chan_monitor = chan.funding_signed(&msg)?;
 					(chan.get_funding_txo().unwrap(), chan.get_user_id(), chan_monitor)
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
@@ -1220,12 +1220,12 @@ impl ChannelMessageHandler for ChannelManager {
 		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 				}
 				chan.funding_locked(&msg)?;
 				return Ok(self.get_announcement_sigs(chan)?);
 			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 		};
 	}
 
@@ -1237,7 +1237,7 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					let res = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg)?;
 					if chan_entry.get().is_shutdown() {
@@ -1247,7 +1247,7 @@ impl ChannelMessageHandler for ChannelManager {
 						(res, Some(chan_entry.remove_entry().1))
 					} else { (res, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		for payment_hash in res.2 {
@@ -1272,7 +1272,7 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					let res = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg)?;
 					if res.1.is_some() {
@@ -1287,7 +1287,7 @@ impl ChannelMessageHandler for ChannelManager {
 						(res, Some(chan_entry.remove_entry().1))
 					} else { (res, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		if let Some(broadcast_tx) = res.1 {
@@ -1335,7 +1335,7 @@ impl ChannelMessageHandler for ChannelManager {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				return Err(msgs::HandleError {
 					err: $msg,
-					msg: Some(msgs::ErrorAction::UpdateFailHTLC {
+					action: Some(msgs::ErrorAction::UpdateFailHTLC {
 						msg: msgs::UpdateFailHTLC {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
@@ -1494,16 +1494,16 @@ impl ChannelMessageHandler for ChannelManager {
 		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 				}
 				if !chan.is_usable() {
-					return Err(HandleError{err: "Channel not yet available for receiving HTLCs", msg: None});
+					return Err(HandleError{err: "Channel not yet available for receiving HTLCs", action: None});
 				}
 				let short_channel_id = chan.get_short_channel_id().unwrap();
 				pending_forward_info.prev_short_channel_id = short_channel_id;
 				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info)?)
 			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None}), //TODO: panic?
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}), //TODO: panic?
 		};
 
 		match claimable_htlcs_entry {
@@ -1544,11 +1544,11 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					chan.update_fulfill_htlc(&msg)?
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
@@ -1562,11 +1562,11 @@ impl ChannelMessageHandler for ChannelManager {
 		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 				}
 				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() })
 			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 		}?;
 
 		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
@@ -1637,11 +1637,11 @@ impl ChannelMessageHandler for ChannelManager {
 		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 				}
 				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() })
 			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 		}
 	}
 
@@ -1651,11 +1651,11 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					chan.commitment_signed(&msg)?
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
@@ -1671,11 +1671,11 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					chan.revoke_and_ack(&msg)?
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
@@ -1721,11 +1721,11 @@ impl ChannelMessageHandler for ChannelManager {
 		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 				}
 				chan.update_fee(&*self.fee_estimator, &msg)
 			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 		}
 	}
 
@@ -1735,10 +1735,10 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", msg: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
 					if !chan.is_usable() {
-						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", msg: None });
+						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: None });
 					}
 
 					let our_node_id = self.get_our_node_id();
@@ -1759,7 +1759,7 @@ impl ChannelMessageHandler for ChannelManager {
 						contents: announcement,
 					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", msg: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();

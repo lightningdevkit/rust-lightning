@@ -329,7 +329,7 @@ macro_rules! secp_call {
 		match $res {
 			Ok(key) => key,
 			//TODO: make the error a parameter
-			Err(_) => return Err(HandleError{err: $err, msg: Some(msgs::ErrorAction::DisconnectPeer{})})
+			Err(_) => return Err(HandleError{err: $err, action: Some(msgs::ErrorAction::DisconnectPeer{})})
 		}
 	};
 }
@@ -434,10 +434,10 @@ impl Channel {
 
 	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background) * 250 {
-			return Err(HandleError{err: "Peer's feerate much too low", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Peer's feerate much too low", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::HighPriority) * 375 { // 375 = 250 * 1.5x
-			return Err(HandleError{err: "Peer's feerate much too high", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Peer's feerate much too high", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		Ok(())
 	}
@@ -449,29 +449,29 @@ impl Channel {
 	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(HandleError{err: "funding value > 2^24", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "push_msat more than highest possible value", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "push_msat more than highest possible value", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Peer never wants payout outputs?", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Peer never wants payout outputs?", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Minimum htlc value is full channel value", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 		if (msg.channel_flags & 254) != 0 {
-			return Err(HandleError{err: "unknown channel_flags", msg: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "unknown channel_flags", action: Some(msgs::ErrorAction::DisconnectPeer{})});
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -943,7 +943,7 @@ impl Channel {
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { ref payment_hash, .. } => {
 						if payment_hash_calc == *payment_hash {
-							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 						}
 					},
 					_ => {}
@@ -970,14 +970,14 @@ impl Channel {
 				} else if htlc.state == HTLCState::RemoteAnnounced {
 					panic!("Somehow forwarded HTLC prior to remote revocation!");
 				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
-					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 				} else {
 					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
 				}
 			}
 		}
 		if htlc_amount_msat == 0 {
-			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 		}
 		self.channel_monitor.provide_payment_preimage(&payment_hash_calc, &payment_preimage_arg);
 
@@ -1000,7 +1000,7 @@ impl Channel {
 
 	pub fn get_update_fail_htlc(&mut self, payment_hash_arg: &[u8; 32], err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Was asked to fail an HTLC when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Was asked to fail an HTLC when channel was not in an operational state", action: None});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
@@ -1010,7 +1010,7 @@ impl Channel {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_hash, .. } => {
 						if *payment_hash_arg == *payment_hash {
-							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { ref payment_hash, .. } => {
@@ -1042,14 +1042,14 @@ impl Channel {
 				} else if htlc.state == HTLCState::RemoteAnnounced {
 					panic!("Somehow forwarded HTLC prior to remote revocation!");
 				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
-					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 				} else {
 					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
 				}
 			}
 		}
 		if htlc_amount_msat == 0 {
-			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", msg: None});
+			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 		}
 
 		Ok(Some(msgs::UpdateFailHTLC {
@@ -1074,26 +1074,26 @@ impl Channel {
 	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
-			return Err(HandleError{err: "Got an accept_channel message from an inbound peer", msg: None});
+			return Err(HandleError{err: "Got an accept_channel message from an inbound peer", action: None});
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
-			return Err(HandleError{err: "Got an accept_channel message at a strange time", msg: None});
+			return Err(HandleError{err: "Got an accept_channel message at a strange time", action: None});
 		}
 		if msg.dust_limit_satoshis > 21000000 * 100000000 {
-			return Err(HandleError{err: "Peer never wants payout outputs?", msg: None});
+			return Err(HandleError{err: "Peer never wants payout outputs?", action: None});
 		}
 		if msg.channel_reserve_satoshis > self.channel_value_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", msg: None});
+			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: None});
 		}
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", msg: None});
+			return Err(HandleError{err: "Minimum htlc value is full channel value", action: None});
 		}
 		//TODO do something with minimum_depth
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", msg: None});
+			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: None});
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", msg: None});
+			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: None});
 		}
 
 		self.channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
@@ -1140,10 +1140,10 @@ impl Channel {
 
 	pub fn funding_created(&mut self, msg: &msgs::FundingCreated) -> Result<(msgs::FundingSigned, ChannelMonitor), HandleError> {
 		if self.channel_outbound {
-			return Err(HandleError{err: "Received funding_created for an outbound channel?", msg: None});
+			return Err(HandleError{err: "Received funding_created for an outbound channel?", action: None});
 		}
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
-			return Err(HandleError{err: "Received funding_created after we got the channel!", msg: None});
+			return Err(HandleError{err: "Received funding_created after we got the channel!", action: None});
 		}
 		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 1 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
@@ -1179,10 +1179,10 @@ impl Channel {
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed(&mut self, msg: &msgs::FundingSigned) -> Result<ChannelMonitor, HandleError> {
 		if !self.channel_outbound {
-			return Err(HandleError{err: "Received funding_signed for an inbound channel?", msg: None});
+			return Err(HandleError{err: "Received funding_signed for an inbound channel?", action: None});
 		}
 		if self.channel_state != ChannelState::FundingCreated as u32 {
-			return Err(HandleError{err: "Received funding_signed in strange state!", msg: None});
+			return Err(HandleError{err: "Received funding_signed in strange state!", action: None});
 		}
 		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 2 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
@@ -1214,7 +1214,7 @@ impl Channel {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
 			self.channel_update_count += 1;
 		} else {
-			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", msg: None});
+			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", action: None});
 		}
 
 		self.their_prev_commitment_point = Some(self.their_cur_commitment_point);
@@ -1259,35 +1259,35 @@ impl Channel {
 
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingForwardHTLCInfo) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
 		if msg.amount_msat > self.channel_value_satoshis * 1000 {
-			return Err(HandleError{err: "Remote side tried to send more than the total value of the channel", msg: None});
+			return Err(HandleError{err: "Remote side tried to send more than the total value of the channel", action: None});
 		}
 		if msg.amount_msat < self.our_htlc_minimum_msat {
-			return Err(HandleError{err: "Remote side tried to send less than our minimum HTLC value", msg: None});
+			return Err(HandleError{err: "Remote side tried to send less than our minimum HTLC value", action: None});
 		}
 
 		let (inbound_htlc_count, _, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(true);
 		if inbound_htlc_count + 1 > OUR_MAX_HTLCS as u32 {
-			return Err(HandleError{err: "Remote tried to push more than our max accepted HTLCs", msg: None});
+			return Err(HandleError{err: "Remote tried to push more than our max accepted HTLCs", action: None});
 		}
 		//TODO: Spec is unclear if this is per-direction or in total (I assume per direction):
 		// Check our_max_htlc_value_in_flight_msat
 		if htlc_inbound_value_msat + msg.amount_msat > Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis) {
-			return Err(HandleError{err: "Remote HTLC add would put them over their max HTLC value in flight", msg: None});
+			return Err(HandleError{err: "Remote HTLC add would put them over their max HTLC value in flight", action: None});
 		}
 		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
 		// something if we punish them for broadcasting an old state).
 		if htlc_inbound_value_msat + htlc_outbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
-			return Err(HandleError{err: "Remote HTLC add would put them over their reserve value", msg: None});
+			return Err(HandleError{err: "Remote HTLC add would put them over their reserve value", action: None});
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
-			return Err(HandleError{err: "Remote skipped HTLC ID", msg: None});
+			return Err(HandleError{err: "Remote skipped HTLC ID", action: None});
 		}
 		if msg.cltv_expiry >= 500000000 {
-			return Err(HandleError{err: "Remote provided CLTV expiry in seconds instead of block height", msg: None});
+			return Err(HandleError{err: "Remote provided CLTV expiry in seconds instead of block height", action: None});
 		}
 
 		//TODO: Check msg.cltv_expiry further? Do this in channel manager?
@@ -1318,28 +1318,28 @@ impl Channel {
 					None => {},
 					Some(payment_hash) =>
 						if payment_hash != htlc.payment_hash {
-							return Err(HandleError{err: "Remote tried to fulfill HTLC with an incorrect preimage", msg: None});
+							return Err(HandleError{err: "Remote tried to fulfill HTLC with an incorrect preimage", action: None});
 						}
 				};
 				if htlc.state == HTLCState::LocalAnnounced {
-					return Err(HandleError{err: "Remote tried to fulfill HTLC before it had been committed", msg: None});
+					return Err(HandleError{err: "Remote tried to fulfill HTLC before it had been committed", action: None});
 				} else if htlc.state == HTLCState::Committed {
 					htlc.state = HTLCState::RemoteRemoved;
 					htlc.fail_reason = fail_reason;
 				} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove || htlc.state == HTLCState::AwaitingRemovedRemoteRevoke || htlc.state == HTLCState::RemoteRemoved {
-					return Err(HandleError{err: "Remote tried to fulfill HTLC that they'd already fulfilled", msg: None});
+					return Err(HandleError{err: "Remote tried to fulfill HTLC that they'd already fulfilled", action: None});
 				} else {
 					panic!("Got a non-outbound state on an outbound HTLC");
 				}
 				return Ok(htlc.payment_hash.clone());
 			}
 		}
-		Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", msg: None})
+		Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", action: None})
 	}
 
 	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<ChannelMonitor, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
 
 		let mut sha = Sha256::new();
@@ -1354,7 +1354,7 @@ impl Channel {
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<[u8; 32], HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
@@ -1362,7 +1362,7 @@ impl Channel {
 
 	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
@@ -1371,7 +1371,7 @@ impl Channel {
 
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got commitment signed message when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Got commitment signed message when channel was not in an operational state", action: None});
 		}
 
 		let funding_script = self.get_funding_redeemscript();
@@ -1383,7 +1383,7 @@ impl Channel {
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey), "Invalid commitment tx signature from peer");
 
 		if msg.htlc_signatures.len() != local_commitment_tx.1.len() {
-			return Err(HandleError{err: "Got wrong number of HTLC signatures from remote", msg: None});
+			return Err(HandleError{err: "Got wrong number of HTLC signatures from remote", action: None});
 		}
 
 		let mut new_local_commitment_txn = Vec::with_capacity(local_commitment_tx.1.len() + 1);
@@ -1527,11 +1527,11 @@ impl Channel {
 	/// revoke_and_ack message.
 	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK) -> Result<(Option<msgs::CommitmentUpdate>, Vec<PendingForwardHTLCInfo>, Vec<([u8; 32], HTLCFailReason)>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", msg: None});
+			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", action: None});
 		}
 		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
 			if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")).unwrap() != their_prev_commitment_point {
-				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", msg: None});
+				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", action: None});
 			}
 		}
 		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret, Some((self.cur_remote_commitment_transaction_number - 1, msg.next_per_commitment_point)))?;
@@ -1604,7 +1604,7 @@ impl Channel {
 
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
 		if self.channel_outbound {
-			return Err(HandleError{err: "Non-funding remote tried to update channel fee", msg: None});
+			return Err(HandleError{err: "Non-funding remote tried to update channel fee", action: None});
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.channel_update_count += 1;
@@ -1620,24 +1620,24 @@ impl Channel {
 		}
 		for htlc in self.pending_htlcs.iter() {
 			if htlc.state == HTLCState::RemoteAnnounced {
-				return Err(HandleError{err: "Got shutdown with remote pending HTLCs", msg: None});
+				return Err(HandleError{err: "Got shutdown with remote pending HTLCs", action: None});
 			}
 		}
 		if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
-			return Err(HandleError{err: "Remote peer sent duplicate shutdown message", msg: None});
+			return Err(HandleError{err: "Remote peer sent duplicate shutdown message", action: None});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		// BOLT 2 says we must only send a scriptpubkey of certain standard forms, which are up to
 		// 34 bytes in length, so dont let the remote peer feed us some super fee-heavy script.
 		if self.channel_outbound && msg.scriptpubkey.len() > 34 {
-			return Err(HandleError{err: "Got shutdown_scriptpubkey of absurd length from remote peer", msg: None});
+			return Err(HandleError{err: "Got shutdown_scriptpubkey of absurd length from remote peer", action: None});
 		}
 		//TODO: Check shutdown_scriptpubkey form as BOLT says we must? WHYYY
 
 		if self.their_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.their_shutdown_scriptpubkey.as_ref() {
-				return Err(HandleError{err: "Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey", msg: None});
+				return Err(HandleError{err: "Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey", action: None});
 			}
 		} else {
 			self.their_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
@@ -1711,19 +1711,19 @@ impl Channel {
 
 	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), HandleError> {
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
-			return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", msg: None});
+			return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", action: None});
 		}
 		if !self.pending_htlcs.is_empty() {
-			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", msg: None});
+			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", action: None});
 		}
 		if msg.fee_satoshis > 21000000 * 10000000 {
-			return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee", msg: None});
+			return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee", action: None});
 		}
 
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
 		if used_total_fee != msg.fee_satoshis {
-			return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", msg: None});
+			return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", action: None});
 		}
 		let mut sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
 
@@ -1768,7 +1768,7 @@ impl Channel {
 			if proposed_sat_per_vbyte > our_max_feerate {
 				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
 					if our_max_feerate <= last_feerate {
-						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", msg: None});
+						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", action: None});
 					}
 				}
 				propose_new_feerate!(our_max_feerate);
@@ -1778,7 +1778,7 @@ impl Channel {
 			if proposed_sat_per_vbyte < our_min_feerate {
 				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
 					if our_min_feerate >= last_feerate {
-						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", msg: None});
+						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", action: None});
 					}
 				}
 				propose_new_feerate!(our_min_feerate);
@@ -1962,7 +1962,7 @@ impl Channel {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
-			return Err(HandleError{err: "Cannot generate an open_channel after we've moved forward", msg: None});
+			return Err(HandleError{err: "Cannot generate an open_channel after we've moved forward", action: None});
 		}
 
 		if self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
@@ -2090,10 +2090,10 @@ impl Channel {
 	/// message can mark the channel disabled.
 	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), HandleError> {
 		if !self.announce_publicly {
-			return Err(HandleError{err: "Channel is not available for public announcements", msg: None});
+			return Err(HandleError{err: "Channel is not available for public announcements", action: None});
 		}
 		if self.channel_state & (ChannelState::ChannelFunded as u32) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", msg: None});
+			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", action: None});
 		}
 
 		let were_node_one = our_node_id.serialize()[..] < self.their_node_id.serialize()[..];
@@ -2125,28 +2125,28 @@ impl Channel {
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: [u8; 32], cltv_expiry: u32, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Cannot send HTLC until channel is fully established and we haven't started shutting down", msg: None});
+			return Err(HandleError{err: "Cannot send HTLC until channel is fully established and we haven't started shutting down", action: None});
 		}
 
 		if amount_msat > self.channel_value_satoshis * 1000 {
-			return Err(HandleError{err: "Cannot send more than the total value of the channel", msg: None});
+			return Err(HandleError{err: "Cannot send more than the total value of the channel", action: None});
 		}
 		if amount_msat < self.their_htlc_minimum_msat {
-			return Err(HandleError{err: "Cannot send less than their minimum HTLC value", msg: None});
+			return Err(HandleError{err: "Cannot send less than their minimum HTLC value", action: None});
 		}
 
 		let (_, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(false);
 		if outbound_htlc_count + 1 > self.their_max_accepted_htlcs as u32 {
-			return Err(HandleError{err: "Cannot push more than their max accepted HTLCs", msg: None});
+			return Err(HandleError{err: "Cannot push more than their max accepted HTLCs", action: None});
 		}
 		//TODO: Spec is unclear if this is per-direction or in total (I assume per direction):
 		// Check their_max_htlc_value_in_flight_msat
 		if htlc_outbound_value_msat + amount_msat > self.their_max_htlc_value_in_flight_msat {
-			return Err(HandleError{err: "Cannot send value that would put us over our max HTLC value in flight", msg: None});
+			return Err(HandleError{err: "Cannot send value that would put us over our max HTLC value in flight", action: None});
 		}
 		// Check their_channel_reserve_satoshis:
 		if htlc_inbound_value_msat + htlc_outbound_value_msat + amount_msat + (self.channel_value_satoshis * 1000 - self.value_to_self_msat) > (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Cannot send value that would put us over our reserve value", msg: None});
+			return Err(HandleError{err: "Cannot send value that would put us over our reserve value", action: None});
 		}
 
 		//TODO: Check cltv_expiry? Do this in channel manager?
@@ -2192,10 +2192,10 @@ impl Channel {
 	/// Creates a signed commitment transaction to send to the remote peer.
 	pub fn send_commitment(&mut self) -> Result<(msgs::CommitmentSigned, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", msg: None});
+			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", action: None});
 		}
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
-			return Err(HandleError{err: "Cannot create commitment tx until remote revokes their previous commitment", msg: None});
+			return Err(HandleError{err: "Cannot create commitment tx until remote revokes their previous commitment", action: None});
 		}
 		let mut have_updates = false; // TODO initialize with "have we sent a fee update?"
 		for htlc in self.pending_htlcs.iter() {
@@ -2205,7 +2205,7 @@ impl Channel {
 			if have_updates { break; }
 		}
 		if !have_updates {
-			return Err(HandleError{err: "Cannot create commitment tx until we have some updates to send", msg: None});
+			return Err(HandleError{err: "Cannot create commitment tx until we have some updates to send", action: None});
 		}
 		self.send_commitment_no_status_check()
 	}
@@ -2270,11 +2270,11 @@ impl Channel {
 	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<[u8; 32]>), HandleError> {
 		for htlc in self.pending_htlcs.iter() {
 			if htlc.state == HTLCState::LocalAnnounced {
-				return Err(HandleError{err: "Cannot begin shutdown with pending HTLCs, call send_commitment first", msg: None});
+				return Err(HandleError{err: "Cannot begin shutdown with pending HTLCs, call send_commitment first", action: None});
 			}
 		}
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0 {
-			return Err(HandleError{err: "Shutdown already in progress", msg: None});
+			return Err(HandleError{err: "Shutdown already in progress", action: None});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
