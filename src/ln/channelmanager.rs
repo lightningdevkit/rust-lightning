@@ -1839,7 +1839,7 @@ mod tests {
 	use bitcoin::util::misc::hex_bytes;
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::util::uint::Uint256;
-	use bitcoin::blockdata::block::BlockHeader;
+	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
 	use bitcoin::network::serialize::serialize;
@@ -2010,6 +2010,7 @@ mod tests {
 	}
 
 	fn confirm_transaction(chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
+		assert!(chain.does_match_tx(tx));
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		chain.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
 		for i in 2..100 {
@@ -2792,9 +2793,9 @@ mod tests {
 		// Simple case with no pending HTLCs:
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), true);
 		{
-			let node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
+			let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0]; 1], &[4; 1]);
+			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
 			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 		}
 		get_announce_close_broadcast_events(&nodes, 0, 1);
@@ -2807,9 +2808,9 @@ mod tests {
 		// Simple case of one pending HTLC to HTLC-Timeout
 		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), true);
 		{
-			let node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
+			let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0]; 1], &[4; 1]);
+			nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
 			assert_eq!(nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 		}
 		get_announce_close_broadcast_events(&nodes, 1, 2);
@@ -2848,7 +2849,7 @@ mod tests {
 			claim_funds!(nodes[3], nodes[2], payment_preimage_1);
 
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[3].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0]; 1], &[4; 1]);
+			nodes[3].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 1);
 
 			check_preimage_claim(&nodes[3], &node_txn);
 		}
@@ -2882,7 +2883,7 @@ mod tests {
 			test_txn_broadcast(&nodes[4], &chan_4, None, HTLCType::SUCCESS);
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[4].chain_monitor.block_connected_checked(&header, TEST_FINAL_CLTV - 5, &[&node_txn[0]; 1], &[4; 1]);
+			nodes[4].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, TEST_FINAL_CLTV - 5);
 
 			check_preimage_claim(&nodes[4], &node_txn);
 		}
@@ -2902,7 +2903,7 @@ mod tests {
 
 		{
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[1].chain_monitor.block_connected_checked(&header, 1, &vec![&revoked_local_txn[0]; 1], &[4; 1]);
+			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 			{
 				let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 				assert_eq!(node_txn.len(), 1);
@@ -2914,10 +2915,10 @@ mod tests {
 				node_txn.clear();
 			}
 
-			nodes[0].chain_monitor.block_connected_checked(&header, 1, &vec![&revoked_local_txn[0]; 1], &[4; 0]);
+			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 			let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[1]; 1], &[4; 1]);
+			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
 
 			//TODO: At this point nodes[1] should claim the revoked HTLC-Timeout output, but that's
 			//not yet implemented in ChannelMonitor
