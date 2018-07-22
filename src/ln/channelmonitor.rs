@@ -94,7 +94,10 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 		};
 		match &monitor.funding_txo {
 			&None => self.chain_monitor.watch_all_txn(),
-			&Some((ref outpoint, ref script)) => self.chain_monitor.install_watch_outpoint((outpoint.txid, outpoint.index as u32), script),
+			&Some((ref outpoint, ref script)) => {
+				self.chain_monitor.install_watch_script(script);
+				self.chain_monitor.install_watch_outpoint((outpoint.txid, outpoint.index as u32), script);
+			},
 		}
 		monitors.insert(key, monitor);
 		Ok(())
