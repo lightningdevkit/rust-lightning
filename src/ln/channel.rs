@@ -1843,6 +1843,10 @@ impl Channel {
 		self.channel_update_count
 	}
 
+	pub fn should_announce(&self) -> bool {
+		self.announce_publicly
+	}
+
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	pub fn get_our_fee_base_msat(&self, fee_estimator: &FeeEstimator) -> u32 {
 		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC

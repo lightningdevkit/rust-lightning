@@ -710,7 +710,7 @@ impl ChannelManager {
 	}
 
 	fn get_announcement_sigs(&self, chan: &Channel) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
-		if !chan.is_usable() { return Ok(None) }
+		if !chan.is_usable() || !chan.should_announce() { return Ok(None) }
 
 		let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone())?;
 		let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
