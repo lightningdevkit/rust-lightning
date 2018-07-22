@@ -4,7 +4,6 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use bitcoin::network::serialize::BitcoinHash;
 use bitcoin::util::hash::Sha256dHash;
-use bitcoin::util::uint::Uint256;
 
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::{Secp256k1,Message};
@@ -111,16 +110,16 @@ enum PendingOutboundHTLC {
 const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u32 = 50;
 
 struct ChannelHolder {
-	by_id: HashMap<Uint256, Channel>,
-	short_to_id: HashMap<u64, Uint256>,
+	by_id: HashMap<[u8; 32], Channel>,
+	short_to_id: HashMap<u64, [u8; 32]>,
 	next_forward: Instant,
 	/// short channel id -> forward infos. Key of 0 means payments received
 	forward_htlcs: HashMap<u64, Vec<PendingForwardHTLCInfo>>,
 	claimable_htlcs: HashMap<[u8; 32], PendingOutboundHTLC>,
 }
 struct MutChannelHolder<'a> {
-	by_id: &'a mut HashMap<Uint256, Channel>,
-	short_to_id: &'a mut HashMap<u64, Uint256>,
+	by_id: &'a mut HashMap<[u8; 32], Channel>,
+	short_to_id: &'a mut HashMap<u64, [u8; 32]>,
 	next_forward: &'a mut Instant,
 	/// short channel id -> forward infos. Key of 0 means payments received
 	forward_htlcs: &'a mut HashMap<u64, Vec<PendingForwardHTLCInfo>>,
@@ -187,7 +186,7 @@ pub struct ChannelDetails {
 	/// thereafter this is the txid of the funding transaction xor the funding transaction output).
 	/// Note that this means this value is *not* persistent - it can change once during the
 	/// lifetime of the channel.
-	pub channel_id: Uint256,
+	pub channel_id: [u8; 32],
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	pub short_channel_id: Option<u64>,
@@ -297,7 +296,7 @@ impl ChannelManager {
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
 	/// will be accepted on the given channel, and after additional timeout/the closing of all
 	/// pending HTLCs, the channel will be closed on chain.
-	pub fn close_channel(&self, channel_id: &Uint256) -> Result<msgs::Shutdown, HandleError> {
+	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<msgs::Shutdown, HandleError> {
 		let (res, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -676,10 +675,10 @@ impl ChannelManager {
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &Uint256, funding_txo: OutPoint) {
+	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
 		let (chan, msg, chan_monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.remove(&temporary_channel_id) {
+			match channel_state.by_id.remove(temporary_channel_id) {
 				Some(mut chan) => {
 					match chan.get_outbound_funding_created(funding_txo) {
 						Ok(funding_msg) => {
@@ -1838,7 +1837,6 @@ mod tests {
 
 	use bitcoin::util::misc::hex_bytes;
 	use bitcoin::util::hash::Sha256dHash;
-	use bitcoin::util::uint::Uint256;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
@@ -2030,7 +2028,7 @@ mod tests {
 	}
 
 	static mut CHAN_COUNT: u32 = 0;
-	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
+	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 42).unwrap();
 
 		let events_1 = node_a.node.get_and_clear_pending_events();
@@ -2158,7 +2156,7 @@ mod tests {
 		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id, tx)
 	}
 
-	fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction) {
+	fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 		let chan_announcement = create_chan_between_nodes(&nodes[a], &nodes[b]);
 		for node in nodes {
 			assert!(node.router.handle_channel_announcement(&chan_announcement.0).unwrap());
@@ -2168,7 +2166,7 @@ mod tests {
 		(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 	}
 
-	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &Uint256, funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
+	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
 		let (node_a, broadcaster_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster) } else { (&outbound_node.node, &outbound_node.tx_broadcaster) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 		let (tx_a, tx_b);
@@ -2679,7 +2677,7 @@ mod tests {
 
 	#[derive(PartialEq)]
 	enum HTLCType { NONE, TIMEOUT, SUCCESS }
-	fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, Uint256, Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction> {
+	fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction> {
 		let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert!(node_txn.len() >= if commitment_tx.is_some() { 0 } else { 1 } + if has_htlc_tx == HTLCType::NONE { 0 } else { 1 });
 

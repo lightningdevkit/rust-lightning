@@ -9,7 +9,6 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::network::constants::Network;
 use bitcoin::network::serialize::{serialize, BitcoinHash};
 use bitcoin::util::hash::Sha256dHash;
-use bitcoin::util::uint::Uint256;
 
 use crypto::sha2::Sha256;
 use crypto::digest::Digest;
@@ -168,7 +167,7 @@ pub fn do_test(data: &[u8]) {
 	let mut should_forward = false;
 	let mut payments_received = Vec::new();
 	let mut payments_sent = 0;
-	let mut pending_funding_generation: Vec<(Uint256, u64, Script)> = Vec::new();
+	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 	let mut pending_funding_relay = Vec::new();
 
