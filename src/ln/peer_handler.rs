@@ -121,7 +121,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		}
 	}
 
-	/// Get the list of known node ids
+	/// Get the list of node ids for peers which have completed the initial handshake.
+	/// For outbound connections, this will be the same as the their_node_id parameter passed in to
+	/// new_outbound_connection, however entries will only appear once the initial handshake has
+	/// completed and we are sure the remote peer has the private key for the given node_id.
 	pub fn get_peer_node_ids(&self) -> Vec<PublicKey> {
 		let peers = self.peers.lock().unwrap();
 		peers.peers.values().filter_map(|p| p.their_node_id).collect()
