@@ -2,7 +2,6 @@ use ln::msgs;
 use chain::transaction::OutPoint;
 
 use bitcoin::blockdata::script::Script;
-use bitcoin::util::uint::Uint256;
 
 use secp256k1::key::PublicKey;
 
@@ -14,7 +13,7 @@ pub enum Event {
 	/// parameters and then call ChannelManager::funding_transaction_generated.
 	/// Generated in ChannelManager message handling.
 	FundingGenerationReady {
-		temporary_channel_id: Uint256,
+		temporary_channel_id: [u8; 32],
 		channel_value_satoshis: u64,
 		output_script: Script,
 		/// The value passed in to ChannelManager::create_channel

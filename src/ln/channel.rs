@@ -2,7 +2,6 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::uint::Uint256;
 use bitcoin::util::hash::{Sha256dHash, Hash160};
 use bitcoin::util::bip143;
 use bitcoin::network::serialize::BitcoinHash;
@@ -236,7 +235,7 @@ const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | 
 pub struct Channel {
 	user_id: u64,
 
-	channel_id: Uint256,
+	channel_id: [u8; 32],
 	channel_state: u32,
 	channel_outbound: bool,
 	secp_ctx: Secp256k1,
@@ -380,7 +379,7 @@ impl Channel {
 		Channel {
 			user_id: user_id,
 
-			channel_id: rng::rand_uint256(),
+			channel_id: rng::rand_u832(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: secp_ctx,
@@ -1798,7 +1797,7 @@ impl Channel {
 
 	// Public utilities:
 
-	pub fn channel_id(&self) -> Uint256 {
+	pub fn channel_id(&self) -> [u8; 32] {
 		self.channel_id
 	}
 
