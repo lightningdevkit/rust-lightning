@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// events).
 pub trait ChainWatchInterface: Sync + Send {
 	/// Provides a scriptPubKey which much be watched for.
-	fn install_watch_script(&self, script_pub_key: Script);
+	fn install_watch_script(&self, script_pub_key: &Script);
 
 	/// Provides an outpoint which must be watched for, providing any transactions which spend the
 	/// given outpoint.
@@ -70,9 +70,9 @@ pub struct ChainWatchInterfaceUtil {
 
 /// Register listener
 impl ChainWatchInterface for ChainWatchInterfaceUtil {
-	fn install_watch_script(&self, script_pub_key: Script) {
+	fn install_watch_script(&self, script_pub_key: &Script) {
 		let mut watched = self.watched.lock().unwrap();
-		watched.0.push(Script::from(script_pub_key));
+		watched.0.push(script_pub_key.clone());
 		self.reentered.fetch_add(1, Ordering::Relaxed);
 	}
 
@@ -103,7 +103,7 @@ impl ChainWatchInterfaceUtil {
 		}
 	}
 
-	/// Notify listeners that a block was connected.
+	/// Notify listeners that a block was connected given a full, unfiltered block.
 	/// Handles re-scanning the block and calling block_connected again if listeners register new
 	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
 	pub fn block_connected_with_filtering(&self, block: &Block, height: u32) {
@@ -135,7 +135,8 @@ impl ChainWatchInterfaceUtil {
 		}
 	}
 
-	/// Notify listeners that a block was connected.
+	/// Notify listeners that a block was connected, given pre-filtered list of transactions in the
+	/// block which matched the filter (probably using does_match_tx).
 	/// Returns true if notified listeners registered additional watch data (implying that the
 	/// block must be re-scanned and this function called again prior to further block_connected
 	/// calls, see ChainListener::block_connected for more info).
