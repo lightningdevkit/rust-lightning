@@ -510,7 +510,19 @@ impl ChannelMonitor {
 				res.extend_from_slice(&revocation_base_key[..]);
 				res.extend_from_slice(&htlc_base_key[..]);
 			},
-			KeyStorage::SigsMode { .. } => unimplemented!(),
+			KeyStorage::SigsMode { ref revocation_base_key, ref htlc_base_key, ref sigs } => {
+				res.push(1);
+				res.extend_from_slice(&revocation_base_key.serialize()[..]);
+				res.extend_from_slice(&htlc_base_key.serialize()[..]);
+				res.extend_from_slice(&byte_utils::be16_to_array(sigs.len() as u16));
+				let mut entries = sigs.iter().collect::<Vec<(&Sha256dHash, &Signature)>>();
+				entries.sort_by_key(|(ref k, _)| *k);
+				let ctx = Secp256k1::new();
+				for (k, v) in entries.iter() {
+					res.extend_from_slice(&k[..]);
+					res.extend_from_slice(&v.serialize_der(&ctx));
+				}
+			}
 		}
 
 		res.extend_from_slice(&self.delayed_payment_base_key.serialize());
@@ -684,7 +696,21 @@ impl ChannelMonitor {
 					htlc_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
 				}
 			},
-			_ => return None,
+			1 => {
+				KeyStorage::SigsMode {
+					revocation_base_key: unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))),
+					htlc_base_key: unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))),
+					sigs: {
+						let mut h = HashMap::new();
+						let cnt = byte_utils::slice_to_be16(read_bytes!(2));
+						for _ in 0..cnt {
+							h.insert(Sha256dHash::from(read_bytes!(32)), unwrap_obj!(Signature::from_der(&secp_ctx, read_bytes!(72))));
+						}
+						h
+					}
+				}
+			},
+			_ => None
 		};
 
 		let delayed_payment_base_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
