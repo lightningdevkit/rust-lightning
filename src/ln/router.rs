@@ -377,17 +377,6 @@ impl Router {
 
 		let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
 		let mut dist = HashMap::with_capacity(network.nodes.len());
-		for (key, node) in network.nodes.iter() {
-			dist.insert(key.clone(), (u64::max_value(),
-				node.lowest_inbound_channel_fee_base_msat as u64,
-				node.lowest_inbound_channel_fee_proportional_millionths as u64,
-				RouteHop {
-					pubkey: PublicKey::new(),
-					short_channel_id: 0,
-					fee_msat: 0,
-					cltv_expiry_delta: 0,
-			}));
-		}
 
 		macro_rules! add_entry {
 			// Adds entry which goes from the node pointed to by $directional_info to
@@ -398,7 +387,19 @@ impl Router {
 				if $starting_fee_msat as u64 + final_value_msat > $directional_info.htlc_minimum_msat {
 					let new_fee = $directional_info.fee_base_msat as u64 + ($starting_fee_msat + final_value_msat) * ($directional_info.fee_proportional_millionths as u64) / 1000000;
 					let mut total_fee = $starting_fee_msat as u64;
-					let old_entry = dist.get_mut(&$directional_info.src_node_id).unwrap();
+					let mut hm_entry = dist.entry(&$directional_info.src_node_id);
+					let old_entry = hm_entry.or_insert_with(|| {
+						let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
+						(u64::max_value(),
+							node.lowest_inbound_channel_fee_base_msat as u64,
+							node.lowest_inbound_channel_fee_proportional_millionths as u64,
+							RouteHop {
+								pubkey: PublicKey::new(),
+								short_channel_id: 0,
+								fee_msat: 0,
+								cltv_expiry_delta: 0,
+						})
+					});
 					if $directional_info.src_node_id != network.our_node_id {
 						// Ignore new_fee for channel-from-us as we assume all channels-from-us
 						// will have the same effective-fee
