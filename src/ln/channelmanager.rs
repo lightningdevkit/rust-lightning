@@ -705,6 +705,16 @@ impl ChannelManager {
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
+
+		macro_rules! add_pending_event {
+			($event: expr) => {
+				{
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push($event);
+				}
+			}
+		}
+
 		let (chan, msg, chan_monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.remove(temporary_channel_id) {
@@ -713,10 +723,15 @@ impl ChannelManager {
 						Ok(funding_msg) => {
 							(chan, funding_msg.0, funding_msg.1)
 						},
-						Err(_e) => {
-							//TODO: Push e to pendingevents
+						Err(e) => {
+							mem::drop(channel_state);
+							add_pending_event!(events::Event::DisconnectPeer {
+								node_id: chan.get_their_node_id(),
+								msg: if let Some(msgs::ErrorAction::DisconnectPeer { msg } ) = e.action { msg } else { None },
+							});
+
 							return;
-						}
+						},
 					}
 				},
 				None => return
@@ -725,13 +740,10 @@ impl ChannelManager {
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 			unimplemented!(); // maybe remove from claimable_htlcs?
 		}
-		{
-			let mut pending_events = self.pending_events.lock().unwrap();
-			pending_events.push(events::Event::SendFundingCreated {
-				node_id: chan.get_their_node_id(),
-				msg: msg,
-			});
-		}
+		add_pending_event!(events::Event::SendFundingCreated {
+			node_id: chan.get_their_node_id(),
+			msg: msg,
+		});
 
 		let mut channel_state = self.channel_state.lock().unwrap();
 		channel_state.by_id.insert(chan.channel_id(), chan);

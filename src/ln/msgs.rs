@@ -379,7 +379,9 @@ pub enum ErrorAction {
 		msg: UpdateFailHTLC
 	},
 	/// The peer took some action which made us think they were useless. Disconnect them.
-	DisconnectPeer,
+	DisconnectPeer {
+		msg: Option<ErrorMessage>
+	},
 	/// The peer did something harmless that we weren't able to process, just log and ignore
 	IgnoreError,
 	/// The peer did something incorrect. Tell them.

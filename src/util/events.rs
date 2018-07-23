@@ -104,6 +104,13 @@ pub enum Event {
 	BroadcastChannelUpdate {
 		msg: msgs::ChannelUpdate,
 	},
+
+	// Events indicating the network loop should change the state of connection with peer:
+	/// Disconnect the given peer, possibly making an attempt to send an ErrorMessage first.
+	DisconnectPeer  {
+		node_id: PublicKey,
+		msg: Option<msgs::ErrorMessage>,
+	}
 }
 
 pub trait EventsProvider {

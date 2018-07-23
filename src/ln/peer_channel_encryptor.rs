@@ -147,7 +147,7 @@ impl PeerChannelEncryptor {
 
 		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
 		if !chacha.decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]) {
-			return Err(HandleError{err: "Bad MAC", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Bad MAC", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		Ok(())
 	}
@@ -195,11 +195,11 @@ impl PeerChannelEncryptor {
 		assert_eq!(act.len(), 50);
 
 		if act[0] != 0 {
-			return Err(HandleError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 
 		let their_pub = match PublicKey::from_slice(secp_ctx, &act[1..34]) {
-			Err(_) => return Err(HandleError{err: "Invalid public key", action: Some(msgs::ErrorAction::DisconnectPeer{})}),
+			Err(_) => return Err(HandleError{err: "Invalid public key", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
 			Ok(key) => key,
 		};
 
@@ -349,14 +349,14 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 						if act_three[0] != 0 {
-							return Err(HandleError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+							return Err(HandleError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 						}
 
 						let mut their_node_id = [0; 33];
 						PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
 						self.their_node_id = Some(match PublicKey::from_slice(&self.secp_ctx, &their_node_id) {
 							Ok(key) => key,
-							Err(_) => return Err(HandleError{err: "Bad node_id from peer", action: Some(msgs::ErrorAction::DisconnectPeer{})}),
+							Err(_) => return Err(HandleError{err: "Bad node_id from peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
 						});
 
 						let mut sha = Sha256::new();

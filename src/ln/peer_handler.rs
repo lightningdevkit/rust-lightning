@@ -37,6 +37,12 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// indicating that read events on this descriptor should resume. A resume_read of false does
 	/// *not* imply that further read events should be paused.
 	fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, resume_read: bool) -> usize;
+	/// Disconnect the socket pointed to by this SocketDescriptor. Once this function returns, no
+	/// more calls to write_event, read_event or disconnect_event may be made with this descriptor.
+	/// No disconnect_event should be generated as a result of this call, though obviously races
+	/// may occur whereby disconnect_socket is called after a call to disconnect_event but prior to
+	/// that event completing.
+	fn disconnect_socket(&mut self);
 }
 
 /// Error for PeerManager errors. If you get one of these, you must disconnect the socket and
@@ -296,7 +302,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 														encode_and_send_msg!(msg, 131);
 														continue;
 													},
-													msgs::ErrorAction::DisconnectPeer => {
+													msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 														return Err(PeerHandleError{ no_connection_possible: false });
 													},
 													msgs::ErrorAction::IgnoreError => {
@@ -731,6 +737,20 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						}
 						continue;
 					},
+					Event::DisconnectPeer { ref node_id, ref msg } => {
+						if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
+							if let Some(mut peer) = peers.peers.remove(&descriptor) {
+								if let Some(ref msg) = *msg {
+									peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
+									// This isn't guaranteed to work, but if there is enough free
+									// room in the send buffer, put the error message there...
+									Self::do_attempt_write_data(&mut descriptor, &mut peer);
+								}
+							}
+							descriptor.disconnect_socket();
+							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+						}
+					},
 				}
 
 				upstream_events.push(event);
@@ -775,5 +795,85 @@ impl<Descriptor: SocketDescriptor> EventsProvider for PeerManager<Descriptor> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut *pending_events);
 		ret
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
+	use util::events;
+	use util::test_utils;
+
+	use secp256k1::Secp256k1;
+	use secp256k1::key::{SecretKey, PublicKey};
+
+	use rand::{thread_rng, Rng};
+
+	use std::sync::{Arc};
+
+	#[derive(PartialEq, Eq, Clone, Hash)]
+	struct FileDescriptor {
+		fd: u16,
+	}
+
+	impl SocketDescriptor for FileDescriptor {
+		fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, _resume_read: bool) -> usize {
+			assert!(write_offset < data.len());
+			data.len() - write_offset
+		}
+
+		fn disconnect_socket(&mut self) {}
+	}
+
+	fn create_network(peer_count: usize) -> Vec<PeerManager<FileDescriptor>> {
+		let secp_ctx = Secp256k1::new();
+		let mut peers = Vec::new();
+		let mut rng = thread_rng();
+
+		for _ in 0..peer_count {
+			let chan_handler = test_utils::TestChannelMessageHandler::new();
+			let router = test_utils::TestRoutingMessageHandler::new();
+			let node_id = {
+				let mut key_slice = [0;32];
+				rng.fill_bytes(&mut key_slice);
+				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
+			};
+			let msg_handler = MessageHandler { chan_handler: Arc::new(chan_handler), route_handler: Arc::new(router) };
+			let peer = PeerManager::new(msg_handler, node_id);
+			peers.push(peer);
+		}
+
+		peers
+	}
+
+	fn establish_connection(peer_a: &PeerManager<FileDescriptor>, peer_b: &PeerManager<FileDescriptor>) {
+		let secp_ctx = Secp256k1::new();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peer_b.our_node_secret).unwrap();
+		let fd = FileDescriptor { fd: 1};
+		peer_a.new_inbound_connection(fd.clone()).unwrap();
+		peer_a.peers.lock().unwrap().node_id_to_descriptor.insert(their_id, fd.clone());
+	}
+
+	#[test]
+	fn test_disconnect_peer() {
+		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
+		// push an DisconnectPeer event to remove the node flagged by id
+		let mut peers = create_network(2);
+		establish_connection(&peers[0], &peers[1]);
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+
+		let secp_ctx = Secp256k1::new();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret).unwrap();
+
+		let chan_handler = test_utils::TestChannelMessageHandler::new();
+		chan_handler.pending_events.lock().unwrap().push(events::Event::DisconnectPeer {
+			node_id: their_id,
+			msg: None,
+		});
+		assert_eq!(chan_handler.pending_events.lock().unwrap().len(), 1);
+		peers[0].message_handler.chan_handler = Arc::new(chan_handler);
+
+		peers[0].process_events();
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 }
