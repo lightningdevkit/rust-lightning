@@ -27,10 +27,11 @@ use crypto::digest::Digest;
 use crypto::symmetriccipher::SynchronousStreamCipher;
 use crypto::chacha20::ChaCha20;
 
-use std::sync::{Mutex,MutexGuard,Arc};
+use std::{ptr, mem};
 use std::collections::HashMap;
 use std::collections::hash_map;
-use std::{ptr, mem};
+use std::sync::{Mutex,MutexGuard,Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
 
 mod channel_held_info {
@@ -151,6 +152,7 @@ pub struct ChannelManager {
 
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
+	latest_block_height: AtomicUsize, //TODO: Compile-time assert this is at least 32-bits long
 	secp_ctx: Secp256k1,
 
 	channel_state: Mutex<ChannelHolder>,
@@ -214,6 +216,7 @@ impl ChannelManager {
 
 			announce_channels_publicly,
 			fee_proportional_millionths,
+			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value (generally need to replay recent chain on chain_monitor registration)
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
@@ -446,9 +449,9 @@ impl ChannelManager {
 	}
 
 	/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-	fn build_onion_payloads(route: &Route) -> Result<(Vec<msgs::OnionHopData>, u64, u32), HandleError> {
+	fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), HandleError> {
 		let mut cur_value_msat = 0u64;
-		let mut cur_cltv = 0u32;
+		let mut cur_cltv = starting_htlc_offset;
 		let mut last_short_channel_id = 0;
 		let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
 		internal_traits::test_no_dealloc::<msgs::OnionHopData>(None);
@@ -459,7 +462,7 @@ impl ChannelManager {
 			// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 			// the intended recipient).
 			let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
-			let cltv = if cur_cltv == 0 { hop.cltv_expiry_delta } else { cur_cltv };
+			let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 			res[idx] = msgs::OnionHopData {
 				realm: 0,
 				data: msgs::OnionRealm0HopData {
@@ -652,9 +655,10 @@ impl ChannelManager {
 			session_key
 		}));
 
+		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
 		let onion_keys = ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv)?;
-		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route)?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
 
 		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
@@ -704,7 +708,6 @@ impl ChannelManager {
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
-
 		macro_rules! add_pending_event {
 			($event: expr) => {
 				{
@@ -1122,6 +1125,7 @@ impl ChainListener for ChannelManager {
 		for funding_locked in new_events.drain(..) {
 			pending_events.push(funding_locked);
 		}
+		self.latest_block_height.store(height as usize, Ordering::Release);
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
@@ -1143,6 +1147,7 @@ impl ChainListener for ChannelManager {
 				true
 			}
 		});
+		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
 	}
 }
 
@@ -1427,6 +1432,8 @@ impl ChannelMessageHandler for ChannelManager {
 				Ok(msg) => msg
 			}
 		};
+
+		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
 
 		let mut pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
@@ -2909,7 +2916,7 @@ mod tests {
 		{
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[3].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 5 {
+			for i in 2..TEST_FINAL_CLTV - 3 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[3].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
@@ -2921,7 +2928,7 @@ mod tests {
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[4].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 5 {
+			for i in 2..TEST_FINAL_CLTV - 3 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[4].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
