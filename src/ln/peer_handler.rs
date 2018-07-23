@@ -681,6 +681,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
+					Event::SendShutdown { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Do whatever we're gonna do for handling dropped messages
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 38)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+						continue;
+					},
 					Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 						if self.message_handler.route_handler.handle_channel_announcement(msg).is_ok() && self.message_handler.route_handler.handle_channel_update(update_msg).is_ok() {
 							let encoded_msg = encode_msg!(msg, 256);

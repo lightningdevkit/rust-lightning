@@ -296,8 +296,9 @@ impl ChannelManager {
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
 	/// will be accepted on the given channel, and after additional timeout/the closing of all
 	/// pending HTLCs, the channel will be closed on chain.
-	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<msgs::Shutdown, HandleError> {
-		let (res, chan_option) = {
+	/// May generate a SendShutdown event on success, which should be relayed.
+	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), HandleError> {
+		let (res, node_id, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 			match channel_state.by_id.entry(channel_id.clone()) {
@@ -307,8 +308,8 @@ impl ChannelManager {
 						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
 							channel_state.short_to_id.remove(&short_id);
 						}
-						(res, Some(chan_entry.remove_entry().1))
-					} else { (res, None) }
+						(res, chan_entry.get().get_their_node_id(), Some(chan_entry.remove_entry().1))
+					} else { (res, chan_entry.get().get_their_node_id(), None) }
 				},
 				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", action: None})
 			}
@@ -317,15 +318,24 @@ impl ChannelManager {
 			// unknown_next_peer...I dunno who that is anymore....
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 		}
-		if let Some(chan) = chan_option {
+		let chan_update = if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
-				let mut events = self.pending_events.lock().unwrap();
-				events.push(events::Event::BroadcastChannelUpdate {
-					msg: update
-				});
-			}
+				Some(update)
+			} else { None }
+		} else { None };
+
+		let mut events = self.pending_events.lock().unwrap();
+		if let Some(update) = chan_update {
+			events.push(events::Event::BroadcastChannelUpdate {
+				msg: update
+			});
 		}
-		Ok(res.0)
+		events.push(events::Event::SendShutdown {
+			node_id,
+			msg: res.0
+		});
+
+		Ok(())
 	}
 
 	#[inline]
@@ -2171,7 +2181,17 @@ mod tests {
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 		let (tx_a, tx_b);
 
-		let shutdown_a = node_a.close_channel(channel_id).unwrap();
+		node_a.close_channel(channel_id).unwrap();
+		let events_1 = node_a.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		let shutdown_a = match events_1[0] {
+			Event::SendShutdown { ref node_id, ref msg } => {
+				assert_eq!(node_id, &node_b.get_our_node_id());
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
 		let (shutdown_b, mut closing_signed_b) = node_b.handle_shutdown(&node_a.get_our_node_id(), &shutdown_a).unwrap();
 		if !close_inbound_first {
 			assert!(closing_signed_b.is_none());
@@ -2203,18 +2223,18 @@ mod tests {
 		funding_tx_map.insert(funding_tx.txid(), funding_tx);
 		tx_a.verify(&funding_tx_map).unwrap();
 
-		let events_1 = node_a.get_and_clear_pending_events();
-		assert_eq!(events_1.len(), 1);
-		let as_update = match events_1[0] {
+		let events_2 = node_a.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let as_update = match events_2[0] {
 			Event::BroadcastChannelUpdate { ref msg } => {
 				msg.clone()
 			},
 			_ => panic!("Unexpected event"),
 		};
 
-		let events_2 = node_b.get_and_clear_pending_events();
-		assert_eq!(events_2.len(), 1);
-		let bs_update = match events_2[0] {
+		let events_3 = node_b.get_and_clear_pending_events();
+		assert_eq!(events_3.len(), 1);
+		let bs_update = match events_3[0] {
 			Event::BroadcastChannelUpdate { ref msg } => {
 				msg.clone()
 			},
