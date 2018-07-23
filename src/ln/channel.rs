@@ -328,7 +328,7 @@ macro_rules! secp_call {
 		match $res {
 			Ok(key) => key,
 			//TODO: make the error a parameter
-			Err(_) => return Err(HandleError{err: $err, action: Some(msgs::ErrorAction::DisconnectPeer{})})
+			Err(_) => return Err(HandleError{err: $err, action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })})
 		}
 	};
 }
@@ -433,10 +433,10 @@ impl Channel {
 
 	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background) * 250 {
-			return Err(HandleError{err: "Peer's feerate much too low", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Peer's feerate much too low", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::HighPriority) * 375 { // 375 = 250 * 1.5x
-			return Err(HandleError{err: "Peer's feerate much too high", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Peer's feerate much too high", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		Ok(())
 	}
@@ -448,29 +448,29 @@ impl Channel {
 	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "push_msat more than highest possible value", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "push_msat more than highest possible value", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Peer never wants payout outputs?", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Peer never wants payout outputs?", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "Minimum htlc value is full channel value", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		if (msg.channel_flags & 254) != 0 {
-			return Err(HandleError{err: "unknown channel_flags", action: Some(msgs::ErrorAction::DisconnectPeer{})});
+			return Err(HandleError{err: "unknown channel_flags", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 
 		// Convert things into internal flags and prep our state:

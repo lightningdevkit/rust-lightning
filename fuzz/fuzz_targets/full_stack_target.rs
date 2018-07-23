@@ -25,7 +25,9 @@ use lightning::util::reset_rng_state;
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
 
@@ -104,14 +106,30 @@ impl BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, _tx: &Transaction) {}
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct Peer {
+#[derive(Clone)]
+struct Peer<'a> {
 	id: u8,
+	peers_connected: &'a RefCell<[bool; 256]>,
 }
-impl SocketDescriptor for Peer {
+impl<'a> SocketDescriptor for Peer<'a> {
 	fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, _resume_read: bool) -> usize {
 		assert!(write_offset < data.len());
 		data.len() - write_offset
+	}
+	fn disconnect_socket(&mut self) {
+		assert!(self.peers_connected.borrow()[self.id as usize]);
+		self.peers_connected.borrow_mut()[self.id as usize] = false;
+	}
+}
+impl<'a> PartialEq for Peer<'a> {
+	fn eq(&self, other: &Self) -> bool {
+		self.id == other.id
+	}
+}
+impl<'a> Eq for Peer<'a> {}
+impl<'a> Hash for Peer<'a> {
+	fn hash<H : std::hash::Hasher>(&self, h: &mut H) {
+		self.id.hash(h)
 	}
 }
 
@@ -158,12 +176,12 @@ pub fn do_test(data: &[u8]) {
 	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone()).unwrap();
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key).unwrap()));
 
+	let peers = RefCell::new([false; 256]);
 	let handler = PeerManager::new(MessageHandler {
 		chan_handler: channelmanager.clone(),
 		route_handler: router.clone(),
 	}, our_network_key);
 
-	let mut peers = [false; 256];
 	let mut should_forward = false;
 	let mut payments_received = Vec::new();
 	let mut payments_sent = 0;
@@ -176,39 +194,39 @@ pub fn do_test(data: &[u8]) {
 			0 => {
 				let mut new_id = 0;
 				for i in 1..256 {
-					if !peers[i-1] {
+					if !peers.borrow()[i-1] {
 						new_id = i;
 						break;
 					}
 				}
 				if new_id == 0 { return; }
-				peers[new_id - 1] = true;
-				handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8}).unwrap();
+				peers.borrow_mut()[new_id - 1] = true;
+				handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 			},
 			1 => {
 				let mut new_id = 0;
 				for i in 1..256 {
-					if !peers[i-1] {
+					if !peers.borrow()[i-1] {
 						new_id = i;
 						break;
 					}
 				}
 				if new_id == 0 { return; }
-				peers[new_id - 1] = true;
-				handler.new_inbound_connection(Peer{id: (new_id - 1) as u8}).unwrap();
+				peers.borrow_mut()[new_id - 1] = true;
+				handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 			},
 			2 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers[peer_id as usize] { return; }
-				peers[peer_id as usize] = false;
-				handler.disconnect_event(&Peer{id: peer_id});
+				if !peers.borrow()[peer_id as usize] { return; }
+				peers.borrow_mut()[peer_id as usize] = false;
+				handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
 			},
 			3 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers[peer_id as usize] { return; }
-				match handler.read_event(&mut Peer{id: peer_id}, get_slice!(get_slice!(1)[0]).to_vec()) {
+				if !peers.borrow()[peer_id as usize] { return; }
+				match handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
 					Ok(res) => assert!(!res),
-					Err(_) => { peers[peer_id as usize] = false; }
+					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
 				}
 			},
 			4 => {
@@ -231,7 +249,7 @@ pub fn do_test(data: &[u8]) {
 			},
 			5 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers[peer_id as usize] { return; }
+				if !peers.borrow()[peer_id as usize] { return; }
 				let their_key = get_pubkey!();
 				let chan_value = slice_to_be24(get_slice!(3)) as u64;
 				if channelmanager.create_channel(their_key, chan_value, 0).is_err() { return; }
