@@ -31,6 +31,8 @@ pub enum DecodeError {
 	BadPublicKey,
 	/// Failed to decode a signature (ie it's invalid)
 	BadSignature,
+	/// Value expected to be text wasn't decodable as text
+	BadText,
 	/// Buffer not of right length (either too short or too long)
 	WrongLength,
 	/// node_announcement included more than one address of a given type!
@@ -136,6 +138,11 @@ impl GlobalFeatures {
 pub struct Init {
 	pub global_features: GlobalFeatures,
 	pub local_features: LocalFeatures,
+}
+
+pub struct ErrorMessage {
+	pub channel_id: [u8; 32],
+	pub data: String,
 }
 
 pub struct Ping {
@@ -375,6 +382,10 @@ pub enum ErrorAction {
 	DisconnectPeer,
 	/// The peer did something harmless that we weren't able to process, just log and ignore
 	IgnoreError,
+	/// The peer did something incorrect. Tell them.
+	SendErrorMessage {
+		msg: ErrorMessage
+	},
 }
 
 pub struct HandleError { //TODO: rename me
@@ -486,6 +497,7 @@ impl Error for DecodeError {
 			DecodeError::UnknownRealmByte => "Unknown realm byte in Onion packet",
 			DecodeError::BadPublicKey => "Invalid public key in packet",
 			DecodeError::BadSignature => "Invalid signature in packet",
+			DecodeError::BadText => "Invalid text in packet",
 			DecodeError::WrongLength => "Data was wrong length for packet",
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 		}
@@ -1597,6 +1609,37 @@ impl MsgEncodable for OnionErrorPacket {
 		res.extend_from_slice(&byte_utils::be16_to_array(self.data.len() as u16));
 		res.extend_from_slice(&self.data);
 		res
+	}
+}
+
+impl MsgEncodable for ErrorMessage {
+	fn encode(&self) -> Vec<u8> {
+		let mut res = Vec::with_capacity(34 + self.data.len());
+		res.extend_from_slice(&self.channel_id);
+		res.extend_from_slice(&byte_utils::be16_to_array(self.data.len() as u16));
+		res.extend_from_slice(&self.data.as_bytes());
+		res
+	}
+}
+impl MsgDecodable for ErrorMessage {
+	fn decode(v: &[u8]) -> Result<Self,DecodeError> {
+		if v.len() < 34 {
+			return Err(DecodeError::WrongLength);
+		}
+		let len = byte_utils::slice_to_be16(&v[32..34]);
+		if v.len() < 34 + len as usize {
+			return Err(DecodeError::WrongLength);
+		}
+		let data = match String::from_utf8(v[34..34 + len as usize].to_vec()) {
+			Ok(s) => s,
+			Err(_) => return Err(DecodeError::BadText),
+		};
+		let mut channel_id = [0; 32];
+		channel_id[..].copy_from_slice(&v[0..32]);
+		Ok(Self {
+			channel_id,
+			data,
+		})
 	}
 }
 

@@ -302,6 +302,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													msgs::ErrorAction::IgnoreError => {
 														continue;
 													},
+													msgs::ErrorAction::SendErrorMessage { msg } => {
+														encode_and_send_msg!(msg, 17);
+														continue;
+													},
 												}
 											} else {
 												return Err(PeerHandleError{ no_connection_possible: false });
