@@ -138,6 +138,11 @@ pub struct Init {
 	pub local_features: LocalFeatures,
 }
 
+pub struct ErrorMessage {
+	pub channel_id: [u8; 32],
+	pub data: String,
+}
+
 pub struct Ping {
 	pub ponglen: u16,
 	pub byteslen: u16,
@@ -375,6 +380,10 @@ pub enum ErrorAction {
 	DisconnectPeer,
 	/// The peer did something harmless that we weren't able to process, just log and ignore
 	IgnoreError,
+	/// The peer did something incorrect. Tell them.
+	SendErrorMessage {
+		msg: ErrorMessage
+	},
 }
 
 pub struct HandleError { //TODO: rename me
@@ -1560,5 +1569,37 @@ impl MsgEncodable for OnionErrorPacket {
 		res.extend_from_slice(&byte_utils::be16_to_array(self.data.len() as u16));
 		res.extend_from_slice(&self.data);
 		res
+	}
+}
+
+impl MsgEncodable for ErrorMessage {
+	fn encode(&self) -> Vec<u8> {
+		let mut res = Vec::with_capacity(34 + self.data.len());
+		res.extend_from_slice(&self.channel_id);
+		res.extend_from_slice(&byte_utils::be16_to_array(self.data.len() as u16));
+		res.extend_from_slice(&self.data.as_bytes());
+		res
+	}
+}
+
+impl MsgDecodable for ErrorMessage {
+	fn decode(v: &[u8]) -> Result<Self,DecodeError> {
+		if v.len() < 34 {
+			return Err(DecodeError::WrongLength);
+		}
+		let len = byte_utils::slice_to_be16(&v[33..34]);
+		let mut data = String::new();
+		if len > 0 {
+			data = String::from_utf8(v[35..len as usize].to_vec()).unwrap();
+			if len != data.len() as u16 {
+				return Err(DecodeError::WrongLength);
+			}
+		}
+		let mut channel_id = [0; 32];
+		channel_id[..].copy_from_slice(&v[0..32]);
+		Ok(Self {
+			channel_id,
+			data: data,
+		})
 	}
 }
