@@ -3,6 +3,7 @@ use secp256k1::{Secp256k1,Message};
 
 use bitcoin::util::hash::Sha256dHash;
 
+use ln::channelmanager;
 use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
 use ln::msgs;
 
@@ -315,6 +316,14 @@ impl cmp::PartialOrd for RouteGraphNode {
 	}
 }
 
+struct DummyDirectionalChannelInfo {
+	src_node_id: PublicKey,
+	cltv_expiry_delta: u32,
+	htlc_minimum_msat: u64,
+	fee_base_msat: u32,
+	fee_proportional_millionths: u32,
+}
+
 impl Router {
 	pub fn new(our_pubkey: PublicKey) -> Router {
 		let mut nodes = HashMap::new();
@@ -357,10 +366,15 @@ impl Router {
 	/// Gets a route from us to the given target node.
 	/// Extra routing hops between known nodes and the target will be used if they are included in
 	/// last_hops.
+	/// If some channels aren't announced, it may be useful to fill in a first_hops with the
+	/// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
+	/// (this Router's) view of our local channels will be ignored, and only those in first_hops
+	/// will be used. Panics if first_hops contains channels without short_channel_ids
+	/// (ChannelManager::list_usable_channels will never include such channels).
 	/// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 	/// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 	/// *is* checked as they may change based on the receiving node.
-	pub fn get_route(&self, target: &PublicKey, last_hops: &Vec<RouteHint>, final_value_msat: u64, final_cltv: u32) -> Result<Route, HandleError> {
+	pub fn get_route(&self, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>, last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32) -> Result<Route, HandleError> {
 		// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 		// uptime/success in using a node in the past.
 		let network = self.network_map.read().unwrap();
@@ -375,18 +389,25 @@ impl Router {
 		// to use as the A* heuristic beyond just the cost to get one node further than the current
 		// one.
 
+		let dummy_directional_info = DummyDirectionalChannelInfo { // used for first_hops routes
+			src_node_id: network.our_node_id.clone(),
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+		};
+
 		let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
 		let mut dist = HashMap::with_capacity(network.nodes.len());
-		for (key, node) in network.nodes.iter() {
-			dist.insert(key.clone(), (u64::max_value(),
-				node.lowest_inbound_channel_fee_base_msat as u64,
-				node.lowest_inbound_channel_fee_proportional_millionths as u64,
-				RouteHop {
-					pubkey: PublicKey::new(),
-					short_channel_id: 0,
-					fee_msat: 0,
-					cltv_expiry_delta: 0,
-			}));
+
+		let mut first_hop_targets = HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
+		if let Some(hops) = first_hops {
+			for chan in hops {
+				first_hop_targets.insert(chan.remote_network_id, chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones"));
+			}
+			if first_hop_targets.is_empty() {
+				return Err(HandleError{err: "Cannot route when there are no outbound routes away from us", action: None});
+			}
 		}
 
 		macro_rules! add_entry {
@@ -398,7 +419,19 @@ impl Router {
 				if $starting_fee_msat as u64 + final_value_msat > $directional_info.htlc_minimum_msat {
 					let new_fee = $directional_info.fee_base_msat as u64 + ($starting_fee_msat + final_value_msat) * ($directional_info.fee_proportional_millionths as u64) / 1000000;
 					let mut total_fee = $starting_fee_msat as u64;
-					let old_entry = dist.get_mut(&$directional_info.src_node_id).unwrap();
+					let mut hm_entry = dist.entry(&$directional_info.src_node_id);
+					let old_entry = hm_entry.or_insert_with(|| {
+						let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
+						(u64::max_value(),
+							node.lowest_inbound_channel_fee_base_msat as u64,
+							node.lowest_inbound_channel_fee_proportional_millionths as u64,
+							RouteHop {
+								pubkey: PublicKey::new(),
+								short_channel_id: 0,
+								fee_msat: 0,
+								cltv_expiry_delta: 0,
+						})
+					});
 					if $directional_info.src_node_id != network.our_node_id {
 						// Ignore new_fee for channel-from-us as we assume all channels-from-us
 						// will have the same effective-fee
@@ -425,16 +458,26 @@ impl Router {
 
 		macro_rules! add_entries_to_cheapest_to_target_node {
 			( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
+				if first_hops.is_some() {
+					if let Some(first_hop) = first_hop_targets.get(&$node_id) {
+						add_entry!(first_hop, $node_id, dummy_directional_info, $fee_to_target_msat);
+					}
+				}
+
 				for chan_id in $node.channels.iter() {
 					let chan = network.channels.get(chan_id).unwrap();
 					if chan.one_to_two.src_node_id == *$node_id {
 						// ie $node is one, ie next hop in A* is two, via the two_to_one channel
-						if chan.two_to_one.enabled {
-							add_entry!(chan_id, chan.one_to_two.src_node_id, chan.two_to_one, $fee_to_target_msat);
+						if first_hops.is_none() || chan.two_to_one.src_node_id != network.our_node_id {
+							if chan.two_to_one.enabled {
+								add_entry!(chan_id, chan.one_to_two.src_node_id, chan.two_to_one, $fee_to_target_msat);
+							}
 						}
 					} else {
-						if chan.one_to_two.enabled {
-							add_entry!(chan_id, chan.two_to_one.src_node_id, chan.one_to_two, $fee_to_target_msat);
+						if first_hops.is_none() || chan.one_to_two.src_node_id != network.our_node_id {
+							if chan.one_to_two.enabled {
+								add_entry!(chan_id, chan.two_to_one.src_node_id, chan.one_to_two, $fee_to_target_msat);
+							}
 						}
 					}
 				}
@@ -449,8 +492,15 @@ impl Router {
 		}
 
 		for hop in last_hops.iter() {
-			if network.nodes.get(&hop.src_node_id).is_some() {
-				add_entry!(hop.short_channel_id, target, hop, 0);
+			if first_hops.is_none() || hop.src_node_id != network.our_node_id { // first_hop overrules last_hops
+				if network.nodes.get(&hop.src_node_id).is_some() {
+					if first_hops.is_some() {
+						if let Some(first_hop) = first_hop_targets.get(&hop.src_node_id) {
+							add_entry!(first_hop, hop.src_node_id, dummy_directional_info, 0);
+						}
+					}
+					add_entry!(hop.short_channel_id, target, hop, 0);
+				}
 			}
 		}
 
@@ -486,6 +536,7 @@ impl Router {
 
 #[cfg(test)]
 mod tests {
+	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::msgs::GlobalFeatures;
 
@@ -503,25 +554,30 @@ mod tests {
 
 		// Build network from our_id to node8:
 		//
-		//        -1(1)2- node1 -1(3)2-
-		//       /                     \
-		// our_id                       - node3
-		//       \                     /
-		//        -1(2)2- node2 -1(4)2-
+		//        -1(1)2-  node1  -1(3)2-
+		//       /                       \
+		// our_id -1(12)2- node8 -1(13)2--- node3
+		//       \                       /
+		//        -1(2)2-  node2  -1(4)2-
 		//
 		//
-		// chan1 1-to-2: disabled
-		// chan1 2-to-1: enabled, 0 fee
+		// chan1  1-to-2: disabled
+		// chan1  2-to-1: enabled, 0 fee
 		//
-		// chan2 1-to-2: enabled, ignored fee
-		// chan2 2-to-1: enabled, 0 fee
+		// chan2  1-to-2: enabled, ignored fee
+		// chan2  2-to-1: enabled, 0 fee
 		//
-		// chan3 1-to-2: enabled, 0 fee
-		// chan3 2-to-1: enabled, 100 msat fee
+		// chan3  1-to-2: enabled, 0 fee
+		// chan3  2-to-1: enabled, 100 msat fee
 		//
-		// chan4 1-to-2: enabled, 100% fee
-		// chan4 2-to-1: enabled, 0 fee
+		// chan4  1-to-2: enabled, 100% fee
+		// chan4  2-to-1: enabled, 0 fee
 		//
+		// chan12 1-to-2: enabled, ignored fee
+		// chan12 2-to-1: enabled, 0 fee
+		//
+		// chan13 1-to-2: enabled, 200% fee
+		// chan13 2-to-1: enabled, 0 fee
 		//
 		//
 		//       -1(5)2- node4 -1(8)2--
@@ -560,6 +616,7 @@ mod tests {
 		let node5 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap()).unwrap();
 		let node6 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap()).unwrap();
 		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap()).unwrap();
+		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap()).unwrap();
 
 		let zero_hash = Sha256dHash::from_data(&[0; 32]);
 
@@ -626,10 +683,41 @@ mod tests {
 					fee_proportional_millionths: 0,
 				},
 			});
+			network.nodes.insert(node8.clone(), NodeInfo {
+				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
+				lowest_inbound_channel_fee_base_msat: 0,
+				lowest_inbound_channel_fee_proportional_millionths: 0,
+				features: GlobalFeatures::new(),
+				last_update: 1,
+				rgb: [0; 3],
+				alias: [0; 32],
+				addresses: Vec::new(),
+			});
+			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
+				features: GlobalFeatures::new(),
+				one_to_two: DirectionalChannelInfo {
+					src_node_id: our_id.clone(),
+					last_update: 0,
+					enabled: true,
+					cltv_expiry_delta: u16::max_value(), // This value should be ignored
+					htlc_minimum_msat: 0,
+					fee_base_msat: u32::max_value(), // This value should be ignored
+					fee_proportional_millionths: u32::max_value(), // This value should be ignored
+				}, two_to_one: DirectionalChannelInfo {
+					src_node_id: node8.clone(),
+					last_update: 0,
+					enabled: true,
+					cltv_expiry_delta: 0,
+					htlc_minimum_msat: 0,
+					fee_base_msat: 0,
+					fee_proportional_millionths: 0,
+				},
+			});
 			network.nodes.insert(node3.clone(), NodeInfo {
 				channels: vec!(
 					NetworkMap::get_key(3, zero_hash.clone()),
 					NetworkMap::get_key(4, zero_hash.clone()),
+					NetworkMap::get_key(13, zero_hash.clone()),
 					NetworkMap::get_key(5, zero_hash.clone()),
 					NetworkMap::get_key(6, zero_hash.clone()),
 					NetworkMap::get_key(7, zero_hash.clone())),
@@ -676,6 +764,26 @@ mod tests {
 					last_update: 0,
 					enabled: true,
 					cltv_expiry_delta: (4 << 8) | 2,
+					htlc_minimum_msat: 0,
+					fee_base_msat: 0,
+					fee_proportional_millionths: 0,
+				},
+			});
+			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
+				features: GlobalFeatures::new(),
+				one_to_two: DirectionalChannelInfo {
+					src_node_id: node8.clone(),
+					last_update: 0,
+					enabled: true,
+					cltv_expiry_delta: (13 << 8) | 1,
+					htlc_minimum_msat: 0,
+					fee_base_msat: 0,
+					fee_proportional_millionths: 2000000,
+				}, two_to_one: DirectionalChannelInfo {
+					src_node_id: node3.clone(),
+					last_update: 0,
+					enabled: true,
+					cltv_expiry_delta: (13 << 8) | 2,
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
@@ -794,7 +902,7 @@ mod tests {
 		}
 
 		{ // Simple route to 3 via 2
-			let route = router.get_route(&node3, &Vec::new(), 100, 42).unwrap();
+			let route = router.get_route(&node3, None, &Vec::new(), 100, 42).unwrap();
 			assert_eq!(route.hops.len(), 2);
 
 			assert_eq!(route.hops[0].pubkey, node2);
@@ -809,7 +917,7 @@ mod tests {
 		}
 
 		{ // Route to 1 via 2 and 3 because our channel to 1 is disabled
-			let route = router.get_route(&node1, &Vec::new(), 100, 42).unwrap();
+			let route = router.get_route(&node1, None, &Vec::new(), 100, 42).unwrap();
 			assert_eq!(route.hops.len(), 3);
 
 			assert_eq!(route.hops[0].pubkey, node2);
@@ -826,6 +934,28 @@ mod tests {
 			assert_eq!(route.hops[2].short_channel_id, 3);
 			assert_eq!(route.hops[2].fee_msat, 100);
 			assert_eq!(route.hops[2].cltv_expiry_delta, 42);
+		}
+
+		{ // If we specify a channel to node8, that overrides our local channel view and that gets used
+			let our_chans = vec![channelmanager::ChannelDetails {
+				channel_id: [0; 32],
+				short_channel_id: Some(42),
+				remote_network_id: node8.clone(),
+				channel_value_satoshis: 0,
+				user_id: 0,
+			}];
+			let route = router.get_route(&node3, Some(&our_chans), &Vec::new(), 100, 42).unwrap();
+			assert_eq!(route.hops.len(), 2);
+
+			assert_eq!(route.hops[0].pubkey, node8);
+			assert_eq!(route.hops[0].short_channel_id, 42);
+			assert_eq!(route.hops[0].fee_msat, 200);
+			assert_eq!(route.hops[0].cltv_expiry_delta, (13 << 8) | 1);
+
+			assert_eq!(route.hops[1].pubkey, node3);
+			assert_eq!(route.hops[1].short_channel_id, 13);
+			assert_eq!(route.hops[1].fee_msat, 100);
+			assert_eq!(route.hops[1].cltv_expiry_delta, 42);
 		}
 
 		let mut last_hops = vec!(RouteHint {
@@ -852,7 +982,7 @@ mod tests {
 			});
 
 		{ // Simple test across 2, 3, 5, and 4 via a last_hop channel
-			let route = router.get_route(&node7, &last_hops, 100, 42).unwrap();
+			let route = router.get_route(&node7, None, &last_hops, 100, 42).unwrap();
 			assert_eq!(route.hops.len(), 5);
 
 			assert_eq!(route.hops[0].pubkey, node2);
@@ -881,10 +1011,32 @@ mod tests {
 			assert_eq!(route.hops[4].cltv_expiry_delta, 42);
 		}
 
+		{ // Simple test with outbound channel to 4 to test that last_hops and first_hops connect
+			let our_chans = vec![channelmanager::ChannelDetails {
+				channel_id: [0; 32],
+				short_channel_id: Some(42),
+				remote_network_id: node4.clone(),
+				channel_value_satoshis: 0,
+				user_id: 0,
+			}];
+			let route = router.get_route(&node7, Some(&our_chans), &last_hops, 100, 42).unwrap();
+			assert_eq!(route.hops.len(), 2);
+
+			assert_eq!(route.hops[0].pubkey, node4);
+			assert_eq!(route.hops[0].short_channel_id, 42);
+			assert_eq!(route.hops[0].fee_msat, 0);
+			assert_eq!(route.hops[0].cltv_expiry_delta, (8 << 8) | 1);
+
+			assert_eq!(route.hops[1].pubkey, node7);
+			assert_eq!(route.hops[1].short_channel_id, 8);
+			assert_eq!(route.hops[1].fee_msat, 100);
+			assert_eq!(route.hops[1].cltv_expiry_delta, 42);
+		}
+
 		last_hops[0].fee_base_msat = 1000;
 
 		{ // Revert to via 6 as the fee on 8 goes up
-			let route = router.get_route(&node7, &last_hops, 100, 42).unwrap();
+			let route = router.get_route(&node7, None, &last_hops, 100, 42).unwrap();
 			assert_eq!(route.hops.len(), 4);
 
 			assert_eq!(route.hops[0].pubkey, node2);
@@ -909,7 +1061,7 @@ mod tests {
 		}
 
 		{ // ...but still use 8 for larger payments as 6 has a variable feerate
-			let route = router.get_route(&node7, &last_hops, 2000, 42).unwrap();
+			let route = router.get_route(&node7, None, &last_hops, 2000, 42).unwrap();
 			assert_eq!(route.hops.len(), 5);
 
 			assert_eq!(route.hops[0].pubkey, node2);

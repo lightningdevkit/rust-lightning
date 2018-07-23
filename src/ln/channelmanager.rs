@@ -293,6 +293,25 @@ impl ChannelManager {
 		res
 	}
 
+	/// Gets the list of usable channels, in random order. Useful as an argument to
+	/// Router::get_route to ensure non-announced channels are used.
+	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
+		let channel_state = self.channel_state.lock().unwrap();
+		let mut res = Vec::with_capacity(channel_state.by_id.len());
+		for (channel_id, channel) in channel_state.by_id.iter() {
+			if channel.is_usable() {
+				res.push(ChannelDetails {
+					channel_id: (*channel_id).clone(),
+					short_channel_id: channel.get_short_channel_id(),
+					remote_network_id: channel.get_their_node_id(),
+					channel_value_satoshis: channel.get_value_satoshis(),
+					user_id: channel.get_user_id(),
+				});
+			}
+		}
+		res
+	}
+
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
 	/// will be accepted on the given channel, and after additional timeout/the closing of all
 	/// pending HTLCs, the channel will be closed on chain.
@@ -2436,7 +2455,7 @@ mod tests {
 	const TEST_FINAL_CLTV: u32 = 32;
 
 	fn route_payment(origin_node: &Node, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
-		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
+		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
 		assert_eq!(route.hops.len(), expected_route.len());
 		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
 			assert_eq!(hop.pubkey, node.node.get_our_node_id());
@@ -2446,7 +2465,7 @@ mod tests {
 	}
 
 	fn route_over_limit(origin_node: &Node, expected_route: &[&Node], recv_value: u64) {
-		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
+		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
 		assert_eq!(route.hops.len(), expected_route.len());
 		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
 			assert_eq!(hop.pubkey, node.node.get_our_node_id());
