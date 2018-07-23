@@ -743,7 +743,7 @@ impl ChannelMonitor {
 		for _ in 0..remote_claimable_outpoints_len {
 			let txid = Sha256dHash::from(read_bytes!(32));
 			let outputs_count = byte_utils::slice_to_be64(read_bytes!(8));
-			if outputs_count > data.len() as u64 * 32 { return None; }
+			if outputs_count > data.len() as u64 / 32 { return None; }
 			let mut outputs = Vec::with_capacity(outputs_count as usize);
 			for _ in 0..outputs_count {
 				outputs.push(read_htlc_in_commitment!());
