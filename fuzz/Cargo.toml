@@ -110,3 +110,7 @@ path = "fuzz_targets/msg_targets/msg_update_fulfill_htlc_target.rs"
 [[bin]]
 name = "msg_update_fail_htlc_target"
 path = "fuzz_targets/msg_targets/msg_update_fail_htlc_target.rs"
+
+[[bin]]
+name = "msg_channel_reestablish_target"
+path = "fuzz_targets/msg_targets/msg_channel_reestablish_target.rs"

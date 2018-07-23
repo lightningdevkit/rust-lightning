@@ -1101,13 +1101,50 @@ impl MsgEncodable for UpdateFee {
 }
 
 impl MsgDecodable for ChannelReestablish {
-	fn decode(_v: &[u8]) -> Result<Self, DecodeError> {
-		unimplemented!();
+	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
+		if v.len() < 32+2*8+33 {
+			return Err(DecodeError::WrongLength);
+		}
+
+		let your_last_per_commitment_secret = if v.len() > 32+2*8+33 {
+			if v.len() < 32+2*8+33 + 32 {
+				return Err(DecodeError::WrongLength);
+			}
+			let mut inner_array = [0; 32];
+			inner_array.copy_from_slice(&v[48..48+32]);
+			Some(inner_array)
+		} else { None };
+
+		let option_size = match &your_last_per_commitment_secret {
+			&Some(ref _ary) => 32,
+			&None => 0,
+		};
+		Ok(Self {
+			channel_id: deserialize(&v[0..32]).unwrap(),
+			next_local_commitment_number: byte_utils::slice_to_be64(&v[32..40]),
+			next_remote_commitment_number: byte_utils::slice_to_be64(&v[40..48]),
+			your_last_per_commitment_secret: your_last_per_commitment_secret,
+			my_current_per_commitment_point: {
+				let ctx = Secp256k1::without_caps();
+				secp_pubkey!(&ctx, &v[48+option_size..48+option_size+33])
+			}
+		})
 	}
 }
 impl MsgEncodable for ChannelReestablish {
 	fn encode(&self) -> Vec<u8> {
-		unimplemented!();
+		let mut res = Vec::with_capacity(if self.your_last_per_commitment_secret.is_some() { 32+2*3+33 + 32 } else { 32+2*8+33 });
+
+		res.extend_from_slice(&serialize(&self.channel_id).unwrap()[..]);
+		res.extend_from_slice(&byte_utils::be64_to_array(self.next_local_commitment_number));
+		res.extend_from_slice(&byte_utils::be64_to_array(self.next_remote_commitment_number));
+
+		if let &Some(ref ary) = &self.your_last_per_commitment_secret {
+			res.extend_from_slice(&ary[..]);
+		}
+
+		res.extend_from_slice(&self.my_current_per_commitment_point.serialize());
+		res
 	}
 }
 
@@ -1560,5 +1597,58 @@ impl MsgEncodable for OnionErrorPacket {
 		res.extend_from_slice(&byte_utils::be16_to_array(self.data.len() as u16));
 		res.extend_from_slice(&self.data);
 		res
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use bitcoin::util::misc::hex_bytes;
+	use ln::msgs::MsgEncodable;
+	use ln::msgs;
+	use secp256k1::key::{PublicKey,SecretKey};
+	use secp256k1::Secp256k1;
+
+	#[test]
+	fn encoding_channel_reestablish_no_secret() {
+		let public_key = {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap()
+		};
+
+		let cr = msgs::ChannelReestablish {
+			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			next_local_commitment_number: 3,
+			next_remote_commitment_number: 4,
+			your_last_per_commitment_secret: None,
+			my_current_per_commitment_point: public_key,
+		};
+
+		let encoded_value = cr.encode();
+		assert_eq!(
+			encoded_value, 
+			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]
+		);
+	}
+
+	#[test]
+	fn encoding_channel_reestablish_with_secret() {
+		let public_key = {
+			let secp_ctx = Secp256k1::new();
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap()
+		};
+
+		let cr = msgs::ChannelReestablish {
+			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			next_local_commitment_number: 3,
+			next_remote_commitment_number: 4,
+			your_last_per_commitment_secret: Some([9; 32]),
+			my_current_per_commitment_point: public_key,
+		};
+
+		let encoded_value = cr.encode();
+		assert_eq!(
+			encoded_value, 
+			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]
+		);
 	}
 }
