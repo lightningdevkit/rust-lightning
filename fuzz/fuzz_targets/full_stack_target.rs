@@ -107,11 +107,15 @@ impl BroadcasterInterface for TestBroadcaster {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Peer {
 	id: u8,
+	connected: bool,
 }
 impl SocketDescriptor for Peer {
 	fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, _resume_read: bool) -> usize {
 		assert!(write_offset < data.len());
 		data.len() - write_offset
+	}
+	fn disconnect_socket(&mut self) {
+		self.connected = false;
 	}
 }
 

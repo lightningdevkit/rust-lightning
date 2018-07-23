@@ -99,6 +99,16 @@ pub enum Event {
 	BroadcastChannelUpdate {
 		msg: msgs::ChannelUpdate,
 	},
+	/// Used to tell a peer that something is incorrect
+	HandleOutboundMsgGenerationError {
+		node_id: PublicKey,
+		msg: msgs::ErrorMessage,
+	},
+	// Events indicating the network loop should change the state of connection with peer
+	DisconnectPeer  {
+		node_id: PublicKey,
+		msg: Option<msgs::ErrorMessage>,
+	}
 }
 
 pub trait EventsProvider {
