@@ -213,7 +213,7 @@ pub fn do_test(data: &[u8]) {
 			},
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let route = match router.get_route(&get_pubkey!(), &Vec::new(), value, 42) {
+				let route = match router.get_route(&get_pubkey!(), None, &Vec::new(), value, 42) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
