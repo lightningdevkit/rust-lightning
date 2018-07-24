@@ -27,3 +27,6 @@ gcc = "0.3"
 [dev-dependencies.bitcoin]
 version = "0.13"
 features = ["bitcoinconsensus"]
+
+[dev-dependencies]
+hex = "0.3.2"
