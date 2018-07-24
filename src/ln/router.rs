@@ -403,7 +403,18 @@ impl Router {
 		let mut first_hop_targets = HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 		if let Some(hops) = first_hops {
 			for chan in hops {
-				first_hop_targets.insert(chan.remote_network_id, chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones"));
+				let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
+				if chan.remote_network_id == *target {
+					return Ok(Route {
+						hops: vec![RouteHop {
+							pubkey: chan.remote_network_id,
+							short_channel_id,
+							fee_msat: final_value_msat,
+							cltv_expiry_delta: final_cltv,
+						}],
+					});
+				}
+				first_hop_targets.insert(chan.remote_network_id, short_channel_id);
 			}
 			if first_hop_targets.is_empty() {
 				return Err(HandleError{err: "Cannot route when there are no outbound routes away from us", action: None});
