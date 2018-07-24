@@ -21,7 +21,7 @@ pub struct RouteHop {
 	/// The fee taken on this hop. For the last hop, this should be the full value of the payment.
 	pub fee_msat: u64,
 	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
-	/// expected at the destination, NOT a delta.
+	/// expected at the destination, in excess of the current block height.
 	pub cltv_expiry_delta: u32,
 }
 

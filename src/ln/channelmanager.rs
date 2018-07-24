@@ -27,10 +27,11 @@ use crypto::digest::Digest;
 use crypto::symmetriccipher::SynchronousStreamCipher;
 use crypto::chacha20::ChaCha20;
 
-use std::sync::{Mutex,MutexGuard,Arc};
+use std::{ptr, mem};
 use std::collections::HashMap;
 use std::collections::hash_map;
-use std::{ptr, mem};
+use std::sync::{Mutex,MutexGuard,Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
 
 mod channel_held_info {
@@ -151,6 +152,7 @@ pub struct ChannelManager {
 
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
+	latest_block_height: AtomicUsize, //TODO: Compile-time assert this is at least 32-bits long
 	secp_ctx: Secp256k1,
 
 	channel_state: Mutex<ChannelHolder>,
@@ -214,6 +216,7 @@ impl ChannelManager {
 
 			announce_channels_publicly,
 			fee_proportional_millionths,
+			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value (generally need to replay recent chain on chain_monitor registration)
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
@@ -446,9 +449,9 @@ impl ChannelManager {
 	}
 
 	/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-	fn build_onion_payloads(route: &Route) -> Result<(Vec<msgs::OnionHopData>, u64, u32), HandleError> {
+	fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), HandleError> {
 		let mut cur_value_msat = 0u64;
-		let mut cur_cltv = 0u32;
+		let mut cur_cltv = starting_htlc_offset;
 		let mut last_short_channel_id = 0;
 		let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
 		internal_traits::test_no_dealloc::<msgs::OnionHopData>(None);
@@ -459,7 +462,7 @@ impl ChannelManager {
 			// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 			// the intended recipient).
 			let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
-			let cltv = if cur_cltv == 0 { hop.cltv_expiry_delta } else { cur_cltv };
+			let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 			res[idx] = msgs::OnionHopData {
 				realm: 0,
 				data: msgs::OnionRealm0HopData {
@@ -502,7 +505,7 @@ impl ChannelManager {
 	}
 
 	const ZERO:[u8; 21*65] = [0; 21*65];
-	fn construct_onion_packet(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, associated_data: Vec<u8>) -> Result<msgs::OnionPacket, HandleError> {
+	fn construct_onion_packet(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, associated_data: &[u8; 32]) -> Result<msgs::OnionPacket, HandleError> {
 		let mut buf = Vec::with_capacity(21*65);
 		buf.resize(21*65, 0);
 
@@ -652,11 +655,11 @@ impl ChannelManager {
 			session_key
 		}));
 
-		let associated_data = Vec::new(); //TODO: What to put here?
+		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
 		let onion_keys = ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv)?;
-		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route)?;
-		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, associated_data)?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
+		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
 
 		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -705,7 +708,6 @@ impl ChannelManager {
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
-
 		macro_rules! add_pending_event {
 			($event: expr) => {
 				{
@@ -1123,6 +1125,7 @@ impl ChainListener for ChannelManager {
 		for funding_locked in new_events.drain(..) {
 			pending_events.push(funding_locked);
 		}
+		self.latest_block_height.store(height as usize, Ordering::Release);
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
@@ -1144,6 +1147,7 @@ impl ChainListener for ChannelManager {
 				true
 			}
 		});
+		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
 	}
 }
 
@@ -1369,8 +1373,6 @@ impl ChannelMessageHandler for ChannelManager {
 		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key, &self.our_network_key);
 		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
 
-		let associated_data = Vec::new(); //TODO: What to put here?
-
 		macro_rules! get_onion_hash {
 			() => {
 				{
@@ -1410,7 +1412,7 @@ impl ChannelMessageHandler for ChannelManager {
 
 		let mut hmac = Hmac::new(Sha256::new(), &mu);
 		hmac.input(&msg.onion_routing_packet.hop_data);
-		hmac.input(&associated_data[..]);
+		hmac.input(&msg.payment_hash);
 		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
 			return_err!("HMAC Check failed", 0x8000 | 0x4000 | 5, &get_onion_hash!());
 		}
@@ -1430,6 +1432,8 @@ impl ChannelMessageHandler for ChannelManager {
 				Ok(msg) => msg
 			}
 		};
+
+		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
 
 		let mut pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
@@ -2018,7 +2022,7 @@ mod tests {
 			},
 		);
 
-		let packet = ChannelManager::construct_onion_packet(payloads, onion_keys, hex_bytes("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
+		let packet = ChannelManager::construct_onion_packet(payloads, onion_keys, &[0x42; 32]).unwrap();
 		// Just check the final packet encoding, as it includes all the per-hop vectors in it
 		// anyway...
 		assert_eq!(packet.encode(), hex_bytes("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619e5f14350c2a76fc232b5e46d421e9615471ab9e0bc887beff8c95fdb878f7b3a716a996c7845c93d90e4ecbb9bde4ece2f69425c99e4bc820e44485455f135edc0d10f7d61ab590531cf08000179a333a347f8b4072f216400406bdf3bf038659793d4a1fd7b246979e3150a0a4cb052c9ec69acf0f48c3d39cd55675fe717cb7d80ce721caad69320c3a469a202f1e468c67eaf7a7cd8226d0fd32f7b48084dca885d56047694762b67021713ca673929c163ec36e04e40ca8e1c6d17569419d3039d9a1ec866abe044a9ad635778b961fc0776dc832b3a451bd5d35072d2269cf9b040f6b7a7dad84fb114ed413b1426cb96ceaf83825665ed5a1d002c1687f92465b49ed4c7f0218ff8c6c7dd7221d589c65b3b9aaa71a41484b122846c7c7b57e02e679ea8469b70e14fe4f70fee4d87b910cf144be6fe48eef24da475c0b0bcc6565ae82cd3f4e3b24c76eaa5616c6111343306ab35c1fe5ca4a77c0e314ed7dba39d6f1e0de791719c241a939cc493bea2bae1c1e932679ea94d29084278513c77b899cc98059d06a27d171b0dbdf6bee13ddc4fc17a0c4d2827d488436b57baa167544138ca2e64a11b43ac8a06cd0c2fba2d4d900ed2d9205305e2d7383cc98dacb078133de5f6fb6bed2ef26ba92cea28aafc3b9948dd9ae5559e8bd6920b8cea462aa445ca6a95e0e7ba52961b181c79e73bd581821df2b10173727a810c92b83b5ba4a0403eb710d2ca10689a35bec6c3a708e9e92f7d78ff3c5d9989574b00c6736f84c199256e76e19e78f0c98a9d580b4a658c84fc8f2096c2fbea8f5f8c59d0fdacb3be2802ef802abbecb3aba4acaac69a0e965abd8981e9896b1f6ef9d60f7a164b371af869fd0e48073742825e9434fc54da837e120266d53302954843538ea7c6c3dbfb4ff3b2fdbe244437f2a153ccf7bdb4c92aa08102d4f3cff2ae5ef86fab4653595e6a5837fa2f3e29f27a9cde5966843fb847a4a61f1e76c281fe8bb2b0a181d096100db5a1a5ce7a910238251a43ca556712eaadea167fb4d7d75825e440f3ecd782036d7574df8bceacb397abefc5f5254d2722215c53ff54af8299aaaad642c6d72a14d27882d9bbd539e1cc7a527526ba89b8c037ad09120e98ab042d3e8652b31ae0e478516bfaf88efca9f3676ffe99d2819dcaeb7610a626695f53117665d267d3f7abebd6bbd6733f645c72c389f03855bdf1e4b8075b516569b118233a0f0971d24b83113c0b096f5216a207ca99a7cddc81c130923fe3d91e7508c9ac5f2e914ff5dccab9e558566fa14efb34ac98d878580814b94b73acbfde9072f30b881f7f0fff42d4045d1ace6322d86a97d164aa84d93a60498065cc7c20e636f5862dc81531a88c60305a2e59a985be327a6902e4bed986dbf4a0b50c217af0ea7fdf9ab37f9ea1a1aaa72f54cf40154ea9b269f1a7c09f9f43245109431a175d50e2db0132337baa0ef97eed0fcf20489da36b79a1172faccc2f7ded7c60e00694282d93359c4682135642bc81f433574aa8ef0c97b4ade7ca372c5ffc23c7eddd839bab4e0f14d6df15c9dbeab176bec8b5701cf054eb3072f6dadc98f88819042bf10c407516ee58bce33fbe3b3d86a54255e577db4598e30a135361528c101683a5fcde7e8ba53f3456254be8f45fe3a56120ae96ea3773631fcb3873aa3abd91bcff00bd38bd43697a2e789e00da6077482e7b1b1a677b5afae4c54e6cbdf7377b694eb7d7a5b913476a5be923322d3de06060fd5e819635232a2cf4f0731da13b8546d1d6d4f8d75b9fce6c2341a71b0ea6f780df54bfdb0dd5cd9855179f602f9172307c7268724c3618e6817abd793adc214a0dc0bc616816632f27ea336fb56dfd").unwrap());
@@ -2912,7 +2916,7 @@ mod tests {
 		{
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[3].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 5 {
+			for i in 2..TEST_FINAL_CLTV - 3 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[3].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
@@ -2924,7 +2928,7 @@ mod tests {
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[4].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 5 {
+			for i in 2..TEST_FINAL_CLTV - 3 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[4].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
