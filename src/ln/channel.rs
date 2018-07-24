@@ -660,8 +660,13 @@ impl Channel {
 							value_to_self_msat_offset -= htlc.amount_msat as i64;
 						}
 					},
+					HTLCState::RemoteRemoved => {
+						if !generated_by_local && htlc.fail_reason.is_none() {
+							value_to_self_msat_offset -= htlc.amount_msat as i64;
+						}
+					},
 					HTLCState::LocalRemoved => {
-						if !generated_by_local && htlc.local_removed_fulfilled {
+						if generated_by_local && htlc.local_removed_fulfilled {
 							value_to_self_msat_offset += htlc.amount_msat as i64;
 						}
 					},
