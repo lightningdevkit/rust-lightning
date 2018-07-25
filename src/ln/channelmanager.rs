@@ -20,6 +20,7 @@ use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable,MsgDecodable};
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::chacha20poly1305rfc::ChaCha20;
+use util::logger::{Logger, Record};
 
 use crypto;
 use crypto::mac::{Mac,MacResult};
@@ -166,6 +167,8 @@ pub struct ChannelManager {
 	our_network_key: SecretKey,
 
 	pending_events: Mutex<Vec<events::Event>>,
+
+	logger: Arc<Logger>,
 }
 
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
@@ -211,7 +214,7 @@ impl ChannelManager {
 	/// fee_proportional_millionths is an optional fee to charge any payments routed through us.
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -236,6 +239,8 @@ impl ChannelManager {
 			our_network_key,
 
 			pending_events: Mutex::new(Vec::new()),
+
+			logger,
 		});
 		let weak_res = Arc::downgrade(&res);
 		res.chain_monitor.register_listener(weak_res);
@@ -270,7 +275,7 @@ impl ChannelManager {
 			}
 		};
 
-		let channel = Channel::new_outbound(&*self.fee_estimator, chan_keys, their_network_key, channel_value_satoshis, self.announce_channels_publicly, user_id);
+		let channel = Channel::new_outbound(&*self.fee_estimator, chan_keys, their_network_key, channel_value_satoshis, self.announce_channels_publicly, user_id, Arc::clone(&self.logger));
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator)?;
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.insert(channel.channel_id(), channel) {
@@ -766,6 +771,7 @@ impl ChannelManager {
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
+
 		macro_rules! add_pending_event {
 			($event: expr) => {
 				{
@@ -784,6 +790,7 @@ impl ChannelManager {
 							(chan, funding_msg.0, funding_msg.1)
 						},
 						Err(e) => {
+							log_error!(self, "Got bad signatures: {}!", e.err);
 							mem::drop(channel_state);
 							add_pending_event!(events::Event::HandleError {
 								node_id: chan.get_their_node_id(),
@@ -879,7 +886,7 @@ impl ChannelManager {
 					if !add_htlc_msgs.is_empty() {
 						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
 							Ok(res) => res,
-							Err(_) => {
+							Err(_e) => {
 								//TODO: Handle...this is bad!
 								continue;
 							},
@@ -1145,7 +1152,8 @@ impl ChainListener for ChannelManager {
 				if let Ok(Some(funding_locked)) = chan_res {
 					let announcement_sigs = match self.get_announcement_sigs(channel) {
 						Ok(res) => res,
-						Err(_e) => {
+						Err(e) => {
+							log_error!(self, "Got error handling message: {}!", e.err);
 							//TODO: push e on events and blow up the channel (it has bad keys)
 							return true;
 						}
@@ -1284,7 +1292,7 @@ impl ChannelMessageHandler for ChannelManager {
 			}
 		};
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly)?;
+		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))?;
 		let accept_msg = channel.get_accept_channel()?;
 		channel_state.by_id.insert(channel.channel_id(), channel);
 		Ok(accept_msg)
@@ -1970,6 +1978,7 @@ mod tests {
 	use ln::msgs::{MsgEncodable,ChannelMessageHandler,RoutingMessageHandler};
 	use util::test_utils;
 	use util::events::{Event, EventsProvider};
+	use util::logger::Logger;
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -2684,10 +2693,11 @@ mod tests {
 		let mut nodes = Vec::new();
 		let mut rng = thread_rng();
 		let secp_ctx = Secp256k1::new();
+		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 
 		for _ in 0..node_count {
 			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
-			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
+			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
 			let node_id = {
@@ -2695,8 +2705,8 @@ mod tests {
 				rng.fill_bytes(&mut key_slice);
 				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 			};
-			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone()).unwrap();
-			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id).unwrap());
+			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger)).unwrap();
+			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id).unwrap(), Arc::clone(&logger));
 			nodes.push(Node { feeest, chain_monitor, tx_broadcaster, chan_monitor, node_id, node, router });
 		}
 

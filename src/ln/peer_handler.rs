@@ -5,6 +5,7 @@ use ln::msgs::{MsgEncodable,MsgDecodable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use util::byte_utils;
 use util::events::{EventsProvider,Event};
+use util::logger::{Logger, Record};
 
 use std::collections::{HashMap,LinkedList};
 use std::sync::{Arc, Mutex};
@@ -96,6 +97,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor> {
 	pending_events: Mutex<Vec<Event>>,
 	our_node_secret: SecretKey,
 	initial_syncs_sent: AtomicUsize,
+	logger: Arc<Logger>,
 }
 
 
@@ -117,13 +119,14 @@ const INITIAL_SYNCS_TO_SEND: usize = 5;
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
 /// PeerIds may repeat, but only after disconnect_event() has been called.
 impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
-	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey) -> PeerManager<Descriptor> {
+	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, logger: Arc<Logger>) -> PeerManager<Descriptor> {
 		PeerManager {
 			message_handler: message_handler,
 			peers: Mutex::new(PeerHolder { peers: HashMap::new(), node_id_to_descriptor: HashMap::new() }),
 			pending_events: Mutex::new(Vec::new()),
 			our_node_secret: our_node_secret,
 			initial_syncs_sent: AtomicUsize::new(0),
+			logger,
 		}
 	}
 
@@ -295,7 +298,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									match $thing {
 										Ok(x) => x,
 										Err(e) => {
-											println!("Got error handling message: {}!", e.err);
 											if let Some(action) = e.action {
 												match action {
 													msgs::ErrorAction::UpdateFailHTLC { msg } => {
@@ -326,7 +328,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									match $thing {
 										Ok(x) => x,
 										Err(_e) => {
-											println!("Error decoding message");
 											//TODO: Handle e?
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}
@@ -339,7 +340,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									match $thing {
 										Ok(x) => x,
 										Err(_e) => {
-											println!("Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
+											log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
 											continue;
 										}
 									};
@@ -826,6 +827,7 @@ mod tests {
 	use ln::msgs;
 	use util::events;
 	use util::test_utils;
+	use util::logger::Logger;
 
 	use secp256k1::Secp256k1;
 	use secp256k1::key::{SecretKey, PublicKey};
@@ -852,6 +854,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let mut peers = Vec::new();
 		let mut rng = thread_rng();
+		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 
 		for _ in 0..peer_count {
 			let chan_handler = test_utils::TestChannelMessageHandler::new();
@@ -862,7 +865,7 @@ mod tests {
 				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 			};
 			let msg_handler = MessageHandler { chan_handler: Arc::new(chan_handler), route_handler: Arc::new(router) };
-			let peer = PeerManager::new(msg_handler, node_id);
+			let peer = PeerManager::new(msg_handler, node_id, Arc::clone(&logger));
 			peers.push(peer);
 		}
 

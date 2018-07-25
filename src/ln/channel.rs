@@ -23,11 +23,13 @@ use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
 use util::sha2::Sha256;
+use util::logger::{Logger, Record};
 
 use std;
 use std::default::Default;
 use std::{cmp,mem};
 use std::time::Instant;
+use std::sync::{Arc};
 
 pub struct ChannelKeys {
 	pub funding_key: SecretKey,
@@ -303,6 +305,8 @@ pub struct Channel {
 	their_shutdown_scriptpubkey: Option<Script>,
 
 	channel_monitor: ChannelMonitor,
+
+	logger: Arc<Logger>,
 }
 
 const OUR_MAX_HTLCS: u16 = 5; //TODO
@@ -361,7 +365,7 @@ impl Channel {
 	// Constructors:
 
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`
-	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, announce_publicly: bool, user_id: u64) -> Channel {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Channel {
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			panic!("funding value > 2^24");
 		}
@@ -429,6 +433,8 @@ impl Channel {
 			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
+
+			logger,
 		}
 	}
 
@@ -446,7 +452,7 @@ impl Channel {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	/// Generally prefers to take the DisconnectPeer action on failure, as a notice to the sender
 	/// that we're rejecting the new channel.
-	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool) -> Result<Channel, HandleError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
@@ -548,6 +554,8 @@ impl Channel {
 			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
+
+			logger,
 		};
 
 		let obscure_factor = chan.get_commitment_transaction_number_obscure_factor();
@@ -1748,7 +1756,7 @@ impl Channel {
 
 		match self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey) {
 			Ok(_) => {},
-			Err(_) => {
+			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
@@ -2111,6 +2119,7 @@ impl Channel {
 		let (our_signature, commitment_tx) = match self.get_outbound_funding_created_signature() {
 			Ok(res) => res,
 			Err(e) => {
+				log_error!(self, "Got bad signatures: {}!", e.err);
 				self.channel_monitor.unset_funding_info();
 				return Err(e);
 			}
@@ -2409,10 +2418,13 @@ mod tests {
 	use ln::chan_utils;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::transaction::OutPoint;
+	use util::test_utils;
+	use util::logger::Logger;
 	use secp256k1::{Secp256k1,Message,Signature};
 	use secp256k1::key::{SecretKey,PublicKey};
 	use crypto::sha2::Sha256;
 	use crypto::digest::Digest;
+	use std::sync::Arc;
 
 	struct TestFeeEstimator {
 		fee_est: u64
@@ -2433,6 +2445,7 @@ mod tests {
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendix C:
 		let feeest = TestFeeEstimator{fee_est: 15000};
+		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
 		let chan_keys = ChannelKeys {
@@ -2450,7 +2463,7 @@ mod tests {
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan_keys.funding_key).unwrap().serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 
-		let mut chan = Channel::new_outbound(&feeest, chan_keys, PublicKey::new(), 10000000, false, 42); // Nothing uses their network key in this test
+		let mut chan = Channel::new_outbound(&feeest, chan_keys, PublicKey::new(), 10000000, false, 42, Arc::clone(&logger)); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
