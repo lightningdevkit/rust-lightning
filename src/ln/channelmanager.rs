@@ -961,7 +961,7 @@ impl ChannelManager {
 	pub fn claim_funds(&self, payment_preimage: [u8; 32]) -> bool {
 		self.claim_funds_internal(payment_preimage, true)
 	}
-	pub fn claim_funds_internal(&self, payment_preimage: [u8; 32], from_user: bool) -> bool {
+	fn claim_funds_internal(&self, payment_preimage: [u8; 32], from_user: bool) -> bool {
 		let mut sha = Sha256::new();
 		sha.input(&payment_preimage);
 		let mut payment_hash = [0; 32];
