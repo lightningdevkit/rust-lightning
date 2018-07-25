@@ -37,6 +37,9 @@ pub enum DecodeError {
 	ShortRead,
 	/// node_announcement included more than one address of a given type!
 	ExtraAddressesPerType,
+	/// A length descriptor in the packet didn't describe the later data correctly
+	/// (currently only generated in node_announcement)
+	BadLengthDescriptor,
 }
 pub trait MsgDecodable: Sized {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError>;
@@ -502,6 +505,7 @@ impl Error for DecodeError {
 			DecodeError::BadText => "Invalid text in packet",
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
+			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 		}
 	}
 }
@@ -1204,19 +1208,20 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 		if v.len() < start + 74 + addrlen {
 			return Err(DecodeError::ShortRead);
 		}
+		let addr_read_limit = start + 74 + addrlen;
 
 		let mut addresses = Vec::with_capacity(4);
 		let mut read_pos = start + 74;
 		loop {
-			if v.len() <= read_pos { break; }
+			if addr_read_limit <= read_pos { break; }
 			match v[read_pos] {
 				0 => { read_pos += 1; },
 				1 => {
-					if v.len() < read_pos + 1 + 6 {
-						return Err(DecodeError::ShortRead);
-					}
 					if addresses.len() > 0 {
 						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addr_read_limit < read_pos + 1 + 6 {
+						return Err(DecodeError::BadLengthDescriptor);
 					}
 					let mut addr = [0; 4];
 					addr.copy_from_slice(&v[read_pos + 1..read_pos + 5]);
@@ -1227,11 +1232,11 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 					read_pos += 1 + 6;
 				},
 				2 => {
-					if v.len() < read_pos + 1 + 18 {
-						return Err(DecodeError::ShortRead);
-					}
 					if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
 						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addr_read_limit < read_pos + 1 + 18 {
+						return Err(DecodeError::BadLengthDescriptor);
 					}
 					let mut addr = [0; 16];
 					addr.copy_from_slice(&v[read_pos + 1..read_pos + 17]);
@@ -1242,11 +1247,11 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 					read_pos += 1 + 18;
 				},
 				3 => {
-					if v.len() < read_pos + 1 + 12 {
-						return Err(DecodeError::ShortRead);
-					}
 					if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
 						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addr_read_limit < read_pos + 1 + 12 {
+						return Err(DecodeError::BadLengthDescriptor);
 					}
 					let mut addr = [0; 10];
 					addr.copy_from_slice(&v[read_pos + 1..read_pos + 11]);
@@ -1257,11 +1262,11 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 					read_pos += 1 + 12;
 				},
 				4 => {
-					if v.len() < read_pos + 1 + 37 {
-						return Err(DecodeError::ShortRead);
-					}
 					if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
 						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addr_read_limit < read_pos + 1 + 37 {
+						return Err(DecodeError::BadLengthDescriptor);
 					}
 					let mut ed25519_pubkey = [0; 32];
 					ed25519_pubkey.copy_from_slice(&v[read_pos + 1..read_pos + 33]);
