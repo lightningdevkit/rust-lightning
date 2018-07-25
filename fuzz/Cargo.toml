@@ -43,6 +43,10 @@ name = "full_stack_target"
 path = "fuzz_targets/full_stack_target.rs"
 
 [[bin]]
+name = "router_target"
+path = "fuzz_targets/router_target.rs"
+
+[[bin]]
 name = "chanmon_deser_target"
 path = "fuzz_targets/chanmon_deser_target.rs"
 
