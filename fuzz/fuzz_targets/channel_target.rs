@@ -120,7 +120,7 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::BadSignature => return,
 					msgs::DecodeError::BadText => return,
 					msgs::DecodeError::ExtraAddressesPerType => return,
-					msgs::DecodeError::WrongLength => panic!("We picked the length..."),
+					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
 				}
 			}
 		}
@@ -141,7 +141,7 @@ pub fn do_test(data: &[u8]) {
 						msgs::DecodeError::BadSignature => return,
 						msgs::DecodeError::BadText => return,
 						msgs::DecodeError::ExtraAddressesPerType => return,
-						msgs::DecodeError::WrongLength => panic!("We picked the length..."),
+						msgs::DecodeError::ShortRead => panic!("We picked the length..."),
 					}
 				}
 			}

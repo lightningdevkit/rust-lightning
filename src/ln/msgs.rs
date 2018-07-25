@@ -33,8 +33,8 @@ pub enum DecodeError {
 	BadSignature,
 	/// Value expected to be text wasn't decodable as text
 	BadText,
-	/// Buffer not of right length (either too short or too long)
-	WrongLength,
+	/// Buffer too short
+	ShortRead,
 	/// node_announcement included more than one address of a given type!
 	ExtraAddressesPerType,
 }
@@ -500,7 +500,7 @@ impl Error for DecodeError {
 			DecodeError::BadPublicKey => "Invalid public key in packet",
 			DecodeError::BadSignature => "Invalid signature in packet",
 			DecodeError::BadText => "Invalid text in packet",
-			DecodeError::WrongLength => "Data was wrong length for packet",
+			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 		}
 	}
@@ -537,9 +537,9 @@ macro_rules! secp_signature {
 
 impl MsgDecodable for LocalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < 2 { return Err(DecodeError::ShortRead); }
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
-		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < len + 2 { return Err(DecodeError::ShortRead); }
 		let mut flags = Vec::with_capacity(len);
 		flags.extend_from_slice(&v[2..2 + len]);
 		Ok(Self {
@@ -559,9 +559,9 @@ impl MsgEncodable for LocalFeatures {
 
 impl MsgDecodable for GlobalFeatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < 2 { return Err(DecodeError::ShortRead); }
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
-		if v.len() < len + 2 { return Err(DecodeError::WrongLength); }
+		if v.len() < len + 2 { return Err(DecodeError::ShortRead); }
 		let mut flags = Vec::with_capacity(len);
 		flags.extend_from_slice(&v[2..2 + len]);
 		Ok(Self {
@@ -583,7 +583,7 @@ impl MsgDecodable for Init {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let global_features = GlobalFeatures::decode(v)?;
 		if v.len() < global_features.flags.len() + 4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let local_features = LocalFeatures::decode(&v[global_features.flags.len() + 2..])?;
 		Ok(Self {
@@ -604,12 +604,12 @@ impl MsgEncodable for Init {
 impl MsgDecodable for Ping {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let ponglen = byte_utils::slice_to_be16(&v[0..2]);
 		let byteslen = byte_utils::slice_to_be16(&v[2..4]);
 		if v.len() < 4 + byteslen as usize {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		Ok(Self {
 			ponglen,
@@ -629,11 +629,11 @@ impl MsgEncodable for Ping {
 impl MsgDecodable for Pong {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let byteslen = byte_utils::slice_to_be16(&v[0..2]);
 		if v.len() < 2 + byteslen as usize {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		Ok(Self {
 			byteslen
@@ -652,7 +652,7 @@ impl MsgEncodable for Pong {
 impl MsgDecodable for OpenChannel {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 2*32+6*8+4+2*2+6*33+1 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let ctx = Secp256k1::without_caps();
 
@@ -660,11 +660,9 @@ impl MsgDecodable for OpenChannel {
 		if v.len() >= 321 {
 			let len = byte_utils::slice_to_be16(&v[319..321]) as usize;
 			if v.len() < 321+len {
-				return Err(DecodeError::WrongLength);
+				return Err(DecodeError::ShortRead);
 			}
 			shutdown_scriptpubkey = Some(Script::from(v[321..321+len].to_vec()));
-		} else if v.len() != 2*32+6*8+4+2*2+6*33+1 { // Message cant have 1 extra byte
-			return Err(DecodeError::WrongLength);
 		}
 
 		Ok(OpenChannel {
@@ -725,7 +723,7 @@ impl MsgEncodable for OpenChannel {
 impl MsgDecodable for AcceptChannel {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+4*8+4+2*2+6*33 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let ctx = Secp256k1::without_caps();
 
@@ -733,11 +731,9 @@ impl MsgDecodable for AcceptChannel {
 		if v.len() >= 272 {
 			let len = byte_utils::slice_to_be16(&v[270..272]) as usize;
 			if v.len() < 272+len {
-				return Err(DecodeError::WrongLength);
+				return Err(DecodeError::ShortRead);
 			}
 			shutdown_scriptpubkey = Some(Script::from(v[272..272+len].to_vec()));
-		} else if v.len() != 32+4*8+4+2*2+6*33 { // Message cant have 1 extra byte
-			return Err(DecodeError::WrongLength);
 		}
 
 		let mut temporary_channel_id = [0; 32];
@@ -792,7 +788,7 @@ impl MsgEncodable for AcceptChannel {
 impl MsgDecodable for FundingCreated {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+32+2+64 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let ctx = Secp256k1::without_caps();
 		let mut temporary_channel_id = [0; 32];
@@ -820,7 +816,7 @@ impl MsgEncodable for FundingCreated {
 impl MsgDecodable for FundingSigned {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+64 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let ctx = Secp256k1::without_caps();
 		let mut channel_id = [0; 32];
@@ -843,7 +839,7 @@ impl MsgEncodable for FundingSigned {
 impl MsgDecodable for FundingLocked {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+33 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let ctx = Secp256k1::without_caps();
 		let mut channel_id = [0; 32];
@@ -866,11 +862,11 @@ impl MsgEncodable for FundingLocked {
 impl MsgDecodable for Shutdown {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32 + 2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let scriptlen = byte_utils::slice_to_be16(&v[32..34]) as usize;
 		if v.len() < 32 + 2 + scriptlen {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -893,7 +889,7 @@ impl MsgEncodable for Shutdown {
 impl MsgDecodable for ClosingSigned {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32 + 8 + 64 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let secp_ctx = Secp256k1::without_caps();
 		let mut channel_id = [0; 32];
@@ -919,7 +915,7 @@ impl MsgEncodable for ClosingSigned {
 impl MsgDecodable for UpdateAddHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+8+8+32+4+1+33+20*65+32 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -951,7 +947,7 @@ impl MsgEncodable for UpdateAddHTLC {
 impl MsgDecodable for UpdateFulfillHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+8+32 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -977,7 +973,7 @@ impl MsgEncodable for UpdateFulfillHTLC {
 impl MsgDecodable for UpdateFailHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+8 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -1002,7 +998,7 @@ impl MsgEncodable for UpdateFailHTLC {
 impl MsgDecodable for UpdateFailMalformedHTLC {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+8+32+2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -1030,14 +1026,14 @@ impl MsgEncodable for UpdateFailMalformedHTLC {
 impl MsgDecodable for CommitmentSigned {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+64+2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
 
 		let htlcs = byte_utils::slice_to_be16(&v[96..98]) as usize;
 		if v.len() < 32+64+2+htlcs*64 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut htlc_signatures = Vec::with_capacity(htlcs);
 		let secp_ctx = Secp256k1::without_caps();
@@ -1068,7 +1064,7 @@ impl MsgEncodable for CommitmentSigned {
 impl MsgDecodable for RevokeAndACK {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+32+33 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -1095,7 +1091,7 @@ impl MsgEncodable for RevokeAndACK {
 impl MsgDecodable for UpdateFee {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut channel_id = [0; 32];
 		channel_id[..].copy_from_slice(&v[0..32]);
@@ -1117,12 +1113,12 @@ impl MsgEncodable for UpdateFee {
 impl MsgDecodable for ChannelReestablish {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+2*8+33 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 
 		let your_last_per_commitment_secret = if v.len() > 32+2*8+33 {
 			if v.len() < 32+2*8+33 + 32 {
-				return Err(DecodeError::WrongLength);
+				return Err(DecodeError::ShortRead);
 			}
 			let mut inner_array = [0; 32];
 			inner_array.copy_from_slice(&v[48..48+32]);
@@ -1165,7 +1161,7 @@ impl MsgEncodable for ChannelReestablish {
 impl MsgDecodable for AnnouncementSignatures {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+8+64*2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let secp_ctx = Secp256k1::without_caps();
 		let mut channel_id = [0; 32];
@@ -1194,7 +1190,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let features = GlobalFeatures::decode(&v[..])?;
 		if v.len() < features.encoded_len() + 4 + 33 + 3 + 32 + 2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let start = features.encoded_len();
 
@@ -1206,7 +1202,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 
 		let addrlen = byte_utils::slice_to_be16(&v[start + 72..start + 74]) as usize;
 		if v.len() < start + 74 + addrlen {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 
 		let mut addresses = Vec::with_capacity(4);
@@ -1217,7 +1213,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 				0 => { read_pos += 1; },
 				1 => {
 					if v.len() < read_pos + 1 + 6 {
-						return Err(DecodeError::WrongLength);
+						return Err(DecodeError::ShortRead);
 					}
 					if addresses.len() > 0 {
 						return Err(DecodeError::ExtraAddressesPerType);
@@ -1232,7 +1228,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 				},
 				2 => {
 					if v.len() < read_pos + 1 + 18 {
-						return Err(DecodeError::WrongLength);
+						return Err(DecodeError::ShortRead);
 					}
 					if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
 						return Err(DecodeError::ExtraAddressesPerType);
@@ -1247,7 +1243,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 				},
 				3 => {
 					if v.len() < read_pos + 1 + 12 {
-						return Err(DecodeError::WrongLength);
+						return Err(DecodeError::ShortRead);
 					}
 					if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
 						return Err(DecodeError::ExtraAddressesPerType);
@@ -1262,7 +1258,7 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 				},
 				4 => {
 					if v.len() < read_pos + 1 + 37 {
-						return Err(DecodeError::WrongLength);
+						return Err(DecodeError::ShortRead);
 					}
 					if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
 						return Err(DecodeError::ExtraAddressesPerType);
@@ -1340,7 +1336,7 @@ impl MsgEncodable for UnsignedNodeAnnouncement {
 impl MsgDecodable for NodeAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 64 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let secp_ctx = Secp256k1::without_caps();
 		Ok(Self {
@@ -1364,7 +1360,7 @@ impl MsgDecodable for UnsignedChannelAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let features = GlobalFeatures::decode(&v[..])?;
 		if v.len() < features.encoded_len() + 32 + 8 + 33*4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let start = features.encoded_len();
 		let secp_ctx = Secp256k1::without_caps();
@@ -1397,7 +1393,7 @@ impl MsgEncodable for UnsignedChannelAnnouncement {
 impl MsgDecodable for ChannelAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 64*4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let secp_ctx = Secp256k1::without_caps();
 		Ok(Self {
@@ -1426,7 +1422,7 @@ impl MsgEncodable for ChannelAnnouncement {
 impl MsgDecodable for UnsignedChannelUpdate {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32+8+4+2+2+8+4+4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		Ok(Self {
 			chain_hash: deserialize(&v[0..32]).unwrap(),
@@ -1458,7 +1454,7 @@ impl MsgEncodable for UnsignedChannelUpdate {
 impl MsgDecodable for ChannelUpdate {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 128 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let secp_ctx = Secp256k1::without_caps();
 		Ok(Self {
@@ -1479,7 +1475,7 @@ impl MsgEncodable for ChannelUpdate {
 impl MsgDecodable for OnionRealm0HopData {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		Ok(OnionRealm0HopData {
 			short_channel_id: byte_utils::slice_to_be64(&v[0..8]),
@@ -1502,7 +1498,7 @@ impl MsgEncodable for OnionRealm0HopData {
 impl MsgDecodable for OnionHopData {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 65 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let realm = v[0];
 		if realm != 0 {
@@ -1530,7 +1526,7 @@ impl MsgEncodable for OnionHopData {
 impl MsgDecodable for OnionPacket {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 1+33+20*65+32 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let mut hop_data = [0; 20*65];
 		hop_data.copy_from_slice(&v[34..1334]);
@@ -1559,15 +1555,15 @@ impl MsgEncodable for OnionPacket {
 impl MsgDecodable for DecodedOnionErrorPacket {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 32 + 4 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let failuremsg_len = byte_utils::slice_to_be16(&v[32..34]) as usize;
 		if v.len() < 32 + 4 + failuremsg_len {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let padding_len = byte_utils::slice_to_be16(&v[34 + failuremsg_len..]) as usize;
 		if v.len() < 32 + 4 + failuremsg_len + padding_len {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 
 		let mut hmac = [0; 32];
@@ -1594,11 +1590,11 @@ impl MsgEncodable for DecodedOnionErrorPacket {
 impl MsgDecodable for OnionErrorPacket {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		if v.len() < 2 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let len = byte_utils::slice_to_be16(&v[0..2]) as usize;
 		if v.len() < 2 + len {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		Ok(Self {
 			data: v[2..len+2].to_vec(),
@@ -1626,11 +1622,11 @@ impl MsgEncodable for ErrorMessage {
 impl MsgDecodable for ErrorMessage {
 	fn decode(v: &[u8]) -> Result<Self,DecodeError> {
 		if v.len() < 34 {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let len = byte_utils::slice_to_be16(&v[32..34]);
 		if v.len() < 34 + len as usize {
-			return Err(DecodeError::WrongLength);
+			return Err(DecodeError::ShortRead);
 		}
 		let data = match String::from_utf8(v[34..34 + len as usize].to_vec()) {
 			Ok(s) => s,
