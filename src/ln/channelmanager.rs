@@ -766,7 +766,10 @@ impl ChannelManager {
 		}))
 	}
 
-	pub fn process_pending_htlc_forward(&self) {
+	/// Processes HTLCs which are pending waiting on random forward delay.
+	/// Should only really ever be called in response to an PendingHTLCsForwardable event.
+	/// Will likely generate further events.
+	pub fn process_pending_htlc_forwards(&self) {
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
 		{
@@ -958,7 +961,7 @@ impl ChannelManager {
 	pub fn claim_funds(&self, payment_preimage: [u8; 32]) -> bool {
 		self.claim_funds_internal(payment_preimage, true)
 	}
-	pub fn claim_funds_internal(&self, payment_preimage: [u8; 32], from_user: bool) -> bool {
+	fn claim_funds_internal(&self, payment_preimage: [u8; 32], from_user: bool) -> bool {
 		let mut sha = Sha256::new();
 		sha.input(&payment_preimage);
 		let mut payment_hash = [0; 32];
@@ -2359,7 +2362,7 @@ mod tests {
 			};
 
 			node.node.channel_state.lock().unwrap().next_forward = Instant::now();
-			node.node.process_pending_htlc_forward();
+			node.node.process_pending_htlc_forwards();
 
 			let mut events_2 = node.node.get_and_clear_pending_events();
 			assert_eq!(events_2.len(), 1);

@@ -628,11 +628,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 					Event::PaymentReceived {..} => { /* Hand upstream */ },
 					Event::PaymentSent {..} => { /* Hand upstream */ },
 					Event::PaymentFailed {..} => { /* Hand upstream */ },
+					Event::PendingHTLCsForwardable {..} => { /* Hand upstream */ },
 
-					Event::PendingHTLCsForwardable {..} => {
-						//TODO: Handle upstream in some confused form so that upstream just knows
-						//to call us somehow?
-					},
 					Event::SendOpenChannel { ref node_id, ref msg } => {
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
@@ -750,6 +747,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							descriptor.disconnect_socket();
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 						}
+						continue;
 					},
 				}
 

@@ -46,13 +46,13 @@ pub enum Event {
 	PaymentFailed {
 		payment_hash: [u8; 32],
 	},
-
-	// Events indicating the network loop should send a message to a peer:
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
 	PendingHTLCsForwardable {
 		time_forwardable: Instant,
 	},
+
+	// Events indicating the network loop should send a message to a peer:
 	/// Used to indicate that we've initialted a channel open and should send the open_channel
 	/// message provided to the given peer
 	SendOpenChannel {
