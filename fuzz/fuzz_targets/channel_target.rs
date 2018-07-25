@@ -10,7 +10,7 @@ use bitcoin::network::serialize::{serialize, BitcoinHash};
 use lightning::ln::channel::{Channel, ChannelKeys};
 use lightning::ln::channelmanager::{HTLCFailReason, PendingForwardHTLCInfo};
 use lightning::ln::msgs;
-use lightning::ln::msgs::MsgDecodable;
+use lightning::ln::msgs::{MsgDecodable, ErrorAction};
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
 use lightning::chain::transaction::OutPoint;
 use lightning::util::reset_rng_state;
@@ -239,10 +239,25 @@ pub fn do_test(data: &[u8]) {
 	let funding_locked = decode_msg!(msgs::FundingLocked, 32+33);
 	return_err!(channel.funding_locked(&funding_locked));
 
+	macro_rules! test_err {
+		($expr: expr) => {
+			match $expr {
+				Ok(r) => Some(r),
+				Err(e) => match e.action {
+					None => return,
+					Some(ErrorAction::UpdateFailHTLC {..}) => None,
+					Some(ErrorAction::DisconnectPeer {..}) => return,
+					Some(ErrorAction::IgnoreError) => None,
+					Some(ErrorAction::SendErrorMessage {..}) => None,
+				},
+			}
+		}
+	}
+
 	loop {
 		match get_slice!(1)[0] {
 			0 => {
-				return_err!(channel.send_htlc(slice_to_be64(get_slice!(8)), [42; 32], slice_to_be32(get_slice!(4)), msgs::OnionPacket {
+				test_err!(channel.send_htlc(slice_to_be64(get_slice!(8)), [42; 32], slice_to_be32(get_slice!(4)), msgs::OnionPacket {
 					version: get_slice!(1)[0],
 					public_key: get_pubkey!(),
 					hop_data: [0; 20*65],
@@ -250,44 +265,45 @@ pub fn do_test(data: &[u8]) {
 				}));
 			},
 			1 => {
-				return_err!(channel.send_commitment());
+				test_err!(channel.send_commitment());
 			},
 			2 => {
 				let update_add_htlc = decode_msg!(msgs::UpdateAddHTLC, 32+8+8+32+4+4+33+20*65+32);
-				return_err!(channel.update_add_htlc(&update_add_htlc, PendingForwardHTLCInfo::dummy()));
+				test_err!(channel.update_add_htlc(&update_add_htlc, PendingForwardHTLCInfo::dummy()));
 			},
 			3 => {
 				let update_fulfill_htlc = decode_msg!(msgs::UpdateFulfillHTLC, 32 + 8 + 32);
-				return_err!(channel.update_fulfill_htlc(&update_fulfill_htlc));
+				test_err!(channel.update_fulfill_htlc(&update_fulfill_htlc));
 			},
 			4 => {
 				let update_fail_htlc = decode_msg_with_len16!(msgs::UpdateFailHTLC, 32 + 8, 1);
-				return_err!(channel.update_fail_htlc(&update_fail_htlc, HTLCFailReason::dummy()));
+				test_err!(channel.update_fail_htlc(&update_fail_htlc, HTLCFailReason::dummy()));
 			},
 			5 => {
 				let update_fail_malformed_htlc = decode_msg!(msgs::UpdateFailMalformedHTLC, 32+8+32+2);
-				return_err!(channel.update_fail_malformed_htlc(&update_fail_malformed_htlc, HTLCFailReason::dummy()));
+				test_err!(channel.update_fail_malformed_htlc(&update_fail_malformed_htlc, HTLCFailReason::dummy()));
 			},
 			6 => {
 				let commitment_signed = decode_msg_with_len16!(msgs::CommitmentSigned, 32+64, 64);
-				return_err!(channel.commitment_signed(&commitment_signed));
+				test_err!(channel.commitment_signed(&commitment_signed));
 			},
 			7 => {
 				let revoke_and_ack = decode_msg!(msgs::RevokeAndACK, 32+32+33);
-				return_err!(channel.revoke_and_ack(&revoke_and_ack));
+				test_err!(channel.revoke_and_ack(&revoke_and_ack));
 			},
 			8 => {
 				let update_fee = decode_msg!(msgs::UpdateFee, 32+4);
-				return_err!(channel.update_fee(&fee_est, &update_fee));
+				test_err!(channel.update_fee(&fee_est, &update_fee));
 			},
 			9 => {
 				let shutdown = decode_msg_with_len16!(msgs::Shutdown, 32, 1);
-				return_err!(channel.shutdown(&fee_est, &shutdown));
+				test_err!(channel.shutdown(&fee_est, &shutdown));
 				if channel.is_shutdown() { return; }
 			},
 			10 => {
 				let closing_signed = decode_msg!(msgs::ClosingSigned, 32+8+64);
-				if return_err!(channel.closing_signed(&fee_est, &closing_signed)).1.is_some() {
+				let sign_res = test_err!(channel.closing_signed(&fee_est, &closing_signed));
+				if sign_res.is_some() && sign_res.unwrap().1.is_some() {
 					assert!(channel.is_shutdown());
 					return;
 				}
