@@ -57,7 +57,12 @@ pub enum ConfirmationTarget {
 /// called from inside the library in response to ChainListener events, P2P events, or timer
 /// events).
 pub trait FeeEstimator: Sync + Send {
-	fn get_est_sat_per_vbyte(&self, confirmation_target: ConfirmationTarget) -> u64;
+	/// Gets estimated satoshis of fee required per 1000 Weight-Units. This translates to:
+	///  * satoshis-per-byte * 250
+	///  * ceil(satoshis-per-kbyte / 4)
+	/// Must be no smaller than 253 (ie 1 satoshi-per-byte rounded up to ensure later round-downs
+	/// don't put us below 1 satoshi-per-byte).
+	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u64;
 }
 
 /// Utility to capture some common parts of ChainWatchInterface implementors.

@@ -350,7 +350,7 @@ impl Channel {
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
-		at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT //TODO
+		at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000 //TODO
 	}
 
 	fn derive_our_htlc_minimum_msat(_at_open_channel_feerate_per_kw: u64) -> u64 {
@@ -365,8 +365,8 @@ impl Channel {
 			panic!("funding value > 2^24");
 		}
 
-		let feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Normal);
-		let background_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
+		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let secp_ctx = Secp256k1::new();
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
@@ -405,13 +405,13 @@ impl Channel {
 			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
 
-			feerate_per_kw: feerate * 250,
+			feerate_per_kw: feerate,
 			their_dust_limit_satoshis: 0,
 			our_dust_limit_satoshis: Channel::derive_our_dust_limit_satoshis(background_feerate),
 			their_max_htlc_value_in_flight_msat: 0,
 			their_channel_reserve_satoshis: 0,
 			their_htlc_minimum_msat: 0,
-			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(feerate * 250),
+			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(feerate),
 			their_to_self_delay: 0,
 			their_max_accepted_htlcs: 0,
 
@@ -432,10 +432,10 @@ impl Channel {
 	}
 
 	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
-		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background) * 250 {
+		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
 			return Err(HandleError{err: "Peer's feerate much too low", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
-		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::HighPriority) * 375 { // 375 = 250 * 1.5x
+		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * 2 {
 			return Err(HandleError{err: "Peer's feerate much too high", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		Ok(())
@@ -477,7 +477,7 @@ impl Channel {
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 
-		let background_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
+		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let secp_ctx = Secp256k1::new();
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
@@ -1650,12 +1650,12 @@ impl Channel {
 		let our_closing_script = self.get_closing_scriptpubkey();
 
 		let (proposed_feerate, proposed_fee, our_sig) = if self.channel_outbound && self.pending_htlcs.is_empty() {
-			let mut proposed_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
-			if self.feerate_per_kw > proposed_feerate * 250 {
-				proposed_feerate = self.feerate_per_kw / 250;
+			let mut proposed_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+			if self.feerate_per_kw > proposed_feerate {
+				proposed_feerate = self.feerate_per_kw;
 			}
 			let tx_weight = Self::get_closing_transaction_weight(&our_closing_script, &msg.scriptpubkey);
-			let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 4;
+			let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
 
 			let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
 			let funding_redeemscript = self.get_funding_redeemscript();
@@ -1754,7 +1754,7 @@ impl Channel {
 		macro_rules! propose_new_feerate {
 			($new_feerate: expr) => {
 				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
-				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 4, false);
+				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 1000, false);
 				sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
 				let our_sig = self.secp_ctx.sign(&sighash, &self.local_keys.funding_key).unwrap();
 				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee));
@@ -1766,10 +1766,10 @@ impl Channel {
 			}
 		}
 
-		let proposed_sat_per_vbyte = msg.fee_satoshis * 4 / closing_tx.get_weight();
+		let proposed_sat_per_kw = msg.fee_satoshis * 1000 / closing_tx.get_weight();
 		if self.channel_outbound {
-			let our_max_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Normal);
-			if proposed_sat_per_vbyte > our_max_feerate {
+			let our_max_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+			if proposed_sat_per_kw > our_max_feerate {
 				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
 					if our_max_feerate <= last_feerate {
 						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", action: None});
@@ -1778,8 +1778,8 @@ impl Channel {
 				propose_new_feerate!(our_max_feerate);
 			}
 		} else {
-			let our_min_feerate = fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background);
-			if proposed_sat_per_vbyte < our_min_feerate {
+			let our_min_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+			if proposed_sat_per_kw < our_min_feerate {
 				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
 					if our_min_feerate >= last_feerate {
 						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", action: None});
@@ -1857,15 +1857,15 @@ impl Channel {
 		// output value back into a transaction with the regular channel output:
 
 		// the fee cost of the HTLC-Success/HTLC-Timeout transaction:
-		let mut res = self.feerate_per_kw * cmp::max(HTLC_TIMEOUT_TX_WEIGHT, HTLC_SUCCESS_TX_WEIGHT);
+		let mut res = self.feerate_per_kw * cmp::max(HTLC_TIMEOUT_TX_WEIGHT, HTLC_SUCCESS_TX_WEIGHT) / 1000;
 
 		if self.channel_outbound {
 			// + the marginal fee increase cost to us in the commitment transaction:
-			res += self.feerate_per_kw * COMMITMENT_TX_WEIGHT_PER_HTLC;
+			res += self.feerate_per_kw * COMMITMENT_TX_WEIGHT_PER_HTLC / 1000;
 		}
 
 		// + the marginal cost of an input which spends the HTLC-Success/HTLC-Timeout output:
-		res += fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Normal) * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT * 250;
+		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
 
 		res as u32
 	}
@@ -1988,7 +1988,7 @@ impl Channel {
 			max_htlc_value_in_flight_msat: Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
 			channel_reserve_satoshis: Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
-			feerate_per_kw: fee_estimator.get_est_sat_per_vbyte(ConfirmationTarget::Background) as u32 * 250,
+			feerate_per_kw: fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u32,
 			to_self_delay: BREAKDOWN_TIMEOUT,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key).unwrap(),
@@ -2350,7 +2350,7 @@ mod tests {
 		fee_est: u64
 	}
 	impl FeeEstimator for TestFeeEstimator {
-		fn get_est_sat_per_vbyte(&self, _: ConfirmationTarget) -> u64 {
+		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
 			self.fee_est
 		}
 	}
@@ -2364,7 +2364,7 @@ mod tests {
 	#[test]
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendix C:
-		let feeest = TestFeeEstimator{fee_est: 15000/250};
+		let feeest = TestFeeEstimator{fee_est: 15000};
 		let secp_ctx = Secp256k1::new();
 
 		let chan_keys = ChannelKeys {
