@@ -429,8 +429,9 @@ impl Router {
 				//TODO: Explore simply adding fee to hit htlc_minimum_msat
 				if $starting_fee_msat as u64 + final_value_msat > $directional_info.htlc_minimum_msat {
 					let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fee_proportional_millionths as u64);
-					if let Some(proportional_fee) = proportional_fee_millions {
-						let new_fee = $directional_info.fee_base_msat as u64 + proportional_fee / 1000000;
+					if let Some(new_fee) = proportional_fee_millions.and_then(|part| {
+							($directional_info.fee_base_msat as u64).checked_add(part / 1000000) })
+					{
 						let mut total_fee = $starting_fee_msat as u64;
 						let mut hm_entry = dist.entry(&$directional_info.src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
