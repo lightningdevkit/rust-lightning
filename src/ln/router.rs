@@ -428,39 +428,42 @@ impl Router {
 			( $chan_id: expr, $dest_node_id: expr, $directional_info: expr, $starting_fee_msat: expr ) => {
 				//TODO: Explore simply adding fee to hit htlc_minimum_msat
 				if $starting_fee_msat as u64 + final_value_msat > $directional_info.htlc_minimum_msat {
-					let new_fee = $directional_info.fee_base_msat as u64 + ($starting_fee_msat + final_value_msat) * ($directional_info.fee_proportional_millionths as u64) / 1000000;
-					let mut total_fee = $starting_fee_msat as u64;
-					let mut hm_entry = dist.entry(&$directional_info.src_node_id);
-					let old_entry = hm_entry.or_insert_with(|| {
-						let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
-						(u64::max_value(),
-							node.lowest_inbound_channel_fee_base_msat as u64,
-							node.lowest_inbound_channel_fee_proportional_millionths as u64,
-							RouteHop {
-								pubkey: PublicKey::new(),
-								short_channel_id: 0,
-								fee_msat: 0,
-								cltv_expiry_delta: 0,
-						})
-					});
-					if $directional_info.src_node_id != network.our_node_id {
-						// Ignore new_fee for channel-from-us as we assume all channels-from-us
-						// will have the same effective-fee
-						total_fee += new_fee;
-						total_fee += old_entry.2 * (final_value_msat + total_fee) / 1000000 + old_entry.1;
-					}
-					let new_graph_node = RouteGraphNode {
-						pubkey: $directional_info.src_node_id,
-						lowest_fee_to_peer_through_node: total_fee,
-					};
-					if old_entry.0 > total_fee {
-						targets.push(new_graph_node);
-						old_entry.0 = total_fee;
-						old_entry.3 = RouteHop {
-							pubkey: $dest_node_id.clone(),
-							short_channel_id: $chan_id.clone(),
-							fee_msat: new_fee, // This field is ignored on the last-hop anyway
-							cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
+					let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fee_proportional_millionths as u64);
+					if let Some(proportional_fee) = proportional_fee_millions {
+						let new_fee = $directional_info.fee_base_msat as u64 + proportional_fee / 1000000;
+						let mut total_fee = $starting_fee_msat as u64;
+						let mut hm_entry = dist.entry(&$directional_info.src_node_id);
+						let old_entry = hm_entry.or_insert_with(|| {
+							let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
+							(u64::max_value(),
+								node.lowest_inbound_channel_fee_base_msat as u64,
+								node.lowest_inbound_channel_fee_proportional_millionths as u64,
+								RouteHop {
+									pubkey: PublicKey::new(),
+									short_channel_id: 0,
+									fee_msat: 0,
+									cltv_expiry_delta: 0,
+							})
+						});
+						if $directional_info.src_node_id != network.our_node_id {
+							// Ignore new_fee for channel-from-us as we assume all channels-from-us
+							// will have the same effective-fee
+							total_fee += new_fee;
+							total_fee += old_entry.2 * (final_value_msat + total_fee) / 1000000 + old_entry.1;
+						}
+						let new_graph_node = RouteGraphNode {
+							pubkey: $directional_info.src_node_id,
+							lowest_fee_to_peer_through_node: total_fee,
+						};
+						if old_entry.0 > total_fee {
+							targets.push(new_graph_node);
+							old_entry.0 = total_fee;
+							old_entry.3 = RouteHop {
+								pubkey: $dest_node_id.clone(),
+								short_channel_id: $chan_id.clone(),
+								fee_msat: new_fee, // This field is ignored on the last-hop anyway
+								cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
+							}
 						}
 					}
 				}
