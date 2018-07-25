@@ -2595,7 +2595,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		for _ in 0..node_count {
-			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_vbyte: 1 });
+			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new());
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
