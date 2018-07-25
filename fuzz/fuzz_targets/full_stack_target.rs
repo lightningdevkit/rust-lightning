@@ -263,7 +263,7 @@ pub fn do_test(data: &[u8]) {
 			},
 			7 => {
 				if should_forward {
-					channelmanager.process_pending_htlc_forward();
+					channelmanager.process_pending_htlc_forwards();
 					handler.process_events();
 					should_forward = false;
 				}
