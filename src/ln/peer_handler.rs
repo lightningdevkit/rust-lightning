@@ -747,6 +747,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							descriptor.disconnect_socket();
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 						}
+						continue;
 					},
 				}
 
