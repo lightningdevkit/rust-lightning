@@ -636,6 +636,12 @@ impl ChannelManager {
 	/// Sends a payment along a given route.
 	/// Value parameters are provided via the last hop in route, see documentation for RouteHop
 	/// fields for more info.
+	/// Note that if the payment_hash already exists elsewhere (eg you're sending a duplicative
+	/// payment), we don't do anything to stop you! We always try to ensure that if the provided
+	/// next hop knows the preimage to payment_hash they can claim an additional amount as
+	/// specified in the last hop in the route! Thus, you should probably do your own
+	/// payment_preimage tracking (which you should already be doing as they represent "proof of
+	/// payment") and prevent double-sends yourself.
 	/// See-also docs on Channel::send_htlc_and_commit.
 	/// May generate a SendHTLCs event on success, which should be relayed.
 	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), HandleError> {
@@ -662,29 +668,33 @@ impl ChannelManager {
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
 
 		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
+
 			let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
 				None => return Err(HandleError{err: "No channel available with first hop!", action: None}),
 				Some(id) => id.clone()
 			};
+
+			let claimable_htlc_entry = channel_state.claimable_htlcs.entry(payment_hash.clone());
+			if let hash_map::Entry::Occupied(_) = claimable_htlc_entry {
+				return Err(HandleError{err: "Already had pending HTLC with the same payment_hash", action: None});
+			}
+
 			let res = {
 				let chan = channel_state.by_id.get_mut(&id).unwrap();
 				if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
 					return Err(HandleError{err: "Node ID mismatch on first hop!", action: None});
 				}
-				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, onion_packet)?
+				chan.send_htlc_and_commit(htlc_msat, payment_hash, htlc_cltv, onion_packet)?
 			};
 
 			let first_hop_node_id = route.hops.first().unwrap().pubkey;
 
-			if channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::OutboundRoute {
+			claimable_htlc_entry.or_insert(PendingOutboundHTLC::OutboundRoute {
 				route,
 				session_priv,
-			}).is_some() {
-				// TODO: We need to track these better, we're not generating these, so a
-				// third-party might make this happen:
-				panic!("payment_hash was repeated! Don't let this happen");
-			}
+			});
 
 			match res {
 				Some(msgs) => (first_hop_node_id, msgs),
