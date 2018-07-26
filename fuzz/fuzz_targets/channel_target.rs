@@ -213,7 +213,7 @@ pub fn do_test(data: &[u8]) {
 		} else {
 			decode_msg!(msgs::OpenChannel, 2*32+6*8+4+2*2+6*33+1)
 		};
-		let mut chan = match Channel::new_from_req(&fee_est, chan_keys!(), their_pubkey, &open_chan, slice_to_be64(get_slice!(8)), get_slice!(1)[0] == 0) {
+		let mut chan = match Channel::new_from_req(&fee_est, chan_keys!(), their_pubkey, &open_chan, slice_to_be64(get_slice!(8)), false, get_slice!(1)[0] == 0) {
 			Ok(chan) => chan,
 			Err(_) => return,
 		};
