@@ -433,7 +433,7 @@ impl Router {
 							($directional_info.fee_base_msat as u64).checked_add(part / 1000000) })
 					{
 						let mut total_fee = $starting_fee_msat as u64;
-						let mut hm_entry = dist.entry(&$directional_info.src_node_id);
+						let hm_entry = dist.entry(&$directional_info.src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
 							let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
 							(u64::max_value(),
