@@ -445,7 +445,7 @@ impl Channel {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	/// Generally prefers to take the DisconnectPeer action on failure, as a notice to the sender
 	/// that we're rejecting the new channel.
-	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, announce_publicly: bool) -> Result<Channel, HandleError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
@@ -476,6 +476,12 @@ impl Channel {
 		// Convert things into internal flags and prep our state:
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
+		if require_announce && !their_announce {
+			return Err(HandleError{err: "Peer tried to open unannounced channel, but we require public ones", action: Some(msgs::ErrorAction::IgnoreError) });
+		}
+		if !allow_announce && their_announce {
+			return Err(HandleError{err: "Peer tried to open announced channel, but we require private ones", action: Some(msgs::ErrorAction::IgnoreError) });
+		}
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
@@ -496,7 +502,7 @@ impl Channel {
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
 			channel_outbound: false,
 			secp_ctx: secp_ctx,
-			announce_publicly: their_announce && announce_publicly,
+			announce_publicly: their_announce,
 
 			local_keys: chan_keys,
 			cur_local_commitment_transaction_number: (1 << 48) - 1,

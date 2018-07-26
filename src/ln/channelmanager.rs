@@ -1185,7 +1185,7 @@ impl ChannelMessageHandler for ChannelManager {
 			}
 		};
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, self.announce_channels_publicly)?;
+		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly)?;
 		let accept_msg = channel.get_accept_channel()?;
 		channel_state.by_id.insert(channel.channel_id(), channel);
 		Ok(accept_msg)
