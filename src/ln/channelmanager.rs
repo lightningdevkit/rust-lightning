@@ -1030,20 +1030,19 @@ impl ChannelManager {
 				};
 
 				mem::drop(channel_state);
-				match fulfill_msgs {
-					Some((msg, commitment_msg, chan_monitor)) => {
-						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-							unimplemented!();// but def dont push the event...
-						}
+				if let Some(chan_monitor) = fulfill_msgs.1 {
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();// but def dont push the event...
+					}
+				}
 
-						let mut pending_events = self.pending_events.lock().unwrap();
-						pending_events.push(events::Event::SendFulfillHTLC {
-							node_id: node_id,
-							msg,
-							commitment_msg,
-						});
-					},
-					None => {},
+				if let Some((msg, commitment_msg)) = fulfill_msgs.0 {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::SendFulfillHTLC {
+						node_id: node_id,
+						msg,
+						commitment_msg,
+					});
 				}
 				true
 			},
