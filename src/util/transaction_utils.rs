@@ -40,11 +40,11 @@ mod tests {
 
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::transaction::TxOut;
-    use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::util::hash::Sha256dHash;
 
 	use hex::decode;
 
-    #[test]
+	#[test]
 	fn sort_output_by_value() {
 		let txout1 = TxOut {
 			value:  100,
@@ -67,7 +67,7 @@ mod tests {
 			);
 	}
 
-    #[test]
+	#[test]
 	fn sort_output_by_script_pubkey() {
 		let txout1 = TxOut {
 			value:  100,
@@ -90,7 +90,7 @@ mod tests {
 			);
 	}
 
-    #[test]
+	#[test]
 	fn sort_output_by_bip_test() {
 		let txout1 = TxOut {
 			value: 100000000,
@@ -136,7 +136,7 @@ mod tests {
 
 					assert_eq!(outputs, expected);
 				}
-	   )*
+			)*
 		}
 	}
 
