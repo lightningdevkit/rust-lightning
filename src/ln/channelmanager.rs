@@ -1624,20 +1624,14 @@ impl ChannelMessageHandler for ChannelManager {
 		// destination. That's OK since those nodes are probably busted or trying to do network
 		// mapping through repeated loops. In either case, we want them to stop talking to us, so
 		// we send permanent_node_failure.
-		match &claimable_htlcs_entry {
-			&hash_map::Entry::Occupied(ref e) => {
-				let mut acceptable_cycle = false;
-				match e.get() {
-					&PendingOutboundHTLC::OutboundRoute { .. } => {
-						acceptable_cycle = pending_forward_info.short_channel_id == 0;
-					},
-					_ => {},
-				}
-				if !acceptable_cycle {
-					return_err!("Payment looped through us twice", 0x4000 | 0x2000 | 2, &[0;0]);
-				}
-			},
-			_ => {},
+		if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
+			let mut acceptable_cycle = false;
+			if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
+				acceptable_cycle = pending_forward_info.short_channel_id == 0;
+			}
+			if !acceptable_cycle {
+				return_err!("Payment looped through us twice", 0x4000 | 0x2000 | 2, &[0;0]);
+			}
 		}
 
 		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
