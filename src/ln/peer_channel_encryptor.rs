@@ -504,48 +504,48 @@ mod tests {
 	use secp256k1::Secp256k1;
 	use secp256k1::key::{PublicKey,SecretKey};
 
-	use bitcoin::util::misc::hex_bytes;
+	use hex;
 
 	use ln::peer_channel_encryptor::{PeerChannelEncryptor,NoiseState,DirectionalNoiseState};
 
 	fn get_outbound_peer_for_initiator_test_vectors() -> PeerChannelEncryptor {
 		let secp_ctx = Secp256k1::new();
-		let their_node_id = PublicKey::from_slice(&secp_ctx, &hex_bytes("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();
+		let their_node_id = PublicKey::from_slice(&secp_ctx, &hex::decode("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();
 
 		let mut outbound_peer = PeerChannelEncryptor::new_outbound(their_node_id);
 		match outbound_peer.noise_state {
 			NoiseState::InProgress { state: _, ref mut directional_state, bidirectional_state: _ } => {
 				*directional_state = DirectionalNoiseState::Outbound { // overwrite ie...
-					ie: SecretKey::from_slice(&secp_ctx, &hex_bytes("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap(),
+					ie: SecretKey::from_slice(&secp_ctx, &hex::decode("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap(),
 				};
 			},
 			_ => panic!()
 		}
 
-		assert_eq!(outbound_peer.get_act_one()[..], hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap()[..]);
+		assert_eq!(outbound_peer.get_act_one()[..], hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap()[..]);
 		outbound_peer
 	}
 
 	#[test]
 	fn noise_initiator_test_vectors() {
 		let secp_ctx = Secp256k1::new();
-		let our_node_id = SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
+		let our_node_id = SecretKey::from_slice(&secp_ctx, &hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
 
 		{
 			// transport-initiator successful handshake
 			let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 
-			let act_two = hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
-			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap()[..], hex_bytes("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
+			let act_two = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
+			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap()[..], hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
 
 			match outbound_peer.noise_state {
 				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
-					assert_eq!(sk, hex_bytes("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
+					assert_eq!(sk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
 					assert_eq!(sn, 0);
-					assert_eq!(sck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-					assert_eq!(rk, hex_bytes("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
+					assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
 					assert_eq!(rn, 0);
-					assert_eq!(rck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
 				},
 				_ => panic!()
 			}
@@ -558,7 +558,7 @@ mod tests {
 			// transport-initiator act2 bad version test
 			let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 
-			let act_two = hex_bytes("0102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
+			let act_two = hex::decode("0102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
 			assert!(outbound_peer.process_act_two(&act_two[..], &our_node_id).is_err());
 		}
 
@@ -566,7 +566,7 @@ mod tests {
 			// transport-initiator act2 bad key serialization test
 			let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 
-			let act_two = hex_bytes("0004466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
+			let act_two = hex::decode("0004466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
 			assert!(outbound_peer.process_act_two(&act_two[..], &our_node_id).is_err());
 		}
 
@@ -574,7 +574,7 @@ mod tests {
 			// transport-initiator act2 bad MAC test
 			let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 
-			let act_two = hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730af").unwrap().to_vec();
+			let act_two = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730af").unwrap().to_vec();
 			assert!(outbound_peer.process_act_two(&act_two[..], &our_node_id).is_err());
 		}
 	}
@@ -582,29 +582,29 @@ mod tests {
 	#[test]
 	fn noise_responder_test_vectors() {
 		let secp_ctx = Secp256k1::new();
-		let our_node_id = SecretKey::from_slice(&secp_ctx, &hex_bytes("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
-		let our_ephemeral = SecretKey::from_slice(&secp_ctx, &hex_bytes("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
+		let our_node_id = SecretKey::from_slice(&secp_ctx, &hex::decode("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
+		let our_ephemeral = SecretKey::from_slice(&secp_ctx, &hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
 
 		{
 			// transport-responder successful handshake
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
-			let act_three = hex_bytes("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
+			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			// test vector doesn't specify the initiator static key, but its the same as the one
 			// from trasport-initiator successful handshake
-			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex_bytes("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
 
 			match inbound_peer.noise_state {
 				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
-					assert_eq!(sk, hex_bytes("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
+					assert_eq!(sk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
 					assert_eq!(sn, 0);
-					assert_eq!(sck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-					assert_eq!(rk, hex_bytes("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
+					assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
 					assert_eq!(rn, 0);
-					assert_eq!(rck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
 				},
 				_ => panic!()
 			}
@@ -617,31 +617,31 @@ mod tests {
 			// transport-responder act1 bad version test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("01036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			let act_one = hex::decode("01036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act1 bad key serialization test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one =hex_bytes("00046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			let act_one =hex::decode("00046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act1 bad MAC test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6b").unwrap().to_vec();
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6b").unwrap().to_vec();
 			assert!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act3 bad version test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
-			let act_three = hex_bytes("01b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
+			let act_three = hex::decode("01b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
 		}
 		{
@@ -652,30 +652,30 @@ mod tests {
 			// transport-responder act3 bad MAC for ciphertext test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
-			let act_three = hex_bytes("00c9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
+			let act_three = hex::decode("00c9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
 		}
 		{
 			// transport-responder act3 bad rs test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
-			let act_three = hex_bytes("00bfe3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa2235536ad09a8ee351870c2bb7f78b754a26c6cef79a98d25139c856d7efd252c2ae73c").unwrap().to_vec();
+			let act_three = hex::decode("00bfe3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa2235536ad09a8ee351870c2bb7f78b754a26c6cef79a98d25139c856d7efd252c2ae73c").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
 		}
 		{
 			// transport-responder act3 bad MAC test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
-			let act_three = hex_bytes("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139bb").unwrap().to_vec();
+			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139bb").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
 		}
 	}
@@ -690,19 +690,19 @@ mod tests {
 		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 
 		{
-			let our_node_id = SecretKey::from_slice(&secp_ctx, &hex_bytes("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
+			let our_node_id = SecretKey::from_slice(&secp_ctx, &hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
 
-			let act_two = hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
-			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap()[..], hex_bytes("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
+			let act_two = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
+			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap()[..], hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
 
 			match outbound_peer.noise_state {
 				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
-					assert_eq!(sk, hex_bytes("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
+					assert_eq!(sk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
 					assert_eq!(sn, 0);
-					assert_eq!(sck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-					assert_eq!(rk, hex_bytes("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
+					assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
 					assert_eq!(rn, 0);
-					assert_eq!(rck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
 				},
 				_ => panic!()
 			}
@@ -712,27 +712,27 @@ mod tests {
 
 		{
 			// transport-responder successful handshake
-			let our_node_id = SecretKey::from_slice(&secp_ctx, &hex_bytes("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
-			let our_ephemeral = SecretKey::from_slice(&secp_ctx, &hex_bytes("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
+			let our_node_id = SecretKey::from_slice(&secp_ctx, &hex::decode("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
+			let our_ephemeral = SecretKey::from_slice(&secp_ctx, &hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
 
 			inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
-			let act_one = hex_bytes("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex_bytes("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
-			let act_three = hex_bytes("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
+			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			// test vector doesn't specify the initiator static key, but its the same as the one
 			// from trasport-initiator successful handshake
-			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex_bytes("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
 
 			match inbound_peer.noise_state {
 				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
-					assert_eq!(sk, hex_bytes("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
+					assert_eq!(sk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
 					assert_eq!(sn, 0);
-					assert_eq!(sck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-					assert_eq!(rk, hex_bytes("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
+					assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
 					assert_eq!(rn, 0);
-					assert_eq!(rck, hex_bytes("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+					assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
 				},
 				_ => panic!()
 			}
@@ -748,17 +748,17 @@ mod tests {
 			assert_eq!(inbound_peer.decrypt_message(&res[2+16..]).unwrap()[..], msg[..]);
 
 			if i == 0 {
-				assert_eq!(res, hex_bytes("cf2b30ddf0cf3f80e7c35a6e6730b59fe802473180f396d88a8fb0db8cbcf25d2f214cf9ea1d95").unwrap());
+				assert_eq!(res, hex::decode("cf2b30ddf0cf3f80e7c35a6e6730b59fe802473180f396d88a8fb0db8cbcf25d2f214cf9ea1d95").unwrap());
 			} else if i == 1 {
-				assert_eq!(res, hex_bytes("72887022101f0b6753e0c7de21657d35a4cb2a1f5cde2650528bbc8f837d0f0d7ad833b1a256a1").unwrap());
+				assert_eq!(res, hex::decode("72887022101f0b6753e0c7de21657d35a4cb2a1f5cde2650528bbc8f837d0f0d7ad833b1a256a1").unwrap());
 			} else if i == 500 {
-				assert_eq!(res, hex_bytes("178cb9d7387190fa34db9c2d50027d21793c9bc2d40b1e14dcf30ebeeeb220f48364f7a4c68bf8").unwrap());
+				assert_eq!(res, hex::decode("178cb9d7387190fa34db9c2d50027d21793c9bc2d40b1e14dcf30ebeeeb220f48364f7a4c68bf8").unwrap());
 			} else if i == 501 {
-				assert_eq!(res, hex_bytes("1b186c57d44eb6de4c057c49940d79bb838a145cb528d6e8fd26dbe50a60ca2c104b56b60e45bd").unwrap());
+				assert_eq!(res, hex::decode("1b186c57d44eb6de4c057c49940d79bb838a145cb528d6e8fd26dbe50a60ca2c104b56b60e45bd").unwrap());
 			} else if i == 1000 {
-				assert_eq!(res, hex_bytes("4a2f3cc3b5e78ddb83dcb426d9863d9d9a723b0337c89dd0b005d89f8d3c05c52b76b29b740f09").unwrap());
+				assert_eq!(res, hex::decode("4a2f3cc3b5e78ddb83dcb426d9863d9d9a723b0337c89dd0b005d89f8d3c05c52b76b29b740f09").unwrap());
 			} else if i == 1001 {
-				assert_eq!(res, hex_bytes("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
+				assert_eq!(res, hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
 			}
 		}
 	}
