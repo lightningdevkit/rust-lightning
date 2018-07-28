@@ -1836,6 +1836,7 @@ impl Channel {
 
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
 	/// is_usable() returns true).
+	/// Allowed in any state (including after shutdown)
 	pub fn get_short_channel_id(&self) -> Option<u64> {
 		self.short_channel_id
 	}
@@ -1846,10 +1847,12 @@ impl Channel {
 		self.channel_monitor.get_funding_txo()
 	}
 
+	/// Allowed in any state (including after shutdown)
 	pub fn get_their_node_id(&self) -> PublicKey {
 		self.their_node_id
 	}
 
+	/// Allowed in any state (including after shutdown)
 	pub fn get_our_htlc_minimum_msat(&self) -> u64 {
 		self.our_htlc_minimum_msat
 	}
@@ -1858,6 +1861,7 @@ impl Channel {
 		self.channel_value_satoshis
 	}
 
+	/// Allowed in any state (including after shutdown)
 	pub fn get_channel_update_count(&self) -> u32 {
 		self.channel_update_count
 	}
@@ -1867,6 +1871,7 @@ impl Channel {
 	}
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
+	/// Allowed in any state (including after shutdown)
 	pub fn get_our_fee_base_msat(&self, fee_estimator: &FeeEstimator) -> u32 {
 		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC
 		// output value back into a transaction with the regular channel output:
@@ -1886,6 +1891,7 @@ impl Channel {
 	}
 
 	/// Returns true if this channel is fully established and not known to be closing.
+	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
 		let mask = ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK;
 		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32)
@@ -1893,6 +1899,7 @@ impl Channel {
 
 	/// Returns true if this channel is currently available for use. This is a superset of
 	/// is_usable() and considers things like the channel being temporarily disabled.
+	/// Allowed in any state (including after shutdown)
 	pub fn is_live(&self) -> bool {
 		self.is_usable()
 	}
@@ -2332,14 +2339,39 @@ impl Channel {
 	}
 
 	/// Gets the latest commitment transaction and any dependant transactions for relay (forcing
-	/// shutdown of this channel - no more calls into this Channel may be made afterwards.
-	pub fn force_shutdown(&mut self) -> Vec<Transaction> {
+	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
+	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
+	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
+	/// immediately (others we will have to allow to time out).
+	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<[u8; 32]>) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
+
+		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
+		// return them to fail the payment.
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
+		for htlc_update in self.holding_cell_htlc_updates.drain(..) {
+			match htlc_update {
+				HTLCUpdateAwaitingACK::AddHTLC { payment_hash, .. } => {
+					dropped_outbound_htlcs.push(payment_hash);
+				},
+				_ => {}
+			}
+		}
+
+		for htlc in self.pending_htlcs.drain(..) {
+			if htlc.state == HTLCState::LocalAnnounced {
+				dropped_outbound_htlcs.push(htlc.payment_hash);
+			}
+			//TODO: Do something with the remaining HTLCs
+			//(we need to have the ChannelManager monitor them so we can claim the inbound HTLCs
+			//which correspond)
+		}
+
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.channel_update_count += 1;
 		let mut res = Vec::new();
 		mem::swap(&mut res, &mut self.last_local_commitment_txn);
-		res
+		(res, dropped_outbound_htlcs)
 	}
 }
 
