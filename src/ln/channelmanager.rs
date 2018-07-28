@@ -1135,9 +1135,9 @@ impl ChainListener for ChannelManager {
 		let mut new_events = Vec::new();
 		let mut failed_channels = Vec::new();
 		{
-			let mut channel_state = self.channel_state.lock().unwrap();
-			let mut short_to_ids_to_insert = Vec::new();
-			let mut short_to_ids_to_remove = Vec::new();
+			let mut channel_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_lock.borrow_parts();
+			let short_to_id = channel_state.short_to_id;
 			channel_state.by_id.retain(|_, channel| {
 				if let Some(funding_locked) = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched) {
 					let announcement_sigs = match self.get_announcement_sigs(channel) {
@@ -1152,14 +1152,14 @@ impl ChainListener for ChannelManager {
 						msg: funding_locked,
 						announcement_sigs: announcement_sigs
 					});
-					short_to_ids_to_insert.push((channel.get_short_channel_id().unwrap(), channel.channel_id()));
+					short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 				}
 				if let Some(funding_txo) = channel.get_funding_txo() {
 					for tx in txn_matched {
 						for inp in tx.input.iter() {
 							if inp.prev_hash == funding_txo.txid && inp.prev_index == funding_txo.index as u32 {
 								if let Some(short_id) = channel.get_short_channel_id() {
-									short_to_ids_to_remove.push(short_id);
+									short_to_id.remove(&short_id);
 								}
 								// It looks like our counterparty went on-chain. We go ahead and
 								// broadcast our latest local state as well here, just in case its
@@ -1177,7 +1177,7 @@ impl ChainListener for ChannelManager {
 				}
 				if channel.channel_monitor().would_broadcast_at_height(height) {
 					if let Some(short_id) = channel.get_short_channel_id() {
-						short_to_ids_to_remove.push(short_id);
+						short_to_id.remove(&short_id);
 					}
 					failed_channels.push(channel.force_shutdown());
 					// If would_broadcast_at_height() is true, the channel_monitor will broadcast
@@ -1193,12 +1193,6 @@ impl ChainListener for ChannelManager {
 				}
 				true
 			});
-			for to_remove in short_to_ids_to_remove {
-				channel_state.short_to_id.remove(&to_remove);
-			}
-			for to_insert in short_to_ids_to_insert {
-				channel_state.short_to_id.insert(to_insert.0, to_insert.1);
-			}
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
