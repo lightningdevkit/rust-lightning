@@ -1356,7 +1356,7 @@ impl Channel {
 		Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", action: None})
 	}
 
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<ChannelMonitor, HandleError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
@@ -1366,9 +1366,8 @@ impl Channel {
 		let mut payment_hash = [0; 32];
 		sha.result(&mut payment_hash);
 
-		self.channel_monitor.provide_payment_preimage(&payment_hash, &msg.payment_preimage);
 		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None)?;
-		Ok(self.channel_monitor.clone())
+		Ok(())
 	}
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<[u8; 32], HandleError> {

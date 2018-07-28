@@ -1682,22 +1682,16 @@ impl ChannelMessageHandler for ChannelManager {
 		// is broken, we may have enough info to get our own money!
 		self.claim_funds_internal(msg.payment_preimage.clone(), false);
 
-		let monitor = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					chan.update_fulfill_htlc(&msg)?
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-			unimplemented!();
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
+				}
+				chan.update_fulfill_htlc(&msg)
+			},
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 		}
-		Ok(())
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
@@ -2492,10 +2486,9 @@ mod tests {
 					{
 						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
 						if $last_node {
-							assert_eq!(added_monitors.len(), 1);
+							assert_eq!(added_monitors.len(), 0);
 						} else {
-							assert_eq!(added_monitors.len(), 2);
-							assert!(added_monitors[0].0 != added_monitors[1].0);
+							assert_eq!(added_monitors.len(), 1);
 						}
 						added_monitors.clear();
 					}
