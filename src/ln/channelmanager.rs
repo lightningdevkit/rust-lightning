@@ -137,12 +137,14 @@ impl ChannelHolder {
 			by_id: &mut self.by_id,
 			short_to_id: &mut self.short_to_id,
 			next_forward: &mut self.next_forward,
-			/// short channel id -> forward infos. Key of 0 means payments received
 			forward_htlcs: &mut self.forward_htlcs,
 			claimable_htlcs: &mut self.claimable_htlcs,
 		}
 	}
 }
+
+#[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
+const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assume they're the same) for ChannelManager::latest_block_height";
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -157,7 +159,7 @@ pub struct ChannelManager {
 
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
-	latest_block_height: AtomicUsize, //TODO: Compile-time assert this is at least 32-bits long
+	latest_block_height: AtomicUsize,
 	secp_ctx: Secp256k1,
 
 	channel_state: Mutex<ChannelHolder>,
