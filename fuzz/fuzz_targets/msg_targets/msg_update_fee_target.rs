@@ -36,13 +36,11 @@ fn main() {
 	}
 }
 
+extern crate hex;
 #[cfg(test)]
 mod tests {
-	use utils::extend_vec_from_hex;
 	#[test]
 	fn duplicate_crash() {
-		let mut a = Vec::new();
-		extend_vec_from_hex("00", &mut a);
-		super::do_test(&a);
+		super::do_test(&::hex::decode("00").unwrap());
 	}
 }
