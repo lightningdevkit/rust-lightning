@@ -115,14 +115,19 @@ struct ChannelHolder {
 	short_to_id: HashMap<u64, [u8; 32]>,
 	next_forward: Instant,
 	/// short channel id -> forward infos. Key of 0 means payments received
+	/// Note that while this is held in the same mutex as the channels themselves, no consistency
+	/// guarantees are made about there existing a channel with the short id here, nor the short
+	/// ids in the PendingForwardHTLCInfo!
 	forward_htlcs: HashMap<u64, Vec<PendingForwardHTLCInfo>>,
+	/// Note that while this is held in the same mutex as the channels themselves, no consistency
+	/// guarantees are made about the channels given here actually existing anymore by the time you
+	/// go to read them!
 	claimable_htlcs: HashMap<[u8; 32], PendingOutboundHTLC>,
 }
 struct MutChannelHolder<'a> {
 	by_id: &'a mut HashMap<[u8; 32], Channel>,
 	short_to_id: &'a mut HashMap<u64, [u8; 32]>,
 	next_forward: &'a mut Instant,
-	/// short channel id -> forward infos. Key of 0 means payments received
 	forward_htlcs: &'a mut HashMap<u64, Vec<PendingForwardHTLCInfo>>,
 	claimable_htlcs: &'a mut HashMap<[u8; 32], PendingOutboundHTLC>,
 }
@@ -884,6 +889,12 @@ impl ChannelManager {
 		self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: Vec::new() })
 	}
 
+	/// Fails an HTLC backwards to the sender of it to us.
+	/// Note that while we take a channel_state lock as input, we do *not* assume consistency here.
+	/// There are several callsites that do stupid things like loop over a list of payment_hashes
+	/// to fail and take the channel_state lock for each iteration (as we take ownership and may
+	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
+	/// still-available channels.
 	fn fail_htlc_backwards_internal(&self, mut channel_state: MutexGuard<ChannelHolder>, payment_hash: &[u8; 32], onion_error: HTLCFailReason) -> bool {
 		let mut pending_htlc = {
 			match channel_state.claimable_htlcs.remove(payment_hash) {
@@ -904,7 +915,7 @@ impl ChannelManager {
 		}
 
 		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { .. } => { panic!("WAT"); },
+			PendingOutboundHTLC::CycledRoute { .. } => unreachable!(),
 			PendingOutboundHTLC::OutboundRoute { .. } => {
 				mem::drop(channel_state);
 
@@ -1000,7 +1011,7 @@ impl ChannelManager {
 		}
 
 		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { .. } => { panic!("WAT"); },
+			PendingOutboundHTLC::CycledRoute { .. } => unreachable!(),
 			PendingOutboundHTLC::OutboundRoute { .. } => {
 				if from_user {
 					panic!("Called claim_funds with a preimage for an outgoing payment. There is nothing we can do with this, and something is seriously wrong if you knew this...");
@@ -1016,13 +1027,20 @@ impl ChannelManager {
 				let (node_id, fulfill_msgs) = {
 					let chan_id = match channel_state.short_to_id.get(&source_short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
-						None => return false
+						None => {
+							// TODO: There is probably a channel manager somewhere that needs to
+							// learn the preimage as the channel already hit the chain and that's
+							// why its missing.
+							return false
+						}
 					};
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
 					match chan.get_update_fulfill_htlc_and_commit(payment_preimage) {
 						Ok(msg) => (chan.get_their_node_id(), msg),
 						Err(_e) => {
+							// TODO: There is probably a channel manager somewhere that needs to
+							// learn the preimage as the channel may be about to hit the chain.
 							//TODO: Do something with e?
 							return false;
 						},
@@ -1571,7 +1589,7 @@ impl ChannelMessageHandler for ChannelManager {
 				pending_forward_info.prev_short_channel_id = short_channel_id;
 				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info)?)
 			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}), //TODO: panic?
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}),
 		};
 
 		match claimable_htlcs_entry {
@@ -1581,7 +1599,7 @@ impl ChannelMessageHandler for ChannelManager {
 					&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
 						(route.clone(), session_priv.clone())
 					},
-					_ => { panic!("WAT") },
+					_ => unreachable!(),
 				};
 				*outbound_route = PendingOutboundHTLC::CycledRoute {
 					source_short_channel_id,
