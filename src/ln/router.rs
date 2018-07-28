@@ -555,8 +555,9 @@ mod tests {
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::msgs::GlobalFeatures;
 
-	use bitcoin::util::misc::hex_bytes;
 	use bitcoin::util::hash::Sha256dHash;
+
+	use hex;
 
 	use secp256k1::key::{PublicKey,SecretKey};
 	use secp256k1::Secp256k1;
@@ -564,7 +565,7 @@ mod tests {
 	#[test]
 	fn route_test() {
 		let secp_ctx = Secp256k1::new();
-		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap();
+		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap();
 		let router = Router::new(our_id);
 
 		// Build network from our_id to node8:
@@ -624,14 +625,14 @@ mod tests {
 		// chan11 1-to-2: enabled, 0 fee
 		// chan11 2-to-1: enabled, 0 fee
 
-		let node1 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap()).unwrap();
-		let node2 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..]).unwrap()).unwrap();
-		let node3 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..]).unwrap()).unwrap();
-		let node4 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..]).unwrap()).unwrap();
-		let node5 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap()).unwrap();
-		let node6 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap()).unwrap();
-		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap()).unwrap();
-		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex_bytes("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap()).unwrap();
+		let node1 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap()).unwrap();
+		let node2 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..]).unwrap()).unwrap();
+		let node3 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..]).unwrap()).unwrap();
+		let node4 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..]).unwrap()).unwrap();
+		let node5 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap()).unwrap();
+		let node6 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap()).unwrap();
+		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap()).unwrap();
+		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap()).unwrap();
 
 		let zero_hash = Sha256dHash::from_data(&[0; 32]);
 
