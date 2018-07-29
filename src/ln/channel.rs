@@ -985,7 +985,7 @@ impl Channel {
 		}
 
 		let htlc_id = {
-			let mut htlc = &mut self.pending_htlcs[pending_idx];
+			let htlc = &mut self.pending_htlcs[pending_idx];
 			if htlc.state == HTLCState::Committed {
 				htlc.state = HTLCState::LocalRemoved;
 				htlc.local_removed_fulfilled = true;

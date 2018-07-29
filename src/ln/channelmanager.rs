@@ -388,7 +388,7 @@ impl ChannelManager {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
-			if let Some(mut chan) = channel_state.by_id.remove(channel_id) {
+			if let Some(chan) = channel_state.by_id.remove(channel_id) {
 				if let Some(short_id) = chan.get_short_channel_id() {
 					channel_state.short_to_id.remove(&short_id);
 				}
