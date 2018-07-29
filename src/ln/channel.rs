@@ -24,6 +24,7 @@ use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
 use util::sha2::Sha256;
 
+use std;
 use std::default::Default;
 use std::{cmp,mem};
 use std::time::Instant;
@@ -927,7 +928,7 @@ impl Channel {
 		Ok(our_sig)
 	}
 
-	pub fn get_update_fulfill_htlc(&mut self, payment_preimage_arg: [u8; 32]) -> Result<Option<(msgs::UpdateFulfillHTLC, ChannelMonitor)>, HandleError> {
+	fn get_update_fulfill_htlc(&mut self, payment_preimage_arg: [u8; 32]) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitor>), HandleError> {
 		// Either ChannelFunded got set (which means it wont bet unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
@@ -942,13 +943,31 @@ impl Channel {
 		let mut payment_hash_calc = [0; 32];
 		sha.result(&mut payment_hash_calc);
 
+		let mut pending_idx = std::usize::MAX;
+		for (idx, htlc) in self.pending_htlcs.iter().enumerate() {
+			if !htlc.outbound && htlc.payment_hash == payment_hash_calc {
+				if pending_idx != std::usize::MAX {
+					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
+				}
+				pending_idx = idx;
+			}
+		}
+		if pending_idx == std::usize::MAX {
+			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
+		}
+
 		// Now update local state:
+		//
+		// We have to put the payment_preimage in the channel_monitor right away here to ensure we
+		// can claim it even if the channel hits the chain before we see their next commitment.
+		self.channel_monitor.provide_payment_preimage(&payment_hash_calc, &payment_preimage_arg);
+
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, .. } => {
 						if payment_preimage_arg == *payment_preimage {
-							return Ok(None);
+							return Ok((None, None));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { ref payment_hash, .. } => {
@@ -962,49 +981,39 @@ impl Channel {
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg, payment_hash: payment_hash_calc,
 			});
-			return Ok(None);
+			return Ok((None, Some(self.channel_monitor.clone())));
 		}
 
-		let mut htlc_id = 0;
-		let mut htlc_amount_msat = 0;
-		for htlc in self.pending_htlcs.iter_mut() {
-			if !htlc.outbound && htlc.payment_hash == payment_hash_calc {
-				if htlc_id != 0 {
-					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
-				}
-				htlc_id = htlc.htlc_id;
-				htlc_amount_msat += htlc.amount_msat;
-				if htlc.state == HTLCState::Committed {
-					htlc.state = HTLCState::LocalRemoved;
-					htlc.local_removed_fulfilled = true;
-				} else if htlc.state == HTLCState::RemoteAnnounced {
-					panic!("Somehow forwarded HTLC prior to remote revocation!");
-				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
-					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
-				} else {
-					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
-				}
+		let htlc_id = {
+			let mut htlc = &mut self.pending_htlcs[pending_idx];
+			if htlc.state == HTLCState::Committed {
+				htlc.state = HTLCState::LocalRemoved;
+				htlc.local_removed_fulfilled = true;
+			} else if htlc.state == HTLCState::RemoteAnnounced {
+				panic!("Somehow forwarded HTLC prior to remote revocation!");
+			} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
+				return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
+			} else {
+				panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
 			}
-		}
-		if htlc_amount_msat == 0 {
-			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
-		}
-		self.channel_monitor.provide_payment_preimage(&payment_hash_calc, &payment_preimage_arg);
+			htlc.htlc_id
+		};
 
-		Ok(Some((msgs::UpdateFulfillHTLC {
+		Ok((Some(msgs::UpdateFulfillHTLC {
 			channel_id: self.channel_id(),
 			htlc_id: htlc_id,
 			payment_preimage: payment_preimage_arg,
-		}, self.channel_monitor.clone())))
+		}), Some(self.channel_monitor.clone())))
 	}
 
-	pub fn get_update_fulfill_htlc_and_commit(&mut self, payment_preimage: [u8; 32]) -> Result<Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned, ChannelMonitor)>, HandleError> {
+	pub fn get_update_fulfill_htlc_and_commit(&mut self, payment_preimage: [u8; 32]) -> Result<(Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)>, Option<ChannelMonitor>), HandleError> {
 		match self.get_update_fulfill_htlc(payment_preimage)? {
-			Some(update_fulfill_htlc) => {
+			(Some(update_fulfill_htlc), _) => {
 				let (commitment, monitor_update) = self.send_commitment_no_status_check()?;
-				Ok(Some((update_fulfill_htlc.0, commitment, monitor_update)))
+				Ok((Some((update_fulfill_htlc, commitment)), Some(monitor_update)))
 			},
-			None => Ok(None)
+			(None, Some(channel_monitor)) => Ok((None, Some(channel_monitor))),
+			(None, None) => Ok((None, None))
 		}
 	}
 
@@ -1491,7 +1500,7 @@ impl Channel {
 						},
 						&HTLCUpdateAwaitingACK::ClaimHTLC { payment_preimage, .. } => {
 							match self.get_update_fulfill_htlc(payment_preimage) {
-								Ok(update_fulfill_msg_option) => update_fulfill_htlcs.push(update_fulfill_msg_option.unwrap().0),
+								Ok(update_fulfill_msg_option) => update_fulfill_htlcs.push(update_fulfill_msg_option.0.unwrap()),
 								Err(e) => {
 									err = Some(e);
 								}
@@ -1827,6 +1836,7 @@ impl Channel {
 
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
 	/// is_usable() returns true).
+	/// Allowed in any state (including after shutdown)
 	pub fn get_short_channel_id(&self) -> Option<u64> {
 		self.short_channel_id
 	}
@@ -1837,10 +1847,12 @@ impl Channel {
 		self.channel_monitor.get_funding_txo()
 	}
 
+	/// Allowed in any state (including after shutdown)
 	pub fn get_their_node_id(&self) -> PublicKey {
 		self.their_node_id
 	}
 
+	/// Allowed in any state (including after shutdown)
 	pub fn get_our_htlc_minimum_msat(&self) -> u64 {
 		self.our_htlc_minimum_msat
 	}
@@ -1849,6 +1861,7 @@ impl Channel {
 		self.channel_value_satoshis
 	}
 
+	/// Allowed in any state (including after shutdown)
 	pub fn get_channel_update_count(&self) -> u32 {
 		self.channel_update_count
 	}
@@ -1858,6 +1871,7 @@ impl Channel {
 	}
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
+	/// Allowed in any state (including after shutdown)
 	pub fn get_our_fee_base_msat(&self, fee_estimator: &FeeEstimator) -> u32 {
 		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC
 		// output value back into a transaction with the regular channel output:
@@ -1877,6 +1891,7 @@ impl Channel {
 	}
 
 	/// Returns true if this channel is fully established and not known to be closing.
+	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
 		let mask = ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK;
 		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32)
@@ -1884,6 +1899,7 @@ impl Channel {
 
 	/// Returns true if this channel is currently available for use. This is a superset of
 	/// is_usable() and considers things like the channel being temporarily disabled.
+	/// Allowed in any state (including after shutdown)
 	pub fn is_live(&self) -> bool {
 		self.is_usable()
 	}
@@ -2323,14 +2339,39 @@ impl Channel {
 	}
 
 	/// Gets the latest commitment transaction and any dependant transactions for relay (forcing
-	/// shutdown of this channel - no more calls into this Channel may be made afterwards.
-	pub fn force_shutdown(&mut self) -> Vec<Transaction> {
+	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
+	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
+	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
+	/// immediately (others we will have to allow to time out).
+	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<[u8; 32]>) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
+
+		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
+		// return them to fail the payment.
+		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
+		for htlc_update in self.holding_cell_htlc_updates.drain(..) {
+			match htlc_update {
+				HTLCUpdateAwaitingACK::AddHTLC { payment_hash, .. } => {
+					dropped_outbound_htlcs.push(payment_hash);
+				},
+				_ => {}
+			}
+		}
+
+		for htlc in self.pending_htlcs.drain(..) {
+			if htlc.state == HTLCState::LocalAnnounced {
+				dropped_outbound_htlcs.push(htlc.payment_hash);
+			}
+			//TODO: Do something with the remaining HTLCs
+			//(we need to have the ChannelManager monitor them so we can claim the inbound HTLCs
+			//which correspond)
+		}
+
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.channel_update_count += 1;
 		let mut res = Vec::new();
 		mem::swap(&mut res, &mut self.last_local_commitment_txn);
-		res
+		(res, dropped_outbound_htlcs)
 	}
 }
 
