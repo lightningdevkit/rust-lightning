@@ -1141,7 +1141,8 @@ impl ChainListener for ChannelManager {
 			let channel_state = channel_lock.borrow_parts();
 			let short_to_id = channel_state.short_to_id;
 			channel_state.by_id.retain(|_, channel| {
-				if let Some(funding_locked) = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched) {
+				let chan_res = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched);
+				if let Ok(Some(funding_locked)) = chan_res {
 					let announcement_sigs = match self.get_announcement_sigs(channel) {
 						Ok(res) => res,
 						Err(_e) => {
@@ -1155,6 +1156,16 @@ impl ChainListener for ChannelManager {
 						announcement_sigs: announcement_sigs
 					});
 					short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
+				} else if let Err(e) = chan_res {
+					if let Some(msgs::ErrorAction::DisconnectPeer { msg }) = e.action {
+						new_events.push(events::Event::DisconnectPeer {
+							node_id: channel.get_their_node_id(),
+							msg: msg
+						});
+					} else { unreachable!(); }
+					if channel.is_shutdown() {
+						return false;
+					}
 				}
 				if let Some(funding_txo) = channel.get_funding_txo() {
 					for tx in txn_matched {
