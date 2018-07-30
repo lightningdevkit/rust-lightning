@@ -35,30 +35,31 @@ pub struct Route {
 	pub hops: Vec<RouteHop>,
 }
 
-struct DirectionalChannelInfo {
-	src_node_id: PublicKey,
-	last_update: u32,
-	enabled: bool,
-	cltv_expiry_delta: u16,
-	htlc_minimum_msat: u64,
-	fee_base_msat: u32,
-	fee_proportional_millionths: u32,
+//Here, DirectionalChannelInfo, ChannelInfo, NodeInfo and NetworkMap are pub(crate) only for log_* macros access
+pub(crate) struct DirectionalChannelInfo {
+	pub(crate) src_node_id: PublicKey,
+	pub(crate) last_update: u32,
+	pub(crate) enabled: bool,
+	pub(crate) cltv_expiry_delta: u16,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) fee_base_msat: u32,
+	pub(crate) fee_proportional_millionths: u32,
 }
 
-struct ChannelInfo {
-	features: GlobalFeatures,
-	one_to_two: DirectionalChannelInfo,
-	two_to_one: DirectionalChannelInfo,
+pub(crate) struct ChannelInfo {
+	pub(crate) features: GlobalFeatures,
+	pub(crate) one_to_two: DirectionalChannelInfo,
+	pub(crate) two_to_one: DirectionalChannelInfo,
 }
 
-struct NodeInfo {
+pub(crate) struct NodeInfo {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: Vec<(u64, Sha256dHash)>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	channels: Vec<u64>,
+	pub(crate) channels: Vec<u64>,
 
-	lowest_inbound_channel_fee_base_msat: u32,
-	lowest_inbound_channel_fee_proportional_millionths: u32,
+	pub(crate) lowest_inbound_channel_fee_base_msat: u32,
+	pub(crate) lowest_inbound_channel_fee_proportional_millionths: u32,
 
 	features: GlobalFeatures,
 	last_update: u32,
@@ -67,14 +68,14 @@ struct NodeInfo {
 	addresses: Vec<NetAddress>,
 }
 
-struct NetworkMap {
+pub(crate) struct NetworkMap {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: HashMap<(u64, Sha256dHash), ChannelInfo>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	channels: HashMap<u64, ChannelInfo>,
+	pub(crate) channels: HashMap<u64, ChannelInfo>,
 
-	our_node_id: PublicKey,
-	nodes: HashMap<PublicKey, NodeInfo>,
+	pub(crate) our_node_id: PublicKey,
+	pub(crate) nodes: HashMap<PublicKey, NodeInfo>,
 }
 
 impl NetworkMap {
