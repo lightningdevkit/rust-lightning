@@ -30,4 +30,4 @@ version = "0.13"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]
-hex = "0.3.2"
+hex = "0.3"
