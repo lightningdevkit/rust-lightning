@@ -136,7 +136,7 @@ enum HTLCState {
 	/// anyway).
 	LocalRemoved,
 	/// Removed by us, sent a new commitment_signed and got a revoke_and_ack. Just waiting on an
-	/// updated local commitment transaction.
+	/// updated local commitment transaction. Implies local_removed_fulfilled.
 	LocalRemovedAwaitingCommitment,
 }
 
@@ -663,7 +663,7 @@ impl Channel {
 			} else {
 				match htlc.state {
 					HTLCState::AwaitingRemoteRevokeToRemove|HTLCState::AwaitingRemovedRemoteRevoke => {
-						if generated_by_local && htlc.fail_reason.is_none() {
+						if htlc.fail_reason.is_none() {
 							value_to_self_msat_offset -= htlc.amount_msat as i64;
 						}
 					},
@@ -678,6 +678,7 @@ impl Channel {
 						}
 					},
 					HTLCState::LocalRemovedAwaitingCommitment => {
+						assert!(htlc.local_removed_fulfilled);
 						value_to_self_msat_offset += htlc.amount_msat as i64;
 					},
 					_ => {},
