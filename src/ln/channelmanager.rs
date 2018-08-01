@@ -785,11 +785,10 @@ impl ChannelManager {
 						},
 						Err(e) => {
 							mem::drop(channel_state);
-							add_pending_event!(events::Event::DisconnectPeer {
+							add_pending_event!(events::Event::HandleError {
 								node_id: chan.get_their_node_id(),
-								msg: if let Some(msgs::ErrorAction::DisconnectPeer { msg } ) = e.action { msg } else { None },
+								action: e.action,
 							});
-
 							return;
 						},
 					}
@@ -1004,6 +1003,7 @@ impl ChannelManager {
 						}
 
 						let mut pending_events = self.pending_events.lock().unwrap();
+						//TODO: replace by HandleError ? UpdateFailHTLC in handle_update_add_htlc need also to build a CommitmentSigned
 						pending_events.push(events::Event::SendFailHTLC {
 							node_id,
 							msg: msg,
@@ -1157,12 +1157,10 @@ impl ChainListener for ChannelManager {
 					});
 					short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 				} else if let Err(e) = chan_res {
-					if let Some(msgs::ErrorAction::DisconnectPeer { msg }) = e.action {
-						new_events.push(events::Event::DisconnectPeer {
-							node_id: channel.get_their_node_id(),
-							msg: msg
-						});
-					} else { unreachable!(); }
+					new_events.push(events::Event::HandleError {
+						node_id: channel.get_their_node_id(),
+						action: e.action,
+					});
 					if channel.is_shutdown() {
 						return false;
 					}
