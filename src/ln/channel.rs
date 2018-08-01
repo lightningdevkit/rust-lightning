@@ -1827,6 +1827,7 @@ impl Channel {
 		self.user_id
 	}
 
+	/// May only be called after funding has been initiated (ie is_funding_initiated() is true)
 	pub fn channel_monitor(&self) -> ChannelMonitor {
 		if self.channel_state < ChannelState::FundingCreated as u32 {
 			panic!("Can't get a channel monitor until funding has been created");
@@ -1902,6 +1903,11 @@ impl Channel {
 	/// Allowed in any state (including after shutdown)
 	pub fn is_live(&self) -> bool {
 		self.is_usable()
+	}
+
+	/// Returns true if funding_created was sent/received.
+	pub fn is_funding_initiated(&self) -> bool {
+		self.channel_state >= ChannelState::FundingCreated as u32
 	}
 
 	/// Returns true if this channel is fully shut down. True here implies that no further actions

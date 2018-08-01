@@ -1188,7 +1188,7 @@ impl ChainListener for ChannelManager {
 						}
 					}
 				}
-				if channel.channel_monitor().would_broadcast_at_height(height) {
+				if channel.is_funding_initiated() && channel.channel_monitor().would_broadcast_at_height(height) {
 					if let Some(short_id) = channel.get_short_channel_id() {
 						short_to_id.remove(&short_id);
 					}
