@@ -271,7 +271,7 @@ pub struct Channel {
 	/// to detect unconfirmation after a serialize-unserialize roudtrip where we may not see a full
 	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
-	funding_tx_confirmed_in: Sha256dHash,
+	funding_tx_confirmed_in: Option<Sha256dHash>,
 	short_channel_id: Option<u64>,
 	/// Used to deduplicate block_connected callbacks
 	last_block_connected: Sha256dHash,
@@ -401,7 +401,7 @@ impl Channel {
 
 			last_sent_closing_fee: None,
 
-			funding_tx_confirmed_in: Default::default(),
+			funding_tx_confirmed_in: None,
 			short_channel_id: None,
 			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
@@ -519,7 +519,7 @@ impl Channel {
 
 			last_sent_closing_fee: None,
 
-			funding_tx_confirmed_in: Default::default(),
+			funding_tx_confirmed_in: None,
 			short_channel_id: None,
 			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
@@ -1942,7 +1942,7 @@ impl Channel {
 					} else if self.channel_state < ChannelState::ChannelFunded as u32 {
 						panic!("Started confirming a channel in a state pre-FundingSent?");
 					}
-					self.funding_tx_confirmed_in = header.bitcoin_hash();
+					self.funding_tx_confirmed_in = Some(header.bitcoin_hash());
 
 					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
@@ -1988,7 +1988,7 @@ impl Channel {
 				return true;
 			}
 		}
-		if header.bitcoin_hash() == self.funding_tx_confirmed_in {
+		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = CONF_TARGET as u64 - 1;
 		}
 		false
