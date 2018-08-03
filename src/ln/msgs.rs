@@ -937,7 +937,7 @@ impl MsgDecodable for UpdateAddHTLC {
 }
 impl MsgEncodable for UpdateAddHTLC {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32+8+8+32+4+1+1366);
+		let mut res = Vec::with_capacity(32+8+8+32+4+1366);
 		res.extend_from_slice(&self.channel_id);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_id));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.amount_msat));
