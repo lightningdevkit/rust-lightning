@@ -271,7 +271,7 @@ pub struct Channel {
 	/// to detect unconfirmation after a serialize-unserialize roudtrip where we may not see a full
 	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
-	funding_tx_confirmed_in: Sha256dHash,
+	funding_tx_confirmed_in: Option<Sha256dHash>,
 	short_channel_id: Option<u64>,
 	/// Used to deduplicate block_connected callbacks
 	last_block_connected: Sha256dHash,
@@ -401,7 +401,7 @@ impl Channel {
 
 			last_sent_closing_fee: None,
 
-			funding_tx_confirmed_in: Default::default(),
+			funding_tx_confirmed_in: None,
 			short_channel_id: None,
 			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
@@ -519,7 +519,7 @@ impl Channel {
 
 			last_sent_closing_fee: None,
 
-			funding_tx_confirmed_in: Default::default(),
+			funding_tx_confirmed_in: None,
 			short_channel_id: None,
 			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
@@ -1827,6 +1827,7 @@ impl Channel {
 		self.user_id
 	}
 
+	/// May only be called after funding has been initiated (ie is_funding_initiated() is true)
 	pub fn channel_monitor(&self) -> ChannelMonitor {
 		if self.channel_state < ChannelState::FundingCreated as u32 {
 			panic!("Can't get a channel monitor until funding has been created");
@@ -1904,6 +1905,11 @@ impl Channel {
 		self.is_usable()
 	}
 
+	/// Returns true if funding_created was sent/received.
+	pub fn is_funding_initiated(&self) -> bool {
+		self.channel_state >= ChannelState::FundingCreated as u32
+	}
+
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
 	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
 	/// will be handled appropriately by the chain monitor.
@@ -1927,27 +1933,38 @@ impl Channel {
 				self.last_block_connected = header.bitcoin_hash();
 				self.funding_tx_confirmations += 1;
 				if self.funding_tx_confirmations == CONF_TARGET as u64 {
-					if non_shutdown_state == ChannelState::FundingSent as u32 {
+					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
+						true
 					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
 						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
 						self.channel_update_count += 1;
-						//TODO: Something about a state where we "lost confirmation"
+						true
+					} else if self.channel_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+						// We got a reorg but not enough to trigger a force close, just update
+						// funding_tx_confirmed_in and return.
+						false
 					} else if self.channel_state < ChannelState::ChannelFunded as u32 {
-						panic!("Started confirming a channel in a state pre-FundingSent?");
-					}
-					self.funding_tx_confirmed_in = header.bitcoin_hash();
+						panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
+					} else {
+						// We got a reorg but not enough to trigger a force close, just update
+						// funding_tx_confirmed_in and return.
+						false
+					};
+					self.funding_tx_confirmed_in = Some(header.bitcoin_hash());
 
 					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
 					//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
 					//a protocol oversight, but I assume I'm just missing something.
-					let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-					let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret).unwrap();
-					return Ok(Some(msgs::FundingLocked {
-						channel_id: self.channel_id,
-						next_per_commitment_point: next_per_commitment_point,
-					}));
+					if need_commitment_update {
+						let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+						let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret).unwrap();
+						return Ok(Some(msgs::FundingLocked {
+							channel_id: self.channel_id,
+							next_per_commitment_point: next_per_commitment_point,
+						}));
+					}
 				}
 			}
 		}
@@ -1982,7 +1999,7 @@ impl Channel {
 				return true;
 			}
 		}
-		if header.bitcoin_hash() == self.funding_tx_confirmed_in {
+		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = CONF_TARGET as u64 - 1;
 		}
 		false

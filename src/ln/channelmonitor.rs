@@ -423,7 +423,9 @@ impl ChannelMonitor {
 
 	pub fn insert_combine(&mut self, mut other: ChannelMonitor) -> Result<(), HandleError> {
 		if self.funding_txo.is_some() {
-			if other.funding_txo.is_some() && other.funding_txo.as_ref().unwrap() != self.funding_txo.as_ref().unwrap() {
+			// We should be able to compare the entire funding_txo, but in fuzztarget its trivially
+			// easy to collide the funding_txo hash and have a different scriptPubKey.
+			if other.funding_txo.is_some() && other.funding_txo.as_ref().unwrap().0 != self.funding_txo.as_ref().unwrap().0 {
 				return Err(HandleError{err: "Funding transaction outputs are not identical!", action: None});
 			}
 		} else {
