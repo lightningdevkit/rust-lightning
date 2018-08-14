@@ -1210,6 +1210,15 @@ impl Channel {
 			return_error_message!("max_accpted_htlcs > 483");
 		}
 
+		// TODO: Optional additional constraints mentioned in the spec
+		// MAY fail the channel if
+		// funding_satoshi is too small
+		// htlc_minimum_msat too large
+		// max_htlc_value_in_flight_msat too small
+		// channel_reserve_satoshis too large
+		// max_accepted_htlcs too small
+		// dust_limit_satoshis too small
+
 		self.channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
