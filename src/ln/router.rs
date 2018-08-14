@@ -303,6 +303,7 @@ impl RoutingMessageHandler for Router {
 struct RouteGraphNode {
 	pubkey: PublicKey,
 	lowest_fee_to_peer_through_node: u64,
+	lowest_fee_to_node: u64,
 }
 
 impl cmp::Ord for RouteGraphNode {
@@ -463,6 +464,7 @@ impl Router {
 						let new_graph_node = RouteGraphNode {
 							pubkey: $directional_info.src_node_id,
 							lowest_fee_to_peer_through_node: total_fee,
+							lowest_fee_to_node: $starting_fee_msat as u64 + new_fee,
 						};
 						if old_entry.0 > total_fee {
 							targets.push(new_graph_node);
@@ -527,7 +529,7 @@ impl Router {
 			}
 		}
 
-		while let Some(RouteGraphNode { pubkey, lowest_fee_to_peer_through_node }) = targets.pop() {
+		while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
 			if pubkey == network.our_node_id {
 				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
 				while res.last().unwrap().pubkey != *target {
@@ -546,9 +548,7 @@ impl Router {
 			match network.nodes.get(&pubkey) {
 				None => {},
 				Some(node) => {
-					let mut fee = lowest_fee_to_peer_through_node - node.lowest_inbound_channel_fee_base_msat as u64;
-					fee -= node.lowest_inbound_channel_fee_proportional_millionths as u64 * (fee + final_value_msat) / 1000000;
-					add_entries_to_cheapest_to_target_node!(node, &pubkey, fee);
+					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node);
 				},
 			}
 		}
