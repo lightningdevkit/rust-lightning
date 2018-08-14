@@ -320,7 +320,6 @@ pub struct Channel {
 }
 
 const OUR_MAX_HTLCS: u16 = 5; //TODO
-const CONF_TARGET: u32 = 12; //TODO: Should be much higher
 /// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
 /// really allow for this, so instead we're stuck closing it out at that point.
@@ -370,6 +369,16 @@ impl Channel {
 
 	fn derive_our_htlc_minimum_msat(_at_open_channel_feerate_per_kw: u64) -> u64 {
 		1000 // TODO
+	}
+
+	fn derive_minimum_depth(_channel_value_satoshis_msat: u64, _value_to_self_msat: u64) -> u32 {
+		const CONF_TARGET: u32 = 12; //TODO: Should be much higher
+		CONF_TARGET
+	}
+
+	fn derive_maximum_minimum_depth(_channel_value_satoshis_msat: u64, _value_to_self_msat: u64) -> u32 {
+		const CONF_TARGET: u32 = 12; //TODO: Should be much higher
+		CONF_TARGET * 2
 	}
 
 	// Constructors:
@@ -465,31 +474,46 @@ impl Channel {
 	/// Generally prefers to take the DisconnectPeer action on failure, as a notice to the sender
 	/// that we're rejecting the new channel.
 	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, HandleError> {
+		macro_rules! return_error_message {
+			( $msg: expr ) => {
+				return Err(HandleError{err: $msg, action: Some(msgs::ErrorAction::SendErrorMessage{ msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: $msg.to_string() }})});
+			}
+		}
+
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("funding value > 2^24");
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("Bogus channel_reserve_satoshis");
 		}
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "push_msat more than highest possible value", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("push_msat larger than funding value");
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Peer never wants payout outputs?", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("Peer never wants payout outputs?");
+		}
+		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
+			return_error_message!("Bogus; channel reserve is less than dust limit");
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("Miminum htlc value is full channel value");
 		}
-		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw).map_err(|e|
+			HandleError{err: e.err, action: Some(msgs::ErrorAction::SendErrorMessage{ msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: e.err.to_string() }})}
+		)?;
+
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("They wanted our payments to be delayed by a needlessly long period");
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return_error_message!("0 max_accpted_htlcs makes for a useless channel");
+		}
+		if msg.max_accepted_htlcs > 483 {
+			return_error_message!("max_accpted_htlcs > 483");
 		}
 		if (msg.channel_flags & 254) != 0 {
-			return Err(HandleError{err: "unknown channel_flags", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError{err: "Unknown channel flags", action: Some(msgs::ErrorAction::IgnoreError) });
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -503,6 +527,31 @@ impl Channel {
 		}
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+
+		let our_dust_limit_satoshis = Channel::derive_our_dust_limit_satoshis(background_feerate);
+		let our_channel_reserve_satoshis = Channel::get_our_channel_reserve_satoshis(msg.funding_satoshis);
+		if our_channel_reserve_satoshis < our_dust_limit_satoshis {
+			return_error_message!("Suitalbe channel reserve not found. aborting");
+		}
+		if msg.channel_reserve_satoshis < our_dust_limit_satoshis {
+			return_error_message!("channel_reserve_satoshis too small");
+		}
+		if our_channel_reserve_satoshis < msg.dust_limit_satoshis {
+			return_error_message!("Dust limit too high for our channel reserve");
+		}
+
+		// check if the funder's amount for the initial commitment tx is sufficient
+		// for full fee payment
+		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
+		if funders_amount_msat < background_feerate * COMMITMENT_TX_BASE_WEIGHT {
+			return_error_message!("Insufficient funding amount for initial commitment");
+		}
+
+		let to_local_msat = msg.push_msat;
+		let to_remote_msat = funders_amount_msat - background_feerate * COMMITMENT_TX_BASE_WEIGHT;
+		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= our_channel_reserve_satoshis * 1000 {
+			return_error_message!("Insufficient funding amount for initial commitment");
+		}
 
 		let secp_ctx = Secp256k1::new();
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
@@ -545,7 +594,7 @@ impl Channel {
 			feerate_per_kw: msg.feerate_per_kw as u64,
 			channel_value_satoshis: msg.funding_satoshis,
 			their_dust_limit_satoshis: msg.dust_limit_satoshis,
-			our_dust_limit_satoshis: Channel::derive_our_dust_limit_satoshis(background_feerate),
+			our_dust_limit_satoshis: our_dust_limit_satoshis,
 			their_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			their_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			their_htlc_minimum_msat: msg.htlc_minimum_msat,
@@ -1118,28 +1167,47 @@ impl Channel {
 	// Message handlers:
 
 	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
+		macro_rules! return_error_message {
+			( $msg: expr ) => {
+				return Err(HandleError{err: $msg, action: Some(msgs::ErrorAction::SendErrorMessage{ msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: $msg.to_string() }})});
+			}
+		}
 		// Check sanity of message fields:
 		if !self.channel_outbound {
-			return Err(HandleError{err: "Got an accept_channel message from an inbound peer", action: None});
+			return_error_message!("Got an accept_channel message from an inbound peer");
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
-			return Err(HandleError{err: "Got an accept_channel message at a strange time", action: None});
+			return_error_message!("Got an accept_channel message at a strange time");
 		}
 		if msg.dust_limit_satoshis > 21000000 * 100000000 {
-			return Err(HandleError{err: "Peer never wants payout outputs?", action: None});
+			return_error_message!("Peer never wants payout outputs?");
 		}
 		if msg.channel_reserve_satoshis > self.channel_value_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: None});
+			return_error_message!("Bogus channel_reserve_satoshis");
+		}
+		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
+			return_error_message!("Bogus channel_reserve and dust_limit");
+		}
+		if msg.channel_reserve_satoshis < self.our_dust_limit_satoshis {
+			return_error_message!("Peer never wants payout outputs?");
+		}
+		if msg.dust_limit_satoshis > Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis) {
+			return_error_message!("Dust limit is bigger than our channel reverse");
 		}
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", action: None});
+			return_error_message!("Minimum htlc value is full channel value");
 		}
-		//TODO do something with minimum_depth
+		if msg.minimum_depth > Channel::derive_maximum_minimum_depth(self.channel_value_satoshis*1000,  self.value_to_self_msat) {
+			return_error_message!("minimum_depth too large");
+		}
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: None});
+			return_error_message!("They wanted our payments to be delayed by a needlessly long period");
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: None});
+			return_error_message!("0 max_accpted_htlcs makes for a useless channel");
+		}
+		if msg.max_accepted_htlcs > 483 {
+			return_error_message!("max_accpted_htlcs > 483");
 		}
 
 		self.channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
@@ -1958,7 +2026,7 @@ impl Channel {
 			if header.bitcoin_hash() != self.last_block_connected {
 				self.last_block_connected = header.bitcoin_hash();
 				self.funding_tx_confirmations += 1;
-				if self.funding_tx_confirmations == CONF_TARGET as u64 {
+				if self.funding_tx_confirmations == Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
 						true
@@ -2026,7 +2094,7 @@ impl Channel {
 			}
 		}
 		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
-			self.funding_tx_confirmations = CONF_TARGET as u64 - 1;
+			self.funding_tx_confirmations = Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 - 1;
 		}
 		false
 	}
@@ -2090,7 +2158,7 @@ impl Channel {
 			max_htlc_value_in_flight_msat: Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
 			channel_reserve_satoshis: Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
-			minimum_depth: CONF_TARGET,
+			minimum_depth: Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat),
 			to_self_delay: BREAKDOWN_TIMEOUT,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key).unwrap(),
