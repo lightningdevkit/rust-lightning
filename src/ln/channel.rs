@@ -24,6 +24,7 @@ use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
 use util::sha2::Sha256;
 use util::logger::{Logger, Record};
+use util::errors::APIError;
 
 use std;
 use std::default::Default;
@@ -372,11 +373,13 @@ impl Channel {
 	}
 
 	// Constructors:
-
-	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`
-	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Channel {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
-			panic!("funding value > 2^24");
+			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
+		}
+
+		if push_msat > channel_value_satoshis * 1000 {
+			return Err(APIError::APIMisuseError{err: "push value > channel value"});
 		}
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -390,7 +393,7 @@ impl Channel {
 		                                          &chan_keys.htlc_base_key,
 		                                          BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
 
-		Channel {
+		Ok(Channel {
 			user_id: user_id,
 
 			channel_id: rng::rand_u832(),
@@ -403,7 +406,7 @@ impl Channel {
 			local_keys: chan_keys,
 			cur_local_commitment_transaction_number: (1 << 48) - 1,
 			cur_remote_commitment_transaction_number: (1 << 48) - 1,
-			value_to_self_msat: channel_value_satoshis * 1000, //TODO: give them something on open? Parameterize it?
+			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
 			pending_htlcs: Vec::new(),
 			holding_cell_htlc_updates: Vec::new(),
 			next_local_htlc_id: 0,
@@ -444,7 +447,7 @@ impl Channel {
 			channel_monitor: channel_monitor,
 
 			logger,
-		}
+		})
 	}
 
 	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
@@ -2031,12 +2034,12 @@ impl Channel {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> Result<msgs::OpenChannel, HandleError> {
+	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> Result<msgs::OpenChannel, APIError> {
 		if !self.channel_outbound {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
-			return Err(HandleError{err: "Cannot generate an open_channel after we've moved forward", action: None});
+			panic!("Cannot generate an open_channel after we've moved forward");
 		}
 
 		if self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
@@ -2049,7 +2052,7 @@ impl Channel {
 			chain_hash: chain_hash,
 			temporary_channel_id: self.channel_id,
 			funding_satoshis: self.channel_value_satoshis,
-			push_msat: 0, //TODO: Something about feerate?
+			push_msat: self.channel_value_satoshis * 1000 - self.value_to_self_msat,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
 			max_htlc_value_in_flight_msat: Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
 			channel_reserve_satoshis: Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
@@ -2478,7 +2481,7 @@ mod tests {
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan_keys.funding_key).unwrap().serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 
-		let mut chan = Channel::new_outbound(&feeest, chan_keys, PublicKey::new(), 10000000, false, 42, Arc::clone(&logger)); // Nothing uses their network key in this test
+		let mut chan = Channel::new_outbound(&feeest, chan_keys, PublicKey::new(), 10000000, 100000, false, 42, Arc::clone(&logger)).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
