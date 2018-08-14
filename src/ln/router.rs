@@ -440,8 +440,8 @@ impl Router {
 						let old_entry = hm_entry.or_insert_with(|| {
 							let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
 							(u64::max_value(),
-								node.lowest_inbound_channel_fee_base_msat as u64,
-								node.lowest_inbound_channel_fee_proportional_millionths as u64,
+								node.lowest_inbound_channel_fee_base_msat,
+								node.lowest_inbound_channel_fee_proportional_millionths,
 								RouteHop {
 									pubkey: PublicKey::new(),
 									short_channel_id: 0,
@@ -453,7 +453,12 @@ impl Router {
 							// Ignore new_fee for channel-from-us as we assume all channels-from-us
 							// will have the same effective-fee
 							total_fee += new_fee;
-							total_fee += old_entry.2 * (final_value_msat + total_fee) / 1000000 + old_entry.1;
+							if let Some(fee_inc) = final_value_msat.checked_add(total_fee).and_then(|inc| { (old_entry.2 as u64).checked_mul(inc) }) {
+								total_fee += fee_inc / 1000000 + (old_entry.1 as u64);
+							} else {
+								// max_value means we'll always fail the old_entry.0 > total_fee check
+								total_fee = u64::max_value();
+							}
 						}
 						let new_graph_node = RouteGraphNode {
 							pubkey: $directional_info.src_node_id,
