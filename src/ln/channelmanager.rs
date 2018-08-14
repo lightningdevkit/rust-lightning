@@ -34,6 +34,17 @@ use std::collections::hash_map;
 use std::sync::{Mutex,MutexGuard,Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
+use std::fmt;
+
+pub struct APIMisuseError {
+	pub err: &'static str,
+}
+
+impl fmt::Debug for APIMisuseError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.write_str(self.err)
+	}
+}
 
 mod channel_held_info {
 	use ln::msgs;
@@ -254,7 +265,7 @@ impl ChannelManager {
 	/// may wish to avoid using 0 for user_id here.
 	/// If successful, will generate a SendOpenChannel event, so you should probably poll
 	/// PeerManager::process_events afterwards.
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, user_id: u64) -> Result<(), HandleError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIMisuseError> {
 		let chan_keys = if cfg!(feature = "fuzztarget") {
 			ChannelKeys {
 				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
@@ -275,7 +286,7 @@ impl ChannelManager {
 			}
 		};
 
-		let channel = Channel::new_outbound(&*self.fee_estimator, chan_keys, their_network_key, channel_value_satoshis, self.announce_channels_publicly, user_id, Arc::clone(&self.logger));
+		let channel = Channel::new_outbound(&*self.fee_estimator, chan_keys, their_network_key, channel_value_satoshis, push_msat, self.announce_channels_publicly, user_id, Arc::clone(&self.logger))?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator)?;
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.insert(channel.channel_id(), channel) {
@@ -2192,7 +2203,7 @@ mod tests {
 
 	static mut CHAN_COUNT: u32 = 0;
 	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
-		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 42).unwrap();
+		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 10001, 42).unwrap();
 
 		let events_1 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_1.len(), 1);
