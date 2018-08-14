@@ -387,6 +387,10 @@ impl Router {
 			return Err(HandleError{err: "Cannot generate a route to ourselves", action: None});
 		}
 
+		if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
+			return Err(HandleError{err: "Cannot generate a route of more value than all existing satoshis", action: None});
+		}
+
 		// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
 		// plus the minimum per-HTLC fee to get from it to another node (aka "shitty A*").
 		// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
