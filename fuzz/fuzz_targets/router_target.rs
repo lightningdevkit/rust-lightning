@@ -165,7 +165,7 @@ pub fn do_test(data: &[u8]) {
 						last_hops_vec.push(RouteHint {
 							src_node_id: get_pubkey!(),
 							short_channel_id: slice_to_be64(get_slice!(8)),
-							fee_base_msat: slice_to_be64(get_slice!(8)),
+							fee_base_msat: slice_to_be32(get_slice!(4)),
 							fee_proportional_millionths: slice_to_be32(get_slice!(4)),
 							cltv_expiry_delta: slice_to_be16(get_slice!(2)),
 							htlc_minimum_msat: slice_to_be64(get_slice!(8)),

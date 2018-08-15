@@ -95,7 +95,7 @@ impl NetworkMap {
 pub struct RouteHint {
 	pub src_node_id: PublicKey,
 	pub short_channel_id: u64,
-	pub fee_base_msat: u64,
+	pub fee_base_msat: u32,
 	pub fee_proportional_millionths: u32,
 	pub cltv_expiry_delta: u16,
 	pub htlc_minimum_msat: u64,
