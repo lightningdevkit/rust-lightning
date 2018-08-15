@@ -770,6 +770,8 @@ impl ChannelManager {
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
+	/// May panic if the funding_txo is duplicative with some other channel (note that this should
+	/// be trivially prevented by using unique funding transaction keys per-channel).
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
 
 		macro_rules! add_pending_event {
@@ -812,7 +814,14 @@ impl ChannelManager {
 		});
 
 		let mut channel_state = self.channel_state.lock().unwrap();
-		channel_state.by_id.insert(chan.channel_id(), chan);
+		match channel_state.by_id.entry(chan.channel_id()) {
+			hash_map::Entry::Occupied(_) => {
+				panic!("Generated duplicate funding txid?");
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(chan);
+			}
+		}
 	}
 
 	fn get_announcement_sigs(&self, chan: &Channel) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
@@ -1350,7 +1359,17 @@ impl ChannelMessageHandler for ChannelManager {
 			unimplemented!();
 		}
 		let mut channel_state = self.channel_state.lock().unwrap();
-		channel_state.by_id.insert(funding_msg.channel_id, chan);
+		match channel_state.by_id.entry(funding_msg.channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				return Err(HandleError {
+					err: "Duplicate channel_id!",
+					action: Some(msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: funding_msg.channel_id, data: "Already had channel with the new channel_id".to_owned() } })
+				});
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(chan);
+			}
+		}
 		Ok(funding_msg)
 	}
 

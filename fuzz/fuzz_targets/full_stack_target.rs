@@ -300,13 +300,21 @@ pub fn do_test(data: &[u8]) {
 				}
 			},
 			10 => {
-				for funding_generation in  pending_funding_generation.drain(..) {
+				for funding_generation in pending_funding_generation.drain(..) {
 					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 							value: funding_generation.1, script_pubkey: funding_generation.2,
 						}] };
 					let funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
-					channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
-					pending_funding_signatures.insert(funding_output, tx);
+					let mut found_duplicate_txo = false;
+					for chan in channelmanager.list_channels() {
+						if chan.channel_id == funding_output.to_channel_id() {
+							found_duplicate_txo = true;
+						}
+					}
+					if !found_duplicate_txo {
+						channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
+						pending_funding_signatures.insert(funding_output, tx);
+					}
 				}
 			},
 			11 => {
