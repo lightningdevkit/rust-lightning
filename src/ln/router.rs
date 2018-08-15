@@ -448,7 +448,7 @@ impl Router {
 								node.lowest_inbound_channel_fee_base_msat,
 								node.lowest_inbound_channel_fee_proportional_millionths,
 								RouteHop {
-									pubkey: PublicKey::new(),
+									pubkey: $dest_node_id.clone(),
 									short_channel_id: 0,
 									fee_msat: 0,
 									cltv_expiry_delta: 0,
@@ -537,7 +537,10 @@ impl Router {
 			if pubkey == network.our_node_id {
 				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
 				while res.last().unwrap().pubkey != *target {
-					let new_entry = dist.remove(&res.last().unwrap().pubkey).unwrap().3;
+					let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
+						Some(hop) => hop.3,
+						None => return Err(HandleError{err: "Failed to find a non-fee-overflowing path to the given destination", action: None}),
+					};
 					res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
 					res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
 					res.push(new_entry);
