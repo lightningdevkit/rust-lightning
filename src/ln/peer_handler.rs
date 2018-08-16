@@ -734,21 +734,45 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						}
 						continue;
 					},
-					Event::DisconnectPeer { ref node_id, ref msg } => {
-						if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
-							if let Some(mut peer) = peers.peers.remove(&descriptor) {
-								if let Some(ref msg) = *msg {
+					Event::HandleError { ref node_id, ref action } => {
+						if let Some(ref action) = *action {
+							match *action {
+								msgs::ErrorAction::UpdateFailHTLC { ref msg } => {
+									let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+										//TODO: Do whatever we're gonna do for handling dropped messages
+									});
+									peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
+									Self::do_attempt_write_data(&mut descriptor, peer);
+
+								},
+								msgs::ErrorAction::DisconnectPeer { ref msg } => {
+									if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
+										if let Some(mut peer) = peers.peers.remove(&descriptor) {
+											if let Some(ref msg) = *msg {
+												peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
+												// This isn't guaranteed to work, but if there is enough free
+												// room in the send buffer, put the error message there...
+												Self::do_attempt_write_data(&mut descriptor, &mut peer);
+											}
+										}
+										descriptor.disconnect_socket();
+										self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+									}
+								},
+								msgs::ErrorAction::IgnoreError => {
+									continue;
+								},
+								msgs::ErrorAction::SendErrorMessage { ref msg } => {
+									let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+										//TODO: Do whatever we're gonna do for handling dropped messages
+									});
 									peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
-									// This isn't guaranteed to work, but if there is enough free
-									// room in the send buffer, put the error message there...
-									Self::do_attempt_write_data(&mut descriptor, &mut peer);
-								}
+									Self::do_attempt_write_data(&mut descriptor, peer);
+								},
 							}
-							descriptor.disconnect_socket();
-							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 						}
 						continue;
-					},
+					}
 				}
 
 				upstream_events.push(event);
@@ -799,6 +823,7 @@ impl<Descriptor: SocketDescriptor> EventsProvider for PeerManager<Descriptor> {
 #[cfg(test)]
 mod tests {
 	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
+	use ln::msgs;
 	use util::events;
 	use util::test_utils;
 
@@ -864,9 +889,9 @@ mod tests {
 		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret).unwrap();
 
 		let chan_handler = test_utils::TestChannelMessageHandler::new();
-		chan_handler.pending_events.lock().unwrap().push(events::Event::DisconnectPeer {
+		chan_handler.pending_events.lock().unwrap().push(events::Event::HandleError {
 			node_id: their_id,
-			msg: None,
+			action: Some(msgs::ErrorAction::DisconnectPeer { msg: None }),
 		});
 		assert_eq!(chan_handler.pending_events.lock().unwrap().len(), 1);
 		peers[0].message_handler.chan_handler = Arc::new(chan_handler);

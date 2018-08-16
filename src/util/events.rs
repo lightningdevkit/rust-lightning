@@ -105,11 +105,11 @@ pub enum Event {
 		msg: msgs::ChannelUpdate,
 	},
 
-	// Events indicating the network loop should change the state of connection with peer:
-	/// Disconnect the given peer, possibly making an attempt to send an ErrorMessage first.
-	DisconnectPeer  {
+	//Error handling
+	/// Broadcast an error downstream to be handled
+	HandleError {
 		node_id: PublicKey,
-		msg: Option<msgs::ErrorMessage>,
+		action: Option<msgs::ErrorAction>
 	}
 }
 
