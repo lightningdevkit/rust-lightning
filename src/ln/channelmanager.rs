@@ -1323,26 +1323,24 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
-		//TODO: broke this - a node shouldn't be able to get their channel removed by sending a
-		//funding_created a second time, or long after the first, or whatever (note this also
-		//leaves the short_to_id map in a busted state.
 		let (chan, funding_msg, monitor_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.remove(&msg.temporary_channel_id) {
-				Some(mut chan) => {
-					if chan.get_their_node_id() != *their_node_id {
+			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan) => {
+					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
-					match chan.funding_created(msg) {
+					match chan.get_mut().funding_created(msg) {
 						Ok((funding_msg, monitor_update)) => {
-							(chan, funding_msg, monitor_update)
+							(chan.remove(), funding_msg, monitor_update)
 						},
 						Err(e) => {
+							//TODO: Possibly remove the channel depending on e.action
 							return Err(e);
 						}
 					}
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		}; // Release channel lock for install_watch_outpoint call,
 		   // note that this means if the remote end is misbehaving and sends a message for the same
