@@ -16,7 +16,7 @@ afl_fuzz = ["afl"]
 honggfuzz_fuzz = ["honggfuzz"]
 
 [dependencies]
-afl = { version = "0.3", optional = true }
+afl = { version = "0.4", optional = true }
 lightning = { path = "..", features = ["fuzztarget"] }
 bitcoin = { version = "0.13", features = ["fuzztarget"] }
 hex = "0.3"

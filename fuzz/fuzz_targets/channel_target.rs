@@ -325,11 +325,11 @@ pub fn do_test(data: &[u8]) {
 }
 
 #[cfg(feature = "afl")]
-extern crate afl;
+#[macro_use] extern crate afl;
 #[cfg(feature = "afl")]
 fn main() {
-	afl::read_stdio_bytes(|data| {
-		do_test(&data);
+	fuzz!(|data| {
+		do_test(data);
 	});
 }
 
