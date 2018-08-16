@@ -10,7 +10,6 @@ use bitcoin::network::constants::Network;
 use bitcoin::network::serialize::{serialize, BitcoinHash};
 use bitcoin::util::hash::Sha256dHash;
 
-use crypto::sha2::Sha256;
 use crypto::digest::Digest;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
@@ -22,6 +21,7 @@ use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
 use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
+use lightning::util::sha2::Sha256;
 
 mod utils;
 
@@ -189,7 +189,7 @@ pub fn do_test(data: &[u8]) {
 	}, our_network_key, Arc::clone(&logger));
 
 	let mut should_forward = false;
-	let mut payments_received = Vec::new();
+	let mut payments_received: Vec<[u8; 32]> = Vec::new();
 	let mut payments_sent = 0;
 	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
@@ -246,7 +246,6 @@ pub fn do_test(data: &[u8]) {
 				let mut sha = Sha256::new();
 				sha.input(&payment_hash);
 				sha.result(&mut payment_hash);
-				for i in 1..32 { payment_hash[i] = 0; }
 				payments_sent += 1;
 				match channelmanager.send_payment(route, payment_hash) {
 					Ok(_) => {},
@@ -276,22 +275,14 @@ pub fn do_test(data: &[u8]) {
 			},
 			8 => {
 				for payment in payments_received.drain(..) {
-					let mut payment_preimage = None;
-					for i in 0..payments_sent {
-						let mut payment_hash = [0; 32];
-						payment_hash[0..8].copy_from_slice(&be64_to_array(i));
-						let mut sha = Sha256::new();
-						sha.input(&payment_hash);
-						sha.result(&mut payment_hash);
-						for i in 1..32 { payment_hash[i] = 0; }
-						if payment_hash == payment {
-							payment_hash = [0; 32];
-							payment_hash[0..8].copy_from_slice(&be64_to_array(i));
-							payment_preimage = Some(payment_hash);
-							break;
-						}
-					}
-					channelmanager.claim_funds(payment_preimage.unwrap());
+					let mut payment_preimage = [0; 32];
+					payment_preimage[0] = payment[0];
+					let mut sha = Sha256::new();
+					sha.input(&payment_preimage);
+					let mut payment_hash_check = [0; 32];
+					sha.result(&mut payment_hash_check);
+					assert!(payment_hash_check == payment);
+					channelmanager.claim_funds(payment_preimage);
 				}
 			},
 			9 => {
