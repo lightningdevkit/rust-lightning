@@ -89,6 +89,18 @@ impl NetworkMap {
 	fn get_key(short_channel_id: u64, _: Sha256dHash) -> u64 {
 		short_channel_id
 	}
+
+	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
+	#[inline]
+	fn get_short_id(id: &(u64, Sha256dHash)) -> &u64 {
+		&id.0
+	}
+
+	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
+	#[inline]
+	fn get_short_id(id: &u64) -> &u64 {
+		id
+	}
 }
 
 /// A channel descriptor which provides a last-hop route to get_route
@@ -224,7 +236,14 @@ impl RoutingMessageHandler for Router {
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id } => {
 				let mut network = self.network_map.write().unwrap();
-				network.channels.remove(short_channel_id);
+				if let Some(chan) = network.channels.remove(short_channel_id) {
+					network.nodes.get_mut(&chan.one_to_two.src_node_id).unwrap().channels.retain(|chan_id| {
+						chan_id != NetworkMap::get_short_id(chan_id)
+					});
+					network.nodes.get_mut(&chan.two_to_one.src_node_id).unwrap().channels.retain(|chan_id| {
+						chan_id != NetworkMap::get_short_id(chan_id)
+					});
+				}
 			},
 		}
 	}
