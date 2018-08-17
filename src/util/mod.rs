@@ -1,4 +1,5 @@
 pub mod events;
+pub mod errors;
 
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20poly1305rfc;

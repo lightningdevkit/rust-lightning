@@ -199,7 +199,10 @@ pub fn do_test(data: &[u8]) {
 	let mut channel = if get_slice!(1)[0] != 0 {
 		let chan_value = slice_to_be24(get_slice!(3));
 
-		let mut chan = Channel::new_outbound(&fee_est, chan_keys!(), their_pubkey, chan_value, get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)), Arc::clone(&logger));
+		let mut chan = match Channel::new_outbound(&fee_est, chan_keys!(), their_pubkey, chan_value, slice_to_be24(get_slice!(3)), get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)), Arc::clone(&logger)) {
+			Ok(chan) => chan,
+			Err(_) => return,
+		};
 		chan.get_open_channel(Sha256dHash::from(get_slice!(32)), &fee_est).unwrap();
 		let accept_chan = if get_slice!(1)[0] == 0 {
 			decode_msg_with_len16!(msgs::AcceptChannel, 270, 1)
