@@ -391,8 +391,13 @@ impl Channel {
 			return Err(APIError::APIMisuseError{err: "push value > channel value"});
 		}
 
-		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+		if Channel::get_our_channel_reserve_satoshis(channel_value_satoshis) < Channel::derive_our_dust_limit_satoshis(background_feerate) {
+			return Err(APIError::FeeRateTooHigh{err: format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate), feerate: background_feerate});
+		}
+
+		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let secp_ctx = Secp256k1::new();
 		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).unwrap().serialize());
