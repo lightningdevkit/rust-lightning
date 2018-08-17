@@ -107,7 +107,7 @@ pub fn do_test(data: &[u8]) {
 		input: &input,
 	};
 
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new());
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
 
 	macro_rules! get_slice {
 		($len: expr) => {

@@ -289,7 +289,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 							macro_rules! encode_and_send_msg {
 								($msg: expr, $msg_code: expr) => {
-									peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!($msg, $msg_code)[..]));
+									{
+										log_trace!(self, "Encoding and sending message of type {} to {}", $msg_code, log_pubkey!(peer.their_node_id.unwrap()));
+										peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!($msg, $msg_code)[..]));
+									}
 								}
 							}
 
@@ -396,6 +399,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										peer.pending_read_is_header = true;
 
 										let msg_type = byte_utils::slice_to_be16(&msg_data[0..2]);
+										log_trace!(self, "Received message of type {} from {}", msg_type, log_pubkey!(peer.their_node_id.unwrap()));
 										if msg_type != 16 && peer.their_global_features.is_none() {
 											// Need an init message as first message
 											return Err(PeerHandleError{ no_connection_possible: false });
@@ -632,6 +636,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 					Event::PendingHTLCsForwardable {..} => { /* Hand upstream */ },
 
 					Event::SendOpenChannel { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.temporary_channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
 							});
@@ -640,6 +647,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::SendFundingCreated { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendFundingCreated event in peer_handler for node {} for channel {} (which becomes {})",
+								log_pubkey!(node_id),
+								log_bytes!(msg.temporary_channel_id),
+								log_funding_channel_id!(msg.funding_txid, msg.funding_output_index));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: generate a DiscardFunding event indicating to the wallet that
 								//they should just throw away this funding transaction
@@ -649,6 +660,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
+						log_trace!(self, "Handling SendFundingLocked event in peer_handler for node {}{} for channel {}",
+								log_pubkey!(node_id),
+								if announcement_sigs.is_some() { " with announcement sigs" } else { "" },
+								log_bytes!(msg.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
@@ -661,6 +676,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::SendHTLCs { ref node_id, ref msgs, ref commitment_msg } => {
+						log_trace!(self, "Handling SendHTLCs event in peer_handler for node {} with {} HTLCs for channel {}",
+								log_pubkey!(node_id),
+								msgs.len(),
+								log_bytes!(commitment_msg.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
@@ -672,6 +691,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
+						log_trace!(self, "Handling SendFulfillHTLCs event in peer_handler for node {} with payment_preimage {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.payment_preimage),
+								log_bytes!(msg.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
@@ -681,6 +704,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
+						log_trace!(self, "Handling SendFailHTLCs event in peer_handler for node {} for HTLC ID {} for channel {}",
+								log_pubkey!(node_id),
+								msg.htlc_id,
+								log_bytes!(msg.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
@@ -690,6 +717,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::SendShutdown { ref node_id, ref msg } => {
+						log_trace!(self, "Handling Shutdown event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
@@ -698,6 +728,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
+						log_trace!(self, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_announcement(msg).is_ok() && self.message_handler.route_handler.handle_channel_update(update_msg).is_ok() {
 							let encoded_msg = encode_msg!(msg, 256);
 							let encoded_update_msg = encode_msg!(update_msg, 258);
@@ -722,6 +753,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						continue;
 					},
 					Event::BroadcastChannelUpdate { ref msg } => {
+						log_trace!(self, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_update(msg).is_ok() {
 							let encoded_msg = encode_msg!(msg, 258);
 
@@ -739,6 +771,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						if let Some(ref action) = *action {
 							match *action {
 								msgs::ErrorAction::UpdateFailHTLC { ref msg } => {
+									log_trace!(self, "Handling UpdateFailHTLC HandleError event in peer_handler for node {} for HTLC ID {} for channel {}",
+											log_pubkey!(node_id),
+											msg.htlc_id,
+											log_bytes!(msg.channel_id));
 									let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 										//TODO: Do whatever we're gonna do for handling dropped messages
 									});
@@ -750,10 +786,15 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
 										if let Some(mut peer) = peers.peers.remove(&descriptor) {
 											if let Some(ref msg) = *msg {
+												log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
+														log_pubkey!(node_id),
+														msg.data);
 												peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
 												// This isn't guaranteed to work, but if there is enough free
 												// room in the send buffer, put the error message there...
 												Self::do_attempt_write_data(&mut descriptor, &mut peer);
+											} else {
+												log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 											}
 										}
 										descriptor.disconnect_socket();
@@ -764,6 +805,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									continue;
 								},
 								msgs::ErrorAction::SendErrorMessage { ref msg } => {
+									log_trace!(self, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
+											log_pubkey!(node_id),
+											msg.data);
 									let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 										//TODO: Do whatever we're gonna do for handling dropped messages
 									});
@@ -771,6 +815,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									Self::do_attempt_write_data(&mut descriptor, peer);
 								},
 							}
+						} else {
+							log_error!(self, "Got no-action HandleError Event in peer_handler for node {}, no such events should ever be generated!", log_pubkey!(node_id));
 						}
 						continue;
 					}

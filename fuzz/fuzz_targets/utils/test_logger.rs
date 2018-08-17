@@ -1,19 +1,6 @@
-use lightning::util::logger::{Logger, Level, Record};
+use lightning::util::logger::{Logger, Record};
 
-pub struct TestLogger {
-	level: Level,
-}
-
-impl TestLogger {
-	pub fn new() -> TestLogger {
-		TestLogger {
-			level: Level::Off,
-		}
-	}
-	pub fn enable(&mut self, level: Level) {
-		self.level = level;
-	}
-}
+pub struct TestLogger {}
 
 impl Logger for TestLogger {
 	fn log(&self, record: &Record) {

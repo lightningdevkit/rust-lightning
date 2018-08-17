@@ -154,7 +154,7 @@ pub struct TestLogger {
 impl TestLogger {
 	pub fn new() -> TestLogger {
 		TestLogger {
-			level: Level::Off,
+			level: Level::Trace,
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
