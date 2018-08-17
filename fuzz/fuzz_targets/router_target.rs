@@ -7,9 +7,16 @@ use lightning::ln::msgs;
 use lightning::ln::msgs::{MsgDecodable, RoutingMessageHandler};
 use lightning::ln::router::{Router, RouteHint};
 use lightning::util::reset_rng_state;
+use lightning::util::logger::Logger;
 
 use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
+
+mod utils;
+
+use utils::test_logger;
+
+use std::sync::Arc;
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -98,8 +105,10 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new());
+
 	let our_pubkey = get_pubkey!();
-	let router = Router::new(our_pubkey.clone());
+	let router = Router::new(our_pubkey.clone(), Arc::clone(&logger));
 
 	loop {
 		match get_slice!(1)[0] {

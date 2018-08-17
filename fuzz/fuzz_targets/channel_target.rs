@@ -14,11 +14,17 @@ use lightning::ln::msgs::{MsgDecodable, ErrorAction};
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
 use lightning::chain::transaction::OutPoint;
 use lightning::util::reset_rng_state;
+use lightning::util::logger::Logger;
+
+mod utils;
+
+use utils::test_logger;
 
 use secp256k1::key::{PublicKey, SecretKey};
 use secp256k1::Secp256k1;
 
 use std::sync::atomic::{AtomicUsize,Ordering};
+use std::sync::Arc;
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -100,6 +106,8 @@ pub fn do_test(data: &[u8]) {
 	let fee_est = FuzzEstimator {
 		input: &input,
 	};
+
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new());
 
 	macro_rules! get_slice {
 		($len: expr) => {
@@ -191,7 +199,7 @@ pub fn do_test(data: &[u8]) {
 	let mut channel = if get_slice!(1)[0] != 0 {
 		let chan_value = slice_to_be24(get_slice!(3));
 
-		let mut chan = Channel::new_outbound(&fee_est, chan_keys!(), their_pubkey, chan_value, get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)));
+		let mut chan = Channel::new_outbound(&fee_est, chan_keys!(), their_pubkey, chan_value, get_slice!(1)[0] == 0, slice_to_be64(get_slice!(8)), Arc::clone(&logger));
 		chan.get_open_channel(Sha256dHash::from(get_slice!(32)), &fee_est).unwrap();
 		let accept_chan = if get_slice!(1)[0] == 0 {
 			decode_msg_with_len16!(msgs::AcceptChannel, 270, 1)
@@ -213,7 +221,7 @@ pub fn do_test(data: &[u8]) {
 		} else {
 			decode_msg!(msgs::OpenChannel, 2*32+6*8+4+2*2+6*33+1)
 		};
-		let mut chan = match Channel::new_from_req(&fee_est, chan_keys!(), their_pubkey, &open_chan, slice_to_be64(get_slice!(8)), false, get_slice!(1)[0] == 0) {
+		let mut chan = match Channel::new_from_req(&fee_est, chan_keys!(), their_pubkey, &open_chan, slice_to_be64(get_slice!(8)), false, get_slice!(1)[0] == 0, Arc::clone(&logger)) {
 			Ok(chan) => chan,
 			Err(_) => return,
 		};

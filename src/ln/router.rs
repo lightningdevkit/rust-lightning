@@ -6,9 +6,10 @@ use bitcoin::util::hash::Sha256dHash;
 use ln::channelmanager;
 use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
 use ln::msgs;
+use util::logger::Logger;
 
 use std::cmp;
-use std::sync::RwLock;
+use std::sync::{RwLock,Arc};
 use std::collections::{HashMap,BinaryHeap};
 use std::collections::hash_map::Entry;
 
@@ -105,6 +106,7 @@ pub struct RouteHint {
 pub struct Router {
 	secp_ctx: Secp256k1,
 	network_map: RwLock<NetworkMap>,
+	logger: Arc<Logger>,
 }
 
 macro_rules! secp_verify_sig {
@@ -325,7 +327,7 @@ struct DummyDirectionalChannelInfo {
 }
 
 impl Router {
-	pub fn new(our_pubkey: PublicKey) -> Router {
+	pub fn new(our_pubkey: PublicKey, logger: Arc<Logger>) -> Router {
 		let mut nodes = HashMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
 			channels: Vec::new(),
@@ -344,6 +346,7 @@ impl Router {
 				our_node_id: our_pubkey,
 				nodes: nodes,
 			}),
+			logger,
 		}
 	}
 
@@ -554,6 +557,8 @@ mod tests {
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::msgs::GlobalFeatures;
+	use util::test_utils;
+	use util::logger::Logger;
 
 	use bitcoin::util::hash::Sha256dHash;
 
@@ -562,11 +567,14 @@ mod tests {
 	use secp256k1::key::{PublicKey,SecretKey};
 	use secp256k1::Secp256k1;
 
+	use std::sync::Arc;
+
 	#[test]
 	fn route_test() {
 		let secp_ctx = Secp256k1::new();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap();
-		let router = Router::new(our_id);
+		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let router = Router::new(our_id, Arc::clone(&logger));
 
 		// Build network from our_id to node8:
 		//

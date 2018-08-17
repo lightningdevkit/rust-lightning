@@ -2,7 +2,8 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::hash::Sha256dHash;
-use std::sync::{Mutex,Weak,MutexGuard};
+use util::logger::Logger;
+use std::sync::{Mutex,Weak,MutexGuard,Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// An interface to request notification of certain scripts as they appear the
@@ -70,7 +71,8 @@ pub trait FeeEstimator: Sync + Send {
 pub struct ChainWatchInterfaceUtil {
 	watched: Mutex<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>, //TODO: Something clever to optimize this
 	listeners: Mutex<Vec<Weak<ChainListener>>>,
-	reentered: AtomicUsize
+	reentered: AtomicUsize,
+	logger: Arc<Logger>,
 }
 
 /// Register listener
@@ -100,11 +102,12 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 }
 
 impl ChainWatchInterfaceUtil {
-	pub fn new() -> ChainWatchInterfaceUtil {
+	pub fn new(logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
 			watched: Mutex::new((Vec::new(), Vec::new(), false)),
 			listeners: Mutex::new(Vec::new()),
-			reentered: AtomicUsize::new(1)
+			reentered: AtomicUsize::new(1),
+			logger: logger,
 		}
 	}
 

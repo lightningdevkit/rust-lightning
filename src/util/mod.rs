@@ -12,3 +12,8 @@ pub use self::rng::reset_rng_state;
 
 #[cfg(test)]
 pub(crate) mod test_utils;
+
+#[macro_use]
+pub(crate) mod macro_logger;
+
+pub mod logger;

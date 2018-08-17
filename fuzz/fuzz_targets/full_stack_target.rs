@@ -21,6 +21,11 @@ use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
 use lightning::util::reset_rng_state;
+use lightning::util::logger::Logger;
+
+mod utils;
+
+use utils::test_logger;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
@@ -169,18 +174,19 @@ pub fn do_test(data: &[u8]) {
 		Err(_) => return,
 	};
 
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new());
 	let monitor = Arc::new(TestChannelMonitor{});
-	let watch = Arc::new(ChainWatchInterfaceUtil::new());
+	let watch = Arc::new(ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
 	let broadcast = Arc::new(TestBroadcaster{});
 
-	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone()).unwrap();
-	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key).unwrap()));
+	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger)).unwrap();
+	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key).unwrap(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let handler = PeerManager::new(MessageHandler {
 		chan_handler: channelmanager.clone(),
 		route_handler: router.clone(),
-	}, our_network_key);
+	}, our_network_key, Arc::clone(&logger));
 
 	let mut should_forward = false;
 	let mut payments_received = Vec::new();

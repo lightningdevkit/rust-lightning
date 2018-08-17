@@ -15,6 +15,12 @@ build = "build.rs"
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
 non_bitcoin_chain_hash_routing = []
 fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget"]
+# Unlog messages superior at targeted level.
+max_level_off = []
+max_level_error = []
+max_level_warn = []
+max_level_info = []
+max_level_debug = []
 
 [dependencies]
 bitcoin = "0.13"
