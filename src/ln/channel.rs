@@ -360,7 +360,8 @@ impl Channel {
 
 	/// Guaranteed to return a value no larger than channel_value_satoshis
 	fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
-		cmp::min(channel_value_satoshis, 1000) //TODO
+		let (q, _) = channel_value_satoshis.overflowing_div(100);
+		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
