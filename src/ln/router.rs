@@ -89,13 +89,25 @@ impl NetworkMap {
 	fn get_key(short_channel_id: u64, _: Sha256dHash) -> u64 {
 		short_channel_id
 	}
+
+	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
+	#[inline]
+	fn get_short_id(id: &(u64, Sha256dHash)) -> &u64 {
+		&id.0
+	}
+
+	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
+	#[inline]
+	fn get_short_id(id: &u64) -> &u64 {
+		id
+	}
 }
 
 /// A channel descriptor which provides a last-hop route to get_route
 pub struct RouteHint {
 	pub src_node_id: PublicKey,
 	pub short_channel_id: u64,
-	pub fee_base_msat: u64,
+	pub fee_base_msat: u32,
 	pub fee_proportional_millionths: u32,
 	pub cltv_expiry_delta: u16,
 	pub htlc_minimum_msat: u64,
@@ -224,7 +236,14 @@ impl RoutingMessageHandler for Router {
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id } => {
 				let mut network = self.network_map.write().unwrap();
-				network.channels.remove(short_channel_id);
+				if let Some(chan) = network.channels.remove(short_channel_id) {
+					network.nodes.get_mut(&chan.one_to_two.src_node_id).unwrap().channels.retain(|chan_id| {
+						chan_id != NetworkMap::get_short_id(chan_id)
+					});
+					network.nodes.get_mut(&chan.two_to_one.src_node_id).unwrap().channels.retain(|chan_id| {
+						chan_id != NetworkMap::get_short_id(chan_id)
+					});
+				}
 			},
 		}
 	}
@@ -303,6 +322,7 @@ impl RoutingMessageHandler for Router {
 struct RouteGraphNode {
 	pubkey: PublicKey,
 	lowest_fee_to_peer_through_node: u64,
+	lowest_fee_to_node: u64,
 }
 
 impl cmp::Ord for RouteGraphNode {
@@ -386,6 +406,10 @@ impl Router {
 			return Err(HandleError{err: "Cannot generate a route to ourselves", action: None});
 		}
 
+		if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
+			return Err(HandleError{err: "Cannot generate a route of more value than all existing satoshis", action: None});
+		}
+
 		// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
 		// plus the minimum per-HTLC fee to get from it to another node (aka "shitty A*").
 		// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
@@ -440,10 +464,10 @@ impl Router {
 						let old_entry = hm_entry.or_insert_with(|| {
 							let node = network.nodes.get(&$directional_info.src_node_id).unwrap();
 							(u64::max_value(),
-								node.lowest_inbound_channel_fee_base_msat as u64,
-								node.lowest_inbound_channel_fee_proportional_millionths as u64,
+								node.lowest_inbound_channel_fee_base_msat,
+								node.lowest_inbound_channel_fee_proportional_millionths,
 								RouteHop {
-									pubkey: PublicKey::new(),
+									pubkey: $dest_node_id.clone(),
 									short_channel_id: 0,
 									fee_msat: 0,
 									cltv_expiry_delta: 0,
@@ -453,11 +477,17 @@ impl Router {
 							// Ignore new_fee for channel-from-us as we assume all channels-from-us
 							// will have the same effective-fee
 							total_fee += new_fee;
-							total_fee += old_entry.2 * (final_value_msat + total_fee) / 1000000 + old_entry.1;
+							if let Some(fee_inc) = final_value_msat.checked_add(total_fee).and_then(|inc| { (old_entry.2 as u64).checked_mul(inc) }) {
+								total_fee += fee_inc / 1000000 + (old_entry.1 as u64);
+							} else {
+								// max_value means we'll always fail the old_entry.0 > total_fee check
+								total_fee = u64::max_value();
+							}
 						}
 						let new_graph_node = RouteGraphNode {
 							pubkey: $directional_info.src_node_id,
 							lowest_fee_to_peer_through_node: total_fee,
+							lowest_fee_to_node: $starting_fee_msat as u64 + new_fee,
 						};
 						if old_entry.0 > total_fee {
 							targets.push(new_graph_node);
@@ -522,11 +552,14 @@ impl Router {
 			}
 		}
 
-		while let Some(RouteGraphNode { pubkey, lowest_fee_to_peer_through_node }) = targets.pop() {
+		while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
 			if pubkey == network.our_node_id {
 				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
 				while res.last().unwrap().pubkey != *target {
-					let new_entry = dist.remove(&res.last().unwrap().pubkey).unwrap().3;
+					let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
+						Some(hop) => hop.3,
+						None => return Err(HandleError{err: "Failed to find a non-fee-overflowing path to the given destination", action: None}),
+					};
 					res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
 					res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
 					res.push(new_entry);
@@ -541,9 +574,7 @@ impl Router {
 			match network.nodes.get(&pubkey) {
 				None => {},
 				Some(node) => {
-					let mut fee = lowest_fee_to_peer_through_node - node.lowest_inbound_channel_fee_base_msat as u64;
-					fee -= node.lowest_inbound_channel_fee_proportional_millionths as u64 * (fee + final_value_msat) / 1000000;
-					add_entries_to_cheapest_to_target_node!(node, &pubkey, fee);
+					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node);
 				},
 			}
 		}
