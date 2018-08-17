@@ -105,7 +105,7 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new());
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
 
 	let our_pubkey = get_pubkey!();
 	let router = Router::new(our_pubkey.clone(), Arc::clone(&logger));

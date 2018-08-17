@@ -174,7 +174,7 @@ pub fn do_test(data: &[u8]) {
 		Err(_) => return,
 	};
 
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new());
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
 	let monitor = Arc::new(TestChannelMonitor{});
 	let watch = Arc::new(ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
 	let broadcast = Arc::new(TestBroadcaster{});
