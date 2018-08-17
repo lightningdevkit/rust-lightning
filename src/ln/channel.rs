@@ -17,7 +17,6 @@ use ln::msgs;
 use ln::msgs::{ErrorAction, HandleError, MsgEncodable};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingForwardHTLCInfo, HTLCFailReason};
-use ln::channelmanager::APIMisuseError;
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -25,6 +24,7 @@ use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
 use util::sha2::Sha256;
 use util::logger::{Logger, Record};
+use util::errors::APIError;
 
 use std;
 use std::default::Default;
@@ -382,13 +382,17 @@ impl Channel {
 	}
 
 	// Constructors:
+<<<<<<< HEAD
 	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64: Arc<Logger>) -> Result<Channel, APIMisuseError> {
+=======
+	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64) -> Result<Channel, APIError> {
+>>>>>>> a526657... Use new APIError
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(APIMisuseError{err: "funding value > 2^24"});
+			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
 		}
 
 		if push_msat > channel_value_satoshis * 1000 {
-			return Err(APIMisuseError{err: "push value > channel value"});
+			return Err(APIError::APIMisuseError{err: "push value > channel value"});
 		}
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -2111,12 +2115,12 @@ impl Channel {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> Result<msgs::OpenChannel, APIMisuseError> {
+	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> Result<msgs::OpenChannel, APIError> {
 		if !self.channel_outbound {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
-			return Err(APIMisuseError{err: "Cannot generate an open_channel after we've moved forward"});
+			panic!("Cannot generate an open_channel after we've moved forward");
 		}
 
 		if self.cur_local_commitment_transaction_number != (1 << 48) - 1 {

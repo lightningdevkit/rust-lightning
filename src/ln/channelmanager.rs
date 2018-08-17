@@ -21,6 +21,7 @@ use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::chacha20poly1305rfc::ChaCha20;
 use util::logger::{Logger, Record};
+use util::errors::APIError;
 
 use crypto;
 use crypto::mac::{Mac,MacResult};
@@ -34,17 +35,6 @@ use std::collections::hash_map;
 use std::sync::{Mutex,MutexGuard,Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
-use std::fmt;
-
-pub struct APIMisuseError {
-	pub err: &'static str,
-}
-
-impl fmt::Debug for APIMisuseError {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_str(self.err)
-	}
-}
 
 mod channel_held_info {
 	use ln::msgs;
@@ -265,7 +255,7 @@ impl ChannelManager {
 	/// may wish to avoid using 0 for user_id here.
 	/// If successful, will generate a SendOpenChannel event, so you should probably poll
 	/// PeerManager::process_events afterwards.
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIMisuseError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
 		let chan_keys = if cfg!(feature = "fuzztarget") {
 			ChannelKeys {
 				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
