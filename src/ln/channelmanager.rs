@@ -770,6 +770,8 @@ impl ChannelManager {
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	/// Panics if a funding transaction has already been provided for this channel.
+	/// May panic if the funding_txo is duplicative with some other channel (note that this should
+	/// be trivially prevented by using unique funding transaction keys per-channel).
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
 
 		macro_rules! add_pending_event {
@@ -812,7 +814,14 @@ impl ChannelManager {
 		});
 
 		let mut channel_state = self.channel_state.lock().unwrap();
-		channel_state.by_id.insert(chan.channel_id(), chan);
+		match channel_state.by_id.entry(chan.channel_id()) {
+			hash_map::Entry::Occupied(_) => {
+				panic!("Generated duplicate funding txid?");
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(chan);
+			}
+		}
 	}
 
 	fn get_announcement_sigs(&self, chan: &Channel) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
@@ -1323,26 +1332,24 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
-		//TODO: broke this - a node shouldn't be able to get their channel removed by sending a
-		//funding_created a second time, or long after the first, or whatever (note this also
-		//leaves the short_to_id map in a busted state.
 		let (chan, funding_msg, monitor_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.remove(&msg.temporary_channel_id) {
-				Some(mut chan) => {
-					if chan.get_their_node_id() != *their_node_id {
+			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan) => {
+					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 					}
-					match chan.funding_created(msg) {
+					match chan.get_mut().funding_created(msg) {
 						Ok((funding_msg, monitor_update)) => {
-							(chan, funding_msg, monitor_update)
+							(chan.remove(), funding_msg, monitor_update)
 						},
 						Err(e) => {
+							//TODO: Possibly remove the channel depending on e.action
 							return Err(e);
 						}
 					}
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 			}
 		}; // Release channel lock for install_watch_outpoint call,
 		   // note that this means if the remote end is misbehaving and sends a message for the same
@@ -1352,7 +1359,17 @@ impl ChannelMessageHandler for ChannelManager {
 			unimplemented!();
 		}
 		let mut channel_state = self.channel_state.lock().unwrap();
-		channel_state.by_id.insert(funding_msg.channel_id, chan);
+		match channel_state.by_id.entry(funding_msg.channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				return Err(HandleError {
+					err: "Duplicate channel_id!",
+					action: Some(msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: funding_msg.channel_id, data: "Already had channel with the new channel_id".to_owned() } })
+				});
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(chan);
+			}
+		}
 		Ok(funding_msg)
 	}
 

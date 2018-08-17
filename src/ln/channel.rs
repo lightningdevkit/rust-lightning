@@ -88,18 +88,21 @@ impl ChannelKeys {
 #[derive(PartialEq)]
 enum HTLCState {
 	/// Added by remote, to be included in next local commitment tx.
+	/// Implies HTLCOutput::outbound: false
 	RemoteAnnounced,
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'ed it), but
 	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
 	/// accept this HTLC. Implies AwaitingRemoteRevoke.
 	/// We also have not yet included this HTLC in a commitment_signed message, and are waiting on
 	/// a remote revoke_and_ack on a previous state before we can do so.
+	/// Implies HTLCOutput::outbound: false
 	AwaitingRemoteRevokeToAnnounce,
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'ed it), but
 	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
 	/// accept this HTLC. Implies AwaitingRemoteRevoke.
 	/// We have included this HTLC in our latest commitment_signed and are now just waiting on a
 	/// revoke_and_ack.
+	/// Implies HTLCOutput::outbound: true
 	AwaitingAnnouncedRemoteRevoke,
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -111,22 +114,26 @@ enum HTLCState {
 	///    allowed to remove it, the "can only be removed once committed on both sides" requirement
 	///    doesn't matter to us and its up to them to enforce it, worst-case they jump ahead but
 	///    we'll never get out of sync).
+	/// Implies HTLCOutput::outbound: true
 	LocalAnnounced,
 	Committed,
 	/// Remote removed this (outbound) HTLC. We're waiting on their commitment_signed to finalize
 	/// the change (though they'll need to revoke before we fail the payment).
+	/// Implies HTLCOutput::outbound: true
 	RemoteRemoved,
 	/// Remote removed this and sent a commitment_signed (implying we've revoke_and_ack'ed it), but
 	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
 	/// can do any backwards failing. Implies AwaitingRemoteRevoke.
 	/// We also have not yet removed this HTLC in a commitment_signed message, and are waiting on a
 	/// remote revoke_and_ack on a previous state before we can do so.
+	/// Implies HTLCOutput::outbound: true
 	AwaitingRemoteRevokeToRemove,
 	/// Remote removed this and sent a commitment_signed (implying we've revoke_and_ack'ed it), but
 	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
 	/// can do any backwards failing. Implies AwaitingRemoteRevoke.
 	/// We have removed this HTLC in our latest commitment_signed and are now just waiting on a
 	/// revoke_and_ack to drop completely.
+	/// Implies HTLCOutput::outbound: true
 	AwaitingRemovedRemoteRevoke,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -136,9 +143,11 @@ enum HTLCState {
 	/// commitment transaction without it as otherwise we'll have to force-close the channel to
 	/// claim it before the timeout (obviously doesn't apply to revoked HTLCs that we can't claim
 	/// anyway).
+	/// Implies HTLCOutput::outbound: false
 	LocalRemoved,
 	/// Removed by us, sent a new commitment_signed and got a revoke_and_ack. Just waiting on an
 	/// updated local commitment transaction. Implies local_removed_fulfilled.
+	/// Implies HTLCOutput::outbound: false
 	LocalRemovedAwaitingCommitment,
 }
 
@@ -956,7 +965,7 @@ impl Channel {
 		for (idx, htlc) in self.pending_htlcs.iter().enumerate() {
 			if !htlc.outbound && htlc.payment_hash == payment_hash_calc {
 				if pending_idx != std::usize::MAX {
-					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
+					panic!("Duplicate HTLC payment_hash, ChannelManager should have prevented this!");
 				}
 				pending_idx = idx;
 			}
@@ -998,8 +1007,14 @@ impl Channel {
 			if htlc.state == HTLCState::Committed {
 				htlc.state = HTLCState::LocalRemoved;
 				htlc.local_removed_fulfilled = true;
-			} else if htlc.state == HTLCState::RemoteAnnounced {
-				panic!("Somehow forwarded HTLC prior to remote revocation!");
+			} else if htlc.state == HTLCState::RemoteAnnounced || htlc.state == HTLCState::AwaitingRemoteRevokeToAnnounce || htlc.state == HTLCState::AwaitingAnnouncedRemoteRevoke {
+				// Theoretically we can hit this if we get the preimage on an HTLC prior to us
+				// having forwarded it to anyone. This implies that the sender is busted as someone
+				// else knows the preimage, but handling this case and implementing the logic to
+				// take their money would be a lot of (never-tested) code to handle a case that
+				// hopefully never happens. Instead, we make sure we get the preimage into the
+				// channel_monitor and pretend we didn't just see the preimage.
+				return Ok((None, Some(self.channel_monitor.clone())));
 			} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
 				return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 			} else {
