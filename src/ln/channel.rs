@@ -518,9 +518,6 @@ impl Channel {
 		if msg.max_accepted_htlcs > 483 {
 			return_error_message!("max_accpted_htlcs > 483");
 		}
-		if (msg.channel_flags & 254) != 0 {
-			return Err(HandleError{err: "Unknown channel flags", action: Some(msgs::ErrorAction::IgnoreError) });
-		}
 
 		// Convert things into internal flags and prep our state:
 
