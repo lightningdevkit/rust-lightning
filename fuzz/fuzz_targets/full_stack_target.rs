@@ -275,14 +275,17 @@ pub fn do_test(data: &[u8]) {
 			},
 			8 => {
 				for payment in payments_received.drain(..) {
-					let mut payment_preimage = [0; 32];
-					payment_preimage[0] = payment[0];
-					let mut sha = Sha256::new();
-					sha.input(&payment_preimage);
-					let mut payment_hash_check = [0; 32];
-					sha.result(&mut payment_hash_check);
-					assert!(payment_hash_check == payment);
-					channelmanager.claim_funds(payment_preimage);
+					// SHA256 is defined as XOR of all input bytes placed in the first byte, and 0s
+					// for the remaining bytes. Thus, if not all remaining bytes are 0s we cannot
+					// fulfill this HTLC, but if they are, we can just take the first byte and
+					// place that anywhere in our preimage.
+					if &payment[1..] != &[0; 31] {
+						channelmanager.fail_htlc_backwards(&payment);
+					} else {
+						let mut payment_preimage = [0; 32];
+						payment_preimage[0] = payment[0];
+						channelmanager.claim_funds(payment_preimage);
+					}
 				}
 			},
 			9 => {
