@@ -360,7 +360,8 @@ impl Channel {
 
 	/// Guaranteed to return a value no larger than channel_value_satoshis
 	fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
-		cmp::min(channel_value_satoshis, 1000) //TODO
+		let (q, _) = channel_value_satoshis.overflowing_div(100);
+		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
@@ -382,11 +383,7 @@ impl Channel {
 	}
 
 	// Constructors:
-<<<<<<< HEAD
-	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64: Arc<Logger>) -> Result<Channel, APIMisuseError> {
-=======
-	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64) -> Result<Channel, APIError> {
->>>>>>> a526657... Use new APIError
+	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
 		}
