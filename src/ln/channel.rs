@@ -503,7 +503,7 @@ impl Channel {
 			return_error_message!("Peer never wants payout outputs?");
 		}
 		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
-			return_error_message!("Bogus; channel reserve is less thand dust limit");
+			return_error_message!("Bogus; channel reserve is less than dust limit");
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return_error_message!("Miminum htlc value is full channel value");
