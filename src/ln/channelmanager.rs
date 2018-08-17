@@ -255,6 +255,7 @@ impl ChannelManager {
 	/// may wish to avoid using 0 for user_id here.
 	/// If successful, will generate a SendOpenChannel event, so you should probably poll
 	/// PeerManager::process_events afterwards.
+	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat being greater than channel_value_satoshis * 1k
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
 		let chan_keys = if cfg!(feature = "fuzztarget") {
 			ChannelKeys {
