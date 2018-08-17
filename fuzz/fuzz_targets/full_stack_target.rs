@@ -7,7 +7,7 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::Script;
 use bitcoin::network::constants::Network;
-use bitcoin::network::serialize::{serialize, BitcoinHash};
+use bitcoin::network::serialize::{deserialize, serialize, BitcoinHash};
 use bitcoin::util::hash::Sha256dHash;
 
 use crypto::digest::Digest;
@@ -32,6 +32,7 @@ use secp256k1::Secp256k1;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::cmp;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
@@ -92,17 +93,9 @@ impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
-			Some(slice) => slice_to_be16(slice) as u64 * 250,
+			Some(slice) => cmp::max(slice_to_be16(slice) as u64, 253),
 			None => 0
 		}
-	}
-}
-
-struct TestChannelMonitor {}
-impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, _funding_txo: OutPoint, _monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
-		//TODO!
-		Ok(())
 	}
 }
 
@@ -135,6 +128,71 @@ impl<'a> Eq for Peer<'a> {}
 impl<'a> Hash for Peer<'a> {
 	fn hash<H : std::hash::Hasher>(&self, h: &mut H) {
 		self.id.hash(h)
+	}
+}
+
+struct MoneyLossDetector<'a> {
+	manager: Arc<ChannelManager>,
+	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
+	handler: PeerManager<Peer<'a>>,
+
+	peers: &'a RefCell<[bool; 256]>,
+	funding_txn: Vec<Transaction>,
+	header_hashes: Vec<Sha256dHash>,
+	height: usize,
+	max_height: usize,
+
+}
+impl<'a> MoneyLossDetector<'a> {
+	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
+		MoneyLossDetector {
+			manager,
+			monitor,
+			handler,
+
+			peers,
+			funding_txn: Vec::new(),
+			header_hashes: vec![Default::default()],
+			height: 0,
+			max_height: 0,
+		}
+	}
+
+	fn connect_block(&mut self, txn: &[&Transaction], txn_idxs: &[u32]) {
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		self.height += 1;
+		self.manager.block_connected(&header, self.height as u32, txn, txn_idxs);
+		(*self.monitor).block_connected(&header, self.height as u32, txn, txn_idxs);
+		if self.header_hashes.len() > self.height {
+			self.header_hashes[self.height] = header.bitcoin_hash();
+		} else {
+			assert_eq!(self.header_hashes.len(), self.height);
+			self.header_hashes.push(header.bitcoin_hash());
+		}
+		self.max_height = cmp::max(self.height, self.max_height);
+	}
+
+	fn disconnect_block(&mut self) {
+		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
+			self.height -= 1;
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			self.manager.block_disconnected(&header);
+			self.monitor.block_disconnected(&header);
+		}
+	}
+}
+
+impl<'a> Drop for MoneyLossDetector<'a> {
+	fn drop(&mut self) {
+		// Disconnect all peers
+		for (idx, peer) in self.peers.borrow().iter().enumerate() {
+			if *peer {
+				self.handler.disconnect_event(&Peer{id: idx as u8, peers_connected: &self.peers});
+			}
+		}
+
+		// Force all channels onto the chain (and time out claim txn)
+		self.manager.force_close_all_channels();
 	}
 }
 
@@ -175,18 +233,18 @@ pub fn do_test(data: &[u8]) {
 	};
 
 	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
-	let monitor = Arc::new(TestChannelMonitor{});
 	let watch = Arc::new(ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
 	let broadcast = Arc::new(TestBroadcaster{});
+	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone());
 
 	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger)).unwrap();
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key).unwrap(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
-	let handler = PeerManager::new(MessageHandler {
+	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
 		chan_handler: channelmanager.clone(),
 		route_handler: router.clone(),
-	}, our_network_key, Arc::clone(&logger));
+	}, our_network_key, Arc::clone(&logger)));
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<[u8; 32]> = Vec::new();
@@ -206,8 +264,8 @@ pub fn do_test(data: &[u8]) {
 					}
 				}
 				if new_id == 0 { return; }
+				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
-				handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 			},
 			1 => {
 				let mut new_id = 0;
@@ -218,19 +276,19 @@ pub fn do_test(data: &[u8]) {
 					}
 				}
 				if new_id == 0 { return; }
+				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
-				handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 			},
 			2 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
+				loss_detector.handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
 				peers.borrow_mut()[peer_id as usize] = false;
-				handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
 			},
 			3 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				match handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
+				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
 					Ok(res) => assert!(!res),
 					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
 				}
@@ -270,7 +328,6 @@ pub fn do_test(data: &[u8]) {
 			7 => {
 				if should_forward {
 					channelmanager.process_pending_htlc_forwards();
-					handler.process_events();
 					should_forward = false;
 				}
 			},
@@ -321,20 +378,36 @@ pub fn do_test(data: &[u8]) {
 						txn_idxs.push(idx as u32 + 1);
 					}
 
-					let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-					channelmanager.block_connected(&header, 1, &txn[..], &txn_idxs[..]);
-					txn.clear();
+					loss_detector.connect_block(&txn[..], &txn_idxs[..]);
 					txn_idxs.clear();
-					for i in 2..100 {
-						header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-						channelmanager.block_connected(&header, i, &txn[..], &txn_idxs[..]);
+					for _ in 2..100 {
+						loss_detector.connect_block(&txn[..], &txn_idxs[..]);
 					}
 				}
-				pending_funding_relay.clear();
+				for tx in pending_funding_relay.drain(..) {
+					loss_detector.funding_txn.push(tx);
+				}
+			},
+			12 => {
+				let txlen = slice_to_be16(get_slice!(2));
+				if txlen == 0 {
+					loss_detector.connect_block(&[], &[]);
+				} else {
+					let txres: Result<Transaction, _> = deserialize(get_slice!(txlen));
+					if let Ok(tx) = txres {
+						loss_detector.connect_block(&[&tx], &[1]);
+					} else {
+						return;
+					}
+				}
+			},
+			13 => {
+				loss_detector.disconnect_block();
 			},
 			_ => return,
 		}
-		for event in handler.get_and_clear_pending_events() {
+		loss_detector.handler.process_events();
+		for event in loss_detector.handler.get_and_clear_pending_events() {
 			match event {
 				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
