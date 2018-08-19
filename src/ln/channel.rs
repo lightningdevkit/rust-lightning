@@ -342,7 +342,7 @@ macro_rules! secp_call {
 		match $res {
 			Ok(key) => key,
 			//TODO: make the error a parameter
-			Err(_) => return Err(HandleError{err: $err, action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })})
+			Err(_) => return Err(HandleError::disconnect_peer($err))
 		}
 	};
 }
@@ -449,10 +449,10 @@ impl Channel {
 
 	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
-			return Err(HandleError{err: "Peer's feerate much too low", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("Peer's feerate much too low"));
 		}
 		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * 2 {
-			return Err(HandleError{err: "Peer's feerate much too high", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("Peer's feerate much too high"));
 		}
 		Ok(())
 	}
@@ -464,39 +464,39 @@ impl Channel {
 	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, HandleError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(HandleError{err: "funding value > 2^24", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("funding value > 2^24"));
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Bogus channel_reserve_satoshis", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("Bogus channel_reserve_satoshis"));
 		}
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "push_msat more than highest possible value", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("push_msat more than highest possible value"));
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
-			return Err(HandleError{err: "Peer never wants payout outputs?", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("Peer never wants payout outputs?"));
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(HandleError{err: "Minimum htlc value is full channel value", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("Minimum htlc value is full channel value"));
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return Err(HandleError{err: "They wanted our payments to be delayed by a needlessly long period", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(HandleError{err: "0 max_accpted_htlcs makes for a useless channel", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("0 max_accpted_htlcs makes for a useless channel"));
 		}
 		if (msg.channel_flags & 254) != 0 {
-			return Err(HandleError{err: "unknown channel_flags", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(HandleError::disconnect_peer("unknown channel_flags"));
 		}
 
 		// Convert things into internal flags and prep our state:
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if require_announce && !their_announce {
-			return Err(HandleError{err: "Peer tried to open unannounced channel, but we require public ones", action: Some(msgs::ErrorAction::IgnoreError) });
+			return Err(HandleError::ignore("Peer tried to open unannounced channel, but we require public ones"));
 		}
 		if !allow_announce && their_announce {
-			return Err(HandleError{err: "Peer tried to open announced channel, but we require private ones", action: Some(msgs::ErrorAction::IgnoreError) });
+			return Err(HandleError::ignore("Peer tried to open announced channel, but we require private ones"));
 		}
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
@@ -1999,7 +1999,7 @@ impl Channel {
 						tx.output[txo_idx].value != self.channel_value_satoshis {
 						self.channel_state = ChannelState::ShutdownComplete as u32;
 						self.channel_update_count += 1;
-						return Err(HandleError{err: "funding tx had wrong script/value", action: Some(ErrorAction::DisconnectPeer{msg: None})});
+						return Err(HandleError::disconnect_peer("funding tx had wrong script/value"));
 					} else {
 						self.funding_tx_confirmations = 1;
 						self.short_channel_id = Some(((height as u64)          << (5*8)) |

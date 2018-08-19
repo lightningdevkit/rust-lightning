@@ -398,6 +398,24 @@ pub struct HandleError { //TODO: rename me
 	pub action: Option<ErrorAction>, //TODO: Make this required
 }
 
+impl HandleError {
+	/// Creates a `HandleError` with an `ErrorAction::DisconnectPeer` action.
+	pub fn disconnect_peer(err: &'static str) -> HandleError {
+		HandleError {
+			err: err,
+			action: Some(ErrorAction::DisconnectPeer { msg: None })
+		}
+	}
+
+	/// Creates a `HandleError` with an `ErrorAction::IgnoreError` action.
+	pub fn ignore(err: &'static str) -> HandleError {
+		HandleError {
+			err: err,
+			action: Some(ErrorAction::IgnoreError)
+		}
+	}
+}
+
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
 pub struct CommitmentUpdate {
