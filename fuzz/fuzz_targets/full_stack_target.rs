@@ -7,7 +7,7 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::Script;
 use bitcoin::network::constants::Network;
-use bitcoin::network::serialize::{serialize, BitcoinHash};
+use bitcoin::network::serialize::{deserialize, serialize, BitcoinHash};
 use bitcoin::util::hash::Sha256dHash;
 
 use crypto::digest::Digest;
@@ -32,6 +32,7 @@ use secp256k1::Secp256k1;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::cmp;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
@@ -92,17 +93,9 @@ impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
-			Some(slice) => slice_to_be16(slice) as u64 * 250,
+			Some(slice) => cmp::max(slice_to_be16(slice) as u64, 253),
 			None => 0
 		}
-	}
-}
-
-struct TestChannelMonitor {}
-impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, _funding_txo: OutPoint, _monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
-		//TODO!
-		Ok(())
 	}
 }
 
@@ -138,8 +131,73 @@ impl<'a> Hash for Peer<'a> {
 	}
 }
 
+struct MoneyLossDetector<'a> {
+	manager: Arc<ChannelManager>,
+	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
+	handler: PeerManager<Peer<'a>>,
+
+	peers: &'a RefCell<[bool; 256]>,
+	funding_txn: Vec<Transaction>,
+	header_hashes: Vec<Sha256dHash>,
+	height: usize,
+	max_height: usize,
+
+}
+impl<'a> MoneyLossDetector<'a> {
+	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
+		MoneyLossDetector {
+			manager,
+			monitor,
+			handler,
+
+			peers,
+			funding_txn: Vec::new(),
+			header_hashes: vec![Default::default()],
+			height: 0,
+			max_height: 0,
+		}
+	}
+
+	fn connect_block(&mut self, txn: &[&Transaction], txn_idxs: &[u32]) {
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		self.height += 1;
+		self.manager.block_connected(&header, self.height as u32, txn, txn_idxs);
+		(*self.monitor).block_connected(&header, self.height as u32, txn, txn_idxs);
+		if self.header_hashes.len() > self.height {
+			self.header_hashes[self.height] = header.bitcoin_hash();
+		} else {
+			assert_eq!(self.header_hashes.len(), self.height);
+			self.header_hashes.push(header.bitcoin_hash());
+		}
+		self.max_height = cmp::max(self.height, self.max_height);
+	}
+
+	fn disconnect_block(&mut self) {
+		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
+			self.height -= 1;
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			self.manager.block_disconnected(&header);
+			self.monitor.block_disconnected(&header);
+		}
+	}
+}
+
+impl<'a> Drop for MoneyLossDetector<'a> {
+	fn drop(&mut self) {
+		// Disconnect all peers
+		for (idx, peer) in self.peers.borrow().iter().enumerate() {
+			if *peer {
+				self.handler.disconnect_event(&Peer{id: idx as u8, peers_connected: &self.peers});
+			}
+		}
+
+		// Force all channels onto the chain (and time out claim txn)
+		self.manager.force_close_all_channels();
+	}
+}
+
 #[inline]
-pub fn do_test(data: &[u8]) {
+pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	reset_rng_state();
 
 	let input = Arc::new(InputData {
@@ -174,19 +232,18 @@ pub fn do_test(data: &[u8]) {
 		Err(_) => return,
 	};
 
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
-	let monitor = Arc::new(TestChannelMonitor{});
 	let watch = Arc::new(ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
 	let broadcast = Arc::new(TestBroadcaster{});
+	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone());
 
 	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger)).unwrap();
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key).unwrap(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
-	let handler = PeerManager::new(MessageHandler {
+	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
 		chan_handler: channelmanager.clone(),
 		route_handler: router.clone(),
-	}, our_network_key, Arc::clone(&logger));
+	}, our_network_key, Arc::clone(&logger)));
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<[u8; 32]> = Vec::new();
@@ -206,8 +263,8 @@ pub fn do_test(data: &[u8]) {
 					}
 				}
 				if new_id == 0 { return; }
+				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
-				handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 			},
 			1 => {
 				let mut new_id = 0;
@@ -218,19 +275,19 @@ pub fn do_test(data: &[u8]) {
 					}
 				}
 				if new_id == 0 { return; }
+				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
-				handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
 			},
 			2 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
+				loss_detector.handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
 				peers.borrow_mut()[peer_id as usize] = false;
-				handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
 			},
 			3 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				match handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
+				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
 					Ok(res) => assert!(!res),
 					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
 				}
@@ -257,7 +314,9 @@ pub fn do_test(data: &[u8]) {
 				if !peers.borrow()[peer_id as usize] { return; }
 				let their_key = get_pubkey!();
 				let chan_value = slice_to_be24(get_slice!(3)) as u64;
-				let push_msat_value = slice_to_be24(get_slice!(3)) as u64;
+				//let push_msat_value = slice_to_be24(get_slice!(3)) as u64;
+				// Temporarily don't read extra bytes to avoid breaking existing test-cases
+				let push_msat_value = 0;
 				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0).is_err() { return; }
 			},
 			6 => {
@@ -270,7 +329,6 @@ pub fn do_test(data: &[u8]) {
 			7 => {
 				if should_forward {
 					channelmanager.process_pending_htlc_forwards();
-					handler.process_events();
 					should_forward = false;
 				}
 			},
@@ -321,20 +379,36 @@ pub fn do_test(data: &[u8]) {
 						txn_idxs.push(idx as u32 + 1);
 					}
 
-					let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-					channelmanager.block_connected(&header, 1, &txn[..], &txn_idxs[..]);
-					txn.clear();
+					loss_detector.connect_block(&txn[..], &txn_idxs[..]);
 					txn_idxs.clear();
-					for i in 2..100 {
-						header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-						channelmanager.block_connected(&header, i, &txn[..], &txn_idxs[..]);
+					for _ in 2..100 {
+						loss_detector.connect_block(&txn[..], &txn_idxs[..]);
 					}
 				}
-				pending_funding_relay.clear();
+				for tx in pending_funding_relay.drain(..) {
+					loss_detector.funding_txn.push(tx);
+				}
+			},
+			12 => {
+				let txlen = slice_to_be16(get_slice!(2));
+				if txlen == 0 {
+					loss_detector.connect_block(&[], &[]);
+				} else {
+					let txres: Result<Transaction, _> = deserialize(get_slice!(txlen));
+					if let Ok(tx) = txres {
+						loss_detector.connect_block(&[&tx], &[1]);
+					} else {
+						return;
+					}
+				}
+			},
+			13 => {
+				loss_detector.disconnect_block();
 			},
 			_ => return,
 		}
-		for event in handler.get_and_clear_pending_events() {
+		loss_detector.handler.process_events();
+		for event in loss_detector.handler.get_and_clear_pending_events() {
 			match event {
 				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
@@ -358,11 +432,12 @@ pub fn do_test(data: &[u8]) {
 }
 
 #[cfg(feature = "afl")]
-extern crate afl;
+#[macro_use] extern crate afl;
 #[cfg(feature = "afl")]
 fn main() {
-	afl::read_stdio_bytes(|data| {
-		do_test(&data);
+	fuzz!(|data| {
+		let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+		do_test(data, &logger);
 	});
 }
 
@@ -372,7 +447,8 @@ fn main() {
 fn main() {
 	loop {
 		fuzz!(|data| {
-			do_test(data);
+			let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+			do_test(data, &logger);
 		});
 	}
 }
@@ -380,8 +456,254 @@ fn main() {
 extern crate hex;
 #[cfg(test)]
 mod tests {
+	use utils::test_logger;
+	use lightning::util::logger::{Logger, Record};
+	use std::collections::HashMap;
+	use std::sync::{Arc, Mutex};
+
 	#[test]
 	fn duplicate_crash() {
-		super::do_test(&::hex::decode("00").unwrap());
+		let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+		super::do_test(&::hex::decode("00").unwrap(), &logger);
+	}
+
+	struct TrackingLogger {
+		/// (module, message) -> count
+		pub lines: Mutex<HashMap<(String, String), usize>>,
+	}
+	impl Logger for TrackingLogger {
+		fn log(&self, record: &Record) {
+			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
+			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+		}
+	}
+
+	#[test]
+	fn test_no_existing_test_breakage() {
+		// To avoid accidentally causing all existing fuzz test cases to be useless by making minor
+		// changes (such as requesting feerate info in a new place), we run a pretty full
+		// step-through with two peers and HTLC forwarding here. Obviously this is pretty finicky,
+		// so this should be updated pretty liberally, but at least we'll know when changes occur.
+		// If nothing else, this test serves as a pretty great initial full_stack_target seed.
+
+		// What each byte represents is broken down below, and then everything is concatenated into
+		// one large test at the end (you want %s/ -.*//g %s/\n\| \|\t\|\///g).
+
+		// 0000000000000000000000000000000000000000000000000000000000000000 - our network key
+		// 00000000 - fee_proportional_millionths
+		// 01 - announce_channels_publicly
+		//
+		// 00 - new outbound connection with id 0
+		// 030000000000000000000000000000000000000000000000000000000000000000 - peer's pubkey
+		// 030032 - inbound read from peer id 0 of len 50
+		// 00 030000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - noise act two (0||pubkey||mac)
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0006 03000000000000000000000000000000 - message header indicating message length 6
+		// 030016 - inbound read from peer id 0 of len 22
+		// 0010 00000000 03000000000000000000000000000000 - init message with no features (type 16)
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0141 03000000000000000000000000000000 - message header indicating message length 321
+		// 0300ff - inbound read from peer id 0 of len 255
+		// 0020 7500000000000000000000000000000000000000000000000000000000000000ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679000000000000c35000000000000000000000000000000222ffffffffffffffff00000000000002220000000000000000000000fd000601e303000000000000000000000000000000000000000000000000000000000000000103000000000000000000000000000000000000000000000000000000000000000203000000000000000000000000000000000000000000000000000000000000000303000000000000000000000000000000000000000000000000000000000000000403 - beginning of open_channel message
+		// 030052 - inbound read from peer id 0 of len 82
+		// 0000000000000000000000000000000000000000000000000000000000000005 030100000000000000000000000000000000000000000000000000000000000000 01 03000000000000000000000000000000 - rest of open_channel and mac
+		//
+		// 00fd00fd00fd - Three feerate requests (all returning min feerate, which our open_channel also uses)
+		// - client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0084 03000000000000000000000000000000 - message header indicating message length 132
+		// 030094 - inbound read from peer id 0 of len 148
+		// 0022 ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb1819096793d00000000000000000000000000000000000000000000000000000000000000000036000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 03000000000000000000000000000000 - funding_created and mac
+		// - client should now respond with funding_signed (CHECK 2: type 35 to peer 03000000)
+		//
+		// 0c005e - connect a block with one transaction of len 94
+		// 020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000 - the funding transaction
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// 0c0000 - connect a block with no transactions
+		// - by now client should have sent a funding_locked (CHECK 3: SendFundingLocked to 03000000 for chan 3d000000)
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0043 03000000000000000000000000000000 - message header indicating message length 67
+		// 030053 - inbound read from peer id 0 of len 83
+		// 0024 3d00000000000000000000000000000000000000000000000000000000000000 030000000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - funding_locked and mac
+		//
+		// 01 - new inbound connection with id 1
+		// 030132 - inbound read from peer id 1 of len 50
+		// 0003000000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000 - inbound noise act 1
+		// 030142 - inbound read from peer id 1 of len 66
+		// 000302000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003000000000000000000000000000000 - inbound noise act 3
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0006 01000000000000000000000000000000 - message header indicating message length 6
+		// 030116 - inbound read from peer id 1 of len 22
+		// 0010 00000000 01000000000000000000000000000000 - init message with no features (type 16)
+		//
+		// 050103020000000000000000000000000000000000000000000000000000000000000000c350 - create outbound channel to peer 1 for 50k sat
+		// 00fd00fd00fd - Three feerate requests (all returning min feerate)
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0110 01000000000000000000000000000000 - message header indicating message length 272
+		// 0301ff - inbound read from peer id 1 of len 255
+		// 0021 0200000000000000020000000000000002000000000000000200000000000000000000000000001a00000000004c4b4000000000000003e800000000000003e80000000203f0000503000000000000000000000000000000000000000000000000000000000000010003000000000000000000000000000000000000000000000000000000000000020003000000000000000000000000000000000000000000000000000000000000030003000000000000000000000000000000000000000000000000000000000000040003000000000000000000000000000000000000000000000000000000000000050003000000000000000000000000000000 - beginning of accept_channel
+		// 030121 - inbound read from peer id 1 of len 33
+		// 0000000000000000000000000000000000 01000000000000000000000000000000 - rest of accept_channel and mac
+		//
+		// 0a - create the funding transaction (client should send funding_created now)
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0062 01000000000000000000000000000000 - message header indicating message length 98
+		// 030172 - inbound read from peer id 1 of len 114
+		// 0023 3f00000000000000000000000000000000000000000000000000000000000000f7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100 01000000000000000000000000000000 - funding_signed message and mac
+		//
+		// 0b - broadcast funding transaction
+		// - by now client should have sent a funding_locked (CHECK 4: SendFundingLocked to 03020000 for chan 3f000000)
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0043 01000000000000000000000000000000 - message header indicating message length 67
+		// 030153 - inbound read from peer id 1 of len 83
+		// 0024 3f00000000000000000000000000000000000000000000000000000000000000 030100777777777777777777777777777777777777777777777777777777777777 01000000000000000000000000000000 - funding_locked and mac
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 05ac 03000000000000000000000000000000 - message header indicating message length 1452
+		// 0300ff - inbound read from peer id 0 of len 255
+		// 0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000000 00000000000003e8 ff00000000000000000000000000000000000000000000000000000000000000 00000001 00 030000000000000000000000000000000000000000000000000000000000000555 0000000e000001000000000000000003e8000000010000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff - beginning of update_add_htlc from 0 to 1 via client
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300c1 - inbound read from peer id 0 of len 193
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ef00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0064 03000000000000000000000000000000 - message header indicating message length 100
+		// 030074 - inbound read from peer id 0 of len 116
+		// 0084 3d00000000000000000000000000000000000000000000000000000000000000 36000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 0000 03000000000000000000000000000000 - commitment_signed and mac
+		// - client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6: types 133 and 132 to peer 03000000)
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0063 03000000000000000000000000000000 - message header indicating message length 99
+		// 030073 - inbound read from peer id 0 of len 115
+		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0100000000000000000000000000000000000000000000000000000000000000 031111111111111111111111111111111111111111111111111111111111111111 03000000000000000000000000000000 - revoke_and_ack and mac
+		//
+		// 07 - process the now-pending HTLC forward
+		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: SendHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
+		//
+		// - we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0064 01000000000000000000000000000000 - message header indicating message length 100
+		// 030174 - inbound read from peer id 1 of len 116
+		// 0084 3f00000000000000000000000000000000000000000000000000000000000000 f6000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100 0000 01000000000000000000000000000000 - commitment_signed and mac
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0063 01000000000000000000000000000000 - message header indicating message length 99
+		// 030173 - inbound read from peer id 1 of len 115
+		// 0085 3f00000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 032222222222222222222222222222222222222222222222222222222222222222 01000000000000000000000000000000 - revoke_and_ack and mac
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 004a 01000000000000000000000000000000 - message header indicating message length 74
+		// 03015a - inbound read from peer id 1 of len 90
+		// 0082 3f00000000000000000000000000000000000000000000000000000000000000 0000000000000000 ff00888888888888888888888888888888888888888888888888888888888888 01000000000000000000000000000000 - update_fulfill_htlc and mac
+		// - client should immediately claim the pending HTLC from peer 0 (CHECK 8: SendFulfillHTLCs for node 03000000 with preimage ff00888888 for channel 3d000000)
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0064 01000000000000000000000000000000 - message header indicating message length 100
+		// 030174 - inbound read from peer id 1 of len 116
+		// 0084 3f00000000000000000000000000000000000000000000000000000000000000 f4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100 0000 01000000000000000000000000000000 - commitment_signed and mac
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0063 01000000000000000000000000000000 - message header indicating message length 99
+		// 030173 - inbound read from peer id 1 of len 115
+		// 0085 3f00000000000000000000000000000000000000000000000000000000000000 0100777777777777777777777777777777777777777777777777777777777777 033333333333333333333333333333333333333333333333333333333333333333 01000000000000000000000000000000 - revoke_and_ack and mac
+		//
+		// - before responding to the commitment_signed generated above, send a new HTLC
+		// 030012 - inbound read from peer id 0 of len 18
+		// 05ac 03000000000000000000000000000000 - message header indicating message length 1452
+		// 0300ff - inbound read from peer id 0 of len 255
+		// 0080 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000001 00000000000003e8 ff00000000000000000000000000000000000000000000000000000000000000 00000001 00 030000000000000000000000000000000000000000000000000000000000000555 0000000e000001000000000000000003e8000000010000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff - beginning of update_add_htlc from 0 to 1 via client
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300ff - inbound read from peer id 0 of len 255
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+		// 0300c1 - inbound read from peer id 0 of len 193
+		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ef00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
+		//
+		// - now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0063 03000000000000000000000000000000 - message header indicating message length 99
+		// 030073 - inbound read from peer id 0 of len 115
+		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 034444444444444444444444444444444444444444444444444444444444444444 03000000000000000000000000000000 - revoke_and_ack and mac
+		// - client should now respond with revoke_and_ack and commitment_signed (CHECK 5/6)
+		// duplicates)
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0064 03000000000000000000000000000000 - message header indicating message length 100
+		// 030074 - inbound read from peer id 0 of len 116
+		// 0084 3d00000000000000000000000000000000000000000000000000000000000000 3a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 0000 03000000000000000000000000000000 - commitment_signed and mac
+		//
+		// 030012 - inbound read from peer id 0 of len 18
+		// 0063 03000000000000000000000000000000 - message header indicating message length 99
+		// 030073 - inbound read from peer id 0 of len 115
+		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 1111111111111111111111111111111111111111111111111111111111111111035555555555555555555555555555555555555555555555555555555555555555 03000000000000000000000000000000 - revoke_and_ack and mac
+		//
+		// 07 - process the now-pending HTLC forward
+		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
+		// - we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0064 01000000000000000000000000000000 - message header indicating message length 100
+		// 030174 - inbound read from peer id 1 of len 116
+		// 0084 3f00000000000000000000000000000000000000000000000000000000000000 f5000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100 0000 01000000000000000000000000000000 - commitment_signed and mac
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0063 01000000000000000000000000000000 - message header indicating message length 99
+		// 030173 - inbound read from peer id 1 of len 115
+		// 0085 3f00000000000000000000000000000000000000000000000000000000000000 2222222222222222222222222222222222222222222222222222222222222222 036666666666666666666666666666666666666666666666666666666666666666 01000000000000000000000000000000 - revoke_and_ack and mac
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 002c 01000000000000000000000000000000 - message header indicating message length 44
+		// 03013c - inbound read from peer id 1 of len 60
+		// 0083 3f00000000000000000000000000000000000000000000000000000000000000 0000000000000001 0000 01000000000000000000000000000000 - update_fail_htlc and mac
+		//
+		// 030112 - inbound read from peer id 1 of len 18
+		// 0064 01000000000000000000000000000000 - message header indicating message length 100
+		// 030174 - inbound read from peer id 1 of len 116
+		// 0084 3f00000000000000000000000000000000000000000000000000000000000000 f2000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100 0000 01000000000000000000000000000000 - commitment_signed and mac
+		//
+		// - TODO: update_fail_htlc from peer 1
+
+		let logger = Arc::new(TrackingLogger { lines: Mutex::new(HashMap::new()) });
+		super::do_test(&::hex::decode("00000000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000000000300320003000000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000030012000603000000000000000000000000000000030016001000000000030000000000000000000000000000000300120141030000000000000000000000000000000300ff00207500000000000000000000000000000000000000000000000000000000000000ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679000000000000c35000000000000000000000000000000222ffffffffffffffff00000000000002220000000000000000000000fd000601e3030000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000000000000000000000000000000000002030000000000000000000000000000000000000000000000000000000000000003030000000000000000000000000000000000000000000000000000000000000004030300520000000000000000000000000000000000000000000000000000000000000005030100000000000000000000000000000000000000000000000000000000000000010300000000000000000000000000000000fd00fd00fd0300120084030000000000000000000000000000000300940022ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb1819096793d00000000000000000000000000000000000000000000000000000000000000000036000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000c005e020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae00000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c000003001200430300000000000000000000000000000003005300243d000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000001030132000300000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003014200030200000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000300000000000000000000000000000003011200060100000000000000000000000000000003011600100000000001000000000000000000000000000000050103020000000000000000000000000000000000000000000000000000000000000000c35000fd00fd00fd0301120110010000000000000000000000000000000301ff00210200000000000000020000000000000002000000000000000200000000000000000000000000001a00000000004c4b4000000000000003e800000000000003e80000000203f00005030000000000000000000000000000000000000000000000000000000000000100030000000000000000000000000000000000000000000000000000000000000200030000000000000000000000000000000000000000000000000000000000000300030000000000000000000000000000000000000000000000000000000000000400030000000000000000000000000000000000000000000000000000000000000500030000000000000000000000000000000301210000000000000000000000000000000000010000000000000000000000000000000a03011200620100000000000000000000000000000003017200233f00000000000000000000000000000000000000000000000000000000000000f7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100010000000000000000000000000000000b03011200430100000000000000000000000000000003015300243f000000000000000000000000000000000000000000000000000000000000000301007777777777777777777777777777777777777777777777777777777777770100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e8ff0000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000005550000000e000001000000000000000003e8000000010000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffef000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000003600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000031111111111111111111111111111111111111111111111111111111111111111030000000000000000000000000000000703011200640100000000000000000000000000000003017400843f00000000000000000000000000000000000000000000000000000000000000f600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003222222222222222222222222222222222222222222222222222222222222222201000000000000000000000000000000030112004a0100000000000000000000000000000003015a00823f000000000000000000000000000000000000000000000000000000000000000000000000000000ff008888888888888888888888888888888888888888888888888888888888880100000000000000000000000000000003011200640100000000000000000000000000000003017400843f00000000000000000000000000000000000000000000000000000000000000f400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853f0000000000000000000000000000000000000000000000000000000000000001007777777777777777777777777777777777777777777777777777777777770333333333333333333333333333333333333333333333333333333333333333330100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d00000000000000000000000000000000000000000000000000000000000000000000000000000100000000000003e8ff0000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000005550000000e000001000000000000000003e8000000010000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffef000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000344444444444444444444444444444444444444444444444444444444444444440300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000003a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000001111111111111111111111111111111111111111111111111111111111111111035555555555555555555555555555555555555555555555555555555555555555030000000000000000000000000000000703011200640100000000000000000000000000000003017400843f00000000000000000000000000000000000000000000000000000000000000f500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853f00000000000000000000000000000000000000000000000000000000000000222222222222222222222222222222222222222222222222222222222222222203666666666666666666666666666666666666666666666666666666666666666601000000000000000000000000000000030112002c0100000000000000000000000000000003013c00833f00000000000000000000000000000000000000000000000000000000000000000000000000000100000100000000000000000000000000000003011200640100000000000000000000000000000003017400843f00000000000000000000000000000000000000000000000000000000000000f2000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000001000000000000000000000000000000").unwrap(), &(Arc::clone(&logger) as Arc<Logger>));
+
+		let log_entries = logger.lines.lock().unwrap();
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 33 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 1
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 35 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 2
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 3
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3f00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 4
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 133 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 5
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 132 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 6
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 HTLCs for channel 3f00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 7
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFulfillHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 with payment_preimage ff00888888888888888888888888888888888888888888888888888888888888 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 8
+		
 	}
 }

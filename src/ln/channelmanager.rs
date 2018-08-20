@@ -415,6 +415,14 @@ impl ChannelManager {
 		}
 	}
 
+	/// Force close all channels, immediately broadcasting the latest local commitment transaction
+	/// for each to the chain and rejecting new HTLCs on each.
+	pub fn force_close_all_channels(&self) {
+		for chan in self.list_channels() {
+			self.force_close_channel(&chan.channel_id);
+		}
+	}
+
 	#[inline]
 	fn gen_rho_mu_from_shared_secret(shared_secret: &SharedSecret) -> ([u8; 32], [u8; 32]) {
 		({
