@@ -52,7 +52,7 @@ macro_rules! log_funding_channel_id {
 
 macro_rules! log_internal {
 	($self: ident, $lvl:expr, $($arg:tt)+) => (
-		&$self.logger.log(&Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()));
+		&$self.logger.log(&::util::logger::Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()));
 	);
 }
 

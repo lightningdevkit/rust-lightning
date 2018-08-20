@@ -5,7 +5,7 @@ use ln::msgs::{MsgEncodable,MsgDecodable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use util::byte_utils;
 use util::events::{EventsProvider,Event};
-use util::logger::{Logger, Record};
+use util::logger::Logger;
 
 use std::collections::{HashMap,LinkedList};
 use std::sync::{Arc, Mutex};

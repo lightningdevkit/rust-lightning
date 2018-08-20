@@ -23,7 +23,7 @@ use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
 use util::sha2::Sha256;
-use util::logger::{Logger, Record};
+use util::logger::Logger;
 use util::errors::APIError;
 
 use std;
