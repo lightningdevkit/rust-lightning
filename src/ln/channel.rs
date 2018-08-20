@@ -1018,7 +1018,8 @@ impl Channel {
 
 		let mut pending_idx = std::usize::MAX;
 		for (idx, htlc) in self.pending_htlcs.iter().enumerate() {
-			if !htlc.outbound && htlc.payment_hash == payment_hash_calc {
+			if !htlc.outbound && htlc.payment_hash == payment_hash_calc &&
+					htlc.state != HTLCState::LocalRemoved && htlc.state != HTLCState::LocalRemovedAwaitingCommitment {
 				if pending_idx != std::usize::MAX {
 					panic!("Duplicate HTLC payment_hash, ChannelManager should have prevented this!");
 				}
@@ -1070,9 +1071,8 @@ impl Channel {
 				// hopefully never happens. Instead, we make sure we get the preimage into the
 				// channel_monitor and pretend we didn't just see the preimage.
 				return Ok((None, Some(self.channel_monitor.clone())));
-			} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
-				return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 			} else {
+				// LocalRemoved/LocalRemovedAwaitingCOmmitment handled in the search loop
 				panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
 			}
 			htlc.htlc_id
