@@ -126,7 +126,7 @@ pub trait Logger: Sync + Send {
 
 #[cfg(test)]
 mod tests {
-	use util::logger::{Logger, Level, Record};
+	use util::logger::{Logger, Level};
 	use util::test_utils::TestLogger;
 	use std::sync::{Arc};
 

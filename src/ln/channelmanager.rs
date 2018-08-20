@@ -20,7 +20,7 @@ use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable,MsgDecodable};
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::chacha20poly1305rfc::ChaCha20;
-use util::logger::{Logger, Record};
+use util::logger::Logger;
 use util::errors::APIError;
 
 use crypto;
