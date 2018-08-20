@@ -1,7 +1,8 @@
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 
 /// A reference to a transaction output.
-/// Differs from bitcoin::blockdata::transaction::TxOutRef as the index is a u16 instead of usize
+/// Differs from bitcoin::blockdata::transaction::OutPoint as the index is a u16 instead of u32
 /// due to LN's restrictions on index values. Should reduce (possibly) unsafe conversions this way.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct OutPoint {
@@ -24,6 +25,13 @@ impl OutPoint {
 		res[30] ^= ((self.index >> 8) & 0xff) as u8;
 		res[31] ^= ((self.index >> 0) & 0xff) as u8;
 		res
+	}
+
+	pub fn into_bitcoin_outpoint(self) -> BitcoinOutPoint {
+		BitcoinOutPoint {
+			txid: self.txid,
+			vout: self.index as u32,
+		}
 	}
 }
 

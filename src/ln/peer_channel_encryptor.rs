@@ -4,6 +4,7 @@ use ln::msgs;
 use secp256k1::Secp256k1;
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::ecdh::SharedSecret;
+use secp256k1;
 
 use crypto::digest::Digest;
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
@@ -65,7 +66,7 @@ enum NoiseState {
 }
 
 pub struct PeerChannelEncryptor {
-	secp_ctx: Secp256k1,
+	secp_ctx: Secp256k1<secp256k1::SignOnly>,
 	their_node_id: Option<PublicKey>, // filled in for outbound, or inbound after noise_state is Finished
 
 	noise_state: NoiseState,
@@ -76,7 +77,7 @@ impl PeerChannelEncryptor {
 		let mut key = [0u8; 32];
 		rng::fill_bytes(&mut key);
 
-		let secp_ctx = Secp256k1::new();
+		let secp_ctx = Secp256k1::signing_only();
 		let sec_key = SecretKey::from_slice(&secp_ctx, &key).unwrap(); //TODO: nicer rng-is-bad error message
 
 		let mut sha = Sha256::new();
@@ -102,11 +103,11 @@ impl PeerChannelEncryptor {
 	}
 
 	pub fn new_inbound(our_node_secret: &SecretKey) -> PeerChannelEncryptor {
-		let secp_ctx = Secp256k1::new();
+		let secp_ctx = Secp256k1::signing_only();
 
 		let mut sha = Sha256::new();
 		sha.input(&NOISE_H);
-		let our_node_id = PublicKey::from_secret_key(&secp_ctx, our_node_secret).unwrap(); //TODO: nicer bad-node_secret error message
+		let our_node_id = PublicKey::from_secret_key(&secp_ctx, our_node_secret);
 		sha.input(&our_node_id.serialize()[..]);
 		let mut h = [0; 32];
 		sha.result(&mut h);
@@ -167,8 +168,8 @@ impl PeerChannelEncryptor {
 	}
 
 	#[inline]
-	fn outbound_noise_act(secp_ctx: &Secp256k1, state: &mut BidirectionalNoiseState, our_key: &SecretKey, their_key: &PublicKey) -> ([u8; 50], [u8; 32]) {
-		let our_pub = PublicKey::from_secret_key(secp_ctx, &our_key).unwrap(); //TODO: nicer rng-is-bad error message
+	fn outbound_noise_act<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, state: &mut BidirectionalNoiseState, our_key: &SecretKey, their_key: &PublicKey) -> ([u8; 50], [u8; 32]) {
+		let our_pub = PublicKey::from_secret_key(secp_ctx, &our_key);
 
 		let mut sha = Sha256::new();
 		sha.input(&state.h);
@@ -191,7 +192,7 @@ impl PeerChannelEncryptor {
 	}
 
 	#[inline]
-	fn inbound_noise_act(secp_ctx: &Secp256k1, state: &mut BidirectionalNoiseState, act: &[u8], our_key: &SecretKey) -> Result<(PublicKey, [u8; 32]), HandleError> {
+	fn inbound_noise_act<T>(secp_ctx: &Secp256k1<T>, state: &mut BidirectionalNoiseState, act: &[u8], our_key: &SecretKey) -> Result<(PublicKey, [u8; 32]), HandleError> {
 		assert_eq!(act.len(), 50);
 
 		if act[0] != 0 {
@@ -294,7 +295,7 @@ impl PeerChannelEncryptor {
 						let (re, temp_k2) = PeerChannelEncryptor::inbound_noise_act(&self.secp_ctx, bidirectional_state, act_two, &ie)?;
 
 						let mut res = [0; 66];
-						let our_node_id = PublicKey::from_secret_key(&self.secp_ctx, &our_node_secret).unwrap(); //TODO: nicer rng-is-bad error message
+						let our_node_id = PublicKey::from_secret_key(&self.secp_ctx, &our_node_secret);
 
 						PeerChannelEncryptor::encrypt_with_ad(&mut res[1..50], 1, &temp_k2, &bidirectional_state.h, &our_node_id.serialize()[..]);
 

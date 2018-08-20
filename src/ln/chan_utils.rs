@@ -1,6 +1,6 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::transaction::{TxIn,TxOut,Transaction};
+use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
 use bitcoin::util::hash::{Hash160,Sha256dHash};
 
 use secp256k1::key::{PublicKey,SecretKey};
@@ -32,10 +32,10 @@ pub fn build_commitment_secret(commitment_seed: [u8; 32], idx: u64) -> [u8; 32] 
 	res
 }
 
-pub fn derive_private_key(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
+pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
 	let mut sha = Sha256::new();
 	sha.input(&per_commitment_point.serialize());
-	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).unwrap().serialize());
+	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
 	let mut res = [0; 32];
 	sha.result(&mut res);
 
@@ -44,21 +44,21 @@ pub fn derive_private_key(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey
 	Ok(key)
 }
 
-pub fn derive_public_key(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let mut sha = Sha256::new();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
 	let mut res = [0; 32];
 	sha.result(&mut res);
 
-	let hashkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &res)?).unwrap();
+	let hashkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &res)?);
 	base_point.combine(&secp_ctx, &hashkey)
 }
 
 /// Derives a revocation key from its constituent parts
-pub fn derive_private_revocation_key(secp_ctx: &Secp256k1, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
-	let revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &revocation_base_secret).unwrap();
-	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret).unwrap();
+pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
+	let revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &revocation_base_secret);
+	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
 	let rev_append_commit_hash_key = {
 		let mut sha = Sha256::new();
@@ -87,7 +87,7 @@ pub fn derive_private_revocation_key(secp_ctx: &Secp256k1, per_commitment_secret
 	Ok(part_a)
 }
 
-pub fn derive_public_revocation_key(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let rev_append_commit_hash_key = {
 		let mut sha = Sha256::new();
 		sha.input(&revocation_base_point.serialize());
@@ -124,7 +124,7 @@ pub struct TxCreationKeys {
 }
 
 impl TxCreationKeys {
-	pub fn new(secp_ctx: &Secp256k1, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
+	pub fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
 			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)?,
@@ -241,8 +241,10 @@ pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKey
 pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
-		prev_hash: prev_hash.clone(),
-		prev_index: htlc.transaction_output_index,
+		previous_output: OutPoint {
+			txid: prev_hash.clone(),
+			vout: htlc.transaction_output_index,
+		},
 		script_sig: Script::new(),
 		sequence: 0,
 		witness: Vec::new(),

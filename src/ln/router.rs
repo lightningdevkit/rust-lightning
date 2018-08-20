@@ -1,5 +1,6 @@
 use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1,Message};
+use secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
 
@@ -152,7 +153,7 @@ pub struct RouteHint {
 /// Tracks a view of the network, receiving updates from peers and generating Routes to
 /// payment destinations.
 pub struct Router {
-	secp_ctx: Secp256k1,
+	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
 	logger: Arc<Logger>,
 }
@@ -396,7 +397,7 @@ impl Router {
 			addresses: Vec::new(),
 		});
 		Router {
-			secp_ctx: Secp256k1::new(),
+			secp_ctx: Secp256k1::verification_only(),
 			network_map: RwLock::new(NetworkMap {
 				channels: HashMap::new(),
 				our_node_id: our_pubkey,
@@ -645,7 +646,7 @@ mod tests {
 	#[test]
 	fn route_test() {
 		let secp_ctx = Secp256k1::new();
-		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap();
+		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let router = Router::new(our_id, Arc::clone(&logger));
 
@@ -706,14 +707,14 @@ mod tests {
 		// chan11 1-to-2: enabled, 0 fee
 		// chan11 2-to-1: enabled, 0 fee
 
-		let node1 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap()).unwrap();
-		let node2 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..]).unwrap()).unwrap();
-		let node3 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..]).unwrap()).unwrap();
-		let node4 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..]).unwrap()).unwrap();
-		let node5 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap()).unwrap();
-		let node6 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap()).unwrap();
-		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap()).unwrap();
-		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap()).unwrap();
+		let node1 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
+		let node2 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..]).unwrap());
+		let node3 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..]).unwrap());
+		let node4 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..]).unwrap());
+		let node5 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap());
+		let node6 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap());
+		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap());
+		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap());
 
 		let zero_hash = Sha256dHash::from_data(&[0; 32]);
 

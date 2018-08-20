@@ -1658,7 +1658,7 @@ mod tests {
 	fn encoding_channel_reestablish_no_secret() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap()
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
 		};
 
 		let cr = msgs::ChannelReestablish {
@@ -1680,7 +1680,7 @@ mod tests {
 	fn encoding_channel_reestablish_with_secret() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap()).unwrap()
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
 		};
 
 		let cr = msgs::ChannelReestablish {

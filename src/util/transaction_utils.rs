@@ -20,13 +20,13 @@ pub fn sort_outputs<T>(outputs: &mut Vec<(TxOut, T)>) {
 
 pub fn sort_inputs<T>(inputs: &mut Vec<(TxIn, T)>) {
 	inputs.sort_unstable_by(|a, b| {
-		if a.0.prev_hash.into_le() < b.0.prev_hash.into_le() {
-		Ordering::Less
-		} else if b.0.prev_hash.into_le() < a.0.prev_hash.into_le() {
-			Ordering::Greater
-		} else if a.0.prev_index < b.0.prev_index {
+		if a.0.previous_output.txid.into_le() < b.0.previous_output.txid.into_le() {
 			Ordering::Less
-		} else if b.0.prev_index < a.0.prev_index {
+		} else if b.0.previous_output.txid.into_le() < a.0.previous_output.txid.into_le() {
+			Ordering::Greater
+		} else if a.0.previous_output.vout < b.0.previous_output.vout {
+			Ordering::Less
+		} else if b.0.previous_output.vout < a.0.previous_output.vout {
 			Ordering::Greater
 		} else {
 			Ordering::Equal
@@ -39,7 +39,7 @@ mod tests {
 	use super::*;
 
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::TxOut;
+	use bitcoin::blockdata::transaction::{TxOut, OutPoint};
 	use bitcoin::util::hash::Sha256dHash;
 
 	use hex::decode;
@@ -161,8 +161,10 @@ mod tests {
 					let expected_raw: Vec<(&str, u32)> = $value;
 					let expected: Vec<(TxIn, &str)> = expected_raw.iter().map(
 						|txin_raw| TxIn {
-							prev_hash: Sha256dHash::from_hex(txin_raw.0).unwrap(),
-							prev_index: txin_raw.1,
+							previous_output: OutPoint {
+								txid: Sha256dHash::from_hex(txin_raw.0).unwrap(),
+								vout: txin_raw.1,
+							},
 							script_sig: Script::new(),
 							sequence: 0,
 							witness: vec![]

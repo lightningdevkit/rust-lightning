@@ -23,16 +23,16 @@ max_level_info = []
 max_level_debug = []
 
 [dependencies]
-bitcoin = "0.13"
+bitcoin = "0.14"
 rust-crypto = "0.2"
 rand = "0.4"
-secp256k1 = "0.9"
+secp256k1 = "0.11"
 
 [build-dependencies]
 cc = "1.0"
 
 [dev-dependencies.bitcoin]
-version = "0.13"
+version = "0.14"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]
