@@ -385,17 +385,18 @@ impl Channel {
 	// Constructors:
 	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
+			return Err(APIError::misuse("funding value > 2^24"));
 		}
 
 		if push_msat > channel_value_satoshis * 1000 {
-			return Err(APIError::APIMisuseError{err: "push value > channel value"});
+			return Err(APIError::misuse("push value > channel value"));
 		}
 
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 		if Channel::get_our_channel_reserve_satoshis(channel_value_satoshis) < Channel::derive_our_dust_limit_satoshis(background_feerate) {
-			return Err(APIError::FeeRateTooHigh{err: format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate), feerate: background_feerate});
+			let err = format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate);
+			return Err(APIError::feerate_too_high(err, background_feerate));
 		}
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
