@@ -8,7 +8,7 @@ use bitcoin::util::hash::Sha256dHash;
 use bitcoin::network::serialize::{serialize, BitcoinHash};
 
 use lightning::ln::channel::{Channel, ChannelKeys};
-use lightning::ln::channelmanager::{HTLCFailReason, PendingForwardHTLCInfo};
+use lightning::ln::channelmanager::{HTLCFailReason, PendingHTLCStatus};
 use lightning::ln::msgs;
 use lightning::ln::msgs::{MsgDecodable, ErrorAction};
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
@@ -280,7 +280,7 @@ pub fn do_test(data: &[u8]) {
 			},
 			2 => {
 				let update_add_htlc = decode_msg!(msgs::UpdateAddHTLC, 32+8+8+32+4+4+33+20*65+32);
-				test_err!(channel.update_add_htlc(&update_add_htlc, PendingForwardHTLCInfo::dummy()));
+				test_err!(channel.update_add_htlc(&update_add_htlc, PendingHTLCStatus::dummy()));
 			},
 			3 => {
 				let update_fulfill_htlc = decode_msg!(msgs::UpdateFulfillHTLC, 32 + 8 + 32);
