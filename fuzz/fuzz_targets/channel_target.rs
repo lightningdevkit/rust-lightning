@@ -256,7 +256,6 @@ pub fn do_test(data: &[u8]) {
 				Ok(r) => Some(r),
 				Err(e) => match e.action {
 					None => return,
-					Some(ErrorAction::UpdateFailHTLC {..}) => None,
 					Some(ErrorAction::DisconnectPeer {..}) => return,
 					Some(ErrorAction::IgnoreError) => None,
 					Some(ErrorAction::SendErrorMessage {..}) => None,

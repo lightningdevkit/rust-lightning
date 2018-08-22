@@ -952,10 +952,14 @@ impl ChannelManager {
 		}
 
 		let mut events = self.pending_events.lock().unwrap();
-		events.push(events::Event::SendHTLCs {
+		events.push(events::Event::UpdateHTLCs {
 			node_id: first_hop_node_id,
-			msgs: vec![update_add],
-			commitment_msg: commitment_signed,
+			updates: msgs::CommitmentUpdate {
+				update_add_htlcs: vec![update_add],
+				update_fulfill_htlcs: Vec::new(),
+				update_fail_htlcs: Vec::new(),
+				commitment_signed,
+			},
 		});
 		Ok(())
 	}
@@ -1092,10 +1096,14 @@ impl ChannelManager {
 								continue;
 							},
 						};
-						new_events.push((Some(monitor), events::Event::SendHTLCs {
+						new_events.push((Some(monitor), events::Event::UpdateHTLCs {
 							node_id: forward_chan.get_their_node_id(),
-							msgs: add_htlc_msgs,
-							commitment_msg: commitment_msg,
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: add_htlc_msgs,
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: Vec::new(),
+								commitment_signed: commitment_msg,
+							},
 						}));
 					}
 				} else {
@@ -1211,11 +1219,14 @@ impl ChannelManager {
 						}
 
 						let mut pending_events = self.pending_events.lock().unwrap();
-						//TODO: replace by HandleError ? UpdateFailHTLC in handle_update_add_htlc need also to build a CommitmentSigned
-						pending_events.push(events::Event::SendFailHTLC {
+						pending_events.push(events::Event::UpdateHTLCs {
 							node_id,
-							msg: msg,
-							commitment_msg: commitment_msg,
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: Vec::new(),
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: vec![msg],
+								commitment_signed: commitment_msg,
+							},
 						});
 					},
 					None => {},
@@ -1307,10 +1318,14 @@ impl ChannelManager {
 
 				if let Some((msg, commitment_msg)) = fulfill_msgs.0 {
 					let mut pending_events = self.pending_events.lock().unwrap();
-					pending_events.push(events::Event::SendFulfillHTLC {
+					pending_events.push(events::Event::UpdateHTLCs {
 						node_id: node_id,
-						msg,
-						commitment_msg,
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: vec![msg],
+							update_fail_htlcs: Vec::new(),
+							commitment_signed: commitment_msg,
+						}
 					});
 				}
 				true
@@ -2461,8 +2476,10 @@ mod tests {
 	impl SendEvent {
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::SendHTLCs { node_id, msgs, commitment_msg } => {
-					SendEvent { node_id: node_id, msgs: msgs, commitment_msg: commitment_msg }
+				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, commitment_signed } } => {
+					assert!(update_fulfill_htlcs.is_empty());
+					assert!(update_fail_htlcs.is_empty());
+					SendEvent { node_id: node_id, msgs: update_add_htlcs, commitment_msg: commitment_signed }
 				},
 				_ => panic!("Unexpected event type!"),
 			}
@@ -2618,9 +2635,12 @@ mod tests {
 			let events = node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
+				Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref commitment_signed } } => {
+					assert!(update_add_htlcs.is_empty());
+					assert_eq!(update_fulfill_htlcs.len(), 1);
+					assert!(update_fail_htlcs.is_empty());
 					expected_next_node = node_id.clone();
-					next_msgs = Some((msg.clone(), commitment_msg.clone()));
+					next_msgs = Some((update_fulfill_htlcs[0].clone(), commitment_signed.clone()));
 				},
 				_ => panic!("Unexpected event"),
 			};
@@ -2739,9 +2759,12 @@ mod tests {
 			let events = node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
+				Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref commitment_signed } } => {
+					assert!(update_add_htlcs.is_empty());
+					assert!(update_fulfill_htlcs.is_empty());
+					assert_eq!(update_fail_htlcs.len(), 1);
 					expected_next_node = node_id.clone();
-					next_msgs = Some((msg.clone(), commitment_msg.clone()));
+					next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
 				},
 				_ => panic!("Unexpected event"),
 			};
@@ -3057,7 +3080,9 @@ mod tests {
 					let events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
 					match events[0] {
-						Event::SendFulfillHTLC { ref node_id, .. } => {
+						Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, .. } } => {
+							assert!(update_add_htlcs.is_empty());
+							assert!(update_fail_htlcs.is_empty());
 							assert_eq!(*node_id, $prev_node.node.get_our_node_id());
 						},
 						_ => panic!("Unexpected event"),
