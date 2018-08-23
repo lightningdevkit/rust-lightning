@@ -829,8 +829,8 @@ impl ChannelManager {
 					if !chan.is_live() {
 						Some(("Forwarding channel is not in a ready state.", 0x1000 | 7, self.get_channel_update(chan).unwrap()))
 					} else {
-						let fee = chan.get_our_fee_base_msat(&*self.fee_estimator) + (*amt_to_forward * self.fee_proportional_millionths as u64 / 1000000) as u32;
-						if msg.amount_msat < fee as u64 || (msg.amount_msat - fee as u64) < *amt_to_forward {
+						let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
+						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward {
 							Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()))
 						} else {
 							if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 {
