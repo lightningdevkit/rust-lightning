@@ -1131,17 +1131,24 @@ impl Channel {
 				if htlc_id != 0 {
 					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
 				}
-				htlc_id = htlc.htlc_id;
-				htlc_amount_msat += htlc.amount_msat;
 				if htlc.state == HTLCState::Committed {
 					htlc.state = HTLCState::LocalRemoved;
 				} else if htlc.state == HTLCState::RemoteAnnounced {
-					panic!("Somehow forwarded HTLC prior to remote revocation!");
+					if let Some(PendingHTLCStatus::Forward(_)) = htlc.pending_forward_state {
+						panic!("Somehow forwarded HTLC prior to remote revocation!");
+					} else {
+						// We have to pretend this isn't here - we're probably a duplicate with the
+						// same payment_hash as some other HTLC, and the other is getting failed,
+						// we'll fail this one as soon as remote commits to it.
+						continue;
+					}
 				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
 					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 				} else {
 					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
 				}
+				htlc_id = htlc.htlc_id;
+				htlc_amount_msat += htlc.amount_msat;
 			}
 		}
 		if htlc_amount_msat == 0 {
