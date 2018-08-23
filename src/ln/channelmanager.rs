@@ -1633,8 +1633,6 @@ impl ChannelMessageHandler for ChannelManager {
 					hmac: next_hop_data.hmac.clone(),
 				};
 
-				//TODO: Check amt_to_forward and outgoing_cltv_value are within acceptable ranges!
-
 				PendingForwardHTLCInfo {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
@@ -1656,6 +1654,17 @@ impl ChannelMessageHandler for ChannelManager {
 				Some(id) => id.clone(),
 			};
 			let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
+			let fee = chan.get_our_fee_base_msat(&*self.fee_estimator) + (pending_forward_info.amt_to_forward * self.fee_proportional_millionths as u64 / 1000000) as u32;
+			if msg.amount_msat < fee as u64 || (msg.amount_msat - fee as u64) < pending_forward_info.amt_to_forward {
+				log_debug!(self, "HTLC {} incorrect amount: in {} out {} fee required {}", msg.htlc_id, msg.amount_msat, pending_forward_info.amt_to_forward, fee);
+				//TODO: send back "channel_update" with new fee parameters in onion failure packet
+				return_err!("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, &[0;0]);
+			}
+			if (msg.cltv_expiry as u64) < pending_forward_info.outgoing_cltv_value as u64 + CLTV_EXPIRY_DELTA as u64 {
+				log_debug!(self, "HTLC {} incorrect CLTV: in {} out {} delta required {}", msg.htlc_id, msg.cltv_expiry, pending_forward_info.outgoing_cltv_value, CLTV_EXPIRY_DELTA);
+				return_err!("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, &[0;0]);
+			}
+
 			if !chan.is_live() {
 				let chan_update = self.get_channel_update(chan).unwrap();
 				return_err!("Forwarding channel is not in a ready state.", 0x1000 | 7, &chan_update.encode_with_len()[..]);
