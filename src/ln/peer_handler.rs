@@ -308,17 +308,22 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 														continue;
 													},
 													msgs::ErrorAction::DisconnectPeer { msg: _ } => {
+														//TODO: Try to push msg
+														log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
 														return Err(PeerHandleError{ no_connection_possible: false });
 													},
 													msgs::ErrorAction::IgnoreError => {
+														log_trace!(self, "Got Err handling message, ignoring because {}", e.err);
 														continue;
 													},
 													msgs::ErrorAction::SendErrorMessage { msg } => {
+														log_trace!(self, "Got Err handling message, sending Error message because {}", e.err);
 														encode_and_send_msg!(msg, 17);
 														continue;
 													},
 												}
 											} else {
+												log_debug!(self, "Got Err handling message, action not yet filled in: {}", e.err);
 												return Err(PeerHandleError{ no_connection_possible: false });
 											}
 										}
