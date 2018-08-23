@@ -16,7 +16,7 @@ use crypto::hkdf::{hkdf_extract,hkdf_expand};
 use ln::msgs;
 use ln::msgs::{ErrorAction, HandleError, MsgEncodable};
 use ln::channelmonitor::ChannelMonitor;
-use ln::channelmanager::{PendingForwardHTLCInfo, HTLCFailReason};
+use ln::channelmanager::{PendingHTLCStatus, PendingForwardHTLCInfo, HTLCFailReason};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -164,7 +164,7 @@ struct HTLCOutput { //TODO: Refactor into Outbound/InboundHTLCOutput (will save 
 	/// If we're in LocalRemoved*, set to true if we fulfilled the HTLC, and can claim money
 	local_removed_fulfilled: bool,
 	/// state pre-committed Remote* implies pending_forward_state, otherwise it must be None
-	pending_forward_state: Option<PendingForwardHTLCInfo>,
+	pending_forward_state: Option<PendingHTLCStatus>,
 }
 
 impl HTLCOutput {
@@ -1381,7 +1381,7 @@ impl Channel {
 		(inbound_htlc_count, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat)
 	}
 
-	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingForwardHTLCInfo) -> Result<(), HandleError> {
+	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
@@ -1670,6 +1670,7 @@ impl Channel {
 
 		let mut to_forward_infos = Vec::new();
 		let mut revoked_htlcs = Vec::new();
+		let mut failed_htlcs = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
 		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
@@ -1693,8 +1694,17 @@ impl Channel {
 				htlc.state = HTLCState::AwaitingAnnouncedRemoteRevoke;
 				require_commitment = true;
 			} else if htlc.state == HTLCState::AwaitingAnnouncedRemoteRevoke {
-				htlc.state = HTLCState::Committed;
-				to_forward_infos.push(htlc.pending_forward_state.take().unwrap());
+				match htlc.pending_forward_state.take().unwrap() {
+					PendingHTLCStatus::Fail(fail_msg) => {
+						htlc.state = HTLCState::LocalRemoved;
+						require_commitment = true;
+						failed_htlcs.push(fail_msg);
+					},
+					PendingHTLCStatus::Forward(forward_info) => {
+						to_forward_infos.push(forward_info);
+						htlc.state = HTLCState::Committed;
+					}
+				}
 			} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove {
 				htlc.state = HTLCState::AwaitingRemovedRemoteRevoke;
 				require_commitment = true;
@@ -1706,7 +1716,11 @@ impl Channel {
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
 		match self.free_holding_cell_htlcs()? {
-			Some(commitment_update) => {
+			Some(mut commitment_update) => {
+				commitment_update.0.update_fail_htlcs.reserve(failed_htlcs.len());
+				for fail_msg in failed_htlcs.drain(..) {
+					commitment_update.0.update_fail_htlcs.push(fail_msg);
+				}
 				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, commitment_update.1))
 			},
 			None => {
@@ -1715,7 +1729,7 @@ impl Channel {
 					Ok((Some(msgs::CommitmentUpdate {
 						update_add_htlcs: Vec::new(),
 						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs: Vec::new(),
+						update_fail_htlcs: failed_htlcs,
 						commitment_signed
 					}), to_forward_infos, revoked_htlcs, monitor_update))
 				} else {

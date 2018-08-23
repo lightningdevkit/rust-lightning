@@ -70,24 +70,11 @@ pub enum Event {
 		msg: msgs::FundingLocked,
 		announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	},
-	/// Used to indicate that a series of update_add_htlc messages, as well as a commitment_signed
+	/// Used to indicate that a series of HTLC update messages, as well as a commitment_signed
 	/// message should be sent to the peer with the given node_id.
-	SendHTLCs {
+	UpdateHTLCs {
 		node_id: PublicKey,
-		msgs: Vec<msgs::UpdateAddHTLC>,
-		commitment_msg: msgs::CommitmentSigned,
-	},
-	/// Used to indicate that we're ready to fulfill an htlc from the peer with the given node_id.
-	SendFulfillHTLC {
-		node_id: PublicKey,
-		msg: msgs::UpdateFulfillHTLC,
-		commitment_msg: msgs::CommitmentSigned,
-	},
-	/// Used to indicate that we need to fail an htlc from the peer with the given node_id.
-	SendFailHTLC {
-		node_id: PublicKey,
-		msg: msgs::UpdateFailHTLC,
-		commitment_msg: msgs::CommitmentSigned,
+		updates: msgs::CommitmentUpdate,
 	},
 	/// Used to indicate that a shutdown message should be sent to the peer with the given node_id.
 	SendShutdown {

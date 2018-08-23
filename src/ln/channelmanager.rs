@@ -40,6 +40,7 @@ mod channel_held_info {
 	use ln::msgs;
 
 	/// Stores the info we will need to send when we want to forward an HTLC onwards
+	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 	pub struct PendingForwardHTLCInfo {
 		pub(super) onion_packet: Option<msgs::OnionPacket>,
 		pub(super) payment_hash: [u8; 32],
@@ -49,17 +50,24 @@ mod channel_held_info {
 		pub(super) outgoing_cltv_value: u32,
 	}
 
+	/// Stores whether we can't forward an HTLC or relevant forwarding info
+	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+	pub enum PendingHTLCStatus {
+		Forward(PendingForwardHTLCInfo),
+		Fail(msgs::UpdateFailHTLC),
+	}
+
 	#[cfg(feature = "fuzztarget")]
-	impl PendingForwardHTLCInfo {
+	impl PendingHTLCStatus {
 		pub fn dummy() -> Self {
-			Self {
+			PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
 				onion_packet: None,
 				payment_hash: [0; 32],
 				short_channel_id: 0,
 				prev_short_channel_id: 0,
 				amt_to_forward: 0,
 				outgoing_cltv_value: 0,
-			}
+			})
 		}
 	}
 
@@ -667,6 +675,180 @@ impl ChannelManager {
 		ChannelManager::encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 	}
 
+	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, SharedSecret, MutexGuard<ChannelHolder>) {
+		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key, &self.our_network_key);
+		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
+
+		macro_rules! get_onion_hash {
+			() => {
+				{
+					let mut sha = Sha256::new();
+					sha.input(&msg.onion_routing_packet.hop_data);
+					let mut onion_hash = [0; 32];
+					sha.result(&mut onion_hash);
+					onion_hash
+				}
+			}
+		}
+
+		let mut channel_state = None;
+		macro_rules! return_err {
+			($msg: expr, $err_code: expr, $data: expr) => {
+				{
+					log_info!(self, "Failed to accept/forward incoming HTLC: {}", $msg);
+					if channel_state.is_none() {
+						channel_state = Some(self.channel_state.lock().unwrap());
+					}
+					return (PendingHTLCStatus::Fail(msgs::UpdateFailHTLC {
+						channel_id: msg.channel_id,
+						htlc_id: msg.htlc_id,
+						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
+					}), shared_secret, channel_state.unwrap());
+				}
+			}
+		}
+
+		if msg.onion_routing_packet.version != 0 {
+			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
+			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
+			//the hash doesn't really serve any purpuse - in the case of hashing all data, the
+			//receiving node would have to brute force to figure out which version was put in the
+			//packet by the node that send us the message, in the case of hashing the hop_data, the
+			//node knows the HMAC matched, so they already know what is there...
+			return_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4, &get_onion_hash!());
+		}
+
+		let mut hmac = Hmac::new(Sha256::new(), &mu);
+		hmac.input(&msg.onion_routing_packet.hop_data);
+		hmac.input(&msg.payment_hash);
+		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
+			return_err!("HMAC Check failed", 0x8000 | 0x4000 | 5, &get_onion_hash!());
+		}
+
+		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
+		let next_hop_data = {
+			let mut decoded = [0; 65];
+			chacha.process(&msg.onion_routing_packet.hop_data[0..65], &mut decoded);
+			match msgs::OnionHopData::decode(&decoded[..]) {
+				Err(err) => {
+					let error_code = match err {
+						msgs::DecodeError::UnknownRealmByte => 0x4000 | 1,
+						_ => 0x2000 | 2, // Should never happen
+					};
+					return_err!("Unable to decode our hop data", error_code, &[0;0]);
+				},
+				Ok(msg) => msg
+			}
+		};
+
+		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
+
+		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
+				// OUR PAYMENT!
+				if next_hop_data.data.amt_to_forward != msg.amount_msat {
+					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
+				}
+				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
+					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
+				}
+
+				// Note that we could obviously respond immediately with an update_fulfill_htlc
+				// message, however that would leak that we are the recipient of this payment, so
+				// instead we stay symmetric with the forwarding case, only responding (after a
+				// delay) once they've send us a commitment_signed!
+
+				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
+					onion_packet: None,
+					payment_hash: msg.payment_hash.clone(),
+					short_channel_id: 0,
+					prev_short_channel_id: 0,
+					amt_to_forward: next_hop_data.data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
+				})
+			} else {
+				let mut new_packet_data = [0; 20*65];
+				chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
+				chacha.process(&ChannelManager::ZERO[0..65], &mut new_packet_data[19*65..]);
+
+				let mut new_pubkey = msg.onion_routing_packet.public_key.clone();
+
+				let blinding_factor = {
+					let mut sha = Sha256::new();
+					sha.input(&new_pubkey.serialize()[..]);
+					sha.input(&shared_secret[..]);
+					let mut res = [0u8; 32];
+					sha.result(&mut res);
+					match SecretKey::from_slice(&self.secp_ctx, &res) {
+						Err(_) => {
+							// Return temporary node failure as its technically our issue, not the
+							// channel's issue.
+							return_err!("Blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
+						},
+						Ok(key) => key
+					}
+				};
+
+				match new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
+					Err(_) => {
+						// Return temporary node failure as its technically our issue, not the
+						// channel's issue.
+						return_err!("New blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
+					},
+					Ok(_) => {}
+				};
+
+				let outgoing_packet = msgs::OnionPacket {
+					version: 0,
+					public_key: new_pubkey,
+					hop_data: new_packet_data,
+					hmac: next_hop_data.hmac.clone(),
+				};
+
+				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
+					onion_packet: Some(outgoing_packet),
+					payment_hash: msg.payment_hash.clone(),
+					short_channel_id: next_hop_data.data.short_channel_id,
+					prev_short_channel_id: 0,
+					amt_to_forward: next_hop_data.data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
+				})
+			};
+
+		channel_state = Some(self.channel_state.lock().unwrap());
+		if let &PendingHTLCStatus::Forward(PendingForwardHTLCInfo { ref onion_packet, ref short_channel_id, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
+				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
+				let forwarding_id = match id_option {
+					None => {
+						return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
+					},
+					Some(id) => id.clone(),
+				};
+				if let Some((err, code, chan_update)) = {
+					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
+					if !chan.is_live() {
+						Some(("Forwarding channel is not in a ready state.", 0x1000 | 7, self.get_channel_update(chan).unwrap()))
+					} else {
+						let fee = chan.get_our_fee_base_msat(&*self.fee_estimator) + (*amt_to_forward * self.fee_proportional_millionths as u64 / 1000000) as u32;
+						if msg.amount_msat < fee as u64 || (msg.amount_msat - fee as u64) < *amt_to_forward {
+							Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()))
+						} else {
+							if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 {
+								Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()))
+							} else {
+								None
+							}
+						}
+					}
+				} {
+					return_err!(err, code, &chan_update.encode_with_len()[..]);
+				}
+			}
+		}
+
+		(pending_forward_info, shared_secret, channel_state.unwrap())
+	}
+
 	/// only fails if the channel does not yet have an assigned short_id
 	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, HandleError> {
 		let short_channel_id = match chan.get_short_channel_id() {
@@ -770,10 +952,14 @@ impl ChannelManager {
 		}
 
 		let mut events = self.pending_events.lock().unwrap();
-		events.push(events::Event::SendHTLCs {
+		events.push(events::Event::UpdateHTLCs {
 			node_id: first_hop_node_id,
-			msgs: vec![update_add],
-			commitment_msg: commitment_signed,
+			updates: msgs::CommitmentUpdate {
+				update_add_htlcs: vec![update_add],
+				update_fulfill_htlcs: Vec::new(),
+				update_fail_htlcs: Vec::new(),
+				commitment_signed,
+			},
 		});
 		Ok(())
 	}
@@ -910,10 +1096,14 @@ impl ChannelManager {
 								continue;
 							},
 						};
-						new_events.push((Some(monitor), events::Event::SendHTLCs {
+						new_events.push((Some(monitor), events::Event::UpdateHTLCs {
 							node_id: forward_chan.get_their_node_id(),
-							msgs: add_htlc_msgs,
-							commitment_msg: commitment_msg,
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: add_htlc_msgs,
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: Vec::new(),
+								commitment_signed: commitment_msg,
+							},
 						}));
 					}
 				} else {
@@ -1029,11 +1219,14 @@ impl ChannelManager {
 						}
 
 						let mut pending_events = self.pending_events.lock().unwrap();
-						//TODO: replace by HandleError ? UpdateFailHTLC in handle_update_add_htlc need also to build a CommitmentSigned
-						pending_events.push(events::Event::SendFailHTLC {
+						pending_events.push(events::Event::UpdateHTLCs {
 							node_id,
-							msg: msg,
-							commitment_msg: commitment_msg,
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: Vec::new(),
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: vec![msg],
+								commitment_signed: commitment_msg,
+							},
 						});
 					},
 					None => {},
@@ -1125,10 +1318,14 @@ impl ChannelManager {
 
 				if let Some((msg, commitment_msg)) = fulfill_msgs.0 {
 					let mut pending_events = self.pending_events.lock().unwrap();
-					pending_events.push(events::Event::SendFulfillHTLC {
+					pending_events.push(events::Event::UpdateHTLCs {
 						node_id: node_id,
-						msg,
-						commitment_msg,
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: vec![msg],
+							update_fail_htlcs: Vec::new(),
+							commitment_signed: commitment_msg,
+						}
 					});
 				}
 				true
@@ -1507,169 +1704,8 @@ impl ChannelMessageHandler for ChannelManager {
 		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key, &self.our_network_key);
-		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
-
-		macro_rules! get_onion_hash {
-			() => {
-				{
-					let mut sha = Sha256::new();
-					sha.input(&msg.onion_routing_packet.hop_data);
-					let mut onion_hash = [0; 32];
-					sha.result(&mut onion_hash);
-					onion_hash
-				}
-			}
-		}
-
-		macro_rules! return_err {
-			($msg: expr, $err_code: expr, $data: expr) => {
-				return Err(msgs::HandleError {
-					err: $msg,
-					action: Some(msgs::ErrorAction::UpdateFailHTLC {
-						msg: msgs::UpdateFailHTLC {
-							channel_id: msg.channel_id,
-							htlc_id: msg.htlc_id,
-							reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
-						}
-					}),
-				});
-			}
-		}
-
-		if msg.onion_routing_packet.version != 0 {
-			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
-			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
-			//the hash doesn't really serve any purpuse - in the case of hashing all data, the
-			//receiving node would have to brute force to figure out which version was put in the
-			//packet by the node that send us the message, in the case of hashing the hop_data, the
-			//node knows the HMAC matched, so they already know what is there...
-			return_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4, &get_onion_hash!());
-		}
-
-		let mut hmac = Hmac::new(Sha256::new(), &mu);
-		hmac.input(&msg.onion_routing_packet.hop_data);
-		hmac.input(&msg.payment_hash);
-		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
-			return_err!("HMAC Check failed", 0x8000 | 0x4000 | 5, &get_onion_hash!());
-		}
-
-		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
-		let next_hop_data = {
-			let mut decoded = [0; 65];
-			chacha.process(&msg.onion_routing_packet.hop_data[0..65], &mut decoded);
-			match msgs::OnionHopData::decode(&decoded[..]) {
-				Err(err) => {
-					let error_code = match err {
-						msgs::DecodeError::UnknownRealmByte => 0x4000 | 1,
-						_ => 0x2000 | 2, // Should never happen
-					};
-					return_err!("Unable to decode our hop data", error_code, &[0;0]);
-				},
-				Ok(msg) => msg
-			}
-		};
-
-		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
-
-		let mut pending_forward_info = if next_hop_data.hmac == [0; 32] {
-				// OUR PAYMENT!
-				if next_hop_data.data.amt_to_forward != msg.amount_msat {
-					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
-				}
-				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
-					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
-				}
-
-				// Note that we could obviously respond immediately with an update_fulfill_htlc
-				// message, however that would leak that we are the recipient of this payment, so
-				// instead we stay symmetric with the forwarding case, only responding (after a
-				// delay) once they've send us a commitment_signed!
-
-				PendingForwardHTLCInfo {
-					onion_packet: None,
-					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: 0,
-					prev_short_channel_id: 0,
-					amt_to_forward: next_hop_data.data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
-				}
-			} else {
-				let mut new_packet_data = [0; 20*65];
-				chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
-				chacha.process(&ChannelManager::ZERO[0..65], &mut new_packet_data[19*65..]);
-
-				let mut new_pubkey = msg.onion_routing_packet.public_key.clone();
-
-				let blinding_factor = {
-					let mut sha = Sha256::new();
-					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&shared_secret[..]);
-					let mut res = [0u8; 32];
-					sha.result(&mut res);
-					match SecretKey::from_slice(&self.secp_ctx, &res) {
-						Err(_) => {
-							// Return temporary node failure as its technically our issue, not the
-							// channel's issue.
-							return_err!("Blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
-						},
-						Ok(key) => key
-					}
-				};
-
-				match new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
-					Err(_) => {
-						// Return temporary node failure as its technically our issue, not the
-						// channel's issue.
-						return_err!("New blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
-					},
-					Ok(_) => {}
-				};
-
-				let outgoing_packet = msgs::OnionPacket {
-					version: 0,
-					public_key: new_pubkey,
-					hop_data: new_packet_data,
-					hmac: next_hop_data.hmac.clone(),
-				};
-
-				PendingForwardHTLCInfo {
-					onion_packet: Some(outgoing_packet),
-					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: next_hop_data.data.short_channel_id,
-					prev_short_channel_id: 0,
-					amt_to_forward: next_hop_data.data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
-				}
-			};
-
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let (mut pending_forward_info, shared_secret, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = channel_state_lock.borrow_parts();
-
-		if pending_forward_info.onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
-			let forwarding_id = match channel_state.short_to_id.get(&pending_forward_info.short_channel_id) {
-				None => {
-					return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
-				},
-				Some(id) => id.clone(),
-			};
-			let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
-			let fee = chan.get_our_fee_base_msat(&*self.fee_estimator) + (pending_forward_info.amt_to_forward * self.fee_proportional_millionths as u64 / 1000000) as u32;
-			if msg.amount_msat < fee as u64 || (msg.amount_msat - fee as u64) < pending_forward_info.amt_to_forward {
-				log_debug!(self, "HTLC {} incorrect amount: in {} out {} fee required {}", msg.htlc_id, msg.amount_msat, pending_forward_info.amt_to_forward, fee);
-				let chan_update = self.get_channel_update(chan).unwrap();
-				return_err!("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, &chan_update.encode_with_len()[..]);
-			}
-			if (msg.cltv_expiry as u64) < pending_forward_info.outgoing_cltv_value as u64 + CLTV_EXPIRY_DELTA as u64 {
-				log_debug!(self, "HTLC {} incorrect CLTV: in {} out {} delta required {}", msg.htlc_id, msg.cltv_expiry, pending_forward_info.outgoing_cltv_value, CLTV_EXPIRY_DELTA);
-				let chan_update = self.get_channel_update(chan).unwrap();
-				return_err!("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, &chan_update.encode_with_len()[..]);
-			}
-			if !chan.is_live() {
-				let chan_update = self.get_channel_update(chan).unwrap();
-				return_err!("Forwarding channel is not in a ready state.", 0x1000 | 7, &chan_update.encode_with_len()[..]);
-			}
-		}
 
 		let claimable_htlcs_entry = channel_state.claimable_htlcs.entry(msg.payment_hash.clone());
 
@@ -1677,13 +1713,25 @@ impl ChannelMessageHandler for ChannelManager {
 		// destination. That's OK since those nodes are probably busted or trying to do network
 		// mapping through repeated loops. In either case, we want them to stop talking to us, so
 		// we send permanent_node_failure.
-		if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
-			let mut acceptable_cycle = false;
-			if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
-				acceptable_cycle = pending_forward_info.short_channel_id == 0;
-			}
-			if !acceptable_cycle {
-				return_err!("Payment looped through us twice", 0x4000 | 0x2000 | 2, &[0;0]);
+		let mut will_forward = false;
+		if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { short_channel_id, .. }) = pending_forward_info {
+			if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
+				let mut acceptable_cycle = false;
+				if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
+					acceptable_cycle = short_channel_id == 0;
+				}
+				if !acceptable_cycle {
+					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
+					pending_forward_info = PendingHTLCStatus::Fail(msgs::UpdateFailHTLC {
+						channel_id: msg.channel_id,
+						htlc_id: msg.htlc_id,
+						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x4000 | 0x2000 | 2, &[0;0]),
+					});
+				} else {
+					will_forward = true;
+				}
+			} else {
+				will_forward = true;
 			}
 		}
 
@@ -1696,33 +1744,37 @@ impl ChannelMessageHandler for ChannelManager {
 					return Err(HandleError{err: "Channel not yet available for receiving HTLCs", action: None});
 				}
 				let short_channel_id = chan.get_short_channel_id().unwrap();
-				pending_forward_info.prev_short_channel_id = short_channel_id;
+				if let PendingHTLCStatus::Forward(ref mut forward_info) = pending_forward_info {
+					forward_info.prev_short_channel_id = short_channel_id;
+				}
 				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info)?)
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}),
 		};
 
-		match claimable_htlcs_entry {
-			hash_map::Entry::Occupied(mut e) => {
-				let outbound_route = e.get_mut();
-				let (route, session_priv) = match outbound_route {
-					&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-						(route.clone(), session_priv.clone())
-					},
-					_ => unreachable!(),
-				};
-				*outbound_route = PendingOutboundHTLC::CycledRoute {
-					source_short_channel_id,
-					incoming_packet_shared_secret: shared_secret,
-					route,
-					session_priv,
-				};
-			},
-			hash_map::Entry::Vacant(e) => {
-				e.insert(PendingOutboundHTLC::IntermediaryHopData {
-					source_short_channel_id,
-					incoming_packet_shared_secret: shared_secret,
-				});
+		if will_forward {
+			match claimable_htlcs_entry {
+				hash_map::Entry::Occupied(mut e) => {
+					let outbound_route = e.get_mut();
+					let (route, session_priv) = match outbound_route {
+						&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+							(route.clone(), session_priv.clone())
+						},
+						_ => unreachable!(),
+					};
+					*outbound_route = PendingOutboundHTLC::CycledRoute {
+						source_short_channel_id,
+						incoming_packet_shared_secret: shared_secret,
+						route,
+						session_priv,
+					};
+				},
+				hash_map::Entry::Vacant(e) => {
+					e.insert(PendingOutboundHTLC::IntermediaryHopData {
+						source_short_channel_id,
+						incoming_packet_shared_secret: shared_secret,
+					});
+				}
 			}
 		}
 
@@ -2424,8 +2476,10 @@ mod tests {
 	impl SendEvent {
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::SendHTLCs { node_id, msgs, commitment_msg } => {
-					SendEvent { node_id: node_id, msgs: msgs, commitment_msg: commitment_msg }
+				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, commitment_signed } } => {
+					assert!(update_fulfill_htlcs.is_empty());
+					assert!(update_fail_htlcs.is_empty());
+					SendEvent { node_id: node_id, msgs: update_add_htlcs, commitment_msg: commitment_signed }
 				},
 				_ => panic!("Unexpected event type!"),
 			}
@@ -2581,9 +2635,12 @@ mod tests {
 			let events = node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
+				Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref commitment_signed } } => {
+					assert!(update_add_htlcs.is_empty());
+					assert_eq!(update_fulfill_htlcs.len(), 1);
+					assert!(update_fail_htlcs.is_empty());
 					expected_next_node = node_id.clone();
-					next_msgs = Some((msg.clone(), commitment_msg.clone()));
+					next_msgs = Some((update_fulfill_htlcs[0].clone(), commitment_signed.clone()));
 				},
 				_ => panic!("Unexpected event"),
 			};
@@ -2702,9 +2759,12 @@ mod tests {
 			let events = node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
+				Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref commitment_signed } } => {
+					assert!(update_add_htlcs.is_empty());
+					assert!(update_fulfill_htlcs.is_empty());
+					assert_eq!(update_fail_htlcs.len(), 1);
 					expected_next_node = node_id.clone();
-					next_msgs = Some((msg.clone(), commitment_msg.clone()));
+					next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
 				},
 				_ => panic!("Unexpected event"),
 			};
@@ -3020,7 +3080,9 @@ mod tests {
 					let events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
 					match events[0] {
-						Event::SendFulfillHTLC { ref node_id, .. } => {
+						Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, .. } } => {
+							assert!(update_add_htlcs.is_empty());
+							assert!(update_fail_htlcs.is_empty());
 							assert_eq!(*node_id, $prev_node.node.get_our_node_id());
 						},
 						_ => panic!("Unexpected event"),

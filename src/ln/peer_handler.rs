@@ -303,10 +303,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										Err(e) => {
 											if let Some(action) = e.action {
 												match action {
-													msgs::ErrorAction::UpdateFailHTLC { msg } => {
-														encode_and_send_msg!(msg, 131);
-														continue;
-													},
 													msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 														//TODO: Try to push msg
 														log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
@@ -680,44 +676,26 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
-					Event::SendHTLCs { ref node_id, ref msgs, ref commitment_msg } => {
-						log_trace!(self, "Handling SendHTLCs event in peer_handler for node {} with {} HTLCs for channel {}",
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref commitment_signed } } => {
+						log_trace!(self, "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
-								msgs.len(),
-								log_bytes!(commitment_msg.channel_id));
+								update_add_htlcs.len(),
+								update_fulfill_htlcs.len(),
+								update_fail_htlcs.len(),
+								log_bytes!(commitment_signed.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
-						for msg in msgs {
+						for msg in update_add_htlcs {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 128)));
 						}
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_msg, 132)));
-						Self::do_attempt_write_data(&mut descriptor, peer);
-						continue;
-					},
-					Event::SendFulfillHTLC { ref node_id, ref msg, ref commitment_msg } => {
-						log_trace!(self, "Handling SendFulfillHTLCs event in peer_handler for node {} with payment_preimage {} for channel {}",
-								log_pubkey!(node_id),
-								log_bytes!(msg.payment_preimage),
-								log_bytes!(msg.channel_id));
-						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
-								//TODO: Do whatever we're gonna do for handling dropped messages
-							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 130)));
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_msg, 132)));
-						Self::do_attempt_write_data(&mut descriptor, peer);
-						continue;
-					},
-					Event::SendFailHTLC { ref node_id, ref msg, ref commitment_msg } => {
-						log_trace!(self, "Handling SendFailHTLCs event in peer_handler for node {} for HTLC ID {} for channel {}",
-								log_pubkey!(node_id),
-								msg.htlc_id,
-								log_bytes!(msg.channel_id));
-						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
-								//TODO: Do whatever we're gonna do for handling dropped messages
-							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_msg, 132)));
+						for msg in update_fulfill_htlcs {
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 130)));
+						}
+						for msg in update_fail_htlcs {
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
+						}
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed, 132)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
@@ -775,18 +753,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 					Event::HandleError { ref node_id, ref action } => {
 						if let Some(ref action) = *action {
 							match *action {
-								msgs::ErrorAction::UpdateFailHTLC { ref msg } => {
-									log_trace!(self, "Handling UpdateFailHTLC HandleError event in peer_handler for node {} for HTLC ID {} for channel {}",
-											log_pubkey!(node_id),
-											msg.htlc_id,
-											log_bytes!(msg.channel_id));
-									let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
-										//TODO: Do whatever we're gonna do for handling dropped messages
-									});
-									peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
-									Self::do_attempt_write_data(&mut descriptor, peer);
-
-								},
 								msgs::ErrorAction::DisconnectPeer { ref msg } => {
 									if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
 										if let Some(mut peer) = peers.peers.remove(&descriptor) {

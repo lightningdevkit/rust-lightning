@@ -703,8 +703,7 @@ mod tests {
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3f00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 4
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 133 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 5
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 132 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 6
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 HTLCs for channel 3f00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 7
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFulfillHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 with payment_preimage ff00888888888888888888888888888888888888888888888888888888888888 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 8
-		
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails for channel 3f00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 7
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 with 0 adds, 1 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 8
 	}
 }
