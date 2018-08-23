@@ -3,6 +3,8 @@ use chain::transaction::OutPoint;
 use bitcoin::util::hash::Sha256dHash;
 use secp256k1::key::PublicKey;
 
+use ln::router::Route;
+
 use std;
 
 pub(crate) struct DebugPubKey<'a>(pub &'a PublicKey);
@@ -20,7 +22,7 @@ macro_rules! log_pubkey {
 	}
 }
 
-pub(crate) struct DebugBytes<'a>(pub &'a [u8; 32]);
+pub(crate) struct DebugBytes<'a>(pub &'a [u8]);
 impl<'a> std::fmt::Display for DebugBytes<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		for i in self.0 {
@@ -47,6 +49,21 @@ impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 macro_rules! log_funding_channel_id {
 	($funding_txid: expr, $funding_txo: expr) => {
 		::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
+	}
+}
+
+pub(crate) struct DebugRoute<'a>(pub &'a Route);
+impl<'a> std::fmt::Display for DebugRoute<'a> {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		for h in self.0.hops.iter() {
+			write!(f, "node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+		}
+		Ok(())
+	}
+}
+macro_rules! log_route {
+	($obj: expr) => {
+		::util::macro_logger::DebugRoute(&$obj)
 	}
 }
 
