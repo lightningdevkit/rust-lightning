@@ -162,7 +162,7 @@ pub struct ChannelManager {
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
 	latest_block_height: AtomicUsize,
-	secp_ctx: Secp256k1,
+	secp_ctx: Secp256k1<secp256k1::All>,
 
 	channel_state: Mutex<ChannelHolder>,
 	our_network_key: SecretKey,
@@ -461,9 +461,9 @@ impl ChannelManager {
 
 	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 	#[inline]
-	fn construct_onion_keys_callback<FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), HandleError> {
+	fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), HandleError> {
 		let mut blinded_priv = session_priv.clone();
-		let mut blinded_pub = secp_call!(PublicKey::from_secret_key(secp_ctx, &blinded_priv));
+		let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 		let mut first_iteration = true;
 
 		for hop in route.hops.iter() {
@@ -476,13 +476,13 @@ impl ChannelManager {
 			sha.result(&mut blinding_factor);
 
 			if first_iteration {
-				blinded_pub = secp_call!(PublicKey::from_secret_key(secp_ctx, &blinded_priv));
+				blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 				first_iteration = false;
 			}
 			let ephemeral_pubkey = blinded_pub;
 
 			secp_call!(blinded_priv.mul_assign(secp_ctx, &secp_call!(SecretKey::from_slice(secp_ctx, &blinding_factor))));
-			blinded_pub = secp_call!(PublicKey::from_secret_key(secp_ctx, &blinded_priv));
+			blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 			callback(shared_secret, blinding_factor, ephemeral_pubkey, hop);
 		}
@@ -491,7 +491,7 @@ impl ChannelManager {
 	}
 
 	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
-	fn construct_onion_keys(secp_ctx: &Secp256k1, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, HandleError> {
+	fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, HandleError> {
 		let mut res = Vec::with_capacity(route.hops.len());
 
 		Self::construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
@@ -674,7 +674,7 @@ impl ChannelManager {
 			Some(id) => id,
 		};
 
-		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).unwrap().serialize()[..] < chan.get_their_node_id().serialize()[..];
+		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_their_node_id().serialize()[..];
 
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
@@ -688,7 +688,7 @@ impl ChannelManager {
 		};
 
 		let msg_hash = Sha256dHash::from_data(&unsigned.encode()[..]);
-		let sig = self.secp_ctx.sign(&Message::from_slice(&msg_hash[..]).unwrap(), &self.our_network_key).unwrap(); //TODO Can we unwrap here?
+		let sig = self.secp_ctx.sign(&Message::from_slice(&msg_hash[..]).unwrap(), &self.our_network_key); //TODO Can we unwrap here?
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -839,7 +839,7 @@ impl ChannelManager {
 
 		let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone())?;
 		let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
-		let our_node_sig = secp_call!(self.secp_ctx.sign(&msghash, &self.our_network_key));
+		let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
 		Ok(Some(msgs::AnnouncementSignatures {
 			channel_id: chan.channel_id(),
@@ -1138,7 +1138,7 @@ impl ChannelManager {
 
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
-		PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).unwrap()
+		PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key)
 	}
 
 	/// Used to restore channels to normal operation after a
@@ -1195,7 +1195,7 @@ impl ChainListener for ChannelManager {
 				if let Some(funding_txo) = channel.get_funding_txo() {
 					for tx in txn_matched {
 						for inp in tx.input.iter() {
-							if inp.prev_hash == funding_txo.txid && inp.prev_index == funding_txo.index as u32 {
+							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_id.remove(&short_id);
 								}
@@ -1939,7 +1939,7 @@ impl ChannelMessageHandler for ChannelManager {
 					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }));
 					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }));
 
-					let our_node_sig = secp_call!(self.secp_ctx.sign(&msghash, &self.our_network_key));
+					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
 					(msgs::ChannelAnnouncement {
 						node_signature_1: if were_node_one { our_node_sig } else { msg.node_signature },
@@ -2742,7 +2742,7 @@ mod tests {
 				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 			};
 			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger)).unwrap();
-			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id).unwrap(), Arc::clone(&logger));
+			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id), Arc::clone(&logger));
 			nodes.push(Node { feeest, chain_monitor, tx_broadcaster, chan_monitor, node_id, node, router });
 		}
 
@@ -2879,7 +2879,7 @@ mod tests {
 			res.push(explicit_tx.clone());
 		} else {
 			for tx in node_txn.iter() {
-				if tx.input.len() == 1 && tx.input[0].prev_hash == chan.3.txid() {
+				if tx.input.len() == 1 && tx.input[0].previous_output.txid == chan.3.txid() {
 					let mut funding_tx_map = HashMap::new();
 					funding_tx_map.insert(chan.3.txid(), chan.3.clone());
 					tx.verify(&funding_tx_map).unwrap();
@@ -2891,7 +2891,7 @@ mod tests {
 
 		if has_htlc_tx != HTLCType::NONE {
 			for tx in node_txn.iter() {
-				if tx.input.len() == 1 && tx.input[0].prev_hash == res[0].txid() {
+				if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].txid() {
 					let mut funding_tx_map = HashMap::new();
 					funding_tx_map.insert(res[0].txid(), res[0].clone());
 					tx.verify(&funding_tx_map).unwrap();
@@ -2918,7 +2918,7 @@ mod tests {
 		let mut found_prev = false;
 
 		for tx in prev_txn {
-			if node_txn[0].input[0].prev_hash == tx.txid() {
+			if node_txn[0].input[0].previous_output.txid == tx.txid() {
 				let mut funding_tx_map = HashMap::new();
 				funding_tx_map.insert(tx.txid(), tx.clone());
 				node_txn[0].verify(&funding_tx_map).unwrap();

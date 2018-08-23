@@ -181,7 +181,7 @@ impl ChainWatchInterfaceUtil {
 		for input in tx.input.iter() {
 			for outpoint in watched.1.iter() {
 				let &(outpoint_hash, outpoint_index) = outpoint;
-				if outpoint_hash == input.prev_hash && outpoint_index == input.prev_index {
+				if outpoint_hash == input.previous_output.txid && outpoint_index == input.previous_output.vout {
 					return true;
 				}
 			}

@@ -920,7 +920,7 @@ mod tests {
 
 	fn establish_connection(peer_a: &PeerManager<FileDescriptor>, peer_b: &PeerManager<FileDescriptor>) {
 		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peer_b.our_node_secret).unwrap();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peer_b.our_node_secret);
 		let fd = FileDescriptor { fd: 1};
 		peer_a.new_inbound_connection(fd.clone()).unwrap();
 		peer_a.peers.lock().unwrap().node_id_to_descriptor.insert(their_id, fd.clone());
@@ -935,7 +935,7 @@ mod tests {
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
 		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret).unwrap();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
 
 		let chan_handler = test_utils::TestChannelMessageHandler::new();
 		chan_handler.pending_events.lock().unwrap().push(events::Event::HandleError {
