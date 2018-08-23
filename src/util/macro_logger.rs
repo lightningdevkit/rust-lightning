@@ -3,6 +3,8 @@ use chain::transaction::OutPoint;
 use bitcoin::util::hash::Sha256dHash;
 use secp256k1::key::PublicKey;
 
+use ln::router::Route;
+
 use std;
 
 pub(crate) struct DebugPubKey<'a>(pub &'a PublicKey);
@@ -47,6 +49,23 @@ impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 macro_rules! log_funding_channel_id {
 	($funding_txid: expr, $funding_txo: expr) => {
 		::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
+	}
+}
+
+#[allow(dead_code)]
+pub(crate) struct DebugRoute<'a>(pub &'a Route);
+impl<'a> std::fmt::Display for DebugRoute<'a> {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		for (i,h) in self.0.hops.iter().enumerate() {
+			write!(f, "Hop {}\n pubkey {}\n short_channel_id {}\n fee_msat {}\n cltv_expiry_delta {}\n\n", i, log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+		}
+		Ok(())
+	}
+}
+#[allow(unused_macros)]
+macro_rules! log_route {
+	($obj: expr) => {
+		::util::macro_logger::DebugRoute(&$obj)
 	}
 }
 
