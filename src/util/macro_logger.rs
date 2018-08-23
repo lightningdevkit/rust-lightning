@@ -22,7 +22,7 @@ macro_rules! log_pubkey {
 	}
 }
 
-pub(crate) struct DebugBytes<'a>(pub &'a [u8; 32]);
+pub(crate) struct DebugBytes<'a>(pub &'a [u8]);
 impl<'a> std::fmt::Display for DebugBytes<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		for i in self.0 {
@@ -52,17 +52,15 @@ macro_rules! log_funding_channel_id {
 	}
 }
 
-#[allow(dead_code)]
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
 impl<'a> std::fmt::Display for DebugRoute<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		for (i,h) in self.0.hops.iter().enumerate() {
-			write!(f, "Hop {}\n pubkey {}\n short_channel_id {}\n fee_msat {}\n cltv_expiry_delta {}\n\n", i, log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+		for h in self.0.hops.iter() {
+			write!(f, "node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
 		}
 		Ok(())
 	}
 }
-#[allow(unused_macros)]
 macro_rules! log_route {
 	($obj: expr) => {
 		::util::macro_logger::DebugRoute(&$obj)

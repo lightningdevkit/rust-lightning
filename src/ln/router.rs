@@ -48,7 +48,7 @@ struct DirectionalChannelInfo {
 
 impl std::fmt::Display for DirectionalChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, " node id {} last_update {} enabled {} cltv_expiry_delta {} htlc_minimum_msat {} fee_base_msat {} fee_proportional_millionths {}\n", log_pubkey!(self.src_node_id), self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fee_base_msat, self.fee_proportional_millionths)?;
+		write!(f, "src_node_id {}, last_update {}, enabled {}, cltv_expiry_delta {}, htlc_minimum_msat {}, fee_base_msat {}, fee_proportional_millionths {}", log_pubkey!(self.src_node_id), self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fee_base_msat, self.fee_proportional_millionths)?;
 		Ok(())
 	}
 }
@@ -61,9 +61,7 @@ struct ChannelInfo {
 
 impl std::fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		//TODO: GlobalFeatures
-		write!(f, " one_to_two {}", self.one_to_two)?;
-		write!(f, " two_to_one {}", self.two_to_one)?;
+		write!(f, "features: {}, one_to_two: {}, two_to_one: {}", log_bytes!(self.features.encode()), self.one_to_two, self.two_to_one)?;
 		Ok(())
 	}
 }
@@ -86,13 +84,7 @@ struct NodeInfo {
 
 impl std::fmt::Display for NodeInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, " Channels\n")?;
-		for c in self.channels.iter() {
-			write!(f, " {}\n", c)?;
-		}
-		write!(f, " lowest_inbound_channel_fee_base_msat {}\n", self.lowest_inbound_channel_fee_base_msat)?;
-		write!(f, " lowest_inbound_channel_fee_proportional_millionths {}\n", self.lowest_inbound_channel_fee_proportional_millionths)?;
-		//TODO: GlobalFeatures, last_update, rgb, alias, addresses
+		write!(f, "features: {}, last_update: {}, lowest_inbound_channel_fee_base_msat: {}, lowest_inbound_channel_fee_proportional_millionths: {}, channels: {:?}", log_bytes!(self.features.encode()), self.last_update, self.lowest_inbound_channel_fee_base_msat, self.lowest_inbound_channel_fee_proportional_millionths, &self.channels[..])?;
 		Ok(())
 	}
 }
@@ -111,11 +103,11 @@ impl std::fmt::Display for NetworkMap {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		write!(f, "Node id {} network map\n[Channels]\n", log_pubkey!(self.our_node_id))?;
 		for (key, val) in self.channels.iter() {
-			write!(f, " {} :\n {}\n", key, val)?;
+			write!(f, " {}: {}\n", key, val)?;
 		}
 		write!(f, "[Nodes]\n")?;
 		for (key, val) in self.nodes.iter() {
-			write!(f, " {} :\n {}\n", log_pubkey!(key), val)?;
+			write!(f, " {}: {}\n", log_pubkey!(key), val)?;
 		}
 		Ok(())
 	}
@@ -414,6 +406,12 @@ impl Router {
 		}
 	}
 
+	/// Dumps the entire network view of this Router to the logger provided in the constructor at
+	/// level Trace
+	pub fn trace_state(&self) {
+		log_trace!(self, "{}", self.network_map.read().unwrap());
+	}
+
 	/// Get network addresses by node id
 	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
 		let network = self.network_map.read().unwrap();
@@ -610,9 +608,9 @@ impl Router {
 				}
 				res.last_mut().unwrap().fee_msat = final_value_msat;
 				res.last_mut().unwrap().cltv_expiry_delta = final_cltv;
-				return Ok(Route {
-					hops: res
-				});
+				let route = Route { hops: res };
+				log_trace!(self, "Got route: {}", log_route!(route));
+				return Ok(route);
 			}
 
 			match network.nodes.get(&pubkey) {
