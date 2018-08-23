@@ -12,6 +12,7 @@ use std::cmp;
 use std::sync::{RwLock,Arc};
 use std::collections::{HashMap,BinaryHeap};
 use std::collections::hash_map::Entry;
+use std;
 
 /// A hop in a route
 #[derive(Clone)]
@@ -45,10 +46,26 @@ struct DirectionalChannelInfo {
 	fee_proportional_millionths: u32,
 }
 
+impl std::fmt::Display for DirectionalChannelInfo {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		write!(f, " node id {} last_update {} enabled {} cltv_expiry_delta {} htlc_minimum_msat {} fee_base_msat {} fee_proportional_millionths {}\n", log_pubkey!(self.src_node_id), self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fee_base_msat, self.fee_proportional_millionths)?;
+		Ok(())
+	}
+}
+
 struct ChannelInfo {
 	features: GlobalFeatures,
 	one_to_two: DirectionalChannelInfo,
 	two_to_one: DirectionalChannelInfo,
+}
+
+impl std::fmt::Display for ChannelInfo {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		//TODO: GlobalFeatures
+		write!(f, " one_to_two {}", self.one_to_two)?;
+		write!(f, " two_to_one {}", self.two_to_one)?;
+		Ok(())
+	}
 }
 
 struct NodeInfo {
@@ -67,6 +84,19 @@ struct NodeInfo {
 	addresses: Vec<NetAddress>,
 }
 
+impl std::fmt::Display for NodeInfo {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		write!(f, " Channels\n")?;
+		for c in self.channels.iter() {
+			write!(f, " {}\n", c)?;
+		}
+		write!(f, " lowest_inbound_channel_fee_base_msat {}\n", self.lowest_inbound_channel_fee_base_msat)?;
+		write!(f, " lowest_inbound_channel_fee_proportional_millionths {}\n", self.lowest_inbound_channel_fee_proportional_millionths)?;
+		//TODO: GlobalFeatures, last_update, rgb, alias, addresses
+		Ok(())
+	}
+}
+
 struct NetworkMap {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: HashMap<(u64, Sha256dHash), ChannelInfo>,
@@ -75,6 +105,20 @@ struct NetworkMap {
 
 	our_node_id: PublicKey,
 	nodes: HashMap<PublicKey, NodeInfo>,
+}
+
+impl std::fmt::Display for NetworkMap {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		write!(f, "Node id {} network map\n[Channels]\n", log_pubkey!(self.our_node_id))?;
+		for (key, val) in self.channels.iter() {
+			write!(f, " {} :\n {}\n", key, val)?;
+		}
+		write!(f, "[Nodes]\n")?;
+		for (key, val) in self.nodes.iter() {
+			write!(f, " {} :\n {}\n", log_pubkey!(key), val)?;
+		}
+		Ok(())
+	}
 }
 
 impl NetworkMap {
