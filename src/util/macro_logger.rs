@@ -52,6 +52,7 @@ macro_rules! log_funding_channel_id {
 	}
 }
 
+#[allow(dead_code)]
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
 impl<'a> std::fmt::Display for DebugRoute<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
@@ -61,6 +62,7 @@ impl<'a> std::fmt::Display for DebugRoute<'a> {
 		Ok(())
 	}
 }
+#[allow(unused_macros)]
 macro_rules! log_route {
 	($obj: expr) => {
 		::util::macro_logger::DebugRoute(&$obj)
