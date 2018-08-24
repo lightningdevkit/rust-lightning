@@ -2256,7 +2256,6 @@ mod tests {
 		chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 		chan_monitor: Arc<test_utils::TestChannelMonitor>,
-		node_id: SecretKey,
 		node: Arc<ChannelManager>,
 		router: Router,
 	}
@@ -2803,7 +2802,7 @@ mod tests {
 			};
 			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger)).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id), Arc::clone(&logger));
-			nodes.push(Node { feeest, chain_monitor, tx_broadcaster, chan_monitor, node_id, node, router });
+			nodes.push(Node { feeest, chain_monitor, tx_broadcaster, chan_monitor, node, router });
 		}
 
 		nodes
