@@ -439,12 +439,14 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	// Channel-to-announce:
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), HandleError>;
 
-	// Informational:
+	// Error conditions:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
 	/// is believed to be possible in the future (eg they're sending us messages we don't
 	/// understand or indicate they require unknown feature bits), no_connection_possible is set
 	/// and any outstanding channels should be failed.
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
+
+	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
 }
 
 pub trait RoutingMessageHandler : Send + Sync {

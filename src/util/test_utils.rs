@@ -115,6 +115,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		Err(HandleError { err: "", action: None })
 	}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
+	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 }
 
 impl events::EventsProvider for TestChannelMessageHandler {

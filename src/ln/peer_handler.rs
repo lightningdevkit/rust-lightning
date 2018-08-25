@@ -431,7 +431,24 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											17 => {
-												// Error msg
+												let msg = try_potential_decodeerror!(msgs::ErrorMessage::decode(&msg_data[2..]));
+												let mut data_is_printable = true;
+												for b in msg.data.bytes() {
+													if b < 32 || b > 126 {
+														data_is_printable = false;
+														break;
+													}
+												}
+
+												if data_is_printable {
+													log_debug!(self, "Got Err message from {}: {}", log_pubkey!(peer.their_node_id.unwrap()), msg.data);
+												} else {
+													log_debug!(self, "Got Err message from {} with non-ASCII error message", log_pubkey!(peer.their_node_id.unwrap()));
+												}
+												self.message_handler.chan_handler.handle_error(&peer.their_node_id.unwrap(), &msg);
+												if msg.channel_id == [0; 32] {
+													return Err(PeerHandleError{ no_connection_possible: true });
+												}
 											},
 
 											18 => {
