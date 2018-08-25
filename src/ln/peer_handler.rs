@@ -621,6 +621,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							};
 							match peers.peers.get_mut(&descriptor) {
 								Some(peer) => {
+									if peer.their_global_features.is_none() {
+										$handle_no_such_peer;
+										continue;
+									}
 									(descriptor, peer)
 								},
 								None => panic!("Inconsistent peers set state!"),
@@ -717,7 +721,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let encoded_update_msg = encode_msg!(update_msg, 258);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.channel_encryptor.is_ready_for_encryption() {
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_global_features.is_none() {
 									continue
 								}
 								match peer.their_node_id {
@@ -741,7 +745,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let encoded_msg = encode_msg!(msg, 258);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.channel_encryptor.is_ready_for_encryption() {
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_global_features.is_none() {
 									continue
 								}
 								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
