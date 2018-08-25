@@ -8,12 +8,14 @@ use lightning::util::reset_rng_state;
 
 use lightning::ln::msgs::{MsgEncodable, MsgDecodable};
 
-mod utils;
-
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	test_msg!(msgs::ErrorMessage, data);
+	if let Ok(msg) = msgs::ErrorMessage::decode(data){
+		let enc = msg.encode();
+		assert_eq!(&data[0..32], &enc[0..32]);
+		assert_eq!(&data[34..enc.len()], &enc[34..]);
+	}
 }
 
 #[cfg(feature = "afl")]

@@ -5,7 +5,7 @@ use bitcoin::network::serialize::{deserialize,serialize};
 use bitcoin::blockdata::script::Script;
 
 use std::error::Error;
-use std::fmt;
+use std::{cmp, fmt};
 use std::result::Result;
 
 use util::{byte_utils, internal_traits, events};
@@ -1626,11 +1626,9 @@ impl MsgDecodable for ErrorMessage {
 		if v.len() < 34 {
 			return Err(DecodeError::ShortRead);
 		}
-		let len = byte_utils::slice_to_be16(&v[32..34]);
-		if v.len() < 34 + len as usize {
-			return Err(DecodeError::ShortRead);
-		}
-		let data = match String::from_utf8(v[34..34 + len as usize].to_vec()) {
+		// Unlike most messages, BOLT 1 requires we truncate our read if the value is out of range
+		let len = cmp::min(byte_utils::slice_to_be16(&v[32..34]) as usize, v.len() - 34);
+		let data = match String::from_utf8(v[34..34 + len].to_vec()) {
 			Ok(s) => s,
 			Err(_) => return Err(DecodeError::BadText),
 		};
