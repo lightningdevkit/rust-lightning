@@ -2053,6 +2053,18 @@ impl ChannelMessageHandler for ChannelManager {
 			}
 		}
 	}
+
+	fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
+		if msg.channel_id == [0; 32] {
+			for chan in self.list_channels() {
+				if chan.remote_network_id == *their_node_id {
+					self.force_close_channel(&chan.channel_id);
+				}
+			}
+		} else {
+			self.force_close_channel(&msg.channel_id);
+		}
+	}
 }
 
 #[cfg(test)]

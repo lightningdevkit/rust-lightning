@@ -431,7 +431,24 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											17 => {
-												// Error msg
+												let msg = try_potential_decodeerror!(msgs::ErrorMessage::decode(&msg_data[2..]));
+												let mut data_is_printable = true;
+												for b in msg.data.bytes() {
+													if b < 32 || b > 126 {
+														data_is_printable = false;
+														break;
+													}
+												}
+
+												if data_is_printable {
+													log_debug!(self, "Got Err message from {}: {}", log_pubkey!(peer.their_node_id.unwrap()), msg.data);
+												} else {
+													log_debug!(self, "Got Err message from {} with non-ASCII error message", log_pubkey!(peer.their_node_id.unwrap()));
+												}
+												self.message_handler.chan_handler.handle_error(&peer.their_node_id.unwrap(), &msg);
+												if msg.channel_id == [0; 32] {
+													return Err(PeerHandleError{ no_connection_possible: true });
+												}
 											},
 
 											18 => {
@@ -621,6 +638,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							};
 							match peers.peers.get_mut(&descriptor) {
 								Some(peer) => {
+									if peer.their_global_features.is_none() {
+										$handle_no_such_peer;
+										continue;
+									}
 									(descriptor, peer)
 								},
 								None => panic!("Inconsistent peers set state!"),
@@ -717,7 +738,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let encoded_update_msg = encode_msg!(update_msg, 258);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.channel_encryptor.is_ready_for_encryption() {
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_global_features.is_none() {
 									continue
 								}
 								match peer.their_node_id {
@@ -741,7 +762,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let encoded_msg = encode_msg!(msg, 258);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.channel_encryptor.is_ready_for_encryption() {
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_global_features.is_none() {
 									continue
 								}
 								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));

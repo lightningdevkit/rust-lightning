@@ -5,7 +5,7 @@ use bitcoin::network::serialize::{deserialize,serialize};
 use bitcoin::blockdata::script::Script;
 
 use std::error::Error;
-use std::fmt;
+use std::{cmp, fmt};
 use std::result::Result;
 
 use util::{byte_utils, internal_traits, events};
@@ -439,12 +439,14 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	// Channel-to-announce:
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), HandleError>;
 
-	// Informational:
+	// Error conditions:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
 	/// is believed to be possible in the future (eg they're sending us messages we don't
 	/// understand or indicate they require unknown feature bits), no_connection_possible is set
 	/// and any outstanding channels should be failed.
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
+
+	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
 }
 
 pub trait RoutingMessageHandler : Send + Sync {
@@ -1624,11 +1626,9 @@ impl MsgDecodable for ErrorMessage {
 		if v.len() < 34 {
 			return Err(DecodeError::ShortRead);
 		}
-		let len = byte_utils::slice_to_be16(&v[32..34]);
-		if v.len() < 34 + len as usize {
-			return Err(DecodeError::ShortRead);
-		}
-		let data = match String::from_utf8(v[34..34 + len as usize].to_vec()) {
+		// Unlike most messages, BOLT 1 requires we truncate our read if the value is out of range
+		let len = cmp::min(byte_utils::slice_to_be16(&v[32..34]) as usize, v.len() - 34);
+		let data = match String::from_utf8(v[34..34 + len].to_vec()) {
 			Ok(s) => s,
 			Err(_) => return Err(DecodeError::BadText),
 		};
