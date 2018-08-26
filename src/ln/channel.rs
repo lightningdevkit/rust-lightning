@@ -1018,10 +1018,13 @@ impl Channel {
 		for (idx, htlc) in self.pending_htlcs.iter().enumerate() {
 			if !htlc.outbound && htlc.payment_hash == payment_hash_calc &&
 					htlc.state != HTLCState::LocalRemoved && htlc.state != HTLCState::LocalRemovedAwaitingCommitment {
-				if pending_idx != std::usize::MAX {
-					panic!("Duplicate HTLC payment_hash, ChannelManager should have prevented this!");
+				if let Some(PendingHTLCStatus::Fail(_)) = htlc.pending_forward_state {
+				} else {
+					if pending_idx != std::usize::MAX {
+						panic!("Duplicate HTLC payment_hash, ChannelManager should have prevented this!");
+					}
+					pending_idx = idx;
 				}
-				pending_idx = idx;
 			}
 		}
 		if pending_idx == std::usize::MAX {
