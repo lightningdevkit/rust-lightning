@@ -1643,6 +1643,7 @@ impl Channel {
 						update_add_htlcs,
 						update_fulfill_htlcs,
 						update_fail_htlcs,
+						update_fail_malformed_htlcs: Vec::new(),
 						commitment_signed,
 					}, monitor_update)))
 				},
@@ -1740,6 +1741,7 @@ impl Channel {
 						update_add_htlcs: Vec::new(),
 						update_fulfill_htlcs: Vec::new(),
 						update_fail_htlcs: failed_htlcs,
+						update_fail_malformed_htlcs: Vec::new(),
 						commitment_signed
 					}), to_forward_infos, revoked_htlcs, monitor_update))
 				} else {

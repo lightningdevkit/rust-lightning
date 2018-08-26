@@ -399,6 +399,7 @@ pub struct CommitmentUpdate {
 	pub update_add_htlcs: Vec<UpdateAddHTLC>,
 	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
 	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
+	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
 	pub commitment_signed: CommitmentSigned,
 }
 
