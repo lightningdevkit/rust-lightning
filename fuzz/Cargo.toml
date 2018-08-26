@@ -65,6 +65,10 @@ name = "msg_error_message_target"
 path = "fuzz_targets/msg_error_message_target.rs"
 
 [[bin]]
+name = "msg_update_add_htlc_target"
+path = "fuzz_targets/msg_update_add_htlc_target.rs"
+
+[[bin]]
 name = "msg_accept_channel_target"
 path = "fuzz_targets/msg_targets/msg_accept_channel_target.rs"
 
@@ -99,10 +103,6 @@ path = "fuzz_targets/msg_targets/msg_revoke_and_ack_target.rs"
 [[bin]]
 name = "msg_shutdown_target"
 path = "fuzz_targets/msg_targets/msg_shutdown_target.rs"
-
-[[bin]]
-name = "msg_update_add_htlc_target"
-path = "fuzz_targets/msg_targets/msg_update_add_htlc_target.rs"
 
 [[bin]]
 name = "msg_update_fail_malformed_htlc_target"

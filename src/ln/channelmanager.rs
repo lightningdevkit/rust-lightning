@@ -625,7 +625,7 @@ impl ChannelManager {
 
 		Ok(msgs::OnionPacket{
 			version: 0,
-			public_key: onion_keys.first().unwrap().ephemeral_pubkey,
+			public_key: Ok(onion_keys.first().unwrap().ephemeral_pubkey),
 			hop_data: packet_data,
 			hmac: hmac_res,
 		})
@@ -681,10 +681,7 @@ impl ChannelManager {
 		ChannelManager::encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 	}
 
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, SharedSecret, MutexGuard<ChannelHolder>) {
-		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key, &self.our_network_key);
-		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
-
+	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, Option<SharedSecret>, MutexGuard<ChannelHolder>) {
 		macro_rules! get_onion_hash {
 			() => {
 				{
@@ -696,6 +693,19 @@ impl ChannelManager {
 				}
 			}
 		}
+
+		if let Err(_) = msg.onion_routing_packet.public_key {
+			log_info!(self, "Failed to accept/forward incoming HTLC with invalid ephemeral pubkey");
+			return (PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+				channel_id: msg.channel_id,
+				htlc_id: msg.htlc_id,
+				sha256_of_onion: get_onion_hash!(),
+				failure_code: 0x8000 | 0x4000 | 6,
+			})), None, self.channel_state.lock().unwrap());
+		}
+
+		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key);
+		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
 
 		let mut channel_state = None;
 		macro_rules! return_err {
@@ -709,7 +719,7 @@ impl ChannelManager {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
-					})), shared_secret, channel_state.unwrap());
+					})), Some(shared_secret), channel_state.unwrap());
 				}
 			}
 		}
@@ -776,7 +786,7 @@ impl ChannelManager {
 				chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
 				chacha.process(&ChannelManager::ZERO[0..65], &mut new_packet_data[19*65..]);
 
-				let mut new_pubkey = msg.onion_routing_packet.public_key.clone();
+				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				let blinding_factor = {
 					let mut sha = Sha256::new();
@@ -786,26 +796,19 @@ impl ChannelManager {
 					sha.result(&mut res);
 					match SecretKey::from_slice(&self.secp_ctx, &res) {
 						Err(_) => {
-							// Return temporary node failure as its technically our issue, not the
-							// channel's issue.
-							return_err!("Blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
+							return_err!("Blinding factor is an invalid private key", 0x8000 | 0x4000 | 6, &get_onion_hash!());
 						},
 						Ok(key) => key
 					}
 				};
 
-				match new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
-					Err(_) => {
-						// Return temporary node failure as its technically our issue, not the
-						// channel's issue.
-						return_err!("New blinding factor is an invalid private key", 0x2000 | 2, &[0;0]);
-					},
-					Ok(_) => {}
-				};
+				if let Err(_) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
+					return_err!("New blinding factor is an invalid private key", 0x8000 | 0x4000 | 6, &get_onion_hash!());
+				}
 
 				let outgoing_packet = msgs::OnionPacket {
 					version: 0,
-					public_key: new_pubkey,
+					public_key: Ok(new_pubkey),
 					hop_data: new_packet_data,
 					hmac: next_hop_data.hmac.clone(),
 				};
@@ -852,7 +855,7 @@ impl ChannelManager {
 			}
 		}
 
-		(pending_forward_info, shared_secret, channel_state.unwrap())
+		(pending_forward_info, Some(shared_secret), channel_state.unwrap())
 	}
 
 	/// only fails if the channel does not yet have an assigned short_id
@@ -1735,7 +1738,7 @@ impl ChannelMessageHandler for ChannelManager {
 					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x4000 | 0x2000 | 2, &[0;0]),
+						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret.unwrap(), 0x4000 | 0x2000 | 2, &[0;0]),
 					}));
 				} else {
 					will_forward = true;
@@ -1774,7 +1777,7 @@ impl ChannelMessageHandler for ChannelManager {
 					};
 					*outbound_route = PendingOutboundHTLC::CycledRoute {
 						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret,
+						incoming_packet_shared_secret: shared_secret.unwrap(),
 						route,
 						session_priv,
 					};
@@ -1782,7 +1785,7 @@ impl ChannelMessageHandler for ChannelManager {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(PendingOutboundHTLC::IntermediaryHopData {
 						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret,
+						incoming_packet_shared_secret: shared_secret.unwrap(),
 					});
 				}
 			}

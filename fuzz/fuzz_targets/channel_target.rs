@@ -269,7 +269,7 @@ pub fn do_test(data: &[u8]) {
 			0 => {
 				test_err!(channel.send_htlc(slice_to_be64(get_slice!(8)), [42; 32], slice_to_be32(get_slice!(4)), msgs::OnionPacket {
 					version: get_slice!(1)[0],
-					public_key: get_pubkey!(),
+					public_key: PublicKey::from_slice(&secp_ctx, get_slice!(33)),
 					hop_data: [0; 20*65],
 					hmac: [0; 32],
 				}));
