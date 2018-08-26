@@ -50,11 +50,17 @@ mod channel_held_info {
 		pub(super) outgoing_cltv_value: u32,
 	}
 
+	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+	pub enum HTLCFailureMsg {
+		Relay(msgs::UpdateFailHTLC),
+		Malformed(msgs::UpdateFailMalformedHTLC),
+	}
+
 	/// Stores whether we can't forward an HTLC or relevant forwarding info
 	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 	pub enum PendingHTLCStatus {
 		Forward(PendingForwardHTLCInfo),
-		Fail(msgs::UpdateFailHTLC),
+		Fail(HTLCFailureMsg),
 	}
 
 	#[cfg(feature = "fuzztarget")]
@@ -699,11 +705,11 @@ impl ChannelManager {
 					if channel_state.is_none() {
 						channel_state = Some(self.channel_state.lock().unwrap());
 					}
-					return (PendingHTLCStatus::Fail(msgs::UpdateFailHTLC {
+					return (PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
-					}), shared_secret, channel_state.unwrap());
+					})), shared_secret, channel_state.unwrap());
 				}
 			}
 		}
@@ -1726,11 +1732,11 @@ impl ChannelMessageHandler for ChannelManager {
 				}
 				if !acceptable_cycle {
 					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
-					pending_forward_info = PendingHTLCStatus::Fail(msgs::UpdateFailHTLC {
+					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, 0x4000 | 0x2000 | 2, &[0;0]),
-					});
+					}));
 				} else {
 					will_forward = true;
 				}
