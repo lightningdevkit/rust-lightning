@@ -1,5 +1,6 @@
 use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1, Signature};
+use secp256k1;
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::network::serialize::{deserialize,serialize};
 use bitcoin::blockdata::script::Script;
@@ -399,6 +400,7 @@ pub struct CommitmentUpdate {
 	pub update_add_htlcs: Vec<UpdateAddHTLC>,
 	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
 	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
+	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
 	pub commitment_signed: CommitmentSigned,
 }
 
@@ -475,7 +477,10 @@ unsafe impl internal_traits::NoDealloc for OnionHopData{}
 #[derive(Clone)]
 pub struct OnionPacket {
 	pub version: u8,
-	pub public_key: PublicKey,
+	/// In order to ensure we always return an error on Onion decode in compliance with BOLT 4, we
+	/// have to deserialize OnionPackets contained in UpdateAddHTLCs even if the ephemeral public
+	/// key (here) is bogus, so we hold a Result instead of a PublicKey as we'd like.
+	pub public_key: Result<PublicKey, secp256k1::Error>,
 	pub hop_data: [u8; 20*65],
 	pub hmac: [u8; 32],
 }
@@ -1537,7 +1542,7 @@ impl MsgDecodable for OnionPacket {
 		let secp_ctx = Secp256k1::without_caps();
 		Ok(Self {
 			version: v[0],
-			public_key: secp_pubkey!(&secp_ctx, &v[1..34]),
+			public_key: PublicKey::from_slice(&secp_ctx, &v[1..34]),
 			hop_data,
 			hmac,
 		})
@@ -1547,7 +1552,10 @@ impl MsgEncodable for OnionPacket {
 	fn encode(&self) -> Vec<u8> {
 		let mut res = Vec::with_capacity(1 + 33 + 20*65 + 32);
 		res.push(self.version);
-		res.extend_from_slice(&self.public_key.serialize());
+		match self.public_key {
+			Ok(pubkey) => res.extend_from_slice(&pubkey.serialize()),
+			Err(_) => res.extend_from_slice(&[0; 33]),
+		}
 		res.extend_from_slice(&self.hop_data);
 		res.extend_from_slice(&self.hmac);
 		res

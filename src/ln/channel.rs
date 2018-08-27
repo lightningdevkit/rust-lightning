@@ -16,7 +16,7 @@ use crypto::hkdf::{hkdf_extract,hkdf_expand};
 use ln::msgs;
 use ln::msgs::{ErrorAction, HandleError, MsgEncodable};
 use ln::channelmonitor::ChannelMonitor;
-use ln::channelmanager::{PendingHTLCStatus, PendingForwardHTLCInfo, HTLCFailReason};
+use ln::channelmanager::{PendingHTLCStatus, PendingForwardHTLCInfo, HTLCFailReason, HTLCFailureMsg};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -1643,6 +1643,7 @@ impl Channel {
 						update_add_htlcs,
 						update_fulfill_htlcs,
 						update_fail_htlcs,
+						update_fail_malformed_htlcs: Vec::new(),
 						commitment_signed,
 					}, monitor_update)))
 				},
@@ -1680,7 +1681,8 @@ impl Channel {
 
 		let mut to_forward_infos = Vec::new();
 		let mut revoked_htlcs = Vec::new();
-		let mut failed_htlcs = Vec::new();
+		let mut update_fail_htlcs = Vec::new();
+		let mut update_fail_malformed_htlcs = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
 		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
@@ -1708,7 +1710,10 @@ impl Channel {
 					PendingHTLCStatus::Fail(fail_msg) => {
 						htlc.state = HTLCState::LocalRemoved;
 						require_commitment = true;
-						failed_htlcs.push(fail_msg);
+						match fail_msg {
+							HTLCFailureMsg::Relay(msg) => update_fail_htlcs.push(msg),
+							HTLCFailureMsg::Malformed(msg) => update_fail_malformed_htlcs.push(msg),
+						}
 					},
 					PendingHTLCStatus::Forward(forward_info) => {
 						to_forward_infos.push(forward_info);
@@ -1727,9 +1732,13 @@ impl Channel {
 
 		match self.free_holding_cell_htlcs()? {
 			Some(mut commitment_update) => {
-				commitment_update.0.update_fail_htlcs.reserve(failed_htlcs.len());
-				for fail_msg in failed_htlcs.drain(..) {
+				commitment_update.0.update_fail_htlcs.reserve(update_fail_htlcs.len());
+				for fail_msg in update_fail_htlcs.drain(..) {
 					commitment_update.0.update_fail_htlcs.push(fail_msg);
+				}
+				commitment_update.0.update_fail_malformed_htlcs.reserve(update_fail_malformed_htlcs.len());
+				for fail_msg in update_fail_malformed_htlcs.drain(..) {
+					commitment_update.0.update_fail_malformed_htlcs.push(fail_msg);
 				}
 				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, commitment_update.1))
 			},
@@ -1739,7 +1748,8 @@ impl Channel {
 					Ok((Some(msgs::CommitmentUpdate {
 						update_add_htlcs: Vec::new(),
 						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs: failed_htlcs,
+						update_fail_htlcs,
+						update_fail_malformed_htlcs,
 						commitment_signed
 					}), to_forward_infos, revoked_htlcs, monitor_update))
 				} else {
