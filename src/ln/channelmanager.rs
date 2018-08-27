@@ -193,7 +193,7 @@ macro_rules! secp_call {
 		match $res {
 			Ok(key) => key,
 			//TODO: Make the err a parameter!
-			Err(_) => return Err(HandleError{err: "Key error", action: None})
+			Err(_) => return Err(HandleError{err: "Key error", action: None}),
 		}
 	};
 }
@@ -1383,7 +1383,7 @@ impl ChainListener for ChannelManager {
 						Ok(res) => res,
 						Err(e) => {
 							log_error!(self, "Got error handling message: {}!", e.err);
-							//TODO: push e on events and blow up the channel (it has bad keys)
+							//TODO: handle WaitNewState or IgnoreMessage
 							return true;
 						}
 					};
@@ -1553,7 +1553,9 @@ impl ChannelMessageHandler for ChannelManager {
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
 		let (chan, funding_msg, monitor_update) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
+			let mut channel_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_lock.borrow_parts();
+			let short_to_id = channel_state.short_to_id;
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
@@ -1564,9 +1566,11 @@ impl ChannelMessageHandler for ChannelManager {
 							(chan.remove(), funding_msg, monitor_update)
 						},
 						Err(e) => {
-							//TODO: Possibly remove the channel depending on e.action
-							return Err(e);
-						}
+							let failure = chan.get_mut().force_shutdown();
+							short_to_id.remove(&chan.get_mut().get_short_channel_id().unwrap());
+							self.finish_force_close_channel(failure);
+							return Err(HandleError{err: e.err, action: e.action});
+						},
 					}
 				},
 				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
