@@ -373,6 +373,8 @@ impl Channel {
 	}
 
 	fn derive_minimum_depth(_channel_value_satoshis_msat: u64, _value_to_self_msat: u64) -> u32 {
+		// Note that in order to comply with BOLT 7 announcement_signatures requirements this must
+		// be at least 6.
 		const CONF_TARGET: u32 = 12; //TODO: Should be much higher
 		CONF_TARGET
 	}
