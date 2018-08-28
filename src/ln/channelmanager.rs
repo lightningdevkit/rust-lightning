@@ -1030,19 +1030,22 @@ impl ChannelManager {
 		}
 	}
 
-	fn get_announcement_sigs(&self, chan: &Channel) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
-		if !chan.is_usable() || !chan.should_announce() { return Ok(None) }
+	fn get_announcement_sigs(&self, chan: &Channel) -> Option<msgs::AnnouncementSignatures> {
+		if !chan.should_announce() { return None }
 
-		let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone())?;
+		let (announcement, our_bitcoin_sig) = match chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()) {
+			Ok(res) => res,
+			Err(_) => return None, // Only in case of state precondition violations eg channel is closing
+		};
 		let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
 		let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
-		Ok(Some(msgs::AnnouncementSignatures {
+		Some(msgs::AnnouncementSignatures {
 			channel_id: chan.channel_id(),
 			short_channel_id: chan.get_short_channel_id().unwrap(),
 			node_signature: our_node_sig,
 			bitcoin_signature: our_bitcoin_sig,
-		}))
+		})
 	}
 
 	/// Processes HTLCs which are pending waiting on random forward delay.
@@ -1379,14 +1382,7 @@ impl ChainListener for ChannelManager {
 			channel_state.by_id.retain(|_, channel| {
 				let chan_res = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched);
 				if let Ok(Some(funding_locked)) = chan_res {
-					let announcement_sigs = match self.get_announcement_sigs(channel) {
-						Ok(res) => res,
-						Err(e) => {
-							log_error!(self, "Got error handling message: {}!", e.err);
-							//TODO: push e on events and blow up the channel (it has bad keys)
-							return true;
-						}
-					};
+					let announcement_sigs = self.get_announcement_sigs(channel);
 					new_events.push(events::Event::SendFundingLocked {
 						node_id: channel.get_their_node_id(),
 						msg: funding_locked,
@@ -1626,7 +1622,7 @@ impl ChannelMessageHandler for ChannelManager {
 					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
 				}
 				chan.funding_locked(&msg)?;
-				return Ok(self.get_announcement_sigs(chan)?);
+				return Ok(self.get_announcement_sigs(chan));
 			},
 			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
 		};
