@@ -337,6 +337,8 @@ pub struct UnsignedNodeAnnouncement {
 	/// List of addresses on which this node is reachable. Note that you may only have up to one
 	/// address of each type, if you have more, they may be silently discarded or we may panic!
 	pub addresses: Vec<NetAddress>,
+	pub excess_address_data: Vec<u8>,
+	pub excess_data: Vec<u8>,
 }
 pub struct NodeAnnouncement {
 	pub signature: Signature,
@@ -1217,7 +1219,6 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 		loop {
 			if addr_read_limit <= read_pos { break; }
 			match v[read_pos] {
-				0 => { read_pos += 1; },
 				1 => {
 					if addresses.len() > 0 {
 						return Err(DecodeError::ExtraAddressesPerType);
@@ -1284,6 +1285,15 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 			}
 		}
 
+		let excess_address_data = if read_pos < addr_read_limit {
+			let mut excess_address_data = Vec::with_capacity(addr_read_limit - read_pos);
+			excess_address_data.extend_from_slice(&v[read_pos..addr_read_limit]);
+			excess_address_data
+		} else { Vec::new() };
+
+		let mut excess_data = Vec::with_capacity(v.len() - addr_read_limit);
+		excess_data.extend_from_slice(&v[addr_read_limit..]);
+
 		let secp_ctx = Secp256k1::without_caps();
 		Ok(Self {
 			features,
@@ -1292,13 +1302,15 @@ impl MsgDecodable for UnsignedNodeAnnouncement {
 			rgb,
 			alias,
 			addresses,
+			excess_address_data,
+			excess_data,
 		})
 	}
 }
 impl MsgEncodable for UnsignedNodeAnnouncement {
 	fn encode(&self) -> Vec<u8> {
 		let features = self.features.encode();
-		let mut res = Vec::with_capacity(74 + features.len() + self.addresses.len());
+		let mut res = Vec::with_capacity(74 + features.len() + self.addresses.len()*7 + self.excess_address_data.len() + self.excess_data.len());
 		res.extend_from_slice(&features[..]);
 		res.extend_from_slice(&byte_utils::be32_to_array(self.timestamp));
 		res.extend_from_slice(&self.node_id.serialize());
@@ -1334,8 +1346,10 @@ impl MsgEncodable for UnsignedNodeAnnouncement {
 				},
 			}
 		}
-		res.extend_from_slice(&byte_utils::be16_to_array(addr_slice.len() as u16));
+		res.extend_from_slice(&byte_utils::be16_to_array((addr_slice.len() + self.excess_address_data.len()) as u16));
 		res.extend_from_slice(&addr_slice[..]);
+		res.extend_from_slice(&self.excess_address_data[..]);
+		res.extend_from_slice(&self.excess_data[..]);
 		res
 	}
 }
