@@ -276,12 +276,16 @@ pub struct UpdateFee {
 	pub feerate_per_kw: u32,
 }
 
+pub struct DataLossProtect {
+	pub your_last_per_commitment_secret: [u8; 32],
+	pub my_current_per_commitment_point: PublicKey,
+}
+
 pub struct ChannelReestablish {
 	pub channel_id: [u8; 32],
 	pub next_local_commitment_number: u64,
 	pub next_remote_commitment_number: u64,
-	pub your_last_per_commitment_secret: Option<[u8; 32]>,
-	pub my_current_per_commitment_point: Option<PublicKey>,
+	pub data_loss_protect: Option<DataLossProtect>,
 }
 
 #[derive(Clone)]
@@ -1122,38 +1126,37 @@ impl MsgDecodable for ChannelReestablish {
 			return Err(DecodeError::ShortRead);
 		}
 
-		let (your_last_per_commitment_secret, my_current_per_commitment_point) = if v.len() > 32+2*8 {
+		let data_loss_protect = if v.len() > 32+2*8 {
 			if v.len() < 32+2*8 + 33+32 {
 				return Err(DecodeError::ShortRead);
 			}
 			let mut inner_array = [0; 32];
 			inner_array.copy_from_slice(&v[48..48+32]);
-			(Some(inner_array), {
-				let ctx = Secp256k1::without_caps();
-				Some(secp_pubkey!(&ctx, &v[48+32..48+32+33]))
+			Some(DataLossProtect {
+				your_last_per_commitment_secret: inner_array,
+				my_current_per_commitment_point: secp_pubkey!(&Secp256k1::without_caps(), &v[48+32..48+32+33]),
 			})
-		} else { (None, None) };
+		} else { None };
 
 		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			next_local_commitment_number: byte_utils::slice_to_be64(&v[32..40]),
 			next_remote_commitment_number: byte_utils::slice_to_be64(&v[40..48]),
-			your_last_per_commitment_secret: your_last_per_commitment_secret,
-			my_current_per_commitment_point: my_current_per_commitment_point,
+			data_loss_protect: data_loss_protect,
 		})
 	}
 }
 impl MsgEncodable for ChannelReestablish {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(if self.your_last_per_commitment_secret.is_some() { 32+2*8+33+32 } else { 32+2*8 });
+		let mut res = Vec::with_capacity(if self.data_loss_protect.is_some() { 32+2*8+33+32 } else { 32+2*8 });
 
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap()[..]);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.next_local_commitment_number));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.next_remote_commitment_number));
 
-		if let &Some(ref ary) = &self.your_last_per_commitment_secret {
-			res.extend_from_slice(&ary[..]);
-			res.extend_from_slice(&self.my_current_per_commitment_point.expect("my_current_per_commitment_point should have been filled").serialize());
+		if let &Some(ref data_loss_protect) = &self.data_loss_protect {
+			res.extend_from_slice(&data_loss_protect.your_last_per_commitment_secret[..]);
+			res.extend_from_slice(&data_loss_protect.my_current_per_commitment_point.serialize());
 		}
 		res
 	}
@@ -1663,8 +1666,7 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			your_last_per_commitment_secret: None,
-			my_current_per_commitment_point: None,
+			data_loss_protect: None,
 		};
 
 		let encoded_value = cr.encode();
@@ -1685,8 +1687,7 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			your_last_per_commitment_secret: Some([9; 32]),
-			my_current_per_commitment_point: Some(public_key),
+			data_loss_protect: Some(msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key}),
 		};
 
 		let encoded_value = cr.encode();
