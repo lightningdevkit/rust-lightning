@@ -1657,11 +1657,6 @@ mod tests {
 
 	#[test]
 	fn encoding_channel_reestablish_no_secret() {
-		let public_key = {
-			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
-		};
-
 		let cr = msgs::ChannelReestablish {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
