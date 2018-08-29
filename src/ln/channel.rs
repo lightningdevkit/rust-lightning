@@ -373,6 +373,8 @@ impl Channel {
 	}
 
 	fn derive_minimum_depth(_channel_value_satoshis_msat: u64, _value_to_self_msat: u64) -> u32 {
+		// Note that in order to comply with BOLT 7 announcement_signatures requirements this must
+		// be at least 6.
 		const CONF_TARGET: u32 = 12; //TODO: Should be much higher
 		CONF_TARGET
 	}
@@ -2273,17 +2275,21 @@ impl Channel {
 
 	/// Gets an UnsignedChannelAnnouncement, as well as a signature covering it using our
 	/// bitcoin_key, if available, for this channel. The channel must be publicly announceable and
-	/// available for use (have exchanged FundingLocked messages in both directions. Should be used
+	/// available for use (have exchanged FundingLocked messages in both directions). Should be used
 	/// for both loose and in response to an AnnouncementSignatures message from the remote peer.
-	/// Note that you can get an announcement for a channel which is closing, though you should
-	/// likely not announce such a thing. In case its already been announced, a channel_update
-	/// message can mark the channel disabled.
+	/// Will only fail if we're not in a state where channel_announcement may be sent (including
+	/// closing).
+	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
+	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
 	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), HandleError> {
 		if !self.announce_publicly {
 			return Err(HandleError{err: "Channel is not available for public announcements", action: None});
 		}
-		if self.channel_state & (ChannelState::ChannelFunded as u32) != (ChannelState::ChannelFunded as u32) {
+		if self.channel_state & (ChannelState::ChannelFunded as u32) == 0 {
 			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", action: None});
+		}
+		if (self.channel_state & (ChannelState::LocalShutdownSent as u32 | ChannelState::ShutdownComplete as u32)) != 0 {
+			return Err(HandleError{err: "Cannot get a ChannelAnnouncement once the channel is closing", action: None});
 		}
 
 		let were_node_one = our_node_id.serialize()[..] < self.their_node_id.serialize()[..];
