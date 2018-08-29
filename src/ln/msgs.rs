@@ -373,6 +373,7 @@ pub struct UnsignedChannelUpdate {
 	pub htlc_minimum_msat: u64,
 	pub fee_base_msat: u32,
 	pub fee_proportional_millionths: u32,
+	pub excess_data: Vec<u8>,
 }
 #[derive(PartialEq, Clone)]
 pub struct ChannelUpdate {
@@ -1434,6 +1435,8 @@ impl MsgDecodable for UnsignedChannelUpdate {
 		if v.len() < 32+8+4+2+2+8+4+4 {
 			return Err(DecodeError::ShortRead);
 		}
+		let mut excess_data = Vec::with_capacity(v.len() - 64);
+		excess_data.extend_from_slice(&v[64..]);
 		Ok(Self {
 			chain_hash: deserialize(&v[0..32]).unwrap(),
 			short_channel_id: byte_utils::slice_to_be64(&v[32..40]),
@@ -1443,12 +1446,13 @@ impl MsgDecodable for UnsignedChannelUpdate {
 			htlc_minimum_msat: byte_utils::slice_to_be64(&v[48..56]),
 			fee_base_msat: byte_utils::slice_to_be32(&v[56..60]),
 			fee_proportional_millionths: byte_utils::slice_to_be32(&v[60..64]),
+			excess_data
 		})
 	}
 }
 impl MsgEncodable for UnsignedChannelUpdate {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(64);
+		let mut res = Vec::with_capacity(64 + self.excess_data.len());
 		res.extend_from_slice(&self.chain_hash[..]);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
 		res.extend_from_slice(&byte_utils::be32_to_array(self.timestamp));
@@ -1457,6 +1461,7 @@ impl MsgEncodable for UnsignedChannelUpdate {
 		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_minimum_msat));
 		res.extend_from_slice(&byte_utils::be32_to_array(self.fee_base_msat));
 		res.extend_from_slice(&byte_utils::be32_to_array(self.fee_proportional_millionths));
+		res.extend_from_slice(&self.excess_data[..]);
 		res
 	}
 }
