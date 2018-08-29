@@ -136,13 +136,13 @@ impl TestRoutingMessageHandler {
 }
 
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
-	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<(), HandleError> {
+	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<(), HandleError> {
+	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}

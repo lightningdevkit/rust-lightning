@@ -168,9 +168,13 @@ macro_rules! secp_verify_sig {
 }
 
 impl RoutingMessageHandler for Router {
-	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), HandleError> {
+	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
 		let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
+
+		if msg.contents.features.requires_unknown_bits() {
+			panic!("Unknown-required-features NodeAnnouncements should never deserialize!");
+		}
 
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
@@ -185,7 +189,7 @@ impl RoutingMessageHandler for Router {
 				node.rgb = msg.contents.rgb;
 				node.alias = msg.contents.alias;
 				node.addresses = msg.contents.addresses.clone();
-				Ok(())
+				Ok(msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty() && !msg.contents.features.supports_unknown_bits())
 			}
 		}
 	}
@@ -201,7 +205,7 @@ impl RoutingMessageHandler for Router {
 		//TODO: Only allow bitcoin chain_hash
 
 		if msg.contents.features.requires_unknown_bits() {
-			return Err(HandleError{err: "Channel announcement required unknown feature flags", action: None});
+			panic!("Unknown-required-features ChannelAnnouncements should never deserialize!");
 		}
 
 		let mut network = self.network_map.write().unwrap();
@@ -263,7 +267,7 @@ impl RoutingMessageHandler for Router {
 		add_channel_to_node!(msg.contents.node_id_1);
 		add_channel_to_node!(msg.contents.node_id_2);
 
-		Ok(!msg.contents.features.supports_unknown_bits())
+		Ok(msg.contents.excess_data.is_empty() && !msg.contents.features.supports_unknown_bits())
 	}
 
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
@@ -285,7 +289,7 @@ impl RoutingMessageHandler for Router {
 		}
 	}
 
-	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<(), HandleError> {
+	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, HandleError> {
 		let mut network = self.network_map.write().unwrap();
 		let dest_node_id;
 		let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
@@ -351,7 +355,7 @@ impl RoutingMessageHandler for Router {
 			mut_node.lowest_inbound_channel_fee_proportional_millionths = lowest_inbound_channel_fee_proportional_millionths;
 		}
 
-		Ok(())
+		Ok(msg.contents.excess_data.is_empty())
 	}
 }
 

@@ -876,6 +876,7 @@ impl ChannelManager {
 			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
 			fee_base_msat: chan.get_our_fee_base_msat(&*self.fee_estimator),
 			fee_proportional_millionths: self.fee_proportional_millionths,
+			excess_data: Vec::new(),
 		};
 
 		let msg_hash = Sha256dHash::from_data(&unsigned.encode()[..]);

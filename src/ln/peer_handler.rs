@@ -331,21 +331,23 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								($thing: expr) => {
 									match $thing {
 										Ok(x) => x,
-										Err(_e) => {
-											//TODO: Handle e?
-											return Err(PeerHandleError{ no_connection_possible: false });
-										}
-									};
-								}
-							}
-
-							macro_rules! try_ignore_potential_decodeerror {
-								($thing: expr) => {
-									match $thing {
-										Ok(x) => x,
-										Err(_e) => {
-											log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
-											continue;
+										Err(e) => {
+											match e {
+												msgs::DecodeError::UnknownRealmByte => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::UnknownRequiredFeature => {
+													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to udpate!");
+													continue;
+												},
+												msgs::DecodeError::BadPublicKey => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::BadSignature => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::BadText => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::ShortRead => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::ExtraAddressesPerType => {
+													log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
+													continue;
+												},
+												msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError{ no_connection_possible: false }),
+											}
 										}
 									};
 								}
@@ -576,12 +578,20 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											257 => {
-												let msg = try_ignore_potential_decodeerror!(msgs::NodeAnnouncement::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
+												let msg = try_potential_decodeerror!(msgs::NodeAnnouncement::decode(&msg_data[2..]));
+												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
+
+												if should_forward {
+													// TODO: forward msg along to all our other peers!
+												}
 											},
 											258 => {
 												let msg = try_potential_decodeerror!(msgs::ChannelUpdate::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
+												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
+
+												if should_forward {
+													// TODO: forward msg along to all our other peers!
+												}
 											},
 											_ => {
 												if (msg_type & 1) == 0 {
