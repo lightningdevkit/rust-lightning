@@ -1664,13 +1664,13 @@ mod tests {
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: None,
-			my_current_per_commitment_point: public_key,
+			my_current_per_commitment_point: None,
 		};
 
 		let encoded_value = cr.encode();
 		assert_eq!(
 			encoded_value,
-			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]
+			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4]
 		);
 	}
 
@@ -1686,7 +1686,7 @@ mod tests {
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
 			your_last_per_commitment_secret: Some([9; 32]),
-			my_current_per_commitment_point: public_key,
+			my_current_per_commitment_point: Some(public_key),
 		};
 
 		let encoded_value = cr.encode();
