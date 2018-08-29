@@ -276,12 +276,16 @@ pub struct UpdateFee {
 	pub feerate_per_kw: u32,
 }
 
+pub struct DataLossProtect {
+	pub your_last_per_commitment_secret: [u8; 32],
+	pub my_current_per_commitment_point: PublicKey,
+}
+
 pub struct ChannelReestablish {
 	pub channel_id: [u8; 32],
 	pub next_local_commitment_number: u64,
 	pub next_remote_commitment_number: u64,
-	pub your_last_per_commitment_secret: Option<[u8; 32]>,
-	pub my_current_per_commitment_point: PublicKey,
+	pub data_loss_protect: Option<DataLossProtect>,
 }
 
 #[derive(Clone)]
@@ -1118,48 +1122,42 @@ impl MsgEncodable for UpdateFee {
 
 impl MsgDecodable for ChannelReestablish {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+2*8+33 {
+		if v.len() < 32+2*8 {
 			return Err(DecodeError::ShortRead);
 		}
 
-		let your_last_per_commitment_secret = if v.len() > 32+2*8+33 {
-			if v.len() < 32+2*8+33 + 32 {
+		let data_loss_protect = if v.len() > 32+2*8 {
+			if v.len() < 32+2*8 + 33+32 {
 				return Err(DecodeError::ShortRead);
 			}
 			let mut inner_array = [0; 32];
 			inner_array.copy_from_slice(&v[48..48+32]);
-			Some(inner_array)
+			Some(DataLossProtect {
+				your_last_per_commitment_secret: inner_array,
+				my_current_per_commitment_point: secp_pubkey!(&Secp256k1::without_caps(), &v[48+32..48+32+33]),
+			})
 		} else { None };
 
-		let option_size = match &your_last_per_commitment_secret {
-			&Some(ref _ary) => 32,
-			&None => 0,
-		};
 		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			next_local_commitment_number: byte_utils::slice_to_be64(&v[32..40]),
 			next_remote_commitment_number: byte_utils::slice_to_be64(&v[40..48]),
-			your_last_per_commitment_secret: your_last_per_commitment_secret,
-			my_current_per_commitment_point: {
-				let ctx = Secp256k1::without_caps();
-				secp_pubkey!(&ctx, &v[48+option_size..48+option_size+33])
-			}
+			data_loss_protect: data_loss_protect,
 		})
 	}
 }
 impl MsgEncodable for ChannelReestablish {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(if self.your_last_per_commitment_secret.is_some() { 32+2*3+33 + 32 } else { 32+2*8+33 });
+		let mut res = Vec::with_capacity(if self.data_loss_protect.is_some() { 32+2*8+33+32 } else { 32+2*8 });
 
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap()[..]);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.next_local_commitment_number));
 		res.extend_from_slice(&byte_utils::be64_to_array(self.next_remote_commitment_number));
 
-		if let &Some(ref ary) = &self.your_last_per_commitment_secret {
-			res.extend_from_slice(&ary[..]);
+		if let &Some(ref data_loss_protect) = &self.data_loss_protect {
+			res.extend_from_slice(&data_loss_protect.your_last_per_commitment_secret[..]);
+			res.extend_from_slice(&data_loss_protect.my_current_per_commitment_point.serialize());
 		}
-
-		res.extend_from_slice(&self.my_current_per_commitment_point.serialize());
 		res
 	}
 }
@@ -1668,14 +1666,13 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			your_last_per_commitment_secret: None,
-			my_current_per_commitment_point: public_key,
+			data_loss_protect: None,
 		};
 
 		let encoded_value = cr.encode();
 		assert_eq!(
 			encoded_value,
-			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]
+			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4]
 		);
 	}
 
@@ -1690,8 +1687,7 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			your_last_per_commitment_secret: Some([9; 32]),
-			my_current_per_commitment_point: public_key,
+			data_loss_protect: Some(msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key}),
 		};
 
 		let encoded_value = cr.encode();
