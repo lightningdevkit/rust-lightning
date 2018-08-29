@@ -2303,6 +2303,7 @@ impl Channel {
 			node_id_2: if were_node_one { self.get_their_node_id() } else { our_node_id },
 			bitcoin_key_1: if were_node_one { our_bitcoin_key } else { self.their_funding_pubkey.unwrap() },
 			bitcoin_key_2: if were_node_one { self.their_funding_pubkey.unwrap() } else { our_bitcoin_key },
+			excess_data: Vec::new(),
 		};
 
 		let msghash = Message::from_slice(&Sha256dHash::from_data(&msg.encode()[..])[..]).unwrap();

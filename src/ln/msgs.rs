@@ -352,6 +352,7 @@ pub struct UnsignedChannelAnnouncement {
 	pub node_id_2: PublicKey,
 	pub bitcoin_key_1: PublicKey,
 	pub bitcoin_key_2: PublicKey,
+	pub excess_data: Vec<u8>,
 }
 #[derive(PartialEq, Clone)]
 pub struct ChannelAnnouncement {
@@ -1369,6 +1370,8 @@ impl MsgDecodable for UnsignedChannelAnnouncement {
 		}
 		let start = features.encoded_len();
 		let secp_ctx = Secp256k1::without_caps();
+		let mut excess_data = Vec::with_capacity(v.len() - start - 172);
+		excess_data.extend_from_slice(&v[start + 172..]);
 		Ok(Self {
 			features,
 			chain_hash: deserialize(&v[start..start + 32]).unwrap(),
@@ -1377,13 +1380,14 @@ impl MsgDecodable for UnsignedChannelAnnouncement {
 			node_id_2: secp_pubkey!(&secp_ctx, &v[start + 73..start + 106]),
 			bitcoin_key_1: secp_pubkey!(&secp_ctx, &v[start + 106..start + 139]),
 			bitcoin_key_2: secp_pubkey!(&secp_ctx, &v[start + 139..start + 172]),
+			excess_data,
 		})
 	}
 }
 impl MsgEncodable for UnsignedChannelAnnouncement {
 	fn encode(&self) -> Vec<u8> {
 		let features = self.features.encode();
-		let mut res = Vec::with_capacity(172 + features.len());
+		let mut res = Vec::with_capacity(172 + features.len() + self.excess_data.len());
 		res.extend_from_slice(&features[..]);
 		res.extend_from_slice(&self.chain_hash[..]);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
@@ -1391,6 +1395,7 @@ impl MsgEncodable for UnsignedChannelAnnouncement {
 		res.extend_from_slice(&self.node_id_2.serialize());
 		res.extend_from_slice(&self.bitcoin_key_1.serialize());
 		res.extend_from_slice(&self.bitcoin_key_2.serialize());
+		res.extend_from_slice(&self.excess_data[..]);
 		res
 	}
 }

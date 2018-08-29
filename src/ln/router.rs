@@ -263,7 +263,7 @@ impl RoutingMessageHandler for Router {
 		add_channel_to_node!(msg.contents.node_id_1);
 		add_channel_to_node!(msg.contents.node_id_2);
 
-		Ok(!msg.contents.features.supports_unknown_bits())
+		Ok(msg.contents.excess_data.is_empty() && !msg.contents.features.supports_unknown_bits())
 	}
 
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
