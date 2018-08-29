@@ -4,6 +4,7 @@ use secp256k1;
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::network::serialize::{deserialize,serialize};
 use bitcoin::blockdata::script::Script;
+use bitcoin::network::serialize::Error as SerializeError;
 
 use std::error::Error;
 use std::{cmp, fmt};
@@ -41,6 +42,9 @@ pub enum DecodeError {
 	/// A length descriptor in the packet didn't describe the later data correctly
 	/// (currently only generated in node_announcement)
 	BadLengthDescriptor,
+	///This is a bitcoin::network::serialize::Error converted to decode error
+	///This happens when the chain_hash or temporary_channel_id fails deserialization
+	DeserializeFailure,
 }
 pub trait MsgDecodable: Sized {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError>;
@@ -508,9 +512,17 @@ impl Error for DecodeError {
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
+			DecodeError::DeserializeFailure => "Deserialization failed of packet, chain_hash or temporary_channel_id invalid",
 		}
 	}
 }
+
+impl From<SerializeError> for DecodeError{
+	fn from(_e: SerializeError) -> Self {
+        DecodeError::DeserializeFailure
+    } 
+}
+
 impl fmt::Display for DecodeError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_str(self.description())
@@ -672,8 +684,8 @@ impl MsgDecodable for OpenChannel {
 		}
 
 		Ok(OpenChannel {
-			chain_hash: deserialize(&v[0..32]).unwrap(),
-			temporary_channel_id: deserialize(&v[32..64]).unwrap(),
+			chain_hash: deserialize(&v[0..32])?,
+			temporary_channel_id: deserialize(&v[32..64])?,
 			funding_satoshis: byte_utils::slice_to_be64(&v[64..72]),
 			push_msat: byte_utils::slice_to_be64(&v[72..80]),
 			dust_limit_satoshis: byte_utils::slice_to_be64(&v[80..88]),
