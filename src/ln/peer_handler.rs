@@ -334,6 +334,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										Err(e) => {
 											match e {
 												msgs::DecodeError::UnknownRealmByte => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::UnknownRequiredFeature => {
+													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to udpate!");
+													continue;
+												},
 												msgs::DecodeError::BadPublicKey => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::BadSignature => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::BadText => return Err(PeerHandleError{ no_connection_possible: false }),

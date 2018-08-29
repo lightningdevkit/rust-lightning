@@ -172,6 +172,10 @@ impl RoutingMessageHandler for Router {
 		let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
+		if msg.contents.features.requires_unknown_bits() {
+			panic!("Unknown-required-features NodeAnnouncements should never deserialize!");
+		}
+
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
 			None => Err(HandleError{err: "No existing channels for node_announcement", action: Some(ErrorAction::IgnoreError)}),
@@ -201,7 +205,7 @@ impl RoutingMessageHandler for Router {
 		//TODO: Only allow bitcoin chain_hash
 
 		if msg.contents.features.requires_unknown_bits() {
-			return Err(HandleError{err: "Channel announcement required unknown feature flags", action: None});
+			panic!("Unknown-required-features ChannelAnnouncements should never deserialize!");
 		}
 
 		let mut network = self.network_map.write().unwrap();

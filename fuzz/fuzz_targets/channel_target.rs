@@ -124,6 +124,7 @@ pub fn do_test(data: &[u8]) {
 				Ok(msg) => msg,
 				Err(e) => match e {
 					msgs::DecodeError::UnknownRealmByte => return,
+					msgs::DecodeError::UnknownRequiredFeature => return,
 					msgs::DecodeError::BadPublicKey => return,
 					msgs::DecodeError::BadSignature => return,
 					msgs::DecodeError::BadText => return,
@@ -146,6 +147,7 @@ pub fn do_test(data: &[u8]) {
 					Ok(msg) => msg,
 					Err(e) => match e {
 						msgs::DecodeError::UnknownRealmByte => return,
+						msgs::DecodeError::UnknownRequiredFeature => return,
 						msgs::DecodeError::BadPublicKey => return,
 						msgs::DecodeError::BadSignature => return,
 						msgs::DecodeError::BadText => return,

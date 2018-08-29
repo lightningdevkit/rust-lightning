@@ -28,6 +28,8 @@ pub trait MsgEncodable {
 pub enum DecodeError {
 	/// Unknown realm byte in an OnionHopData packet
 	UnknownRealmByte,
+	/// Unknown feature mandating we fail to parse message
+	UnknownRequiredFeature,
 	/// Failed to decode a public key (ie it's invalid)
 	BadPublicKey,
 	/// Failed to decode a signature (ie it's invalid)
@@ -510,6 +512,7 @@ impl Error for DecodeError {
 	fn description(&self) -> &str {
 		match *self {
 			DecodeError::UnknownRealmByte => "Unknown realm byte in Onion packet",
+			DecodeError::UnknownRequiredFeature => "Unknown required feature preventing decode",
 			DecodeError::BadPublicKey => "Invalid public key in packet",
 			DecodeError::BadSignature => "Invalid signature in packet",
 			DecodeError::BadText => "Invalid text in packet",
@@ -1197,6 +1200,10 @@ impl MsgEncodable for AnnouncementSignatures {
 impl MsgDecodable for UnsignedNodeAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let features = GlobalFeatures::decode(&v[..])?;
+		if features.requires_unknown_bits() {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+
 		if v.len() < features.encoded_len() + 4 + 33 + 3 + 32 + 2 {
 			return Err(DecodeError::ShortRead);
 		}
@@ -1380,6 +1387,9 @@ impl MsgEncodable for NodeAnnouncement {
 impl MsgDecodable for UnsignedChannelAnnouncement {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
 		let features = GlobalFeatures::decode(&v[..])?;
+		if features.requires_unknown_bits() {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
 		if v.len() < features.encoded_len() + 32 + 8 + 33*4 {
 			return Err(DecodeError::ShortRead);
 		}
