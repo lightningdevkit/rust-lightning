@@ -168,7 +168,7 @@ macro_rules! secp_verify_sig {
 }
 
 impl RoutingMessageHandler for Router {
-	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), HandleError> {
+	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
 		let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
@@ -189,7 +189,7 @@ impl RoutingMessageHandler for Router {
 				node.rgb = msg.contents.rgb;
 				node.alias = msg.contents.alias;
 				node.addresses = msg.contents.addresses.clone();
-				Ok(())
+				Ok(msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty() && !msg.contents.features.supports_unknown_bits())
 			}
 		}
 	}
@@ -289,7 +289,7 @@ impl RoutingMessageHandler for Router {
 		}
 	}
 
-	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<(), HandleError> {
+	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, HandleError> {
 		let mut network = self.network_map.write().unwrap();
 		let dest_node_id;
 		let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
@@ -355,7 +355,7 @@ impl RoutingMessageHandler for Router {
 			mut_node.lowest_inbound_channel_fee_proportional_millionths = lowest_inbound_channel_fee_proportional_millionths;
 		}
 
-		Ok(())
+		Ok(msg.contents.excess_data.is_empty())
 	}
 }
 

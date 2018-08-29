@@ -579,11 +579,19 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											257 => {
 												let msg = try_potential_decodeerror!(msgs::NodeAnnouncement::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
+												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
+
+												if should_forward {
+													// TODO: forward msg along to all our other peers!
+												}
 											},
 											258 => {
 												let msg = try_potential_decodeerror!(msgs::ChannelUpdate::decode(&msg_data[2..]));
-												try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
+												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
+
+												if should_forward {
+													// TODO: forward msg along to all our other peers!
+												}
 											},
 											_ => {
 												if (msg_type & 1) == 0 {

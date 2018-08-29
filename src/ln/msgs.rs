@@ -462,11 +462,11 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 }
 
 pub trait RoutingMessageHandler : Send + Sync {
-	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<(), HandleError>;
+	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, HandleError>;
 	/// Handle a channel_announcement message, returning true if it should be forwarded on, false
 	/// or returning an Err otherwise.
 	fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, HandleError>;
-	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<(), HandleError>;
+	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, HandleError>;
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 }
 
