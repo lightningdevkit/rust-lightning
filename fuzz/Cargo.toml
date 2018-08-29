@@ -62,11 +62,11 @@ path = "fuzz_targets/msg_pong_target.rs"
 
 [[bin]]
 name = "msg_error_message_target"
-path = "fuzz_targets/msg_error_message_target.rs"
+path = "fuzz_targets/msg_targets/msg_error_message_target.rs"
 
 [[bin]]
 name = "msg_update_add_htlc_target"
-path = "fuzz_targets/msg_update_add_htlc_target.rs"
+path = "fuzz_targets/msg_targets/msg_update_add_htlc_target.rs"
 
 [[bin]]
 name = "msg_accept_channel_target"
@@ -123,3 +123,31 @@ path = "fuzz_targets/msg_targets/msg_update_fail_htlc_target.rs"
 [[bin]]
 name = "msg_channel_reestablish_target"
 path = "fuzz_targets/msg_targets/msg_channel_reestablish_target.rs"
+
+[[bin]]
+name = "msg_announcement_signatures_target"
+path = "fuzz_targets/msg_targets/msg_announcement_signatures_target.rs"
+
+[[bin]]
+name = "msg_channel_announcement_target"
+path = "fuzz_targets/msg_targets/msg_channel_announcement_target.rs"
+
+[[bin]]
+name = "msg_channel_update_target"
+path = "fuzz_targets/msg_targets/msg_channel_update_target.rs"
+
+[[bin]]
+name = "msg_decoded_onion_error_packet_target"
+path = "fuzz_targets/msg_targets/msg_decoded_onion_error_packet_target.rs"
+
+[[bin]]
+name = "msg_init_target"
+path = "fuzz_targets/msg_targets/msg_init_target.rs"
+
+[[bin]]
+name = "msg_node_announcement_target"
+path = "fuzz_targets/msg_targets/msg_node_announcement_target.rs"
+
+[[bin]]
+name = "msg_onion_hop_data_target"
+path = "fuzz_targets/msg_targets/msg_onion_hop_data_target.rs"

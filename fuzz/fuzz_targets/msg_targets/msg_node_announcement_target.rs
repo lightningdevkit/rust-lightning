@@ -13,7 +13,7 @@ mod utils;
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	TEST_MSG!(msgs::MSG_TARGET, dataEXTRA_ARGS);
+	test_msg_exact!(msgs::NodeAnnouncement, data);
 }
 
 #[cfg(feature = "afl")]
