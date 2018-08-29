@@ -281,7 +281,7 @@ pub struct ChannelReestablish {
 	pub next_local_commitment_number: u64,
 	pub next_remote_commitment_number: u64,
 	pub your_last_per_commitment_secret: Option<[u8; 32]>,
-	pub my_current_per_commitment_point: PublicKey,
+	pub my_current_per_commitment_point: Option<PublicKey>,
 }
 
 #[derive(Clone)]
@@ -1118,38 +1118,34 @@ impl MsgEncodable for UpdateFee {
 
 impl MsgDecodable for ChannelReestablish {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 32+2*8+33 {
+		if v.len() < 32+2*8 {
 			return Err(DecodeError::ShortRead);
 		}
 
-		let your_last_per_commitment_secret = if v.len() > 32+2*8+33 {
-			if v.len() < 32+2*8+33 + 32 {
+		let (your_last_per_commitment_secret, my_current_per_commitment_point) = if v.len() > 32+2*8 {
+			if v.len() < 32+2*8 + 33+32 {
 				return Err(DecodeError::ShortRead);
 			}
 			let mut inner_array = [0; 32];
 			inner_array.copy_from_slice(&v[48..48+32]);
-			Some(inner_array)
-		} else { None };
+			(Some(inner_array), {
+				let ctx = Secp256k1::without_caps();
+				Some(secp_pubkey!(&ctx, &v[48+32..48+32+33]))
+			})
+		} else { (None, None) };
 
-		let option_size = match &your_last_per_commitment_secret {
-			&Some(ref _ary) => 32,
-			&None => 0,
-		};
 		Ok(Self {
 			channel_id: deserialize(&v[0..32]).unwrap(),
 			next_local_commitment_number: byte_utils::slice_to_be64(&v[32..40]),
 			next_remote_commitment_number: byte_utils::slice_to_be64(&v[40..48]),
 			your_last_per_commitment_secret: your_last_per_commitment_secret,
-			my_current_per_commitment_point: {
-				let ctx = Secp256k1::without_caps();
-				secp_pubkey!(&ctx, &v[48+option_size..48+option_size+33])
-			}
+			my_current_per_commitment_point: my_current_per_commitment_point,
 		})
 	}
 }
 impl MsgEncodable for ChannelReestablish {
 	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(if self.your_last_per_commitment_secret.is_some() { 32+2*3+33 + 32 } else { 32+2*8+33 });
+		let mut res = Vec::with_capacity(if self.your_last_per_commitment_secret.is_some() { 32+2*8+33+32 } else { 32+2*8 });
 
 		res.extend_from_slice(&serialize(&self.channel_id).unwrap()[..]);
 		res.extend_from_slice(&byte_utils::be64_to_array(self.next_local_commitment_number));
@@ -1157,9 +1153,8 @@ impl MsgEncodable for ChannelReestablish {
 
 		if let &Some(ref ary) = &self.your_last_per_commitment_secret {
 			res.extend_from_slice(&ary[..]);
+			res.extend_from_slice(&self.my_current_per_commitment_point.expect("my_current_per_commitment_point should have been filled").serialize());
 		}
-
-		res.extend_from_slice(&self.my_current_per_commitment_point.serialize());
 		res
 	}
 }
