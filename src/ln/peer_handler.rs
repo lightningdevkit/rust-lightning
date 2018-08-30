@@ -347,6 +347,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													continue;
 												},
 												msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::DeserializeFailure => return Err(PeerHandleError{ no_connection_possible: false }),
+
 											}
 										}
 									};
