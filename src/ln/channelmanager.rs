@@ -1988,10 +1988,10 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: Some(msgs::ErrorAction::IgnoreError) })
 					}
 					if !chan.is_usable() {
-						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: None });
+						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError) });
 					}
 
 					let our_node_id = self.get_our_node_id();
@@ -2013,7 +2013,7 @@ impl ChannelMessageHandler for ChannelManager {
 						contents: announcement,
 					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: Some(msgs::ErrorAction::IgnoreError)})
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
