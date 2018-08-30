@@ -4,6 +4,7 @@ use secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
 
+use chain::chaininterface::ChainWatchInterface;
 use ln::channelmanager;
 use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
 use ln::msgs;
@@ -155,6 +156,7 @@ pub struct RouteHint {
 pub struct Router {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
+	chain_monitor: Arc<ChainWatchInterface>,
 	logger: Arc<Logger>,
 }
 
@@ -388,7 +390,7 @@ struct DummyDirectionalChannelInfo {
 }
 
 impl Router {
-	pub fn new(our_pubkey: PublicKey, logger: Arc<Logger>) -> Router {
+	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
 		let mut nodes = HashMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
 			channels: Vec::new(),
@@ -407,6 +409,7 @@ impl Router {
 				our_node_id: our_pubkey,
 				nodes: nodes,
 			}),
+			chain_monitor,
 			logger,
 		}
 	}
@@ -632,6 +635,7 @@ impl Router {
 
 #[cfg(test)]
 mod tests {
+	use chain::chaininterface;
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::msgs::GlobalFeatures;
@@ -652,7 +656,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let router = Router::new(our_id, Arc::clone(&logger));
+		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+		let router = Router::new(our_id, chain_monitor, Arc::clone(&logger));
 
 		// Build network from our_id to node8:
 		//

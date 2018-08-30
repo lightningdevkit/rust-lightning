@@ -2,6 +2,9 @@ extern crate bitcoin;
 extern crate lightning;
 extern crate secp256k1;
 
+use bitcoin::network::constants::Network;
+
+use lightning::chain::chaininterface;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
 use lightning::ln::msgs::{MsgDecodable, RoutingMessageHandler};
@@ -107,9 +110,10 @@ pub fn do_test(data: &[u8]) {
 	}
 
 	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+	let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 
 	let our_pubkey = get_pubkey!();
-	let router = Router::new(our_pubkey.clone(), Arc::clone(&logger));
+	let router = Router::new(our_pubkey.clone(), chain_monitor, Arc::clone(&logger));
 
 	loop {
 		match get_slice!(1)[0] {

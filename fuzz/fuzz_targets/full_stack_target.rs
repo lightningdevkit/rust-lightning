@@ -232,12 +232,12 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 		Err(_) => return,
 	};
 
-	let watch = Arc::new(ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
+	let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 	let broadcast = Arc::new(TestBroadcaster{});
 	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone());
 
 	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger)).unwrap();
-	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key), Arc::clone(&logger)));
+	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
