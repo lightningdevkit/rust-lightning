@@ -1133,9 +1133,6 @@ impl Channel {
 		let mut htlc_amount_msat = 0;
 		for htlc in self.pending_htlcs.iter_mut() {
 			if !htlc.outbound && htlc.payment_hash == *payment_hash_arg {
-				if htlc_id != 0 {
-					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
-				}
 				if htlc.state == HTLCState::Committed {
 					htlc.state = HTLCState::LocalRemoved;
 				} else if htlc.state == HTLCState::RemoteAnnounced {
@@ -1151,6 +1148,9 @@ impl Channel {
 					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 				} else {
 					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
+				}
+				if htlc_id != 0 {
+					panic!("Duplicate HTLC payment_hash, you probably re-used payment preimages, NEVER DO THIS!");
 				}
 				htlc_id = htlc.htlc_id;
 				htlc_amount_msat += htlc.amount_msat;
