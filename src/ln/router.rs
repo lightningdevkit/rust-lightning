@@ -4,7 +4,7 @@ use secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
 
-use chain::chaininterface::ChainWatchInterface;
+use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
 use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
 use ln::msgs;
@@ -203,11 +203,23 @@ impl RoutingMessageHandler for Router {
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
 
-		//TODO: Call blockchain thing to ask if the short_channel_id is valid
-		//TODO: Only allow bitcoin chain_hash
-
 		if msg.contents.features.requires_unknown_bits() {
 			panic!("Unknown-required-features ChannelAnnouncements should never deserialize!");
+		}
+
+		match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
+			Ok((script_pubkey, _value)) => {
+				//TODO: Check if script_pubkey matches bitcoin_key_1 and bitcoin_key_2
+			},
+			Err(ChainError::NotSupported) => {
+				// Tenatively accept, potentially exposing us to DoS attacks
+			},
+			Err(ChainError::NotWatched) => {
+				return Err(HandleError{err: "Channel announced on an unknown chain", action: Some(ErrorAction::IgnoreError)});
+			},
+			Err(ChainError::UnknownTx) => {
+				return Err(HandleError{err: "Channel announced without corresponding UTXO entry", action: Some(ErrorAction::IgnoreError)});
+			},
 		}
 
 		let mut network = self.network_map.write().unwrap();
@@ -643,6 +655,7 @@ mod tests {
 	use util::logger::Logger;
 
 	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::network::constants::Network;
 
 	use hex;
 
