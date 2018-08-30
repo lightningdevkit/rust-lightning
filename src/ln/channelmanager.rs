@@ -2093,13 +2093,14 @@ mod tests {
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::network::serialize::serialize;
 	use bitcoin::network::serialize::BitcoinHash;
 
 	use hex;
 
-	use secp256k1::Secp256k1;
+	use secp256k1::{Secp256k1, Message};
 	use secp256k1::key::{PublicKey,SecretKey};
 
 	use crypto::sha2::Sha256;
@@ -3234,5 +3235,79 @@ mod tests {
 		let channel_state = nodes[0].node.channel_state.lock().unwrap();
 		assert_eq!(channel_state.by_id.len(), 0);
 		assert_eq!(channel_state.short_to_id.len(), 0);
+	}
+
+	#[test]
+	fn test_invalid_channel_announcement() {
+		//Test BOLT 7 channel_announcement msg requirement for final node, gather data to build customed channel_announcement msgs
+		let secp_ctx = Secp256k1::new();
+		let nodes = create_network(2);
+
+		let chan_announcement = create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+		let a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let b_channel_lock = nodes[1].node.channel_state.lock().unwrap();
+		let as_chan = a_channel_lock.by_id.get(&chan_announcement.3).unwrap();
+		let bs_chan = b_channel_lock.by_id.get(&chan_announcement.3).unwrap();
+
+		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap() } );
+
+		let as_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &as_chan.get_local_keys().funding_key);
+		let bs_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &bs_chan.get_local_keys().funding_key);
+
+		let as_network_key = nodes[0].node.get_our_node_id();
+		let bs_network_key = nodes[1].node.get_our_node_id();
+
+		let were_node_one = as_bitcoin_key.serialize()[..] < bs_bitcoin_key.serialize()[..];
+
+		let mut chan_announcement;
+
+		macro_rules! dummy_unsigned_msg {
+			() => {
+				msgs::UnsignedChannelAnnouncement {
+					features: msgs::GlobalFeatures::new(),
+					chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+					short_channel_id: as_chan.get_short_channel_id().unwrap(),
+					node_id_1: if were_node_one { as_network_key } else { bs_network_key },
+					node_id_2: if !were_node_one { bs_network_key } else { as_network_key },
+					bitcoin_key_1: if were_node_one { as_bitcoin_key } else { bs_bitcoin_key },
+					bitcoin_key_2: if !were_node_one { bs_bitcoin_key } else { as_bitcoin_key },
+					excess_data: Vec::new(),
+				};
+			}
+		}
+
+		macro_rules! sign_msg {
+			($unsigned_msg: expr) => {
+				let msghash = Message::from_slice(&Sha256dHash::from_data(&$unsigned_msg.encode()[..])[..]).unwrap();
+				let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().funding_key);
+				let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().funding_key);
+				let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].node.our_network_key);
+				let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].node.our_network_key);
+				chan_announcement = msgs::ChannelAnnouncement {
+					node_signature_1 : if were_node_one { as_node_sig } else { bs_node_sig},
+					node_signature_2 : if !were_node_one { bs_node_sig } else { as_node_sig},
+					bitcoin_signature_1: if were_node_one { as_bitcoin_sig } else { bs_bitcoin_sig },
+					bitcoin_signature_2 : if !were_node_one { bs_bitcoin_sig } else { as_bitcoin_sig },
+					contents: $unsigned_msg
+				}
+			}
+		}
+
+		let unsigned_msg = dummy_unsigned_msg!();
+		sign_msg!(unsigned_msg);
+		assert_eq!(nodes[0].router.handle_channel_announcement(&chan_announcement).unwrap(), true);
+		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap() } );
+
+		// Configured with Network::Testnet
+		let mut unsigned_msg = dummy_unsigned_msg!();
+		unsigned_msg.chain_hash = genesis_block(Network::Bitcoin).header.bitcoin_hash();
+		sign_msg!(unsigned_msg);
+		assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
+
+		let mut unsigned_msg = dummy_unsigned_msg!();
+		unsigned_msg.chain_hash = Sha256dHash::from_data(&[1,2,3,4,5,6,7,8,9]);
+		sign_msg!(unsigned_msg);
+		assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
 	}
 }

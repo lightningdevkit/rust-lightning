@@ -222,7 +222,7 @@ impl RoutingMessageHandler for Router {
 				//to the new HTLC max field in channel_update
 			},
 			Err(ChainError::NotSupported) => {
-				// Tenatively accept, potentially exposing us to DoS attacks
+				// Tentatively accept, potentially exposing us to DoS attacks
 			},
 			Err(ChainError::NotWatched) => {
 				return Err(HandleError{err: "Channel announced on an unknown chain", action: Some(ErrorAction::IgnoreError)});
