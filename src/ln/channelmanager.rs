@@ -2816,7 +2816,7 @@ mod tests {
 
 		for _ in 0..node_count {
 			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
-			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Arc::clone(&logger)));
+			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
 			let node_id = {
@@ -2825,7 +2825,7 @@ mod tests {
 				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
 			};
 			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger)).unwrap();
-			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id), Arc::clone(&logger));
+			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id), chain_monitor.clone(), Arc::clone(&logger));
 			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router });
 		}
 
