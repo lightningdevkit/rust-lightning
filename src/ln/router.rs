@@ -3,6 +3,8 @@ use secp256k1::{Secp256k1,Message};
 use secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::script::Builder;
+use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
@@ -209,7 +211,15 @@ impl RoutingMessageHandler for Router {
 
 		match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
 			Ok((script_pubkey, _value)) => {
-				//TODO: Check if script_pubkey matches bitcoin_key_1 and bitcoin_key_2
+				let expected_script = Builder::new().push_opcode(opcodes::All::OP_PUSHNUM_2)
+				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
+				                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
+				                                    .push_opcode(opcodes::All::OP_PUSHNUM_2).push_opcode(opcodes::All::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+				if script_pubkey != expected_script {
+					return Err(HandleError{err: "Channel announcement keys didn't match on-chain script", action: Some(ErrorAction::IgnoreError)});
+				}
+				//TODO: Check if value is worth storing, use it to inform routing, and compare it
+				//to the new HTLC max field in channel_update
 			},
 			Err(ChainError::NotSupported) => {
 				// Tenatively accept, potentially exposing us to DoS attacks
