@@ -2,9 +2,11 @@ extern crate bitcoin;
 extern crate lightning;
 extern crate secp256k1;
 
-use bitcoin::network::constants::Network;
+use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::opcodes;
 
-use lightning::chain::chaininterface;
+use lightning::chain::chaininterface::{ChainError,ChainWatchInterface, ChainListener};
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
 use lightning::ln::msgs::{MsgDecodable, RoutingMessageHandler};
@@ -19,7 +21,8 @@ mod utils;
 
 use utils::test_logger;
 
-use std::sync::Arc;
+use std::sync::{Weak, Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -45,6 +48,46 @@ pub fn slice_to_be64(v: &[u8]) -> u64 {
 	((v[5] as u64) << 8*2) |
 	((v[6] as u64) << 8*1) |
 	((v[7] as u64) << 8*0)
+}
+
+
+struct InputData {
+	data: Vec<u8>,
+	read_pos: AtomicUsize,
+}
+impl InputData {
+	fn get_slice(&self, len: usize) -> Option<&[u8]> {
+		let old_pos = self.read_pos.fetch_add(len, Ordering::AcqRel);
+		if self.data.len() < old_pos + len {
+			return None;
+		}
+		Some(&self.data[old_pos..old_pos + len])
+	}
+}
+
+struct DummyChainWatcher {
+	input: Arc<InputData>,
+}
+
+impl ChainWatchInterface for DummyChainWatcher {
+	fn install_watch_script(&self, _script_pub_key: &Script) {
+	}
+
+	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) {
+	}
+
+	fn watch_all_txn(&self) {
+	}
+
+	fn register_listener(&self, _listener: Weak<ChainListener>) {
+	}
+
+	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+		match self.input.get_slice(1) {
+			Some(slice) => Ok((Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).into_script().to_v0_p2wsh(), 0)),
+			None => Err(ChainError::UnknownTx),
+		}
+	}
 }
 
 #[inline]
@@ -110,7 +153,13 @@ pub fn do_test(data: &[u8]) {
 	}
 
 	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
-	let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
+	let input = Arc::new(InputData {
+		data: data.to_vec(),
+		read_pos: AtomicUsize::new(0),
+	});
+	let chain_monitor = Arc::new(DummyChainWatcher {
+		input: input,
+	});
 
 	let our_pubkey = get_pubkey!();
 	let router = Router::new(our_pubkey.clone(), chain_monitor, Arc::clone(&logger));
