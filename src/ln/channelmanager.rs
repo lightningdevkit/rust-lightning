@@ -1361,6 +1361,41 @@ impl ChannelManager {
 	pub fn test_restore_channel_monitor(&self) {
 		unimplemented!();
 	}
+
+	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, HandleError> {
+		if msg.chain_hash != self.genesis_hash {
+			return Err(HandleError{err: "Unknown genesis block hash", action: Some(msgs::ErrorAction::IgnoreError)});
+		}
+		let mut channel_state = self.channel_state.lock().unwrap();
+		if channel_state.by_id.contains_key(&msg.temporary_channel_id) {
+			return Err(HandleError{err: "temporary_channel_id collision!", action: Some(msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: String::new()}})});
+		}
+
+		let chan_keys = if cfg!(feature = "fuzztarget") {
+			ChannelKeys {
+				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]).unwrap(),
+				revocation_base_key:       SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]).unwrap(),
+				payment_base_key:          SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]).unwrap(),
+				delayed_payment_base_key:  SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0]).unwrap(),
+				htlc_base_key:             SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0]).unwrap(),
+				channel_close_key:         SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0]).unwrap(),
+				channel_monitor_claim_key: SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0]).unwrap(),
+				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+			}
+		} else {
+			let mut key_seed = [0u8; 32];
+			rng::fill_bytes(&mut key_seed);
+			match ChannelKeys::new_from_seed(&key_seed) {
+				Ok(key) => key,
+				Err(_) => panic!("RNG is busted!")
+			}
+		};
+
+		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))?;
+		let accept_msg = channel.get_accept_channel()?;
+		channel_state.by_id.insert(channel.channel_id(), channel);
+		Ok(accept_msg)
+	}
 }
 
 impl events::EventsProvider for ChannelManager {
@@ -1487,41 +1522,31 @@ impl ChainListener for ChannelManager {
 	}
 }
 
+macro_rules! handle_error {
+	($self: ident, $internal: expr, $channel_id: expr) => {
+		match $internal {
+			Ok(msg) => Ok(msg),
+			Err(e) => {
+				match e.action {
+					Some(msgs::ErrorAction::DisconnectPeer { msg: _ }) => {
+						$self.force_close_channel(&$channel_id);
+					},
+					Some(msgs::ErrorAction::IgnoreError) => {},
+					Some(msgs::ErrorAction::SendErrorMessage { msg: _ }) => {
+						$self.force_close_channel(&$channel_id);
+					},
+					None => {},
+				}
+				return Err(e);
+			},
+		}
+	}
+}
+
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, HandleError> {
-		if msg.chain_hash != self.genesis_hash {
-			return Err(HandleError{err: "Unknown genesis block hash", action: None});
-		}
-		let mut channel_state = self.channel_state.lock().unwrap();
-		if channel_state.by_id.contains_key(&msg.temporary_channel_id) {
-			return Err(HandleError{err: "temporary_channel_id collision!", action: None});
-		}
-
-		let chan_keys = if cfg!(feature = "fuzztarget") {
-			ChannelKeys {
-				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]).unwrap(),
-				revocation_base_key:       SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]).unwrap(),
-				payment_base_key:          SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]).unwrap(),
-				delayed_payment_base_key:  SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0]).unwrap(),
-				htlc_base_key:             SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0]).unwrap(),
-				channel_close_key:         SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0]).unwrap(),
-				channel_monitor_claim_key: SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0]).unwrap(),
-				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-			}
-		} else {
-			let mut key_seed = [0u8; 32];
-			rng::fill_bytes(&mut key_seed);
-			match ChannelKeys::new_from_seed(&key_seed) {
-				Ok(key) => key,
-				Err(_) => panic!("RNG is busted!")
-			}
-		};
-
-		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))?;
-		let accept_msg = channel.get_accept_channel()?;
-		channel_state.by_id.insert(channel.channel_id(), channel);
-		Ok(accept_msg)
+		handle_error!(self, self.internal_open_channel(their_node_id, msg), msg.temporary_channel_id)
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
