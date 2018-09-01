@@ -6,8 +6,6 @@ extern crate lightning;
 use lightning::ln::msgs;
 use lightning::util::reset_rng_state;
 
-use lightning::ln::msgs::{MsgEncodable, MsgDecodable};
-
 mod utils;
 
 #[inline]
