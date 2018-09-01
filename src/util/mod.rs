@@ -21,4 +21,11 @@ pub(crate) mod test_utils;
 #[macro_use]
 pub(crate) mod macro_logger;
 
+#[cfg(feature = "fuzztarget")]
+#[macro_use]
+pub mod ser;
+#[cfg(not(feature = "fuzztarget"))]
+#[macro_use]
+pub(crate) mod ser;
+
 pub mod logger;

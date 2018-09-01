@@ -131,6 +131,8 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
+					msgs::DecodeError::InvalidValue => panic!("Writeable not used yet..."),
+					msgs::DecodeError::Io(_) => panic!("Writeable not used yet..."),
 				}
 			}
 		}
@@ -154,6 +156,8 @@ pub fn do_test(data: &[u8]) {
 						msgs::DecodeError::ExtraAddressesPerType => return,
 						msgs::DecodeError::BadLengthDescriptor => return,
 						msgs::DecodeError::ShortRead => panic!("We picked the length..."),
+						msgs::DecodeError::InvalidValue => panic!("Writeable not used yet..."),
+						msgs::DecodeError::Io(_) => panic!("Writeable not used yet..."),
 					}
 				}
 			}

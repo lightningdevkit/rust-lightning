@@ -43,6 +43,10 @@ pub enum DecodeError {
 	/// A length descriptor in the packet didn't describe the later data correctly
 	/// (currently only generated in node_announcement)
 	BadLengthDescriptor,
+	/// Error from std::io
+	Io(::std::io::Error),
+	/// Invalid value found when decoding
+	InvalidValue,
 }
 pub trait MsgDecodable: Sized {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError>;
@@ -519,6 +523,8 @@ impl Error for DecodeError {
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
+			DecodeError::Io(ref e) => e.description(),
+			DecodeError::InvalidValue => "Invalid value in the bytes",
 		}
 	}
 }
@@ -531,6 +537,16 @@ impl fmt::Display for DecodeError {
 impl fmt::Debug for HandleError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_str(self.err)
+	}
+}
+
+impl From<::std::io::Error> for DecodeError {
+	fn from(e: ::std::io::Error) -> Self {
+		if e.kind() == ::std::io::ErrorKind::UnexpectedEof {
+			DecodeError::ShortRead
+		} else {
+			DecodeError::Io(e)
+		}
 	}
 }
 
