@@ -11,7 +11,7 @@ mod utils;
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	test_msg!(msgs::OpenChannel, data);
+	test_msg_writeable_hole!(msgs::ErrorMessage, data, 32, 2);
 }
 
 #[cfg(feature = "afl")]

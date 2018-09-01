@@ -54,11 +54,11 @@ path = "fuzz_targets/chanmon_deser_target.rs"
 # message fuzz targets
 [[bin]]
 name = "msg_ping_target"
-path = "fuzz_targets/msg_ping_target.rs"
+path = "fuzz_targets/msg_targets/msg_ping_target.rs"
 
 [[bin]]
 name = "msg_pong_target"
-path = "fuzz_targets/msg_pong_target.rs"
+path = "fuzz_targets/msg_targets/msg_pong_target.rs"
 
 [[bin]]
 name = "msg_error_message_target"
@@ -151,3 +151,104 @@ path = "fuzz_targets/msg_targets/msg_node_announcement_target.rs"
 [[bin]]
 name = "msg_onion_hop_data_target"
 path = "fuzz_targets/msg_targets/msg_onion_hop_data_target.rs"
+
+# message fuzz targets with Writeable
+[[bin]]
+name = "msg_accept_channel_target_writeable"
+path = "fuzz_targets/msg_targets/msg_accept_channel_target_writeable.rs"
+
+[[bin]]
+name = "msg_announcement_signatures_target_writeable"
+path = "fuzz_targets/msg_targets/msg_announcement_signatures_target_writeable.rs"
+
+[[bin]]
+name = "msg_channel_reestablish_target_writeable"
+path = "fuzz_targets/msg_targets/msg_channel_reestablish_target_writeable.rs"
+
+[[bin]]
+name = "msg_closing_signed_target_writeable"
+path = "fuzz_targets/msg_targets/msg_closing_signed_target_writeable.rs"
+
+[[bin]]
+name = "msg_commitment_signed_target_writeable"
+path = "fuzz_targets/msg_targets/msg_commitment_signed_target_writeable.rs"
+
+[[bin]]
+name = "msg_decoded_onion_error_packet_target_writeable"
+path = "fuzz_targets/msg_targets/msg_decoded_onion_error_packet_target_writeable.rs"
+
+[[bin]]
+name = "msg_funding_created_target_writeable"
+path = "fuzz_targets/msg_targets/msg_funding_created_target_writeable.rs"
+
+[[bin]]
+name = "msg_funding_locked_target_writeable"
+path = "fuzz_targets/msg_targets/msg_funding_locked_target_writeable.rs"
+
+[[bin]]
+name = "msg_funding_signed_target_writeable"
+path = "fuzz_targets/msg_targets/msg_funding_signed_target_writeable.rs"
+
+[[bin]]
+name = "msg_init_target_writeable"
+path = "fuzz_targets/msg_targets/msg_init_target_writeable.rs"
+
+[[bin]]
+name = "msg_open_channel_target_writeable"
+path = "fuzz_targets/msg_targets/msg_open_channel_target_writeable.rs"
+
+[[bin]]
+name = "msg_revoke_and_ack_target_writeable"
+path = "fuzz_targets/msg_targets/msg_revoke_and_ack_target_writeable.rs"
+
+[[bin]]
+name = "msg_shutdown_target_writeable"
+path = "fuzz_targets/msg_targets/msg_shutdown_target_writeable.rs"
+
+[[bin]]
+name = "msg_update_fail_htlc_target_writeable"
+path = "fuzz_targets/msg_targets/msg_update_fail_htlc_target_writeable.rs"
+
+[[bin]]
+name = "msg_update_fail_malformed_htlc_target_writeable"
+path = "fuzz_targets/msg_targets/msg_update_fail_malformed_htlc_target_writeable.rs"
+
+[[bin]]
+name = "msg_update_fee_target_writeable"
+path = "fuzz_targets/msg_targets/msg_update_fee_target_writeable.rs"
+
+[[bin]]
+name = "msg_update_fulfill_htlc_target_writeable"
+path = "fuzz_targets/msg_targets/msg_update_fulfill_htlc_target_writeable.rs"
+
+[[bin]]
+name = "msg_channel_announcement_target_writeable"
+path = "fuzz_targets/msg_targets/msg_channel_announcement_target_writeable.rs"
+
+[[bin]]
+name = "msg_channel_update_target_writeable"
+path = "fuzz_targets/msg_targets/msg_channel_update_target_writeable.rs"
+
+[[bin]]
+name = "msg_node_announcement_target_writeable"
+path = "fuzz_targets/msg_targets/msg_node_announcement_target_writeable.rs"
+
+[[bin]]
+name = "msg_update_add_htlc_target_writeable"
+path = "fuzz_targets/msg_targets/msg_update_add_htlc_target_writeable.rs"
+
+[[bin]]
+name = "msg_error_message_target_writeable"
+path = "fuzz_targets/msg_targets/msg_error_message_target_writeable.rs"
+
+[[bin]]
+name = "msg_onion_hop_data_target_writeable"
+path = "fuzz_targets/msg_targets/msg_onion_hop_data_target_writeable.rs"
+
+[[bin]]
+name = "msg_ping_target_writeable"
+path = "fuzz_targets/msg_targets/msg_ping_target_writeable.rs"
+
+[[bin]]
+name = "msg_pong_target_writeable"
+path = "fuzz_targets/msg_targets/msg_pong_target_writeable.rs"
