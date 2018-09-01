@@ -10,6 +10,7 @@ use std::{cmp, fmt};
 use std::result::Result;
 
 use util::{byte_utils, internal_traits, events};
+use util::ser::{Readable, Reader, Writeable, Writer};
 
 pub trait MsgEncodable {
 	fn encode(&self) -> Vec<u8>;
@@ -1697,6 +1698,586 @@ impl MsgDecodable for ErrorMessage {
 		})
 	}
 }
+
+impl_writeable!(AcceptChannel, {
+	temporary_channel_id,
+	dust_limit_satoshis,
+	max_htlc_value_in_flight_msat,
+	channel_reserve_satoshis,
+	htlc_minimum_msat,
+	minimum_depth,
+	to_self_delay,
+	max_accepted_htlcs,
+	funding_pubkey,
+	revocation_basepoint,
+	payment_basepoint,
+	delayed_payment_basepoint,
+	htlc_basepoint,
+	first_per_commitment_point,
+	shutdown_scriptpubkey
+});
+
+impl_writeable!(AnnouncementSignatures, {
+	channel_id,
+	short_channel_id,
+	node_signature,
+	bitcoin_signature
+});
+
+impl<W: ::std::io::Write> Writeable<W> for ChannelReestablish {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.channel_id.write(w)?;
+		self.next_local_commitment_number.write(w)?;
+		self.next_remote_commitment_number.write(w)?;
+		if let Some(ref data_loss_protect) = self.data_loss_protect {
+			data_loss_protect.your_last_per_commitment_secret.write(w)?;
+			data_loss_protect.my_current_per_commitment_point.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for ChannelReestablish{
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(Self {
+			channel_id: Readable::read(r)?,
+			next_local_commitment_number: Readable::read(r)?,
+			next_remote_commitment_number: Readable::read(r)?,
+			data_loss_protect: {
+				match <[u8; 32] as Readable<R>>::read(r) {
+					Ok(your_last_per_commitment_secret) =>
+						Some(DataLossProtect {
+							your_last_per_commitment_secret,
+							my_current_per_commitment_point: Readable::read(r)?,
+						}),
+					Err(DecodeError::ShortRead) => None,
+					Err(e) => return Err(e)
+				}
+			}
+		})
+	}
+}
+
+impl_writeable!(ClosingSigned, {
+	channel_id,
+	fee_satoshis,
+	signature
+});
+
+impl_writeable!(CommitmentSigned, {
+	channel_id,
+	signature,
+	htlc_signatures
+});
+
+impl_writeable!(DecodedOnionErrorPacket, {
+	hmac,
+	failuremsg,
+	pad
+});
+
+impl_writeable!(FundingCreated, {
+	temporary_channel_id,
+	funding_txid,
+	funding_output_index,
+	signature
+});
+
+impl_writeable!(FundingSigned, {
+	channel_id,
+	signature
+});
+
+impl_writeable!(FundingLocked, {
+	channel_id,
+	next_per_commitment_point
+});
+
+impl_writeable!(GlobalFeatures, {
+	flags
+});
+
+impl_writeable!(LocalFeatures, {
+	flags
+});
+
+impl_writeable!(Init, {
+	global_features,
+	local_features
+});
+
+impl_writeable!(OpenChannel, {
+	chain_hash,
+	temporary_channel_id,
+	funding_satoshis,
+	push_msat,
+	dust_limit_satoshis,
+	max_htlc_value_in_flight_msat,
+	channel_reserve_satoshis,
+	htlc_minimum_msat,
+	feerate_per_kw,
+	to_self_delay,
+	max_accepted_htlcs,
+	funding_pubkey,
+	revocation_basepoint,
+	payment_basepoint,
+	delayed_payment_basepoint,
+	htlc_basepoint,
+	first_per_commitment_point,
+	channel_flags,
+	shutdown_scriptpubkey
+});
+
+impl_writeable!(RevokeAndACK, {
+	channel_id,
+	per_commitment_secret,
+	next_per_commitment_point
+});
+
+impl_writeable!(Shutdown, {
+	channel_id,
+	scriptpubkey
+});
+
+impl_writeable!(UpdateFailHTLC, {
+	channel_id,
+	htlc_id,
+	reason
+});
+
+impl_writeable!(UpdateFailMalformedHTLC, {
+	channel_id,
+	htlc_id,
+	sha256_of_onion,
+	failure_code
+});
+
+impl_writeable!(UpdateFee, {
+	channel_id,
+	feerate_per_kw
+});
+
+impl_writeable!(UpdateFulfillHTLC, {
+	channel_id,
+	htlc_id,
+	payment_preimage
+});
+
+impl_writeable!(OnionErrorPacket, {
+	data
+});
+
+impl<W: ::std::io::Write> Writeable<W> for OnionPacket {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.version.write(w)?;
+		match self.public_key {
+			Ok(pubkey) => pubkey.write(w)?,
+			Err(_) => [0u8;33].write(w)?,
+		}
+		w.write_all(&self.hop_data)?;
+		self.hmac.write(w)?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for OnionPacket {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(OnionPacket {
+			version: Readable::read(r)?,
+			public_key: {
+				let mut buf = [0u8;33];
+				r.read_exact(&mut buf)?;
+				PublicKey::from_slice(&Secp256k1::without_caps(), &buf)
+			},
+			hop_data: Readable::read(r)?,
+			hmac: Readable::read(r)?,
+		})
+	}
+}
+
+impl_writeable!(UpdateAddHTLC, {
+	channel_id,
+	htlc_id,
+	amount_msat,
+	payment_hash,
+	cltv_expiry,
+	onion_routing_packet
+});
+
+impl<W: ::std::io::Write> Writeable<W> for OnionRealm0HopData {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.short_channel_id.write(w)?;
+		self.amt_to_forward.write(w)?;
+		self.outgoing_cltv_value.write(w)?;
+		w.write_all(&[0;12])?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for OnionRealm0HopData {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(OnionRealm0HopData {
+			short_channel_id: Readable::read(r)?,
+			amt_to_forward: Readable::read(r)?,
+			outgoing_cltv_value: {
+				let v: u32 = Readable::read(r)?;
+				r.read_exact(&mut [0; 12])?;
+				v
+			}
+		})
+	}
+}
+
+impl<W: ::std::io::Write> Writeable<W> for OnionHopData {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.realm.write(w)?;
+		self.data.write(w)?;
+		self.hmac.write(w)?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for OnionHopData {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(OnionHopData {
+			realm: {
+				let r: u8 = Readable::read(r)?;
+				if r != 0 {
+					return Err(DecodeError::UnknownRealmByte);
+				}
+				r
+			},
+			data: Readable::read(r)?,
+			hmac: Readable::read(r)?,
+		})
+	}
+}
+
+impl<W: ::std::io::Write> Writeable<W> for Ping {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.ponglen.write(w)?;
+		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for Ping {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(Ping {
+			ponglen: Readable::read(r)?,
+			byteslen: {
+				let byteslen = Readable::read(r)?;
+				r.read_exact(&mut vec![0u8; byteslen as usize][..])?;
+				byteslen
+			}
+		})
+	}
+}
+
+impl<W: ::std::io::Write> Writeable<W> for Pong {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for Pong {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(Pong {
+			byteslen: {
+				let byteslen = Readable::read(r)?;
+				r.read_exact(&mut vec![0u8; byteslen as usize][..])?;
+				byteslen
+			}
+		})
+	}
+}
+
+impl<W: ::std::io::Write> Writeable<W> for UnsignedChannelAnnouncement {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.features.write(w)?;
+		self.chain_hash.write(w)?;
+		self.short_channel_id.write(w)?;
+		self.node_id_1.write(w)?;
+		self.node_id_2.write(w)?;
+		self.bitcoin_key_1.write(w)?;
+		self.bitcoin_key_2.write(w)?;
+		w.write_all(&self.excess_data[..])?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for UnsignedChannelAnnouncement {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(Self {
+			features: {
+				let f: GlobalFeatures = Readable::read(r)?;
+				if f.requires_unknown_bits() {
+					return Err(DecodeError::UnknownRequiredFeature);
+				}
+				f
+			},
+			chain_hash: Readable::read(r)?,
+			short_channel_id: Readable::read(r)?,
+			node_id_1: Readable::read(r)?,
+			node_id_2: Readable::read(r)?,
+			bitcoin_key_1: Readable::read(r)?,
+			bitcoin_key_2: Readable::read(r)?,
+			excess_data: {
+				let mut excess_data = vec![];
+				r.read_to_end(&mut excess_data)?;
+				excess_data
+			},
+		})
+	}
+}
+
+impl_writeable!(ChannelAnnouncement,{
+	node_signature_1,
+	node_signature_2,
+	bitcoin_signature_1,
+	bitcoin_signature_2,
+	contents
+});
+
+impl<W: ::std::io::Write> Writeable<W> for UnsignedChannelUpdate {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.chain_hash.write(w)?;
+		self.short_channel_id.write(w)?;
+		self.timestamp.write(w)?;
+		self.flags.write(w)?;
+		self.cltv_expiry_delta.write(w)?;
+		self.htlc_minimum_msat.write(w)?;
+		self.fee_base_msat.write(w)?;
+		self.fee_proportional_millionths.write(w)?;
+		w.write_all(&self.excess_data[..])?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for UnsignedChannelUpdate {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(Self {
+			chain_hash: Readable::read(r)?,
+			short_channel_id: Readable::read(r)?,
+			timestamp: Readable::read(r)?,
+			flags: Readable::read(r)?,
+			cltv_expiry_delta: Readable::read(r)?,
+			htlc_minimum_msat: Readable::read(r)?,
+			fee_base_msat: Readable::read(r)?,
+			fee_proportional_millionths: Readable::read(r)?,
+			excess_data: {
+				let mut excess_data = vec![];
+				r.read_to_end(&mut excess_data)?;
+				excess_data
+			},
+		})
+	}
+}
+
+impl_writeable!(ChannelUpdate, {
+	signature,
+	contents
+});
+
+impl<W: ::std::io::Write> Writeable<W> for ErrorMessage {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.channel_id.write(w)?;
+		self.data.as_bytes().to_vec().write(w)?; // write with size prefix
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for ErrorMessage {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		Ok(Self {
+			channel_id: Readable::read(r)?,
+			data: {
+				let mut sz: usize = <u16 as Readable<R>>::read(r)? as usize;
+				let mut data = vec![];
+				let data_len = r.read_to_end(&mut data)?;
+				sz = cmp::min(data_len, sz);
+				match String::from_utf8(data[..sz as usize].to_vec()) {
+					Ok(s) => s,
+					Err(_) => return Err(DecodeError::BadText),
+				}
+			}
+		})
+	}
+}
+
+impl<W: ::std::io::Write> Writeable<W> for UnsignedNodeAnnouncement {
+	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+		self.features.write(w)?;
+		self.timestamp.write(w)?;
+		self.node_id.write(w)?;
+		w.write_all(&self.rgb)?;
+		self.alias.write(w)?;
+
+		let mut addr_slice = Vec::with_capacity(self.addresses.len() * 18);
+		let mut addrs_to_encode = self.addresses.clone();
+		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
+		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
+		for addr in addrs_to_encode.iter() {
+			match addr {
+				&NetAddress::IPv4{addr, port} => {
+					addr_slice.push(1);
+					addr_slice.extend_from_slice(&addr);
+					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
+				},
+				&NetAddress::IPv6{addr, port} => {
+					addr_slice.push(2);
+					addr_slice.extend_from_slice(&addr);
+					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
+				},
+				&NetAddress::OnionV2{addr, port} => {
+					addr_slice.push(3);
+					addr_slice.extend_from_slice(&addr);
+					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
+				},
+				&NetAddress::OnionV3{ed25519_pubkey, checksum, version, port} => {
+					addr_slice.push(4);
+					addr_slice.extend_from_slice(&ed25519_pubkey);
+					addr_slice.extend_from_slice(&byte_utils::be16_to_array(checksum));
+					addr_slice.push(version);
+					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
+				},
+			}
+		}
+		((addr_slice.len() + self.excess_address_data.len()) as u16).write(w)?;
+		w.write_all(&addr_slice[..])?;
+		w.write_all(&self.excess_address_data[..])?;
+		w.write_all(&self.excess_data[..])?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for UnsignedNodeAnnouncement {
+	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+		let features: GlobalFeatures = Readable::read(r)?;
+		if features.requires_unknown_bits() {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+		let timestamp: u32 = Readable::read(r)?;
+		let node_id: PublicKey = Readable::read(r)?;
+		let mut rgb = [0; 3];
+		r.read_exact(&mut rgb)?;
+		let alias: [u8; 32] = Readable::read(r)?;
+
+		let addrlen: u16 = Readable::read(r)?;
+		let mut addr_readpos = 0;
+		let mut addresses = Vec::with_capacity(4);
+		let mut f: u8 = 0;
+		let mut excess = 0;
+		loop {
+			if addrlen <= addr_readpos { break; }
+			f = Readable::read(r)?;
+			match f {
+				1 => {
+					if addresses.len() > 0 {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addrlen < addr_readpos + 1 + 6 {
+						return Err(DecodeError::BadLengthDescriptor);
+					}
+					addresses.push(NetAddress::IPv4 {
+						addr: {
+							let mut addr = [0; 4];
+							r.read_exact(&mut addr)?;
+							addr
+						},
+						port: Readable::read(r)?,
+					});
+					addr_readpos += 1 + 6
+				},
+				2 => {
+					if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addrlen < addr_readpos + 1 + 18 {
+						return Err(DecodeError::BadLengthDescriptor);
+					}
+					addresses.push(NetAddress::IPv6 {
+						addr: {
+							let mut addr = [0; 16];
+							r.read_exact(&mut addr)?;
+							addr
+						},
+						port: Readable::read(r)?,
+					});
+					addr_readpos += 1 + 18
+				},
+				3 => {
+					if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addrlen < addr_readpos + 1 + 12 {
+						return Err(DecodeError::BadLengthDescriptor);
+					}
+					addresses.push(NetAddress::OnionV2 {
+						addr: {
+							let mut addr = [0; 10];
+							r.read_exact(&mut addr)?;
+							addr
+						},
+						port: Readable::read(r)?,
+					});
+					addr_readpos += 1 + 12
+				},
+				4 => {
+					if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
+						return Err(DecodeError::ExtraAddressesPerType);
+					}
+					if addrlen < addr_readpos + 1 + 37 {
+						return Err(DecodeError::BadLengthDescriptor);
+					}
+					addresses.push(NetAddress::OnionV3 {
+						ed25519_pubkey: Readable::read(r)?,
+						checksum: Readable::read(r)?,
+						version: Readable::read(r)?,
+						port: Readable::read(r)?,
+					});
+					addr_readpos += 1 + 37
+				},
+				_ => { excess = 1; break; }
+			}
+		}
+
+		let mut excess_data = vec![];
+		let excess_address_data = if addr_readpos < addrlen {
+			let mut excess_address_data = vec![0; (addrlen - addr_readpos) as usize];
+			r.read_exact(&mut excess_address_data[excess..])?;
+			if excess == 1 {
+				excess_address_data[0] = f;
+			}
+			excess_address_data
+		} else {
+			if excess == 1 {
+				excess_data.push(f);
+			}
+			Vec::new()
+		};
+
+		Ok(UnsignedNodeAnnouncement {
+			features: features,
+			timestamp: timestamp,
+			node_id: node_id,
+			rgb: rgb,
+			alias: alias,
+			addresses: addresses,
+			excess_address_data: excess_address_data,
+			excess_data: {
+				r.read_to_end(&mut excess_data)?;
+				excess_data
+			},
+		})
+	}
+}
+
+impl_writeable!(NodeAnnouncement, {
+	signature,
+	contents
+});
 
 #[cfg(test)]
 mod tests {
