@@ -189,11 +189,10 @@ pub struct ChannelManager {
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
 
 macro_rules! secp_call {
-	( $res : expr ) => {
+	( $res: expr, $err_msg: expr, $action: expr ) => {
 		match $res {
 			Ok(key) => key,
-			//TODO: Make the err a parameter!
-			Err(_) => return Err(HandleError{err: "Key error", action: None})
+			Err(_) => return Err(HandleError{err: $err_msg, action: Some($action)})
 		}
 	};
 }
@@ -475,7 +474,7 @@ impl ChannelManager {
 
 	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 	#[inline]
-	fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), HandleError> {
+	fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
 		let mut blinded_priv = session_priv.clone();
 		let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
@@ -490,7 +489,7 @@ impl ChannelManager {
 
 			let ephemeral_pubkey = blinded_pub;
 
-			secp_call!(blinded_priv.mul_assign(secp_ctx, &secp_call!(SecretKey::from_slice(secp_ctx, &blinding_factor))));
+			blinded_priv.mul_assign(secp_ctx, &SecretKey::from_slice(secp_ctx, &blinding_factor)?)?;
 			blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 			callback(shared_secret, blinding_factor, ephemeral_pubkey, hop);
@@ -500,7 +499,7 @@ impl ChannelManager {
 	}
 
 	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
-	fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, HandleError> {
+	fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 		let mut res = Vec::with_capacity(route.hops.len());
 
 		Self::construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
@@ -905,15 +904,17 @@ impl ChannelManager {
 			}
 		}
 
-		let session_priv = secp_call!(SecretKey::from_slice(&self.secp_ctx, &{
+		let session_priv = SecretKey::from_slice(&self.secp_ctx, &{
 			let mut session_key = [0; 32];
 			rng::fill_bytes(&mut session_key);
 			session_key
-		}));
+		}).expect("RNG is bad!");
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
-		let onion_keys = ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv)?;
+		//TODO: This should return something other than HandleError, that's really intended for
+		//p2p-returns only.
+		let onion_keys = secp_call!(ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv), "Pubkey along hop was maliciously selected", msgs::ErrorAction::IgnoreError);
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
 
@@ -1982,10 +1983,10 @@ impl ChannelMessageHandler for ChannelManager {
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: Some(msgs::ErrorAction::IgnoreError) })
 					}
 					if !chan.is_usable() {
-						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: None });
+						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError) });
 					}
 
 					let our_node_id = self.get_our_node_id();
@@ -1993,8 +1994,9 @@ impl ChannelMessageHandler for ChannelManager {
 
 					let were_node_one = announcement.node_id_1 == our_node_id;
 					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }));
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }));
+					let bad_sig_action = msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: msg.channel_id.clone(), data: "Invalid signature in announcement_signatures".to_string() } };
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), "Bad announcement_signatures node_signature", bad_sig_action);
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), "Bad announcement_signatures bitcoin_signature", bad_sig_action);
 
 					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
@@ -2006,7 +2008,7 @@ impl ChannelMessageHandler for ChannelManager {
 						contents: announcement,
 					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+				None => return Err(HandleError{err: "Failed to find corresponding channel", action: Some(msgs::ErrorAction::IgnoreError)})
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();

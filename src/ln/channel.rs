@@ -2113,7 +2113,16 @@ impl Channel {
 				if tx.txid() == self.channel_monitor.get_funding_txo().unwrap().txid {
 					let txo_idx = self.channel_monitor.get_funding_txo().unwrap().index as usize;
 					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
-						tx.output[txo_idx].value != self.channel_value_satoshis {
+							tx.output[txo_idx].value != self.channel_value_satoshis {
+						if self.channel_outbound {
+							// If we generated the funding transaction and it doesn't match what it
+							// should, the client is really broken and we should just panic and
+							// tell them off. That said, because hash collisions happen with high
+							// probability in fuzztarget mode, if we're fuzzing we just close the
+							// channel and move on.
+							#[cfg(not(feature = "fuzztarget"))]
+							panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+						}
 						self.channel_state = ChannelState::ShutdownComplete as u32;
 						self.channel_update_count += 1;
 						return Err(HandleError{err: "funding tx had wrong script/value", action: Some(ErrorAction::DisconnectPeer{msg: None})});
