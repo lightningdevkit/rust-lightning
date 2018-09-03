@@ -1,10 +1,23 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::network::constants::Network;
+use bitcoin::network::serialize::BitcoinHash;
 use util::logger::Logger;
 use std::sync::{Mutex,Weak,MutexGuard,Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Used to give chain error details upstream
+pub enum ChainError {
+	/// Client doesn't support UTXO lookup (but the chain hash matches our genesis block hash)
+	NotSupported,
+	/// Chain isn't the one watched
+	NotWatched,
+	/// Tx doesn't exist or is unconfirmed
+	UnknownTx,
+}
 
 /// An interface to request notification of certain scripts as they appear the
 /// chain.
@@ -24,6 +37,12 @@ pub trait ChainWatchInterface: Sync + Send {
 
 	fn register_listener(&self, listener: Weak<ChainListener>);
 	//TODO: unregister
+
+	/// Gets the script and value in satoshis for a given unspent transaction output given a
+	/// short_channel_id (aka unspent_tx_output_identier). For BTC/tBTC channels the top three
+	/// bytes are the block height, the next 3 the transaction index within the block, and the
+	/// final two the output within the transaction.
+	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
 }
 
 /// An interface to send a transaction to the Bitcoin network.
@@ -69,6 +88,7 @@ pub trait FeeEstimator: Sync + Send {
 /// Utility to capture some common parts of ChainWatchInterface implementors.
 /// Keeping a local copy of this in a ChainWatchInterface implementor is likely useful.
 pub struct ChainWatchInterfaceUtil {
+	network: Network,
 	watched: Mutex<(Vec<Script>, Vec<(Sha256dHash, u32)>, bool)>, //TODO: Something clever to optimize this
 	listeners: Mutex<Vec<Weak<ChainListener>>>,
 	reentered: AtomicUsize,
@@ -99,11 +119,19 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
 	}
+
+	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
+			return Err(ChainError::NotWatched);
+		}
+		Err(ChainError::NotSupported)
+	}
 }
 
 impl ChainWatchInterfaceUtil {
-	pub fn new(logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
+	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
+			network: network,
 			watched: Mutex::new((Vec::new(), Vec::new(), false)),
 			listeners: Mutex::new(Vec::new()),
 			reentered: AtomicUsize::new(1),

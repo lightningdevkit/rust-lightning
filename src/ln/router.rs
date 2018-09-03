@@ -3,7 +3,10 @@ use secp256k1::{Secp256k1,Message};
 use secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::script::Builder;
+use bitcoin::blockdata::opcodes;
 
+use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
 use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,MsgEncodable,NetAddress,GlobalFeatures};
 use ln::msgs;
@@ -155,6 +158,7 @@ pub struct RouteHint {
 pub struct Router {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
+	chain_monitor: Arc<ChainWatchInterface>,
 	logger: Arc<Logger>,
 }
 
@@ -201,11 +205,31 @@ impl RoutingMessageHandler for Router {
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
 
-		//TODO: Call blockchain thing to ask if the short_channel_id is valid
-		//TODO: Only allow bitcoin chain_hash
-
 		if msg.contents.features.requires_unknown_bits() {
 			panic!("Unknown-required-features ChannelAnnouncements should never deserialize!");
+		}
+
+		match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
+			Ok((script_pubkey, _value)) => {
+				let expected_script = Builder::new().push_opcode(opcodes::All::OP_PUSHNUM_2)
+				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
+				                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
+				                                    .push_opcode(opcodes::All::OP_PUSHNUM_2).push_opcode(opcodes::All::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+				if script_pubkey != expected_script {
+					return Err(HandleError{err: "Channel announcement keys didn't match on-chain script", action: Some(ErrorAction::IgnoreError)});
+				}
+				//TODO: Check if value is worth storing, use it to inform routing, and compare it
+				//to the new HTLC max field in channel_update
+			},
+			Err(ChainError::NotSupported) => {
+				// Tentatively accept, potentially exposing us to DoS attacks
+			},
+			Err(ChainError::NotWatched) => {
+				return Err(HandleError{err: "Channel announced on an unknown chain", action: Some(ErrorAction::IgnoreError)});
+			},
+			Err(ChainError::UnknownTx) => {
+				return Err(HandleError{err: "Channel announced without corresponding UTXO entry", action: Some(ErrorAction::IgnoreError)});
+			},
 		}
 
 		let mut network = self.network_map.write().unwrap();
@@ -388,7 +412,7 @@ struct DummyDirectionalChannelInfo {
 }
 
 impl Router {
-	pub fn new(our_pubkey: PublicKey, logger: Arc<Logger>) -> Router {
+	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
 		let mut nodes = HashMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
 			channels: Vec::new(),
@@ -407,6 +431,7 @@ impl Router {
 				our_node_id: our_pubkey,
 				nodes: nodes,
 			}),
+			chain_monitor,
 			logger,
 		}
 	}
@@ -632,6 +657,7 @@ impl Router {
 
 #[cfg(test)]
 mod tests {
+	use chain::chaininterface;
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::msgs::GlobalFeatures;
@@ -639,6 +665,7 @@ mod tests {
 	use util::logger::Logger;
 
 	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::network::constants::Network;
 
 	use hex;
 
@@ -652,7 +679,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let router = Router::new(our_id, Arc::clone(&logger));
+		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+		let router = Router::new(our_id, chain_monitor, Arc::clone(&logger));
 
 		// Build network from our_id to node8:
 		//
