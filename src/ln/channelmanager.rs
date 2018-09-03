@@ -478,7 +478,6 @@ impl ChannelManager {
 	fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), HandleError> {
 		let mut blinded_priv = session_priv.clone();
 		let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
-		let mut first_iteration = true;
 
 		for hop in route.hops.iter() {
 			let shared_secret = SharedSecret::new(secp_ctx, &hop.pubkey, &blinded_priv);
@@ -489,10 +488,6 @@ impl ChannelManager {
 			let mut blinding_factor = [0u8; 32];
 			sha.result(&mut blinding_factor);
 
-			if first_iteration {
-				blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
-				first_iteration = false;
-			}
 			let ephemeral_pubkey = blinded_pub;
 
 			secp_call!(blinded_priv.mul_assign(secp_ctx, &secp_call!(SecretKey::from_slice(secp_ctx, &blinding_factor))));
