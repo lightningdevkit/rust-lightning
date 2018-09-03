@@ -77,22 +77,19 @@ struct DummyChainWatcher {
 }
 
 impl ChainWatchInterface for DummyChainWatcher {
-	fn install_watch_script(&self, _script_pub_key: &Script) {
-	}
-
-	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) {
-	}
-
-	fn watch_all_txn(&self) {
-	}
-
-	fn register_listener(&self, _listener: Weak<ChainListener>) {
-	}
+	fn install_watch_script(&self, _script_pub_key: &Script) { }
+	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
+	fn watch_all_txn(&self) { }
+	fn register_listener(&self, _listener: Weak<ChainListener>) { }
 
 	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-		match self.input.get_slice(1) {
-			Some(slice) => Ok((Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).into_script().to_v0_p2wsh(), 0)),
+		match self.input.get_slice(2) {
+			Some(&[0, _]) => Err(ChainError::NotSupported),
+			Some(&[1, _]) => Err(ChainError::NotWatched),
+			Some(&[2, _]) => Err(ChainError::UnknownTx),
+			Some(&[_, x]) => Ok((Builder::new().push_int(x as i64).into_script().to_v0_p2wsh(), 0)),
 			None => Err(ChainError::UnknownTx),
+			_ => unreachable!(),
 		}
 	}
 }
