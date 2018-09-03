@@ -63,6 +63,13 @@ impl InputData {
 		}
 		Some(&self.data[old_pos..old_pos + len])
 	}
+	fn get_slice_nonadvancing(&self, len: usize) -> Option<&[u8]> {
+		let old_pos = self.read_pos.load(Ordering::Acquire);
+		if self.data.len() < old_pos + len {
+			return None;
+		}
+		Some(&self.data[old_pos..old_pos + len])
+	}
 }
 
 struct DummyChainWatcher {
@@ -94,23 +101,23 @@ impl ChainWatchInterface for DummyChainWatcher {
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
 
-	let mut read_pos = 0;
+	let input = Arc::new(InputData {
+		data: data.to_vec(),
+		read_pos: AtomicUsize::new(0),
+	});
 	macro_rules! get_slice_nonadvancing {
 		($len: expr) => {
-			{
-				if data.len() < read_pos + $len as usize {
-					return;
-				}
-				&data[read_pos..read_pos + $len as usize]
+			match input.get_slice_nonadvancing($len as usize) {
+				Some(slice) => slice,
+				None => return,
 			}
 		}
 	}
 	macro_rules! get_slice {
 		($len: expr) => {
-			{
-				let res = get_slice_nonadvancing!($len);
-				read_pos += $len;
-				res
+			match input.get_slice($len as usize) {
+				Some(slice) => slice,
+				None => return,
 			}
 		}
 	}
@@ -153,12 +160,8 @@ pub fn do_test(data: &[u8]) {
 	}
 
 	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
-	let input = Arc::new(InputData {
-		data: data.to_vec(),
-		read_pos: AtomicUsize::new(0),
-	});
 	let chain_monitor = Arc::new(DummyChainWatcher {
-		input: input,
+		input: Arc::clone(&input),
 	});
 
 	let our_pubkey = get_pubkey!();
