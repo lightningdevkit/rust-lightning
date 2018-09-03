@@ -13,7 +13,7 @@ pub struct OutPoint {
 }
 
 impl OutPoint {
-	/// Creates a new `OutPoint` from the txid an the index.
+	/// Creates a new `OutPoint` from the txid and the index.
 	pub fn new(txid: Sha256dHash, index: u16) -> OutPoint {
 		OutPoint { txid, index }
 	}

@@ -2002,6 +2002,12 @@ impl Channel {
 		self.channel_value_satoshis
 	}
 
+	//TODO: Testing purpose only, should be changed in another way after #81
+	#[cfg(test)]
+	pub fn get_local_keys(&self) -> &ChannelKeys {
+		&self.local_keys
+	}
+
 	/// Allowed in any state (including after shutdown)
 	pub fn get_channel_update_count(&self) -> u32 {
 		self.channel_update_count

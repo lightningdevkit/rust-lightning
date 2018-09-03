@@ -2,6 +2,11 @@ extern crate bitcoin;
 extern crate lightning;
 extern crate secp256k1;
 
+use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::opcodes;
+
+use lightning::chain::chaininterface::{ChainError,ChainWatchInterface, ChainListener};
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
 use lightning::ln::msgs::{MsgDecodable, RoutingMessageHandler};
@@ -16,7 +21,8 @@ mod utils;
 
 use utils::test_logger;
 
-use std::sync::Arc;
+use std::sync::{Weak, Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -44,27 +50,71 @@ pub fn slice_to_be64(v: &[u8]) -> u64 {
 	((v[7] as u64) << 8*0)
 }
 
+
+struct InputData {
+	data: Vec<u8>,
+	read_pos: AtomicUsize,
+}
+impl InputData {
+	fn get_slice(&self, len: usize) -> Option<&[u8]> {
+		let old_pos = self.read_pos.fetch_add(len, Ordering::AcqRel);
+		if self.data.len() < old_pos + len {
+			return None;
+		}
+		Some(&self.data[old_pos..old_pos + len])
+	}
+	fn get_slice_nonadvancing(&self, len: usize) -> Option<&[u8]> {
+		let old_pos = self.read_pos.load(Ordering::Acquire);
+		if self.data.len() < old_pos + len {
+			return None;
+		}
+		Some(&self.data[old_pos..old_pos + len])
+	}
+}
+
+struct DummyChainWatcher {
+	input: Arc<InputData>,
+}
+
+impl ChainWatchInterface for DummyChainWatcher {
+	fn install_watch_script(&self, _script_pub_key: &Script) { }
+	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
+	fn watch_all_txn(&self) { }
+	fn register_listener(&self, _listener: Weak<ChainListener>) { }
+
+	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+		match self.input.get_slice(2) {
+			Some(&[0, _]) => Err(ChainError::NotSupported),
+			Some(&[1, _]) => Err(ChainError::NotWatched),
+			Some(&[2, _]) => Err(ChainError::UnknownTx),
+			Some(&[_, x]) => Ok((Builder::new().push_int(x as i64).into_script().to_v0_p2wsh(), 0)),
+			None => Err(ChainError::UnknownTx),
+			_ => unreachable!(),
+		}
+	}
+}
+
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
 
-	let mut read_pos = 0;
+	let input = Arc::new(InputData {
+		data: data.to_vec(),
+		read_pos: AtomicUsize::new(0),
+	});
 	macro_rules! get_slice_nonadvancing {
 		($len: expr) => {
-			{
-				if data.len() < read_pos + $len as usize {
-					return;
-				}
-				&data[read_pos..read_pos + $len as usize]
+			match input.get_slice_nonadvancing($len as usize) {
+				Some(slice) => slice,
+				None => return,
 			}
 		}
 	}
 	macro_rules! get_slice {
 		($len: expr) => {
-			{
-				let res = get_slice_nonadvancing!($len);
-				read_pos += $len;
-				res
+			match input.get_slice($len as usize) {
+				Some(slice) => slice,
+				None => return,
 			}
 		}
 	}
@@ -107,9 +157,12 @@ pub fn do_test(data: &[u8]) {
 	}
 
 	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+	let chain_monitor = Arc::new(DummyChainWatcher {
+		input: Arc::clone(&input),
+	});
 
 	let our_pubkey = get_pubkey!();
-	let router = Router::new(our_pubkey.clone(), Arc::clone(&logger));
+	let router = Router::new(our_pubkey.clone(), chain_monitor, Arc::clone(&logger));
 
 	loop {
 		match get_slice!(1)[0] {
