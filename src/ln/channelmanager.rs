@@ -1414,7 +1414,7 @@ impl ChannelManager {
 		};
 
 		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger)).map_err(|e| MsgHandleErrInternal::from_no_close(e))?;
-		let accept_msg = channel.get_accept_channel().map_err(|e| MsgHandleErrInternal::from_no_close(e))?;
+		let accept_msg = channel.get_accept_channel();
 		channel_state.by_id.insert(channel.channel_id(), channel);
 		Ok(accept_msg)
 	}

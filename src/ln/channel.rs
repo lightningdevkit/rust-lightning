@@ -2200,7 +2200,7 @@ impl Channel {
 		})
 	}
 
-	pub fn get_accept_channel(&self) -> Result<msgs::AcceptChannel, HandleError> {
+	pub fn get_accept_channel(&self) -> msgs::AcceptChannel {
 		if self.channel_outbound {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -2213,7 +2213,7 @@ impl Channel {
 
 		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 
-		Ok(msgs::AcceptChannel {
+		msgs::AcceptChannel {
 			temporary_channel_id: self.channel_id,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
 			max_htlc_value_in_flight_msat: Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
@@ -2229,7 +2229,7 @@ impl Channel {
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			shutdown_scriptpubkey: None,
-		})
+		}
 	}
 
 	fn get_outbound_funding_created_signature(&mut self) -> Result<(Signature, Transaction), HandleError> {
