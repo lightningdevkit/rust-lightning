@@ -3355,9 +3355,9 @@ mod tests {
 					chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 					short_channel_id: as_chan.get_short_channel_id().unwrap(),
 					node_id_1: if were_node_one { as_network_key } else { bs_network_key },
-					node_id_2: if !were_node_one { bs_network_key } else { as_network_key },
+					node_id_2: if were_node_one { bs_network_key } else { as_network_key },
 					bitcoin_key_1: if were_node_one { as_bitcoin_key } else { bs_bitcoin_key },
-					bitcoin_key_2: if !were_node_one { bs_bitcoin_key } else { as_bitcoin_key },
+					bitcoin_key_2: if were_node_one { bs_bitcoin_key } else { as_bitcoin_key },
 					excess_data: Vec::new(),
 				};
 			}
@@ -3372,9 +3372,9 @@ mod tests {
 				let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].node.our_network_key);
 				chan_announcement = msgs::ChannelAnnouncement {
 					node_signature_1 : if were_node_one { as_node_sig } else { bs_node_sig},
-					node_signature_2 : if !were_node_one { bs_node_sig } else { as_node_sig},
+					node_signature_2 : if were_node_one { bs_node_sig } else { as_node_sig},
 					bitcoin_signature_1: if were_node_one { as_bitcoin_sig } else { bs_bitcoin_sig },
-					bitcoin_signature_2 : if !were_node_one { bs_bitcoin_sig } else { as_bitcoin_sig },
+					bitcoin_signature_2 : if were_node_one { bs_bitcoin_sig } else { as_bitcoin_sig },
 					contents: $unsigned_msg
 				}
 			}
