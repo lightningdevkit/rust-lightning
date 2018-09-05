@@ -525,10 +525,10 @@ impl Channel {
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if require_announce && !their_announce {
-			return Err(HandleError{err: "Peer tried to open unannounced channel, but we require public ones", action: Some(msgs::ErrorAction::IgnoreError) });
+			return_error_message!("Peer tried to open unannounced channel, but we require public ones");
 		}
 		if !allow_announce && their_announce {
-			return Err(HandleError{err: "Peer tried to open announced channel, but we require private ones", action: Some(msgs::ErrorAction::IgnoreError) });
+			return_error_message!("Peer tried to open announced channel, but we require private ones");
 		}
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
