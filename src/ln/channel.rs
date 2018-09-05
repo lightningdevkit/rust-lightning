@@ -2334,6 +2334,7 @@ impl Channel {
 	/// This returns an option instead of a pure UpdateAddHTLC as we may be in a state where we are
 	/// waiting on the remote peer to send us a revoke_and_ack during which time we cannot add new
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
+	/// You MUST call send_commitment prior to any other calls on this Channel
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: [u8; 32], cltv_expiry: u32, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot send HTLC until channel is fully established and we haven't started shutting down", action: None});
@@ -2401,6 +2402,8 @@ impl Channel {
 	}
 
 	/// Creates a signed commitment transaction to send to the remote peer.
+	/// Always returns a Channel-failing HandleError::action if an immediately-preceding (read: the
+	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
 	pub fn send_commitment(&mut self) -> Result<(msgs::CommitmentSigned, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", action: None});

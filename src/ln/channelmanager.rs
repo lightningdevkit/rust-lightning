@@ -1147,7 +1147,12 @@ impl ChannelManager {
 					if !add_htlc_msgs.is_empty() {
 						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
 							Ok(res) => res,
-							Err(_e) => {
+							Err(e) => {
+								if let &Some(msgs::ErrorAction::DisconnectPeer{msg: Some(ref _err_msg)}) = &e.action {
+								} else if let &Some(msgs::ErrorAction::SendErrorMessage{msg: ref _err_msg}) = &e.action {
+								} else {
+									panic!("Stated return value requirements in send_commitment() were not met");
+								}
 								//TODO: Handle...this is bad!
 								continue;
 							},
