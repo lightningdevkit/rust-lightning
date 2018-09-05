@@ -230,7 +230,7 @@ pub fn do_test(data: &[u8]) {
 			Ok(chan) => chan,
 			Err(_) => return,
 		};
-		chan.get_accept_channel().unwrap();
+		chan.get_accept_channel();
 
 		tx.output.push(TxOut{ value: open_chan.funding_satoshis, script_pubkey: chan.get_funding_redeemscript().to_v0_p2wsh() });
 		let funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);

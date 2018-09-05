@@ -525,10 +525,10 @@ impl Channel {
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if require_announce && !their_announce {
-			return Err(HandleError{err: "Peer tried to open unannounced channel, but we require public ones", action: Some(msgs::ErrorAction::IgnoreError) });
+			return_error_message!("Peer tried to open unannounced channel, but we require public ones");
 		}
 		if !allow_announce && their_announce {
-			return Err(HandleError{err: "Peer tried to open announced channel, but we require private ones", action: Some(msgs::ErrorAction::IgnoreError) });
+			return_error_message!("Peer tried to open announced channel, but we require private ones");
 		}
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
@@ -2200,7 +2200,7 @@ impl Channel {
 		})
 	}
 
-	pub fn get_accept_channel(&self) -> Result<msgs::AcceptChannel, HandleError> {
+	pub fn get_accept_channel(&self) -> msgs::AcceptChannel {
 		if self.channel_outbound {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -2213,7 +2213,7 @@ impl Channel {
 
 		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 
-		Ok(msgs::AcceptChannel {
+		msgs::AcceptChannel {
 			temporary_channel_id: self.channel_id,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
 			max_htlc_value_in_flight_msat: Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
@@ -2229,7 +2229,7 @@ impl Channel {
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			shutdown_scriptpubkey: None,
-		})
+		}
 	}
 
 	fn get_outbound_funding_created_signature(&mut self) -> Result<(Signature, Transaction), HandleError> {
@@ -2298,13 +2298,13 @@ impl Channel {
 	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
 	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), HandleError> {
 		if !self.announce_publicly {
-			return Err(HandleError{err: "Channel is not available for public announcements", action: None});
+			return Err(HandleError{err: "Channel is not available for public announcements", action: Some(msgs::ErrorAction::IgnoreError)});
 		}
 		if self.channel_state & (ChannelState::ChannelFunded as u32) == 0 {
-			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", action: None});
+			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", action: Some(msgs::ErrorAction::IgnoreError)});
 		}
 		if (self.channel_state & (ChannelState::LocalShutdownSent as u32 | ChannelState::ShutdownComplete as u32)) != 0 {
-			return Err(HandleError{err: "Cannot get a ChannelAnnouncement once the channel is closing", action: None});
+			return Err(HandleError{err: "Cannot get a ChannelAnnouncement once the channel is closing", action: Some(msgs::ErrorAction::IgnoreError)});
 		}
 
 		let were_node_one = our_node_id.serialize()[..] < self.their_node_id.serialize()[..];

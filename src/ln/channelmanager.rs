@@ -120,6 +120,51 @@ enum PendingOutboundHTLC {
 	}
 }
 
+struct MsgHandleErrInternal {
+	err: msgs::HandleError,
+	needs_channel_force_close: bool,
+}
+impl MsgHandleErrInternal {
+	#[inline]
+	fn send_err_msg_no_close(err: &'static str, channel_id: [u8; 32]) -> Self {
+		Self {
+			err: HandleError {
+				err,
+				action: Some(msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage {
+						channel_id,
+						data: err.to_string()
+					},
+				}),
+			},
+			needs_channel_force_close: false,
+		}
+	}
+	#[inline]
+	fn send_err_msg_close_chan(err: &'static str, channel_id: [u8; 32]) -> Self {
+		Self {
+			err: HandleError {
+				err,
+				action: Some(msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage {
+						channel_id,
+						data: err.to_string()
+					},
+				}),
+			},
+			needs_channel_force_close: true,
+		}
+	}
+	#[inline]
+	fn from_maybe_close(err: msgs::HandleError) -> Self {
+		Self { err, needs_channel_force_close: true }
+	}
+	#[inline]
+	fn from_no_close(err: msgs::HandleError) -> Self {
+		Self { err, needs_channel_force_close: false }
+	}
+}
+
 /// We hold back HTLCs we intend to relay for a random interval in the range (this, 5*this). This
 /// provides some limited amount of privacy. Ideally this would range from somewhere like 1 second
 /// to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly. We could
@@ -189,10 +234,10 @@ pub struct ChannelManager {
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
 
 macro_rules! secp_call {
-	( $res: expr, $err_msg: expr, $action: expr ) => {
+	( $res: expr, $err: expr ) => {
 		match $res {
 			Ok(key) => key,
-			Err(_) => return Err(HandleError{err: $err_msg, action: Some($action)})
+			Err(_) => return Err($err),
 		}
 	};
 }
@@ -914,7 +959,8 @@ impl ChannelManager {
 
 		//TODO: This should return something other than HandleError, that's really intended for
 		//p2p-returns only.
-		let onion_keys = secp_call!(ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv), "Pubkey along hop was maliciously selected", msgs::ErrorAction::IgnoreError);
+		let onion_keys = secp_call!(ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
+				HandleError{err: "Pubkey along hop was maliciously selected", action: Some(msgs::ErrorAction::IgnoreError)});
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
 
@@ -1357,6 +1403,83 @@ impl ChannelManager {
 	pub fn test_restore_channel_monitor(&self) {
 		unimplemented!();
 	}
+
+	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, MsgHandleErrInternal> {
+		if msg.chain_hash != self.genesis_hash {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
+		}
+		let mut channel_state = self.channel_state.lock().unwrap();
+		if channel_state.by_id.contains_key(&msg.temporary_channel_id) {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!", msg.temporary_channel_id.clone()));
+		}
+
+		let chan_keys = if cfg!(feature = "fuzztarget") {
+			ChannelKeys {
+				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]).unwrap(),
+				revocation_base_key:       SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]).unwrap(),
+				payment_base_key:          SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]).unwrap(),
+				delayed_payment_base_key:  SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0]).unwrap(),
+				htlc_base_key:             SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0]).unwrap(),
+				channel_close_key:         SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0]).unwrap(),
+				channel_monitor_claim_key: SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0]).unwrap(),
+				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+			}
+		} else {
+			let mut key_seed = [0u8; 32];
+			rng::fill_bytes(&mut key_seed);
+			match ChannelKeys::new_from_seed(&key_seed) {
+				Ok(key) => key,
+				Err(_) => panic!("RNG is busted!")
+			}
+		};
+
+		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger)).map_err(|e| MsgHandleErrInternal::from_no_close(e))?;
+		let accept_msg = channel.get_accept_channel();
+		channel_state.by_id.insert(channel.channel_id(), channel);
+		Ok(accept_msg)
+	}
+
+	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
+		let (chan_announcement, chan_update) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					if !chan.is_usable() {
+						return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError)}));
+					}
+
+					let our_node_id = self.get_our_node_id();
+					let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone())
+						.map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+
+					let were_node_one = announcement.node_id_1 == our_node_id;
+					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
+					let bad_sig_action = MsgHandleErrInternal::send_err_msg_close_chan("Bad announcement_signatures node_signature", msg.channel_id);
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), bad_sig_action);
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), bad_sig_action);
+
+					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
+
+					(msgs::ChannelAnnouncement {
+						node_signature_1: if were_node_one { our_node_sig } else { msg.node_signature },
+						node_signature_2: if were_node_one { msg.node_signature } else { our_node_sig },
+						bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { msg.bitcoin_signature },
+						bitcoin_signature_2: if were_node_one { msg.bitcoin_signature } else { our_bitcoin_sig },
+						contents: announcement,
+					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::Event::BroadcastChannelAnnouncement { msg: chan_announcement, update_msg: chan_update });
+		Ok(())
+	}
+
+
 }
 
 impl events::EventsProvider for ChannelManager {
@@ -1483,41 +1606,42 @@ impl ChainListener for ChannelManager {
 	}
 }
 
+macro_rules! handle_error {
+	($self: ident, $internal: expr, $their_node_id: expr) => {
+		match $internal {
+			Ok(msg) => Ok(msg),
+			Err(MsgHandleErrInternal { err, needs_channel_force_close }) => {
+				if needs_channel_force_close {
+					match &err.action {
+						&Some(msgs::ErrorAction::DisconnectPeer { msg: Some(ref msg) }) => {
+							if msg.channel_id == [0; 32] {
+								$self.peer_disconnected(&$their_node_id, true);
+							} else {
+								$self.force_close_channel(&msg.channel_id);
+							}
+						},
+						&Some(msgs::ErrorAction::DisconnectPeer { msg: None }) => {},
+						&Some(msgs::ErrorAction::IgnoreError) => {},
+						&Some(msgs::ErrorAction::SendErrorMessage { ref msg }) => {
+							if msg.channel_id == [0; 32] {
+								$self.peer_disconnected(&$their_node_id, true);
+							} else {
+								$self.force_close_channel(&msg.channel_id);
+							}
+						},
+						&None => {},
+					}
+				}
+				Err(err)
+			},
+		}
+	}
+}
+
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, HandleError> {
-		if msg.chain_hash != self.genesis_hash {
-			return Err(HandleError{err: "Unknown genesis block hash", action: None});
-		}
-		let mut channel_state = self.channel_state.lock().unwrap();
-		if channel_state.by_id.contains_key(&msg.temporary_channel_id) {
-			return Err(HandleError{err: "temporary_channel_id collision!", action: None});
-		}
-
-		let chan_keys = if cfg!(feature = "fuzztarget") {
-			ChannelKeys {
-				funding_key:               SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]).unwrap(),
-				revocation_base_key:       SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]).unwrap(),
-				payment_base_key:          SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]).unwrap(),
-				delayed_payment_base_key:  SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0]).unwrap(),
-				htlc_base_key:             SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0]).unwrap(),
-				channel_close_key:         SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0]).unwrap(),
-				channel_monitor_claim_key: SecretKey::from_slice(&self.secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0]).unwrap(),
-				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-			}
-		} else {
-			let mut key_seed = [0u8; 32];
-			rng::fill_bytes(&mut key_seed);
-			match ChannelKeys::new_from_seed(&key_seed) {
-				Ok(key) => key,
-				Err(_) => panic!("RNG is busted!")
-			}
-		};
-
-		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))?;
-		let accept_msg = channel.get_accept_channel()?;
-		channel_state.by_id.insert(channel.channel_id(), channel);
-		Ok(accept_msg)
+		handle_error!(self, self.internal_open_channel(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
@@ -1978,42 +2102,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
-		let (chan_announcement, chan_update) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: Some(msgs::ErrorAction::IgnoreError) })
-					}
-					if !chan.is_usable() {
-						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError) });
-					}
-
-					let our_node_id = self.get_our_node_id();
-					let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone())?;
-
-					let were_node_one = announcement.node_id_1 == our_node_id;
-					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
-					let bad_sig_action = msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: msg.channel_id.clone(), data: "Invalid signature in announcement_signatures".to_string() } };
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), "Bad announcement_signatures node_signature", bad_sig_action);
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), "Bad announcement_signatures bitcoin_signature", bad_sig_action);
-
-					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
-
-					(msgs::ChannelAnnouncement {
-						node_signature_1: if were_node_one { our_node_sig } else { msg.node_signature },
-						node_signature_2: if were_node_one { msg.node_signature } else { our_node_sig },
-						bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { msg.bitcoin_signature },
-						bitcoin_signature_2: if were_node_one { msg.bitcoin_signature } else { our_bitcoin_sig },
-						contents: announcement,
-					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: Some(msgs::ErrorAction::IgnoreError)})
-			}
-		};
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::Event::BroadcastChannelAnnouncement { msg: chan_announcement, update_msg: chan_update });
-		Ok(())
+		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
