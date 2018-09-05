@@ -141,6 +141,25 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
+	fn send_err_msg_close_chan(err: &'static str, channel_id: [u8; 32]) -> Self {
+		Self {
+			err: HandleError {
+				err,
+				action: Some(msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage {
+						channel_id,
+						data: err.to_string()
+					},
+				}),
+			},
+			needs_channel_force_close: true,
+		}
+	}
+	#[inline]
+	fn from_maybe_close(err: msgs::HandleError) -> Self {
+		Self { err, needs_channel_force_close: true }
+	}
+	#[inline]
 	fn from_no_close(err: msgs::HandleError) -> Self {
 		Self { err, needs_channel_force_close: false }
 	}
@@ -1419,6 +1438,48 @@ impl ChannelManager {
 		channel_state.by_id.insert(channel.channel_id(), channel);
 		Ok(accept_msg)
 	}
+
+	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
+		let (chan_announcement, chan_update) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					if !chan.is_usable() {
+						return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError)}));
+					}
+
+					let our_node_id = self.get_our_node_id();
+					let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone())
+						.map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+
+					let were_node_one = announcement.node_id_1 == our_node_id;
+					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
+					let bad_sig_action = MsgHandleErrInternal::send_err_msg_close_chan("Bad announcement_signatures node_signature", msg.channel_id);
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), bad_sig_action);
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), bad_sig_action);
+
+					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
+
+					(msgs::ChannelAnnouncement {
+						node_signature_1: if were_node_one { our_node_sig } else { msg.node_signature },
+						node_signature_2: if were_node_one { msg.node_signature } else { our_node_sig },
+						bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { msg.bitcoin_signature },
+						bitcoin_signature_2: if were_node_one { msg.bitcoin_signature } else { our_bitcoin_sig },
+						contents: announcement,
+					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::Event::BroadcastChannelAnnouncement { msg: chan_announcement, update_msg: chan_update });
+		Ok(())
+	}
+
+
 }
 
 impl events::EventsProvider for ChannelManager {
@@ -2041,42 +2102,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
-		let (chan_announcement, chan_update) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: Some(msgs::ErrorAction::IgnoreError) })
-					}
-					if !chan.is_usable() {
-						return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError) });
-					}
-
-					let our_node_id = self.get_our_node_id();
-					let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone())?;
-
-					let were_node_one = announcement.node_id_1 == our_node_id;
-					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
-					let bad_sig_action = msgs::HandleError {err: "Invalid signature in announcement_signatures", action: msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: msg.channel_id.clone(), data: "Invalid signature in announcement_signatures".to_string()}}};
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), bad_sig_action);
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), bad_sig_action);
-
-					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
-
-					(msgs::ChannelAnnouncement {
-						node_signature_1: if were_node_one { our_node_sig } else { msg.node_signature },
-						node_signature_2: if were_node_one { msg.node_signature } else { our_node_sig },
-						bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { msg.bitcoin_signature },
-						bitcoin_signature_2: if were_node_one { msg.bitcoin_signature } else { our_bitcoin_sig },
-						contents: announcement,
-					}, self.get_channel_update(chan).unwrap()) // can only fail if we're not in a ready state
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: Some(msgs::ErrorAction::IgnoreError)})
-			}
-		};
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::Event::BroadcastChannelAnnouncement { msg: chan_announcement, update_msg: chan_update });
-		Ok(())
+		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
