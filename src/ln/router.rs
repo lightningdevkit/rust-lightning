@@ -102,7 +102,21 @@ struct NetworkMap {
 	our_node_id: PublicKey,
 	nodes: HashMap<PublicKey, NodeInfo>,
 }
-
+struct MutNetworkMap<'a> {
+	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
+	channels: &'a mut HashMap<(u64, Sha256dHash), ChannelInfo>,
+	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
+	channels: &'a mut HashMap<u64, ChannelInfo>,
+	nodes: &'a mut HashMap<PublicKey, NodeInfo>,
+}
+impl NetworkMap {
+	fn borrow_parts(&mut self) -> MutNetworkMap {
+		MutNetworkMap {
+			channels: &mut self.channels,
+			nodes: &mut self.nodes,
+		}
+	}
+}
 impl std::fmt::Display for NetworkMap {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		write!(f, "Node id {} network map\n[Channels]\n", log_pubkey!(self.our_node_id))?;
@@ -199,6 +213,10 @@ impl RoutingMessageHandler for Router {
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, HandleError> {
+		if msg.contents.node_id_1 == msg.contents.node_id_2 || msg.contents.bitcoin_key_1 == msg.contents.bitcoin_key_2 {
+			return Err(HandleError{err: "Channel announcement node had a channel with itself", action: Some(ErrorAction::IgnoreError)});
+		}
+
 		let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
@@ -209,7 +227,7 @@ impl RoutingMessageHandler for Router {
 			panic!("Unknown-required-features ChannelAnnouncements should never deserialize!");
 		}
 
-		match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
+		let checked_utxo = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
 			Ok((script_pubkey, _value)) => {
 				let expected_script = Builder::new().push_opcode(opcodes::All::OP_PUSHNUM_2)
 				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
@@ -220,9 +238,11 @@ impl RoutingMessageHandler for Router {
 				}
 				//TODO: Check if value is worth storing, use it to inform routing, and compare it
 				//to the new HTLC max field in channel_update
+				true
 			},
 			Err(ChainError::NotSupported) => {
 				// Tentatively accept, potentially exposing us to DoS attacks
+				false
 			},
 			Err(ChainError::NotWatched) => {
 				return Err(HandleError{err: "Channel announced on an unknown chain", action: Some(ErrorAction::IgnoreError)});
@@ -230,39 +250,55 @@ impl RoutingMessageHandler for Router {
 			Err(ChainError::UnknownTx) => {
 				return Err(HandleError{err: "Channel announced without corresponding UTXO entry", action: Some(ErrorAction::IgnoreError)});
 			},
-		}
+		};
 
-		let mut network = self.network_map.write().unwrap();
+		let mut network_lock = self.network_map.write().unwrap();
+		let network = network_lock.borrow_parts();
+
+		let chan_info = ChannelInfo {
+				features: msg.contents.features.clone(),
+				one_to_two: DirectionalChannelInfo {
+					src_node_id: msg.contents.node_id_1.clone(),
+					last_update: 0,
+					enabled: false,
+					cltv_expiry_delta: u16::max_value(),
+					htlc_minimum_msat: u64::max_value(),
+					fee_base_msat: u32::max_value(),
+					fee_proportional_millionths: u32::max_value(),
+				},
+				two_to_one: DirectionalChannelInfo {
+					src_node_id: msg.contents.node_id_2.clone(),
+					last_update: 0,
+					enabled: false,
+					cltv_expiry_delta: u16::max_value(),
+					htlc_minimum_msat: u64::max_value(),
+					fee_base_msat: u32::max_value(),
+					fee_proportional_millionths: u32::max_value(),
+				}
+			};
 
 		match network.channels.entry(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
-			Entry::Occupied(_) => {
+			Entry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though its unclear
 				//exactly how...
-				return Err(HandleError{err: "Already have knowledge of channel", action: Some(ErrorAction::IgnoreError)})
+				if checked_utxo {
+					// Either our UTXO provider is busted, there was a reorg, or the UTXO provider
+					// only sometimes returns results. In any case remove the previous entry. Note
+					// that the spec expects us to "blacklist" the node_ids involved, but we can't
+					// do that because
+					// a) we don't *require* a UTXO provider that always returns results.
+					// b) we don't track UTXOs of channels we know about and remove them if they
+					//    get reorg'd out.
+					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
+					Self::remove_channel_in_nodes(network.nodes, &entry.get(), msg.contents.short_channel_id);
+					*entry.get_mut() = chan_info;
+				} else {
+					return Err(HandleError{err: "Already have knowledge of channel", action: Some(ErrorAction::IgnoreError)})
+				}
 			},
 			Entry::Vacant(entry) => {
-				entry.insert(ChannelInfo {
-					features: msg.contents.features.clone(),
-					one_to_two: DirectionalChannelInfo {
-						src_node_id: msg.contents.node_id_1.clone(),
-						last_update: 0,
-						enabled: false,
-						cltv_expiry_delta: u16::max_value(),
-						htlc_minimum_msat: u64::max_value(),
-						fee_base_msat: u32::max_value(),
-						fee_proportional_millionths: u32::max_value(),
-					},
-					two_to_one: DirectionalChannelInfo {
-						src_node_id: msg.contents.node_id_2.clone(),
-						last_update: 0,
-						enabled: false,
-						cltv_expiry_delta: u16::max_value(),
-						htlc_minimum_msat: u64::max_value(),
-						fee_base_msat: u32::max_value(),
-						fee_proportional_millionths: u32::max_value(),
-					}
-				});
+				entry.insert(chan_info);
 			}
 		};
 
@@ -302,12 +338,7 @@ impl RoutingMessageHandler for Router {
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id } => {
 				let mut network = self.network_map.write().unwrap();
 				if let Some(chan) = network.channels.remove(short_channel_id) {
-					network.nodes.get_mut(&chan.one_to_two.src_node_id).unwrap().channels.retain(|chan_id| {
-						chan_id != NetworkMap::get_short_id(chan_id)
-					});
-					network.nodes.get_mut(&chan.two_to_one.src_node_id).unwrap().channels.retain(|chan_id| {
-						chan_id != NetworkMap::get_short_id(chan_id)
-					});
+					Self::remove_channel_in_nodes(&mut network.nodes, &chan, *short_channel_id);
 				}
 			},
 		}
@@ -456,6 +487,25 @@ impl Router {
 	/// behaving correctly, it will disable the failing channel and we will use it again next time.
 	pub fn mark_node_bad(&self, _node_id: &PublicKey, _blamed_upstream_node: bool) {
 		unimplemented!();
+	}
+
+	fn remove_channel_in_nodes(nodes: &mut HashMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+		macro_rules! remove_from_node {
+			($node_id: expr) => {
+				if let Entry::Occupied(mut entry) = nodes.entry($node_id) {
+					entry.get_mut().channels.retain(|chan_id| {
+						short_channel_id != *NetworkMap::get_short_id(chan_id)
+					});
+					if entry.get().channels.is_empty() {
+						entry.remove_entry();
+					}
+				} else {
+					panic!("Had channel that pointed to unknown node (ie inconsistent network map)!");
+				}
+			}
+		}
+		remove_from_node!(chan.one_to_two.src_node_id);
+		remove_from_node!(chan.two_to_one.src_node_id);
 	}
 
 	/// Gets a route from us to the given target node.
