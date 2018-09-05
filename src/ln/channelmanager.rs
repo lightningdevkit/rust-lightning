@@ -2126,6 +2126,7 @@ impl ChannelMessageHandler for ChannelManager {
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
 		let mut new_events = Vec::new();
 		let mut failed_channels = Vec::new();
+		let mut failed_payments = Vec::new();
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -2150,9 +2151,12 @@ impl ChannelMessageHandler for ChannelManager {
 			} else {
 				for chan in channel_state.by_id {
 					if chan.1.get_their_node_id() == *their_node_id {
-						//TODO: mark channel disabled (and maybe announce such after a timeout). Also
-						//fail and wipe any uncommitted outbound HTLCs as those are considered after
-						//reconnect.
+						//TODO: mark channel disabled (and maybe announce such after a timeout).
+						let failed_adds = chan.1.remove_uncommitted_htlcs();
+						if !failed_adds.is_empty() {
+							let chan_update = self.get_channel_update(&chan.1).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
+							failed_payments.push((chan_update, failed_adds));
+						}
 					}
 				}
 			}
@@ -2164,6 +2168,11 @@ impl ChannelMessageHandler for ChannelManager {
 			let mut pending_events = self.pending_events.lock().unwrap();
 			for event in new_events.drain(..) {
 				pending_events.push(event);
+			}
+		}
+		for (chan_update, mut htlc_sources) in failed_payments {
+			for (htlc_source, payment_hash) in htlc_sources.drain(..) {
+				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.clone() });
 			}
 		}
 	}

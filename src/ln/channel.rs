@@ -1766,6 +1766,59 @@ impl Channel {
 		}
 	}
 
+	/// Removes any uncommitted HTLCs, to be used on peer disconnection, including any pending
+	/// HTLCs that we intended to add but haven't as we were waiting on a remote revoke.
+	/// Returns the set of PendingHTLCStatuses from remote uncommitted HTLCs (which we're
+	/// implicitly dropping) and the payment_hashes of HTLCs we tried to add but are dropping.
+	pub fn remove_uncommitted_htlcs(&mut self) -> Vec<(HTLCSource, [u8; 32])> {
+		self.pending_inbound_htlcs.retain(|htlc| {
+			match htlc.state {
+				InboundHTLCState::RemoteAnnounced => {
+					// They sent us an update_add_htlc but we never got the commitment_signed.
+					// We'll tell them what commitment_signed we're expecting next and they'll drop
+					// this HTLC accordingly
+					false
+				},
+				InboundHTLCState::AwaitingRemoteRevokeToAnnounce|InboundHTLCState::AwaitingAnnouncedRemoteRevoke => {
+					// Same goes for AwaitingRemoteRevokeToRemove and AwaitingRemovedRemoteRevoke
+					// We received a commitment_signed updating this HTLC and (at least hopefully)
+					// sent a revoke_and_ack (which we can re-transmit) and have heard nothing
+					// in response to it yet, so don't touch it.
+					true
+				},
+				InboundHTLCState::Committed => true,
+				InboundHTLCState::LocalRemoved => { // Same goes for LocalAnnounced
+					// We (hopefully) sent a commitment_signed updating this HTLC (which we can
+					// re-transmit if needed) and they may have even sent a revoke_and_ack back
+					// (that we missed). Keep this around for now and if they tell us they missed
+					// the commitment_signed we can re-transmit the update then.
+					true
+				},
+			}
+		});
+
+		for htlc in self.pending_outbound_htlcs.iter_mut() {
+			if htlc.state == OutboundHTLCState::RemoteRemoved {
+				// They sent us an update to remove this but haven't yet sent the corresponding
+				// commitment_signed, we need to move it back to Committed and they can re-send
+				// the update upon reconnection.
+				htlc.state = OutboundHTLCState::Committed;
+			}
+		}
+
+		let mut outbound_drops = Vec::new();
+		self.holding_cell_htlc_updates.retain(|htlc_update| {
+			match htlc_update {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
+					outbound_drops.push((source.clone(), payment_hash.clone()));
+					false
+				},
+				&HTLCUpdateAwaitingACK::ClaimHTLC {..} | &HTLCUpdateAwaitingACK::FailHTLC {..} => true,
+			}
+		});
+		outbound_drops
+	}
+
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
 		if self.channel_outbound {
 			return Err(HandleError{err: "Non-funding remote tried to update channel fee", action: None});
