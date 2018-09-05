@@ -215,10 +215,10 @@ pub struct ChannelManager {
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
 
 macro_rules! secp_call {
-	( $res: expr, $err_msg: expr, $action: expr ) => {
+	( $res: expr, $err: expr ) => {
 		match $res {
 			Ok(key) => key,
-			Err(_) => return Err(HandleError{err: $err_msg, action: Some($action)})
+			Err(_) => return Err($err),
 		}
 	};
 }
@@ -940,7 +940,8 @@ impl ChannelManager {
 
 		//TODO: This should return something other than HandleError, that's really intended for
 		//p2p-returns only.
-		let onion_keys = secp_call!(ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv), "Pubkey along hop was maliciously selected", msgs::ErrorAction::IgnoreError);
+		let onion_keys = secp_call!(ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
+				HandleError{err: "Pubkey along hop was maliciously selected", action: Some(msgs::ErrorAction::IgnoreError)});
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
 
@@ -2056,9 +2057,9 @@ impl ChannelMessageHandler for ChannelManager {
 
 					let were_node_one = announcement.node_id_1 == our_node_id;
 					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
-					let bad_sig_action = msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: msg.channel_id.clone(), data: "Invalid signature in announcement_signatures".to_string() } };
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), "Bad announcement_signatures node_signature", bad_sig_action);
-					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), "Bad announcement_signatures bitcoin_signature", bad_sig_action);
+					let bad_sig_action = msgs::HandleError {err: "Invalid signature in announcement_signatures", action: msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: msg.channel_id.clone(), data: "Invalid signature in announcement_signatures".to_string()}}};
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), bad_sig_action);
+					secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), bad_sig_action);
 
 					let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
