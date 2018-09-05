@@ -1439,6 +1439,32 @@ impl ChannelManager {
 		Ok(accept_msg)
 	}
 
+	fn internal_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
+		let (value, output_script, user_id) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.temporary_channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						//TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
+					}
+					chan.accept_channel(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					(chan.get_value_satoshis(), chan.get_funding_redeemscript().to_v0_p2wsh(), chan.get_user_id())
+				},
+				//TODO: same as above
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
+			}
+		};
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::Event::FundingGenerationReady {
+			temporary_channel_id: msg.temporary_channel_id,
+			channel_value_satoshis: value,
+			output_script: output_script,
+			user_channel_id: user_id,
+		});
+		Ok(())
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1645,27 +1671,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
-		let (value, output_script, user_id) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.temporary_channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					chan.accept_channel(&msg)?;
-					(chan.get_value_satoshis(), chan.get_funding_redeemscript().to_v0_p2wsh(), chan.get_user_id())
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::Event::FundingGenerationReady {
-			temporary_channel_id: msg.temporary_channel_id,
-			channel_value_satoshis: value,
-			output_script: output_script,
-			user_channel_id: user_id,
-		});
-		Ok(())
+		handle_error!(self, self.internal_accept_channel(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
