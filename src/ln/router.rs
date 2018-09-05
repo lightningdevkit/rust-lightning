@@ -306,12 +306,7 @@ impl RoutingMessageHandler for Router {
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id } => {
 				let mut network = self.network_map.write().unwrap();
 				if let Some(chan) = network.channels.remove(short_channel_id) {
-					network.nodes.get_mut(&chan.one_to_two.src_node_id).unwrap().channels.retain(|chan_id| {
-						chan_id != NetworkMap::get_short_id(chan_id)
-					});
-					network.nodes.get_mut(&chan.two_to_one.src_node_id).unwrap().channels.retain(|chan_id| {
-						chan_id != NetworkMap::get_short_id(chan_id)
-					});
+					Self::remove_channel_in_nodes(&mut network.nodes, &chan, *short_channel_id);
 				}
 			},
 		}
@@ -460,6 +455,25 @@ impl Router {
 	/// behaving correctly, it will disable the failing channel and we will use it again next time.
 	pub fn mark_node_bad(&self, _node_id: &PublicKey, _blamed_upstream_node: bool) {
 		unimplemented!();
+	}
+
+	fn remove_channel_in_nodes(nodes: &mut HashMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+		macro_rules! remove_from_node {
+			($node_id: expr) => {
+				if let Entry::Occupied(mut entry) = nodes.entry($node_id) {
+					entry.get_mut().channels.retain(|chan_id| {
+						short_channel_id != *NetworkMap::get_short_id(chan_id)
+					});
+					if entry.get().channels.is_empty() {
+						entry.remove_entry();
+					}
+				} else {
+					panic!("Had channel that pointed to unknown node (ie inconsistent network map)!");
+				}
+			}
+		}
+		remove_from_node!(chan.one_to_two.src_node_id);
+		remove_from_node!(chan.two_to_one.src_node_id);
 	}
 
 	/// Gets a route from us to the given target node.
