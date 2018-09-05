@@ -138,18 +138,16 @@ enum HTLCState {
 	AwaitingRemovedRemoteRevoke,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
-	/// we'll promote to LocalRemovedAwaitingCommitment if we fulfilled, otherwise we'll drop at
-	/// that point.
+	/// we'll drop it.
 	/// Note that we have to keep an eye on the HTLC until we've received a broadcastable
 	/// commitment transaction without it as otherwise we'll have to force-close the channel to
 	/// claim it before the timeout (obviously doesn't apply to revoked HTLCs that we can't claim
-	/// anyway).
+	/// anyway). That said, ChannelMonitor does this for us (see
+	/// ChannelMonitor::would_broadcast_at_height) so we actually remove the HTLC from our own
+	/// local state before then, once we're sure that the next commitment_signed and
+	/// ChannelMonitor::provide_latest_local_commitment_tx_info will not include this HTLC.
 	/// Implies HTLCOutput::outbound: false
 	LocalRemoved,
-	/// Removed by us, sent a new commitment_signed and got a revoke_and_ack. Just waiting on an
-	/// updated local commitment transaction. Implies local_removed_fulfilled.
-	/// Implies HTLCOutput::outbound: false
-	LocalRemovedAwaitingCommitment,
 }
 
 struct HTLCOutput { //TODO: Refactor into Outbound/InboundHTLCOutput (will save memory and fewer panics)
@@ -706,7 +704,6 @@ impl Channel {
 				HTLCState::AwaitingRemoteRevokeToRemove => generated_by_local,
 				HTLCState::AwaitingRemovedRemoteRevoke => false,
 				HTLCState::LocalRemoved => !generated_by_local,
-				HTLCState::LocalRemovedAwaitingCommitment => false,
 			};
 
 			if include {
@@ -748,10 +745,6 @@ impl Channel {
 						if generated_by_local && htlc.local_removed_fulfilled {
 							value_to_self_msat_offset += htlc.amount_msat as i64;
 						}
-					},
-					HTLCState::LocalRemovedAwaitingCommitment => {
-						assert!(htlc.local_removed_fulfilled);
-						value_to_self_msat_offset += htlc.amount_msat as i64;
 					},
 					_ => {},
 				}
@@ -1018,7 +1011,7 @@ impl Channel {
 		let mut pending_idx = std::usize::MAX;
 		for (idx, htlc) in self.pending_htlcs.iter().enumerate() {
 			if !htlc.outbound && htlc.payment_hash == payment_hash_calc &&
-					htlc.state != HTLCState::LocalRemoved && htlc.state != HTLCState::LocalRemovedAwaitingCommitment {
+					htlc.state != HTLCState::LocalRemoved {
 				if let Some(PendingHTLCStatus::Fail(_)) = htlc.pending_forward_state {
 				} else {
 					if pending_idx != std::usize::MAX {
@@ -1143,7 +1136,7 @@ impl Channel {
 						// we'll fail this one as soon as remote commits to it.
 						continue;
 					}
-				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
+				} else if htlc.state == HTLCState::LocalRemoved {
 					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 				} else {
 					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
@@ -1379,7 +1372,6 @@ impl Channel {
 				HTLCState::AwaitingRemoteRevokeToRemove => { if for_remote_update_check { continue; } },
 				HTLCState::AwaitingRemovedRemoteRevoke => { if for_remote_update_check { continue; } },
 				HTLCState::LocalRemoved => {},
-				HTLCState::LocalRemovedAwaitingCommitment => { if for_remote_update_check { continue; } },
 			}
 			if !htlc.outbound {
 				inbound_htlc_count += 1;
@@ -1556,16 +1548,6 @@ impl Channel {
 				need_our_commitment = true;
 			}
 		}
-		// Finally delete all the LocalRemovedAwaitingCommitment HTLCs
-		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
-		let mut claimed_value_msat = 0;
-		self.pending_htlcs.retain(|htlc| {
-			if htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
-				claimed_value_msat += htlc.amount_msat;
-				false
-			} else { true }
-		});
-		self.value_to_self_msat += claimed_value_msat;
 
 		self.cur_local_commitment_transaction_number -= 1;
 		self.last_local_commitment_txn = new_local_commitment_txn;
@@ -1689,7 +1671,10 @@ impl Channel {
 		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 		self.pending_htlcs.retain(|htlc| {
 			if htlc.state == HTLCState::LocalRemoved {
-				if htlc.local_removed_fulfilled { true } else { false }
+				if htlc.local_removed_fulfilled {
+					value_to_self_msat_diff += htlc.amount_msat as i64;
+				}
+				false
 			} else if htlc.state == HTLCState::AwaitingRemovedRemoteRevoke {
 				if let Some(reason) = htlc.fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
 					revoked_htlcs.push((htlc.payment_hash, reason));
@@ -1724,9 +1709,6 @@ impl Channel {
 			} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove {
 				htlc.state = HTLCState::AwaitingRemovedRemoteRevoke;
 				require_commitment = true;
-			} else if htlc.state == HTLCState::LocalRemoved {
-				assert!(htlc.local_removed_fulfilled);
-				htlc.state = HTLCState::LocalRemovedAwaitingCommitment;
 			}
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
