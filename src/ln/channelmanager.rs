@@ -120,6 +120,32 @@ enum PendingOutboundHTLC {
 	}
 }
 
+struct MsgHandleErrInternal {
+	err: msgs::HandleError,
+	needs_channel_force_close: bool,
+}
+impl MsgHandleErrInternal {
+	#[inline]
+	fn send_err_msg_no_close(err: &'static str, channel_id: [u8; 32]) -> Self {
+		Self {
+			err: HandleError {
+				err,
+				action: Some(msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage {
+						channel_id,
+						data: err.to_string()
+					},
+				}),
+			},
+			needs_channel_force_close: false,
+		}
+	}
+	#[inline]
+	fn from_no_close(err: msgs::HandleError) -> Self {
+		Self { err, needs_channel_force_close: false }
+	}
+}
+
 /// We hold back HTLCs we intend to relay for a random interval in the range (this, 5*this). This
 /// provides some limited amount of privacy. Ideally this would range from somewhere like 1 second
 /// to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly. We could
@@ -1480,6 +1506,38 @@ impl ChainListener for ChannelManager {
 			}
 		}
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
+	}
+}
+
+macro_rules! handle_error {
+	($self: ident, $internal: expr, $their_node_id: expr) => {
+		match $internal {
+			Ok(msg) => Ok(msg),
+			Err(MsgHandleErrInternal { err, needs_channel_force_close }) => {
+				if needs_channel_force_close {
+					match &err.action {
+						&Some(msgs::ErrorAction::DisconnectPeer { msg: Some(ref msg) }) => {
+							if msg.channel_id == [0; 32] {
+								$self.peer_disconnected(&$their_node_id, true);
+							} else {
+								$self.force_close_channel(&msg.channel_id);
+							}
+						},
+						&Some(msgs::ErrorAction::DisconnectPeer { msg: None }) => {},
+						&Some(msgs::ErrorAction::IgnoreError) => {},
+						&Some(msgs::ErrorAction::SendErrorMessage { ref msg }) => {
+							if msg.channel_id == [0; 32] {
+								$self.peer_disconnected(&$their_node_id, true);
+							} else {
+								$self.force_close_channel(&msg.channel_id);
+							}
+						},
+						&None => {},
+					}
+				}
+				Err(err)
+			},
+		}
 	}
 }
 
