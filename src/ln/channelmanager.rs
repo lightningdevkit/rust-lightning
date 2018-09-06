@@ -1439,6 +1439,48 @@ impl ChannelManager {
 		Ok(accept_msg)
 	}
 
+	fn internal_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, MsgHandleErrInternal> {
+		let (chan, funding_msg, monitor_update) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan) => {
+					if chan.get().get_their_node_id() != *their_node_id {
+						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
+					}
+					match chan.get_mut().funding_created(msg) {
+						Ok((funding_msg, monitor_update)) => {
+							(chan.remove(), funding_msg, monitor_update)
+						},
+						Err(e) => {
+							//TODO: Possibly remove the channel depending on e.action
+							return Err(e);
+						}
+					}
+				},
+				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+			}
+		}; // Release channel lock for install_watch_outpoint call,
+		   // note that this means if the remote end is misbehaving and sends a message for the same
+		   // channel back-to-back with funding_created, we'll end up thinking they sent a message
+		   // for a bogus channel.
+		if let Err(_e) = self.monitor.add_update_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
+			unimplemented!();
+		}
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.entry(funding_msg.channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				return Err(HandleError {
+					err: "Duplicate channel_id!",
+					action: Some(msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: funding_msg.channel_id, data: "Already had channel with the new channel_id".to_owned() } })
+				});
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(chan);
+			}
+		}
+		Ok(funding_msg)
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1667,47 +1709,9 @@ impl ChannelMessageHandler for ChannelManager {
 		});
 		Ok(())
 	}
-
+ 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
-		let (chan, funding_msg, monitor_update) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					match chan.get_mut().funding_created(msg) {
-						Ok((funding_msg, monitor_update)) => {
-							(chan.remove(), funding_msg, monitor_update)
-						},
-						Err(e) => {
-							//TODO: Possibly remove the channel depending on e.action
-							return Err(e);
-						}
-					}
-				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		}; // Release channel lock for install_watch_outpoint call,
-		   // note that this means if the remote end is misbehaving and sends a message for the same
-		   // channel back-to-back with funding_created, we'll end up thinking they sent a message
-		   // for a bogus channel.
-		if let Err(_e) = self.monitor.add_update_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
-			unimplemented!();
-		}
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.entry(funding_msg.channel_id) {
-			hash_map::Entry::Occupied(_) => {
-				return Err(HandleError {
-					err: "Duplicate channel_id!",
-					action: Some(msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: funding_msg.channel_id, data: "Already had channel with the new channel_id".to_owned() } })
-				});
-			},
-			hash_map::Entry::Vacant(e) => {
-				e.insert(chan);
-			}
-		}
-		Ok(funding_msg)
+		handle_error!(self, self.internal_funding_created(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
