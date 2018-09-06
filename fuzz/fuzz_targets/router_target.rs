@@ -4,7 +4,6 @@ extern crate secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::{Script, Builder};
-use bitcoin::blockdata::opcodes;
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface, ChainListener};
 use lightning::ln::channelmanager::ChannelDetails;
