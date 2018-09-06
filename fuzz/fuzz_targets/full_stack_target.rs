@@ -403,6 +403,13 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 			13 => {
 				loss_detector.disconnect_block();
 			},
+			14 => {
+				let mut channels = channelmanager.list_channels();
+				let channel_id = get_slice!(1)[0] as usize;
+				if channel_id >= channels.len() { return; }
+				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
+				channelmanager.force_close_channel(&channels[channel_id].channel_id);
+			},
 			_ => return,
 		}
 		loss_detector.handler.process_events();
