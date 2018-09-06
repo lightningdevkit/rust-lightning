@@ -893,10 +893,11 @@ impl Channel {
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
 	/// pays to get_funding_redeemscript().to_v0_p2wsh()).
+	/// Panics if called before accept_channel/new_from_req
 	pub fn get_funding_redeemscript(&self) -> Script {
 		let builder = Builder::new().push_opcode(opcodes::All::OP_PUSHNUM_2);
 		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key).serialize();
-		let their_funding_key = self.their_funding_pubkey.unwrap().serialize();
+		let their_funding_key = self.their_funding_pubkey.expect("get_funding_redeemscript only allowed after accept_channel").serialize();
 		if our_funding_key[..] < their_funding_key[..] {
 			builder.push_slice(&our_funding_key)
 				.push_slice(&their_funding_key)
