@@ -1445,12 +1445,14 @@ impl ChannelManager {
 			match channel_state.by_id.get_mut(&msg.temporary_channel_id) {
 				Some(chan) => {
 					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None});
+						//TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
 					chan.accept_channel(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
 					(chan.get_value_satoshis(), chan.get_funding_redeemscript().to_v0_p2wsh(), chan.get_user_id())
 				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+				//TODO: same as above
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
