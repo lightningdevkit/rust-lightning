@@ -1094,7 +1094,7 @@ impl Channel {
 
 	pub fn get_update_fail_htlc(&mut self, payment_hash_arg: &[u8; 32], err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Was asked to fail an HTLC when channel was not in an operational state", action: None});
+			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
