@@ -447,6 +447,8 @@ impl ChannelManager {
 		//TODO: We need to handle monitoring of pending offered HTLCs which just hit the chain and
 		//may be claimed, resulting in us claiming the inbound HTLCs (and back-failing after
 		//timeouts are hit and our claims confirm).
+		//TODO: In any case, we need to make sure we remove any pending htlc tracking (via
+		//fail_backwards or claim_funds) eventually for all HTLCs that were in the channel
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
@@ -1147,7 +1149,12 @@ impl ChannelManager {
 					if !add_htlc_msgs.is_empty() {
 						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
 							Ok(res) => res,
-							Err(_e) => {
+							Err(e) => {
+								if let &Some(msgs::ErrorAction::DisconnectPeer{msg: Some(ref _err_msg)}) = &e.action {
+								} else if let &Some(msgs::ErrorAction::SendErrorMessage{msg: ref _err_msg}) = &e.action {
+								} else {
+									panic!("Stated return value requirements in send_commitment() were not met");
+								}
 								//TODO: Handle...this is bad!
 								continue;
 							},

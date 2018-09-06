@@ -138,18 +138,16 @@ enum HTLCState {
 	AwaitingRemovedRemoteRevoke,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
-	/// we'll promote to LocalRemovedAwaitingCommitment if we fulfilled, otherwise we'll drop at
-	/// that point.
+	/// we'll drop it.
 	/// Note that we have to keep an eye on the HTLC until we've received a broadcastable
 	/// commitment transaction without it as otherwise we'll have to force-close the channel to
 	/// claim it before the timeout (obviously doesn't apply to revoked HTLCs that we can't claim
-	/// anyway).
+	/// anyway). That said, ChannelMonitor does this for us (see
+	/// ChannelMonitor::would_broadcast_at_height) so we actually remove the HTLC from our own
+	/// local state before then, once we're sure that the next commitment_signed and
+	/// ChannelMonitor::provide_latest_local_commitment_tx_info will not include this HTLC.
 	/// Implies HTLCOutput::outbound: false
 	LocalRemoved,
-	/// Removed by us, sent a new commitment_signed and got a revoke_and_ack. Just waiting on an
-	/// updated local commitment transaction. Implies local_removed_fulfilled.
-	/// Implies HTLCOutput::outbound: false
-	LocalRemovedAwaitingCommitment,
 }
 
 struct HTLCOutput { //TODO: Refactor into Outbound/InboundHTLCOutput (will save memory and fewer panics)
@@ -338,18 +336,17 @@ const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence:
 pub const MAX_FUNDING_SATOSHIS: u64 = (1 << 24);
 
 macro_rules! secp_call {
-	( $res: expr, $err: expr ) => {
+	( $res: expr, $err: expr, $chan_id: expr ) => {
 		match $res {
 			Ok(key) => key,
-			//TODO: make the error a parameter
-			Err(_) => return Err(HandleError{err: $err, action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })})
+			Err(_) => return Err(HandleError {err: $err, action: Some(msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: $chan_id, data: $err.to_string()}})})
 		}
 	};
 }
 
 macro_rules! secp_derived_key {
-	( $res: expr ) => {
-		secp_call!($res, "Derived invalid key, peer is maliciously selecting parameters")
+	( $res: expr, $chan_id: expr ) => {
+		secp_call!($res, "Derived invalid key, peer is maliciously selecting parameters", $chan_id)
 	}
 }
 impl Channel {
@@ -707,7 +704,6 @@ impl Channel {
 				HTLCState::AwaitingRemoteRevokeToRemove => generated_by_local,
 				HTLCState::AwaitingRemovedRemoteRevoke => false,
 				HTLCState::LocalRemoved => !generated_by_local,
-				HTLCState::LocalRemovedAwaitingCommitment => false,
 			};
 
 			if include {
@@ -749,10 +745,6 @@ impl Channel {
 						if generated_by_local && htlc.local_removed_fulfilled {
 							value_to_self_msat_offset += htlc.amount_msat as i64;
 						}
-					},
-					HTLCState::LocalRemovedAwaitingCommitment => {
-						assert!(htlc.local_removed_fulfilled);
-						value_to_self_msat_offset += htlc.amount_msat as i64;
 					},
 					_ => {},
 				}
@@ -883,7 +875,7 @@ impl Channel {
 		let delayed_payment_base = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.delayed_payment_base_key);
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key);
 
-		Ok(secp_derived_key!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &self.their_revocation_basepoint.unwrap(), &self.their_payment_basepoint.unwrap(), &self.their_htlc_basepoint.unwrap())))
+		Ok(secp_derived_key!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &self.their_revocation_basepoint.unwrap(), &self.their_payment_basepoint.unwrap(), &self.their_htlc_basepoint.unwrap()), self.channel_id()))
 	}
 
 	#[inline]
@@ -896,7 +888,7 @@ impl Channel {
 		let revocation_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.revocation_base_key);
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key);
 
-		Ok(secp_derived_key!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &self.their_delayed_payment_basepoint.unwrap(), &self.their_htlc_basepoint.unwrap(), &revocation_basepoint, &payment_basepoint, &htlc_basepoint)))
+		Ok(secp_derived_key!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &self.their_delayed_payment_basepoint.unwrap(), &self.their_htlc_basepoint.unwrap(), &revocation_basepoint, &payment_basepoint, &htlc_basepoint), self.channel_id()))
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -960,7 +952,7 @@ impl Channel {
 
 		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 
-		let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, &self.local_keys.htlc_base_key));
+		let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, &self.local_keys.htlc_base_key), self.channel_id());
 		let sighash = Message::from_slice(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 		let is_local_tx = PublicKey::from_secret_key(&self.secp_ctx, &our_htlc_key) == keys.a_htlc_key;
 		Ok((htlc_redeemscript, self.secp_ctx.sign(&sighash, &our_htlc_key), is_local_tx))
@@ -1019,7 +1011,7 @@ impl Channel {
 		let mut pending_idx = std::usize::MAX;
 		for (idx, htlc) in self.pending_htlcs.iter().enumerate() {
 			if !htlc.outbound && htlc.payment_hash == payment_hash_calc &&
-					htlc.state != HTLCState::LocalRemoved && htlc.state != HTLCState::LocalRemovedAwaitingCommitment {
+					htlc.state != HTLCState::LocalRemoved {
 				if let Some(PendingHTLCStatus::Fail(_)) = htlc.pending_forward_state {
 				} else {
 					if pending_idx != std::usize::MAX {
@@ -1144,7 +1136,7 @@ impl Channel {
 						// we'll fail this one as soon as remote commits to it.
 						continue;
 					}
-				} else if htlc.state == HTLCState::LocalRemoved || htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
+				} else if htlc.state == HTLCState::LocalRemoved {
 					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given payment preimage", action: None});
 				} else {
 					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
@@ -1268,7 +1260,7 @@ impl Channel {
 		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
-		secp_call!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey.unwrap()), "Invalid funding_created signature from peer");
+		secp_call!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey.unwrap()), "Invalid funding_created signature from peer", self.channel_id());
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
 		Ok((remote_initial_commitment_tx, self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key)))
@@ -1331,7 +1323,7 @@ impl Channel {
 		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
-		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid funding_signed signature from peer");
+		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid funding_signed signature from peer", self.channel_id());
 
 		self.sign_commitment_transaction(&mut local_initial_commitment_tx, &msg.signature);
 		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx.clone(), local_keys, self.feerate_per_kw, Vec::new());
@@ -1380,7 +1372,6 @@ impl Channel {
 				HTLCState::AwaitingRemoteRevokeToRemove => { if for_remote_update_check { continue; } },
 				HTLCState::AwaitingRemovedRemoteRevoke => { if for_remote_update_check { continue; } },
 				HTLCState::LocalRemoved => {},
-				HTLCState::LocalRemovedAwaitingCommitment => { if for_remote_update_check { continue; } },
 			}
 			if !htlc.outbound {
 				inbound_htlc_count += 1;
@@ -1515,7 +1506,7 @@ impl Channel {
 		let mut local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false);
 		let local_commitment_txid = local_commitment_tx.0.txid();
 		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
-		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid commitment tx signature from peer");
+		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid commitment tx signature from peer", self.channel_id());
 
 		if msg.htlc_signatures.len() != local_commitment_tx.1.len() {
 			return Err(HandleError{err: "Got wrong number of HTLC signatures from remote", action: None});
@@ -1530,7 +1521,7 @@ impl Channel {
 			let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
-			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer");
+			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer", self.channel_id());
 			let htlc_sig = if htlc.offered {
 				let htlc_sig = self.sign_htlc_transaction(&mut htlc_tx, &msg.htlc_signatures[idx], &None, htlc, &local_keys)?;
 				new_local_commitment_txn.push(htlc_tx);
@@ -1557,16 +1548,6 @@ impl Channel {
 				need_our_commitment = true;
 			}
 		}
-		// Finally delete all the LocalRemovedAwaitingCommitment HTLCs
-		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
-		let mut claimed_value_msat = 0;
-		self.pending_htlcs.retain(|htlc| {
-			if htlc.state == HTLCState::LocalRemovedAwaitingCommitment {
-				claimed_value_msat += htlc.amount_msat;
-				false
-			} else { true }
-		});
-		self.value_to_self_msat += claimed_value_msat;
 
 		self.cur_local_commitment_transaction_number -= 1;
 		self.last_local_commitment_txn = new_local_commitment_txn;
@@ -1666,7 +1647,7 @@ impl Channel {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", action: None});
 		}
 		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
-			if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")) != their_prev_commitment_point {
+			if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret", self.channel_id())) != their_prev_commitment_point {
 				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", action: None});
 			}
 		}
@@ -1690,7 +1671,10 @@ impl Channel {
 		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 		self.pending_htlcs.retain(|htlc| {
 			if htlc.state == HTLCState::LocalRemoved {
-				if htlc.local_removed_fulfilled { true } else { false }
+				if htlc.local_removed_fulfilled {
+					value_to_self_msat_diff += htlc.amount_msat as i64;
+				}
+				false
 			} else if htlc.state == HTLCState::AwaitingRemovedRemoteRevoke {
 				if let Some(reason) = htlc.fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
 					revoked_htlcs.push((htlc.payment_hash, reason));
@@ -1725,9 +1709,6 @@ impl Channel {
 			} else if htlc.state == HTLCState::AwaitingRemoteRevokeToRemove {
 				htlc.state = HTLCState::AwaitingRemovedRemoteRevoke;
 				require_commitment = true;
-			} else if htlc.state == HTLCState::LocalRemoved {
-				assert!(htlc.local_removed_fulfilled);
-				htlc.state = HTLCState::LocalRemovedAwaitingCommitment;
 			}
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
@@ -1893,7 +1874,7 @@ impl Channel {
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
 				sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
-				secp_call!(self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid closing tx signature from peer");
+				secp_call!(self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid closing tx signature from peer", self.channel_id());
 			},
 		};
 
@@ -2335,6 +2316,7 @@ impl Channel {
 	/// This returns an option instead of a pure UpdateAddHTLC as we may be in a state where we are
 	/// waiting on the remote peer to send us a revoke_and_ack during which time we cannot add new
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
+	/// You MUST call send_commitment prior to any other calls on this Channel
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: [u8; 32], cltv_expiry: u32, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot send HTLC until channel is fully established and we haven't started shutting down", action: None});
@@ -2402,6 +2384,8 @@ impl Channel {
 	}
 
 	/// Creates a signed commitment transaction to send to the remote peer.
+	/// Always returns a Channel-failing HandleError::action if an immediately-preceding (read: the
+	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
 	pub fn send_commitment(&mut self) -> Result<(msgs::CommitmentSigned, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", action: None});
@@ -2448,7 +2432,7 @@ impl Channel {
 			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
-			let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key));
+			let our_htlc_key = secp_derived_key!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key), self.channel_id());
 			htlc_sigs.push(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key));
 		}
 
