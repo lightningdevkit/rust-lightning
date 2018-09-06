@@ -686,8 +686,6 @@ impl MsgDecodable for OpenChannel {
 		Ok(OpenChannel {
 			chain_hash: deserialize(&v[0..32]).unwrap(),
 			temporary_channel_id: temp_channel_id,
-			chain_hash: deserialize(&v[0..32])?,
-			temporary_channel_id: temp_channel_id,
 			funding_satoshis: byte_utils::slice_to_be64(&v[64..72]),
 			push_msat: byte_utils::slice_to_be64(&v[72..80]),
 			dust_limit_satoshis: byte_utils::slice_to_be64(&v[80..88]),
