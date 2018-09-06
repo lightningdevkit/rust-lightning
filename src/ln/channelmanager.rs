@@ -447,6 +447,8 @@ impl ChannelManager {
 		//TODO: We need to handle monitoring of pending offered HTLCs which just hit the chain and
 		//may be claimed, resulting in us claiming the inbound HTLCs (and back-failing after
 		//timeouts are hit and our claims confirm).
+		//TODO: In any case, we need to make sure we remove any pending htlc tracking (via
+		//fail_backwards or claim_funds) eventually for all HTLCs that were in the channel
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
