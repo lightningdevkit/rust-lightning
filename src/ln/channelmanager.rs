@@ -1445,7 +1445,8 @@ impl ChannelManager {
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
 					match chan.get_mut().funding_created(msg) {
 						Ok((funding_msg, monitor_update)) => {
@@ -1453,11 +1454,11 @@ impl ChannelManager {
 						},
 						Err(e) => {
 							//TODO: Possibly remove the channel depending on e.action
-							return Err(e);
+							return Err(e).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
 						}
 					}
 				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
 			}
 		}; // Release channel lock for install_watch_outpoint call,
 		   // note that this means if the remote end is misbehaving and sends a message for the same
@@ -1469,10 +1470,7 @@ impl ChannelManager {
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				return Err(HandleError {
-					err: "Duplicate channel_id!",
-					action: Some(msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id: funding_msg.channel_id, data: "Already had channel with the new channel_id".to_owned() } })
-				});
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id", funding_msg.channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
 				e.insert(chan);
@@ -1709,7 +1707,7 @@ impl ChannelMessageHandler for ChannelManager {
 		});
 		Ok(())
 	}
- 
+
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
 		handle_error!(self, self.internal_funding_created(their_node_id, msg), their_node_id)
 	}
