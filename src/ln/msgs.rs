@@ -681,10 +681,11 @@ impl MsgDecodable for OpenChannel {
 			}
 			shutdown_scriptpubkey = Some(Script::from(v[321..321+len].to_vec()));
 		}
-
+		let mut temp_channel_id = [0; 32];
+		temp_channel_id[..].copy_from_slice(&v[32..64]);
 		Ok(OpenChannel {
 			chain_hash: deserialize(&v[0..32]).unwrap(),
-			temporary_channel_id: deserialize(&v[32..64]).unwrap(),
+			temporary_channel_id: temp_channel_id,
 			funding_satoshis: byte_utils::slice_to_be64(&v[64..72]),
 			push_msat: byte_utils::slice_to_be64(&v[72..80]),
 			dust_limit_satoshis: byte_utils::slice_to_be64(&v[80..88]),
