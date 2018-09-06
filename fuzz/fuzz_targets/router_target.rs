@@ -132,6 +132,7 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
+					msgs::DecodeError::DeserializeFailure => return,
 				}
 			}
 		}
