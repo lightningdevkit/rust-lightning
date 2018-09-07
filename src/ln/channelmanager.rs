@@ -1511,6 +1511,84 @@ impl ChannelManager {
 		Ok(funding_msg)
 	}
 
+	fn internal_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
+		let (funding_txo, user_id, monitor) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					let chan_monitor = chan.funding_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					(chan.get_funding_txo().unwrap(), chan.get_user_id(), chan_monitor)
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+			unimplemented!();
+		}
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::Event::FundingBroadcastSafe {
+			funding_txo: funding_txo,
+			user_channel_id: user_id,
+		});
+		Ok(())
+	}
+
+	fn internal_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, MsgHandleErrInternal> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.funding_locked(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				return Ok(self.get_announcement_sigs(chan));
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		};
+	}
+
+	fn internal_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), MsgHandleErrInternal> {
+		let (res, chan_option) = {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
+
+			match channel_state.by_id.entry(msg.channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if chan_entry.get().get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					let res = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					if chan_entry.get().is_shutdown() {
+						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
+							channel_state.short_to_id.remove(&short_id);
+						}
+						(res, Some(chan_entry.remove_entry().1))
+					} else { (res, None) }
+				},
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		for payment_hash in res.2 {
+			// unknown_next_peer...I dunno who that is anymore....
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+		}
+		if let Some(chan) = chan_option {
+			if let Ok(update) = self.get_channel_update(&chan) {
+				let mut events = self.pending_events.lock().unwrap();
+				events.push(events::Event::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
+		}
+		Ok((res.0, res.1))
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1725,78 +1803,15 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
-		let (funding_txo, user_id, monitor) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					let chan_monitor = chan.funding_signed(&msg)?;
-					(chan.get_funding_txo().unwrap(), chan.get_user_id(), chan_monitor)
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-			unimplemented!();
-		}
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::Event::FundingBroadcastSafe {
-			funding_txo: funding_txo,
-			user_channel_id: user_id,
-		});
-		Ok(())
+		handle_error!(self, self.internal_funding_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.funding_locked(&msg)?;
-				return Ok(self.get_announcement_sigs(chan));
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		};
+		handle_error!(self, self.internal_funding_locked(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), HandleError> {
-		let (res, chan_option) = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = channel_state_lock.borrow_parts();
-
-			match channel_state.by_id.entry(msg.channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					let res = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg)?;
-					if chan_entry.get().is_shutdown() {
-						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
-							channel_state.short_to_id.remove(&short_id);
-						}
-						(res, Some(chan_entry.remove_entry().1))
-					} else { (res, None) }
-				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		for payment_hash in res.2 {
-			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
-		}
-		if let Some(chan) = chan_option {
-			if let Ok(update) = self.get_channel_update(&chan) {
-				let mut events = self.pending_events.lock().unwrap();
-				events.push(events::Event::BroadcastChannelUpdate {
-					msg: update
-				});
-			}
-		}
-		Ok((res.0, res.1))
+		handle_error!(self, self.internal_shutdown(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
