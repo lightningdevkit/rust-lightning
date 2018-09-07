@@ -2123,6 +2123,10 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
 	}
 
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>), HandleError> {
+		Ok((None, None, None))
+	}
+
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
 		let mut new_events = Vec::new();
 		let mut failed_channels = Vec::new();
@@ -2182,6 +2186,10 @@ impl ChannelMessageHandler for ChannelManager {
 				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.clone() });
 			}
 		}
+	}
+
+	fn peer_connected(&self, _their_node_id: &PublicKey) -> Vec<msgs::ChannelReestablish> {
+		Vec::new()
 	}
 
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
