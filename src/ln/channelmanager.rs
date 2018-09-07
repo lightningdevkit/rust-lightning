@@ -1589,6 +1589,46 @@ impl ChannelManager {
 		Ok((res.0, res.1))
 	}
 
+	fn internal_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, MsgHandleErrInternal> {
+		let (res, chan_option) = {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
+			match channel_state.by_id.entry(msg.channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if chan_entry.get().get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					let res = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					if res.1.is_some() {
+						// We're done with this channel, we've got a signed closing transaction and
+						// will send the closing_signed back to the remote peer upon return. This
+						// also implies there are no pending HTLCs left on the channel, so we can
+						// fully delete it from tracking (the channel monitor is still around to
+						// watch for old state broadcasts)!
+						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
+							channel_state.short_to_id.remove(&short_id);
+						}
+						(res, Some(chan_entry.remove_entry().1))
+					} else { (res, None) }
+				},
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Some(broadcast_tx) = res.1 {
+			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
+		}
+		if let Some(chan) = chan_option {
+			if let Ok(update) = self.get_channel_update(&chan) {
+				let mut events = self.pending_events.lock().unwrap();
+				events.push(events::Event::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
+		}
+		Ok(res.0)
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1815,42 +1855,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
-		let (res, chan_option) = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = channel_state_lock.borrow_parts();
-			match channel_state.by_id.entry(msg.channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					let res = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg)?;
-					if res.1.is_some() {
-						// We're done with this channel, we've got a signed closing transaction and
-						// will send the closing_signed back to the remote peer upon return. This
-						// also implies there are no pending HTLCs left on the channel, so we can
-						// fully delete it from tracking (the channel monitor is still around to
-						// watch for old state broadcasts)!
-						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
-							channel_state.short_to_id.remove(&short_id);
-						}
-						(res, Some(chan_entry.remove_entry().1))
-					} else { (res, None) }
-				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Some(broadcast_tx) = res.1 {
-			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
-		}
-		if let Some(chan) = chan_option {
-			if let Ok(update) = self.get_channel_update(&chan) {
-				let mut events = self.pending_events.lock().unwrap();
-				events.push(events::Event::BroadcastChannelUpdate {
-					msg: update
-				});
-			}
-		}
-		Ok(res.0)
+		handle_error!(self, self.internal_closing_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
