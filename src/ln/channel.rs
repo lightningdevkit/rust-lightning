@@ -1268,10 +1268,13 @@ impl Channel {
 
 	pub fn funding_created(&mut self, msg: &msgs::FundingCreated) -> Result<(msgs::FundingSigned, ChannelMonitor), HandleError> {
 		if self.channel_outbound {
-			return Err(HandleError{err: "Received funding_created for an outbound channel?", action: None});
+			return Err(HandleError{err: "Received funding_created for an outbound channel?", action: Some(msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: self.channel_id, data: "Received funding_created for an outbound channel?".to_string()}})});
 		}
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
-			return Err(HandleError{err: "Received funding_created after we got the channel!", action: None});
+			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
+			// remember the channel, so its safe to just send an error_message here and drop the
+			// channel.
+			return Err(HandleError{err: "Received funding_created after we got the channel!", action: Some(msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: self.channel_id, data: "Received funding_created after we got the channel!".to_string()}})});
 		}
 		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 1 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
