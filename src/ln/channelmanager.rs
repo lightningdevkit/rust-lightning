@@ -1826,6 +1826,27 @@ impl ChannelManager {
 		}
 	}
 
+	fn internal_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), MsgHandleErrInternal> {
+		let (revoke_and_ack, commitment_signed, chan_monitor) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					chan.commitment_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+			unimplemented!();
+		}
+
+		Ok((revoke_and_ack, commitment_signed))
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -2072,23 +2093,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), HandleError> {
-		let (revoke_and_ack, commitment_signed, chan_monitor) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					chan.commitment_signed(&msg)?
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!();
-		}
-
-		Ok((revoke_and_ack, commitment_signed))
+		handle_error!(self, self.internal_commitment_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, HandleError> {
