@@ -1717,6 +1717,25 @@ impl ChannelManager {
 		Ok(res)
 	}
 
+	fn internal_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
+		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
+		// Claim funds first, cause we don't really care if the channel we received the message on
+		// is broken, we may have enough info to get our own money!
+		self.claim_funds_internal(msg.payment_preimage.clone(), false);
+
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.update_fulfill_htlc(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1951,21 +1970,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
-		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
-		// Claim funds first, cause we don't really care if the channel we received the message on
-		// is broken, we may have enough info to get our own money!
-		self.claim_funds_internal(msg.payment_preimage.clone(), false);
-
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.update_fulfill_htlc(&msg)
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		}
+		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
