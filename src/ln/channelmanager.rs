@@ -1537,6 +1537,21 @@ impl ChannelManager {
 		Ok(())
 	}
 
+	fn internal_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, MsgHandleErrInternal> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.funding_locked(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				return Ok(self.get_announcement_sigs(chan));
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		};
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1755,17 +1770,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.funding_locked(&msg)?;
-				return Ok(self.get_announcement_sigs(chan));
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		};
+		handle_error!(self, self.internal_funding_locked(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), HandleError> {
