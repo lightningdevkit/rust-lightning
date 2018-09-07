@@ -1736,6 +1736,82 @@ impl ChannelManager {
 		}
 	}
 
+	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, MsgHandleErrInternal> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}?;
+
+		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
+			match pending_htlc {
+				&PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+					// Handle packed channel/node updates for passing back for the route handler
+					let mut packet_decrypted = msg.reason.data.clone();
+					let mut res = None;
+					Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
+						if res.is_some() { return; }
+
+						let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+
+						let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
+						decryption_tmp.resize(packet_decrypted.len(), 0);
+						let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+						chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
+						packet_decrypted = decryption_tmp;
+
+						if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
+							if err_packet.failuremsg.len() >= 2 {
+								let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+
+								let mut hmac = Hmac::new(Sha256::new(), &um);
+								hmac.input(&err_packet.encode()[32..]);
+								let mut calc_tag = [0u8; 32];
+								hmac.raw_result(&mut calc_tag);
+								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
+									const UNKNOWN_CHAN: u16 = 0x4000|10;
+									const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
+									match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
+										TEMP_CHAN_FAILURE => {
+											if err_packet.failuremsg.len() >= 4 {
+												let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
+												if err_packet.failuremsg.len() >= 4 + update_len {
+													if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
+														res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
+															msg: chan_update,
+														});
+													}
+												}
+											}
+										},
+										UNKNOWN_CHAN => {
+											// No such next-hop. We know this came from the
+											// current node as the HMAC validated.
+											res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
+												short_channel_id: route_hop.short_channel_id
+											});
+										},
+										_ => {}, //TODO: Enumerate all of these!
+									}
+								}
+							}
+						}
+					}).unwrap();
+					Ok(res)
+				},
+				_ => { Ok(None) },
+			}
+		} else {
+			Ok(None)
+		}
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1974,78 +2050,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() })
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		}?;
-
-		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
-			match pending_htlc {
-				&PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-					// Handle packed channel/node updates for passing back for the route handler
-					let mut packet_decrypted = msg.reason.data.clone();
-					let mut res = None;
-					Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
-						if res.is_some() { return; }
-
-						let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
-
-						let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-						decryption_tmp.resize(packet_decrypted.len(), 0);
-						let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-						chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-						packet_decrypted = decryption_tmp;
-
-						if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
-							if err_packet.failuremsg.len() >= 2 {
-								let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
-
-								let mut hmac = Hmac::new(Sha256::new(), &um);
-								hmac.input(&err_packet.encode()[32..]);
-								let mut calc_tag = [0u8; 32];
-								hmac.raw_result(&mut calc_tag);
-								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
-									const UNKNOWN_CHAN: u16 = 0x4000|10;
-									const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
-									match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
-										TEMP_CHAN_FAILURE => {
-											if err_packet.failuremsg.len() >= 4 {
-												let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
-												if err_packet.failuremsg.len() >= 4 + update_len {
-													if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
-														res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
-															msg: chan_update,
-														});
-													}
-												}
-											}
-										},
-										UNKNOWN_CHAN => {
-											// No such next-hop. We know this came from the
-											// current node as the HMAC validated.
-											res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-												short_channel_id: route_hop.short_channel_id
-											});
-										},
-										_ => {}, //TODO: Enumerate all of these!
-									}
-								}
-							}
-						}
-					}).unwrap();
-					Ok(res)
-				},
-				_ => { Ok(None) },
-			}
-		} else {
-			Ok(None)
-		}
+		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
