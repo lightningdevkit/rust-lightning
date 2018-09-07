@@ -1771,6 +1771,13 @@ impl Channel {
 	/// Returns the set of PendingHTLCStatuses from remote uncommitted HTLCs (which we're
 	/// implicitly dropping) and the payment_hashes of HTLCs we tried to add but are dropping.
 	pub fn remove_uncommitted_htlcs(&mut self) -> Vec<(HTLCSource, [u8; 32])> {
+		let mut outbound_drops = Vec::new();
+
+		if self.channel_state < ChannelState::FundingSent as u32 {
+			self.channel_state = ChannelState::ShutdownComplete as u32;
+			return outbound_drops;
+		}
+
 		self.pending_inbound_htlcs.retain(|htlc| {
 			match htlc.state {
 				InboundHTLCState::RemoteAnnounced => {
@@ -1806,7 +1813,6 @@ impl Channel {
 			}
 		}
 
-		let mut outbound_drops = Vec::new();
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
 				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {

@@ -2149,16 +2149,23 @@ impl ChannelMessageHandler for ChannelManager {
 					}
 				});
 			} else {
-				for chan in channel_state.by_id {
-					if chan.1.get_their_node_id() == *their_node_id {
+				channel_state.by_id.retain(|_, chan| {
+					if chan.get_their_node_id() == *their_node_id {
 						//TODO: mark channel disabled (and maybe announce such after a timeout).
-						let failed_adds = chan.1.remove_uncommitted_htlcs();
+						let failed_adds = chan.remove_uncommitted_htlcs();
 						if !failed_adds.is_empty() {
-							let chan_update = self.get_channel_update(&chan.1).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
+							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 							failed_payments.push((chan_update, failed_adds));
 						}
+						if chan.is_shutdown() {
+							if let Some(short_id) = chan.get_short_channel_id() {
+								short_to_id.remove(&short_id);
+							}
+							return false;
+						}
 					}
-				}
+					true
+				})
 			}
 		}
 		for failure in failed_channels.drain(..) {
