@@ -46,6 +46,8 @@ pub enum ChannelMonitorUpdateErr {
 /// channel's monitor everywhere (including remote watchtowers) *before* this function returns. If
 /// an update occurs and a remote watchtower is left with old state, it may broadcast transactions
 /// which we have revoked, allowing our counterparty to claim all funds in the channel!
+/// A call to add_update_monitor is needed to register outpoint and its txid with ChainWatchInterface 
+/// after setting funding_txo in a ChannelMonitor
 pub trait ManyChannelMonitor: Send + Sync {
 	/// Adds or updates a monitor for the given `funding_txo`.
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr>;
@@ -69,7 +71,12 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 	fn block_connected(&self, _header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values() {
-			monitor.block_connected(txn_matched, height, &*self.broadcaster);
+			let txn_outputs = monitor.block_connected(txn_matched, height, &*self.broadcaster);
+			for (ref txid, ref outputs) in txn_outputs {
+				for (idx, output) in outputs.iter().enumerate() {
+					self.chain_monitor.install_watch_outpoint((txid.clone(), idx as u32), &output.script_pubkey);
+				}
+			}
 		}
 	}
 
@@ -464,8 +471,9 @@ impl ChannelMonitor {
 	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
 	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
 	/// provides slightly better privacy.
+	/// It's the responsability of the caller to register outpoint and script with passing the former
+	/// value as key to add_update_monitor.
 	pub(super) fn set_funding_info(&mut self, funding_info: (OutPoint, Script)) {
-		//TODO: Need to register the given script here with a chain_monitor
 		self.funding_txo = Some(funding_info);
 	}
 
@@ -908,21 +916,23 @@ impl ChannelMonitor {
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions, and claim them using the revocation key (if
 	/// applicable) as well.
-	fn check_spend_remote_transaction(&self, tx: &Transaction, height: u32) -> Vec<Transaction> {
+	fn check_spend_remote_transaction(&self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>)) {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
+		let mut watch_outputs = Vec::new();
+
+		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
+		let per_commitment_option = self.remote_claimable_outpoints.get(&commitment_txid);
+
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
 				match $thing {
 					Ok(a) => a,
-					Err(_) => return txn_to_broadcast
+					Err(_) => return (txn_to_broadcast, (commitment_txid, watch_outputs))
 				}
 			};
 		}
-
-		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
-		let per_commitment_option = self.remote_claimable_outpoints.get(&commitment_txid);
 
 		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (tx.lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		if commitment_number >= self.get_min_seen_secret() {
@@ -942,7 +952,7 @@ impl ChannelMonitor {
 			};
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.delayed_payment_base_key));
 			let a_htlc_key = match self.their_htlc_base_key {
-				None => return txn_to_broadcast,
+				None => return (txn_to_broadcast, (commitment_txid, watch_outputs)),
 				Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &their_htlc_base_key)),
 			};
 
@@ -1009,7 +1019,7 @@ impl ChannelMonitor {
 					if htlc.transaction_output_index as usize >= tx.output.len() ||
 							tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
 							tx.output[htlc.transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
-						return txn_to_broadcast; // Corrupted per_commitment_data, fuck this user
+						return (txn_to_broadcast, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 					}
 					let input = TxIn {
 						previous_output: BitcoinOutPoint {
@@ -1044,10 +1054,10 @@ impl ChannelMonitor {
 
 			if !inputs.is_empty() || !txn_to_broadcast.is_empty() { // ie we're confident this is actually ours
 				// We're definitely a remote commitment transaction!
-				// TODO: Register all outputs in commitment_tx with the ChainWatchInterface!
+				watch_outputs.append(&mut tx.output.clone());
 				self.remote_commitment_txn_on_chain.lock().unwrap().insert(commitment_txid, commitment_number);
 			}
-			if inputs.is_empty() { return txn_to_broadcast; } // Nothing to be done...probably a false positive/local tx
+			if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs)); } // Nothing to be done...probably a false positive/local tx
 
 			let outputs = vec!(TxOut {
 				script_pubkey: self.destination_script.clone(),
@@ -1077,7 +1087,7 @@ impl ChannelMonitor {
 			// already processed the block, resulting in the remote_commitment_txn_on_chain entry
 			// not being generated by the above conditional. Thus, to be safe, we go ahead and
 			// insert it here.
-			// TODO: Register all outputs in commitment_tx with the ChainWatchInterface!
+			watch_outputs.append(&mut tx.output.clone());
 			self.remote_commitment_txn_on_chain.lock().unwrap().insert(commitment_txid, commitment_number);
 
 			if let Some(revocation_points) = self.their_cur_revocation_points {
@@ -1098,7 +1108,7 @@ impl ChannelMonitor {
 						},
 					};
 					let a_htlc_key = match self.their_htlc_base_key {
-						None => return txn_to_broadcast,
+						None => return (txn_to_broadcast, (commitment_txid, watch_outputs)),
 						Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &their_htlc_base_key)),
 					};
 
@@ -1161,7 +1171,7 @@ impl ChannelMonitor {
 						}
 					}
 
-					if inputs.is_empty() { return txn_to_broadcast; } // Nothing to be done...probably a false positive/local tx
+					if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs)); } // Nothing to be done...probably a false positive/local tx
 
 					let outputs = vec!(TxOut {
 						script_pubkey: self.destination_script.clone(),
@@ -1189,7 +1199,7 @@ impl ChannelMonitor {
 			//TODO: For each input check if its in our remote_commitment_txn_on_chain map!
 		}
 
-		txn_to_broadcast
+		(txn_to_broadcast, (commitment_txid, watch_outputs))
 	}
 
 	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx) -> Vec<Transaction> {
@@ -1250,11 +1260,15 @@ impl ChannelMonitor {
 		Vec::new()
 	}
 
-	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface) {
+	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface)-> Vec<(Sha256dHash, Vec<TxOut>)> {
+		let mut watch_outputs = Vec::new();
 		for tx in txn_matched {
 			for txin in tx.input.iter() {
 				if self.funding_txo.is_none() || (txin.previous_output.txid == self.funding_txo.as_ref().unwrap().0.txid && txin.previous_output.vout == self.funding_txo.as_ref().unwrap().0.index as u32) {
-					let mut txn = self.check_spend_remote_transaction(tx, height);
+					let (mut txn, new_outputs) = self.check_spend_remote_transaction(tx, height);
+					if !new_outputs.1.is_empty() {
+						watch_outputs.push(new_outputs);
+					}
 					if txn.is_empty() {
 						txn = self.check_spend_local_transaction(tx, height);
 					}
@@ -1281,6 +1295,7 @@ impl ChannelMonitor {
 				}
 			}
 		}
+		watch_outputs
 	}
 
 	pub fn would_broadcast_at_height(&self, height: u32) -> bool {

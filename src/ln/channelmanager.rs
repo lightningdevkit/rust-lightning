@@ -3337,7 +3337,8 @@ mod tests {
 			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 			{
 				let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-				assert_eq!(node_txn.len(), 2);
+				assert_eq!(node_txn.len(), 3);
+				assert_eq!(node_txn.pop().unwrap(), node_txn[0]); // An outpoint registration will result in a 2nd block_connected
 				assert_eq!(node_txn[0].input.len(), 1);
 
 				let mut funding_tx_map = HashMap::new();
