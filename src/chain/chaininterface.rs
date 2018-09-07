@@ -25,8 +25,8 @@ pub enum ChainError {
 /// called from inside the library in response to ChainListener events, P2P events, or timer
 /// events).
 pub trait ChainWatchInterface: Sync + Send {
-	/// Provides a scriptPubKey which much be watched for.
-	fn install_watch_script(&self, script_pub_key: &Script);
+	/// Provides a txid/random-scriptPubKey-in-the-tx which much be watched for.
+	fn install_watch_tx(&self, txid: &Sha256dHash, script_pub_key: &Script);
 
 	/// Provides an outpoint which must be watched for, providing any transactions which spend the
 	/// given outpoint.
@@ -54,9 +54,9 @@ pub trait BroadcasterInterface: Sync + Send {
 /// A trait indicating a desire to listen for events from the chain
 pub trait ChainListener: Sync + Send {
 	/// Notifies a listener that a block was connected.
-	/// Note that if a new script/transaction is watched during a block_connected call, the block
-	/// *must* be re-scanned with the new script/transaction and block_connected should be called
-	/// again with the same header and (at least) the new transactions.
+	/// Note that if a new transaction/outpoint is watched during a block_connected call, the block
+	/// *must* be re-scanned with the new transaction/outpoints and block_connected should be
+	/// called again with the same header and (at least) the new transactions.
 	/// This also means those counting confirmations using block_connected callbacks should watch
 	/// for duplicate headers and not count them towards confirmations!
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
@@ -97,7 +97,7 @@ pub struct ChainWatchInterfaceUtil {
 
 /// Register listener
 impl ChainWatchInterface for ChainWatchInterfaceUtil {
-	fn install_watch_script(&self, script_pub_key: &Script) {
+	fn install_watch_tx(&self, _txid: &Sha256dHash, script_pub_key: &Script) {
 		let mut watched = self.watched.lock().unwrap();
 		watched.0.push(script_pub_key.clone());
 		self.reentered.fetch_add(1, Ordering::Relaxed);

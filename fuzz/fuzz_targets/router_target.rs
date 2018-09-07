@@ -76,7 +76,7 @@ struct DummyChainWatcher {
 }
 
 impl ChainWatchInterface for DummyChainWatcher {
-	fn install_watch_script(&self, _script_pub_key: &Script) { }
+	fn install_watch_tx(&self, _txid: &Sha256dHash, _script_pub_key: &Script) { }
 	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
 	fn register_listener(&self, _listener: Weak<ChainListener>) { }
