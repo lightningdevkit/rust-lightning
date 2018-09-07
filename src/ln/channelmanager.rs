@@ -1589,6 +1589,330 @@ impl ChannelManager {
 		Ok((res.0, res.1))
 	}
 
+	fn internal_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, MsgHandleErrInternal> {
+		let (res, chan_option) = {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
+			match channel_state.by_id.entry(msg.channel_id.clone()) {
+				hash_map::Entry::Occupied(mut chan_entry) => {
+					if chan_entry.get().get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					let res = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					if res.1.is_some() {
+						// We're done with this channel, we've got a signed closing transaction and
+						// will send the closing_signed back to the remote peer upon return. This
+						// also implies there are no pending HTLCs left on the channel, so we can
+						// fully delete it from tracking (the channel monitor is still around to
+						// watch for old state broadcasts)!
+						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
+							channel_state.short_to_id.remove(&short_id);
+						}
+						(res, Some(chan_entry.remove_entry().1))
+					} else { (res, None) }
+				},
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Some(broadcast_tx) = res.1 {
+			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
+		}
+		if let Some(chan) = chan_option {
+			if let Ok(update) = self.get_channel_update(&chan) {
+				let mut events = self.pending_events.lock().unwrap();
+				events.push(events::Event::BroadcastChannelUpdate {
+					msg: update
+				});
+			}
+		}
+		Ok(res.0)
+	}
+
+	fn internal_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), MsgHandleErrInternal> {
+		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
+		//determine the state of the payment based on our response/if we forward anything/the time
+		//we take to respond. We should take care to avoid allowing such an attack.
+		//
+		//TODO: There exists a further attack where a node may garble the onion data, forward it to
+		//us repeatedly garbled in different ways, and compare our error messages, which are
+		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
+		//but we should prevent it anyway.
+
+		let (mut pending_forward_info, shared_secret, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let channel_state = channel_state_lock.borrow_parts();
+
+		let claimable_htlcs_entry = channel_state.claimable_htlcs.entry(msg.payment_hash.clone());
+
+		// We dont correctly handle payments that route through us twice on their way to their
+		// destination. That's OK since those nodes are probably busted or trying to do network
+		// mapping through repeated loops. In either case, we want them to stop talking to us, so
+		// we send permanent_node_failure.
+		let mut will_forward = false;
+		if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { short_channel_id, .. }) = pending_forward_info {
+			if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
+				let mut acceptable_cycle = false;
+				if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
+					acceptable_cycle = short_channel_id == 0;
+				}
+				if !acceptable_cycle {
+					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
+					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+						channel_id: msg.channel_id,
+						htlc_id: msg.htlc_id,
+						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret.unwrap(), 0x4000 | 0x2000 | 2, &[0;0]),
+					}));
+				} else {
+					will_forward = true;
+				}
+			} else {
+				will_forward = true;
+			}
+		}
+
+		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				if !chan.is_usable() {
+					return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Channel not yet available for receiving HTLCs", action: Some(msgs::ErrorAction::IgnoreError)}));
+				}
+				let short_channel_id = chan.get_short_channel_id().unwrap();
+				if let PendingHTLCStatus::Forward(ref mut forward_info) = pending_forward_info {
+					forward_info.prev_short_channel_id = short_channel_id;
+				}
+				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?)
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		};
+
+		if will_forward {
+			match claimable_htlcs_entry {
+				hash_map::Entry::Occupied(mut e) => {
+					let outbound_route = e.get_mut();
+					let (route, session_priv) = match outbound_route {
+						&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+							(route.clone(), session_priv.clone())
+						},
+						_ => unreachable!(),
+					};
+					*outbound_route = PendingOutboundHTLC::CycledRoute {
+						source_short_channel_id,
+						incoming_packet_shared_secret: shared_secret.unwrap(),
+						route,
+						session_priv,
+					};
+				},
+				hash_map::Entry::Vacant(e) => {
+					e.insert(PendingOutboundHTLC::IntermediaryHopData {
+						source_short_channel_id,
+						incoming_packet_shared_secret: shared_secret.unwrap(),
+					});
+				}
+			}
+		}
+
+		Ok(res)
+	}
+
+	fn internal_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
+		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
+		// Claim funds first, cause we don't really care if the channel we received the message on
+		// is broken, we may have enough info to get our own money!
+		self.claim_funds_internal(msg.payment_preimage.clone(), false);
+
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.update_fulfill_htlc(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
+	}
+
+	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, MsgHandleErrInternal> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}?;
+
+		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
+			match pending_htlc {
+				&PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+					// Handle packed channel/node updates for passing back for the route handler
+					let mut packet_decrypted = msg.reason.data.clone();
+					let mut res = None;
+					Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
+						if res.is_some() { return; }
+
+						let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+
+						let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
+						decryption_tmp.resize(packet_decrypted.len(), 0);
+						let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+						chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
+						packet_decrypted = decryption_tmp;
+
+						if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
+							if err_packet.failuremsg.len() >= 2 {
+								let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+
+								let mut hmac = Hmac::new(Sha256::new(), &um);
+								hmac.input(&err_packet.encode()[32..]);
+								let mut calc_tag = [0u8; 32];
+								hmac.raw_result(&mut calc_tag);
+								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
+									const UNKNOWN_CHAN: u16 = 0x4000|10;
+									const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
+									match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
+										TEMP_CHAN_FAILURE => {
+											if err_packet.failuremsg.len() >= 4 {
+												let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
+												if err_packet.failuremsg.len() >= 4 + update_len {
+													if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
+														res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
+															msg: chan_update,
+														});
+													}
+												}
+											}
+										},
+										UNKNOWN_CHAN => {
+											// No such next-hop. We know this came from the
+											// current node as the HMAC validated.
+											res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
+												short_channel_id: route_hop.short_channel_id
+											});
+										},
+										_ => {}, //TODO: Enumerate all of these!
+									}
+								}
+							}
+						}
+					}).unwrap();
+					Ok(res)
+				},
+				_ => { Ok(None) },
+			}
+		} else {
+			Ok(None)
+		}
+	}
+
+	fn internal_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
+	}
+
+	fn internal_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), MsgHandleErrInternal> {
+		let (revoke_and_ack, commitment_signed, chan_monitor) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					chan.commitment_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+			unimplemented!();
+		}
+
+		Ok((revoke_and_ack, commitment_signed))
+	}
+
+	fn internal_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, MsgHandleErrInternal> {
+		let (res, mut pending_forwards, mut pending_failures, chan_monitor) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						//TODO: here and below MsgHandleErrInternal, #153 case
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+			unimplemented!();
+		}
+		for failure in pending_failures.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failure.0, failure.1);
+		}
+
+		let mut forward_event = None;
+		if !pending_forwards.is_empty() {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			if channel_state.forward_htlcs.is_empty() {
+				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+				channel_state.next_forward = forward_event.unwrap();
+			}
+			for forward_info in pending_forwards.drain(..) {
+				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(forward_info);
+					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec!(forward_info));
+					}
+				}
+			}
+		}
+		match forward_event {
+			Some(time) => {
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push(events::Event::PendingHTLCsForwardable {
+					time_forwardable: time
+				});
+			}
+			None => {},
+		}
+
+		Ok(res)
+	}
+
+	fn internal_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here and below MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				chan.update_fee(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1815,319 +2139,35 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
-		let (res, chan_option) = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = channel_state_lock.borrow_parts();
-			match channel_state.by_id.entry(msg.channel_id.clone()) {
-				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					let res = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg)?;
-					if res.1.is_some() {
-						// We're done with this channel, we've got a signed closing transaction and
-						// will send the closing_signed back to the remote peer upon return. This
-						// also implies there are no pending HTLCs left on the channel, so we can
-						// fully delete it from tracking (the channel monitor is still around to
-						// watch for old state broadcasts)!
-						if let Some(short_id) = chan_entry.get().get_short_channel_id() {
-							channel_state.short_to_id.remove(&short_id);
-						}
-						(res, Some(chan_entry.remove_entry().1))
-					} else { (res, None) }
-				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Some(broadcast_tx) = res.1 {
-			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
-		}
-		if let Some(chan) = chan_option {
-			if let Ok(update) = self.get_channel_update(&chan) {
-				let mut events = self.pending_events.lock().unwrap();
-				events.push(events::Event::BroadcastChannelUpdate {
-					msg: update
-				});
-			}
-		}
-		Ok(res.0)
+		handle_error!(self, self.internal_closing_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
-		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
-		//determine the state of the payment based on our response/if we forward anything/the time
-		//we take to respond. We should take care to avoid allowing such an attack.
-		//
-		//TODO: There exists a further attack where a node may garble the onion data, forward it to
-		//us repeatedly garbled in different ways, and compare our error messages, which are
-		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
-		//but we should prevent it anyway.
-
-		let (mut pending_forward_info, shared_secret, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
-		let channel_state = channel_state_lock.borrow_parts();
-
-		let claimable_htlcs_entry = channel_state.claimable_htlcs.entry(msg.payment_hash.clone());
-
-		// We dont correctly handle payments that route through us twice on their way to their
-		// destination. That's OK since those nodes are probably busted or trying to do network
-		// mapping through repeated loops. In either case, we want them to stop talking to us, so
-		// we send permanent_node_failure.
-		let mut will_forward = false;
-		if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { short_channel_id, .. }) = pending_forward_info {
-			if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
-				let mut acceptable_cycle = false;
-				if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
-					acceptable_cycle = short_channel_id == 0;
-				}
-				if !acceptable_cycle {
-					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
-					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret.unwrap(), 0x4000 | 0x2000 | 2, &[0;0]),
-					}));
-				} else {
-					will_forward = true;
-				}
-			} else {
-				will_forward = true;
-			}
-		}
-
-		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				if !chan.is_usable() {
-					return Err(HandleError{err: "Channel not yet available for receiving HTLCs", action: None});
-				}
-				let short_channel_id = chan.get_short_channel_id().unwrap();
-				if let PendingHTLCStatus::Forward(ref mut forward_info) = pending_forward_info {
-					forward_info.prev_short_channel_id = short_channel_id;
-				}
-				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info)?)
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}),
-		};
-
-		if will_forward {
-			match claimable_htlcs_entry {
-				hash_map::Entry::Occupied(mut e) => {
-					let outbound_route = e.get_mut();
-					let (route, session_priv) = match outbound_route {
-						&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-							(route.clone(), session_priv.clone())
-						},
-						_ => unreachable!(),
-					};
-					*outbound_route = PendingOutboundHTLC::CycledRoute {
-						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret.unwrap(),
-						route,
-						session_priv,
-					};
-				},
-				hash_map::Entry::Vacant(e) => {
-					e.insert(PendingOutboundHTLC::IntermediaryHopData {
-						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret.unwrap(),
-					});
-				}
-			}
-		}
-
-		Ok(res)
+		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
-		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
-		// Claim funds first, cause we don't really care if the channel we received the message on
-		// is broken, we may have enough info to get our own money!
-		self.claim_funds_internal(msg.payment_preimage.clone(), false);
-
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.update_fulfill_htlc(&msg)
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		}
+		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() })
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		}?;
-
-		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
-			match pending_htlc {
-				&PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-					// Handle packed channel/node updates for passing back for the route handler
-					let mut packet_decrypted = msg.reason.data.clone();
-					let mut res = None;
-					Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
-						if res.is_some() { return; }
-
-						let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
-
-						let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-						decryption_tmp.resize(packet_decrypted.len(), 0);
-						let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-						chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-						packet_decrypted = decryption_tmp;
-
-						if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
-							if err_packet.failuremsg.len() >= 2 {
-								let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
-
-								let mut hmac = Hmac::new(Sha256::new(), &um);
-								hmac.input(&err_packet.encode()[32..]);
-								let mut calc_tag = [0u8; 32];
-								hmac.raw_result(&mut calc_tag);
-								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
-									const UNKNOWN_CHAN: u16 = 0x4000|10;
-									const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
-									match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
-										TEMP_CHAN_FAILURE => {
-											if err_packet.failuremsg.len() >= 4 {
-												let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
-												if err_packet.failuremsg.len() >= 4 + update_len {
-													if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
-														res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
-															msg: chan_update,
-														});
-													}
-												}
-											}
-										},
-										UNKNOWN_CHAN => {
-											// No such next-hop. We know this came from the
-											// current node as the HMAC validated.
-											res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-												short_channel_id: route_hop.short_channel_id
-											});
-										},
-										_ => {}, //TODO: Enumerate all of these!
-									}
-								}
-							}
-						}
-					}).unwrap();
-					Ok(res)
-				},
-				_ => { Ok(None) },
-			}
-		} else {
-			Ok(None)
-		}
+		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() })
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		}
+		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), HandleError> {
-		let (revoke_and_ack, commitment_signed, chan_monitor) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					chan.commitment_signed(&msg)?
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!();
-		}
-
-		Ok((revoke_and_ack, commitment_signed))
+		handle_error!(self, self.internal_commitment_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, HandleError> {
-		let (res, mut pending_forwards, mut pending_failures, chan_monitor) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-					}
-					chan.revoke_and_ack(&msg)?
-				},
-				None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-			}
-		};
-		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!();
-		}
-		for failure in pending_failures.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failure.0, failure.1);
-		}
-
-		let mut forward_event = None;
-		if !pending_forwards.is_empty() {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			if channel_state.forward_htlcs.is_empty() {
-				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
-				channel_state.next_forward = forward_event.unwrap();
-			}
-			for forward_info in pending_forwards.drain(..) {
-				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(forward_info);
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(forward_info));
-					}
-				}
-			}
-		}
-		match forward_event {
-			Some(time) => {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PendingHTLCsForwardable {
-					time_forwardable: time
-				});
-			}
-			None => {},
-		}
-
-		Ok(res)
+		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				chan.update_fee(&*self.fee_estimator, &msg)
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None})
-		}
+		handle_error!(self, self.internal_update_fee(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
