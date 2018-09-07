@@ -1629,6 +1629,94 @@ impl ChannelManager {
 		Ok(res.0)
 	}
 
+	fn internal_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), MsgHandleErrInternal> {
+		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
+		//determine the state of the payment based on our response/if we forward anything/the time
+		//we take to respond. We should take care to avoid allowing such an attack.
+		//
+		//TODO: There exists a further attack where a node may garble the onion data, forward it to
+		//us repeatedly garbled in different ways, and compare our error messages, which are
+		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
+		//but we should prevent it anyway.
+
+		let (mut pending_forward_info, shared_secret, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let channel_state = channel_state_lock.borrow_parts();
+
+		let claimable_htlcs_entry = channel_state.claimable_htlcs.entry(msg.payment_hash.clone());
+
+		// We dont correctly handle payments that route through us twice on their way to their
+		// destination. That's OK since those nodes are probably busted or trying to do network
+		// mapping through repeated loops. In either case, we want them to stop talking to us, so
+		// we send permanent_node_failure.
+		let mut will_forward = false;
+		if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { short_channel_id, .. }) = pending_forward_info {
+			if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
+				let mut acceptable_cycle = false;
+				if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
+					acceptable_cycle = short_channel_id == 0;
+				}
+				if !acceptable_cycle {
+					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
+					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+						channel_id: msg.channel_id,
+						htlc_id: msg.htlc_id,
+						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret.unwrap(), 0x4000 | 0x2000 | 2, &[0;0]),
+					}));
+				} else {
+					will_forward = true;
+				}
+			} else {
+				will_forward = true;
+			}
+		}
+
+		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					//TODO: here MsgHandleErrInternal, #153 case
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				if !chan.is_usable() {
+					return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Channel not yet available for receiving HTLCs", action: Some(msgs::ErrorAction::IgnoreError)}));
+				}
+				let short_channel_id = chan.get_short_channel_id().unwrap();
+				if let PendingHTLCStatus::Forward(ref mut forward_info) = pending_forward_info {
+					forward_info.prev_short_channel_id = short_channel_id;
+				}
+				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?)
+			},
+			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		};
+
+		if will_forward {
+			match claimable_htlcs_entry {
+				hash_map::Entry::Occupied(mut e) => {
+					let outbound_route = e.get_mut();
+					let (route, session_priv) = match outbound_route {
+						&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
+							(route.clone(), session_priv.clone())
+						},
+						_ => unreachable!(),
+					};
+					*outbound_route = PendingOutboundHTLC::CycledRoute {
+						source_short_channel_id,
+						incoming_packet_shared_secret: shared_secret.unwrap(),
+						route,
+						session_priv,
+					};
+				},
+				hash_map::Entry::Vacant(e) => {
+					e.insert(PendingOutboundHTLC::IntermediaryHopData {
+						source_short_channel_id,
+						incoming_packet_shared_secret: shared_secret.unwrap(),
+					});
+				}
+			}
+		}
+
+		Ok(res)
+	}
+
 	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let (chan_announcement, chan_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1859,90 +1947,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
-		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
-		//determine the state of the payment based on our response/if we forward anything/the time
-		//we take to respond. We should take care to avoid allowing such an attack.
-		//
-		//TODO: There exists a further attack where a node may garble the onion data, forward it to
-		//us repeatedly garbled in different ways, and compare our error messages, which are
-		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
-		//but we should prevent it anyway.
-
-		let (mut pending_forward_info, shared_secret, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
-		let channel_state = channel_state_lock.borrow_parts();
-
-		let claimable_htlcs_entry = channel_state.claimable_htlcs.entry(msg.payment_hash.clone());
-
-		// We dont correctly handle payments that route through us twice on their way to their
-		// destination. That's OK since those nodes are probably busted or trying to do network
-		// mapping through repeated loops. In either case, we want them to stop talking to us, so
-		// we send permanent_node_failure.
-		let mut will_forward = false;
-		if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { short_channel_id, .. }) = pending_forward_info {
-			if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
-				let mut acceptable_cycle = false;
-				if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
-					acceptable_cycle = short_channel_id == 0;
-				}
-				if !acceptable_cycle {
-					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
-					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret.unwrap(), 0x4000 | 0x2000 | 2, &[0;0]),
-					}));
-				} else {
-					will_forward = true;
-				}
-			} else {
-				will_forward = true;
-			}
-		}
-
-		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
-			Some(chan) => {
-				if chan.get_their_node_id() != *their_node_id {
-					return Err(HandleError{err: "Got a message for a channel from the wrong node!", action: None})
-				}
-				if !chan.is_usable() {
-					return Err(HandleError{err: "Channel not yet available for receiving HTLCs", action: None});
-				}
-				let short_channel_id = chan.get_short_channel_id().unwrap();
-				if let PendingHTLCStatus::Forward(ref mut forward_info) = pending_forward_info {
-					forward_info.prev_short_channel_id = short_channel_id;
-				}
-				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info)?)
-			},
-			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}),
-		};
-
-		if will_forward {
-			match claimable_htlcs_entry {
-				hash_map::Entry::Occupied(mut e) => {
-					let outbound_route = e.get_mut();
-					let (route, session_priv) = match outbound_route {
-						&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-							(route.clone(), session_priv.clone())
-						},
-						_ => unreachable!(),
-					};
-					*outbound_route = PendingOutboundHTLC::CycledRoute {
-						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret.unwrap(),
-						route,
-						session_priv,
-					};
-				},
-				hash_map::Entry::Vacant(e) => {
-					e.insert(PendingOutboundHTLC::IntermediaryHopData {
-						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret.unwrap(),
-					});
-				}
-			}
-		}
-
-		Ok(res)
+		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
