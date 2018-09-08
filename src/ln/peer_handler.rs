@@ -445,6 +445,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												if msg.local_features.requires_unknown_bits() {
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
+												if peer.their_global_features.is_some() {
+													return Err(PeerHandleError{ no_connection_possible: false });
+												}
 												peer.their_global_features = Some(msg.global_features);
 												peer.their_local_features = Some(msg.local_features);
 
