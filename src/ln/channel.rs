@@ -203,6 +203,13 @@ enum HTLCUpdateAwaitingACK {
 	},
 }
 
+/// There are a few "states" and then a number of flags which can be applied:
+/// We first move through init with OurInitSent -> TheirInitSent -> FundingCreated -> FundingSent.
+/// TheirFundingLocked and OurFundingLocked then get set on FundingSent, and when both are set we
+/// move on to ChannelFunded.
+/// Note that PeerDisconnected can be set on both ChannelFunded and FundingSent.
+/// ChannelFunded can then get all remaining flags set on it, until we finish shutdown, then we
+/// move on to ShutdownComplete, at which point most calls into this channel are disallowed.
 enum ChannelState {
 	/// Implies we have (or are prepared to) send our open_channel/accept_channel message
 	OurInitSent = (1 << 0),
@@ -223,25 +230,29 @@ enum ChannelState {
 	/// Once both TheirFundingLocked and OurFundingLocked are set, state moves on to ChannelFunded.
 	OurFundingLocked = (1 << 5),
 	ChannelFunded = 64,
+	/// Flag which is set on ChannelFunded and FundingSent indicating remote side is considered
+	/// "disconnected" and no updates are allowed until after we've done a channel_reestablish
+	/// dance.
+	PeerDisconnected = (1 << 7),
 	/// Flag which implies that we have sent a commitment_signed but are awaiting the responding
 	/// revoke_and_ack message. During this time period, we can't generate new commitment_signed
 	/// messages as then we will be unable to determine which HTLCs they included in their
 	/// revoke_and_ack implicit ACK, so instead we have to hold them away temporarily to be sent
 	/// later.
 	/// Flag is set on ChannelFunded.
-	AwaitingRemoteRevoke = (1 << 7),
+	AwaitingRemoteRevoke = (1 << 8),
 	/// Flag which is set on ChannelFunded or FundingSent after receiving a shutdown message from
 	/// the remote end. If set, they may not add any new HTLCs to the channel, and we are expected
 	/// to respond with our own shutdown message when possible.
-	RemoteShutdownSent = (1 << 8),
+	RemoteShutdownSent = (1 << 9),
 	/// Flag which is set on ChannelFunded or FundingSent after sending a shutdown message. At this
 	/// point, we may not add any new HTLCs to the channel.
 	/// TODO: Investigate some kind of timeout mechanism by which point the remote end must provide
 	/// us their shutdown.
-	LocalShutdownSent = (1 << 9),
+	LocalShutdownSent = (1 << 10),
 	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
 	/// to drop us, but we store this anyway.
-	ShutdownComplete = (1 << 10),
+	ShutdownComplete = 2048,
 }
 const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32);
 
@@ -1061,7 +1072,7 @@ impl Channel {
 		// can claim it even if the channel hits the chain before we see their next commitment.
 		self.channel_monitor.provide_payment_preimage(&payment_hash_calc, &payment_preimage_arg);
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32)) != 0 {
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
@@ -1137,7 +1148,7 @@ impl Channel {
 		}
 
 		// Now update local state:
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32)) != 0 {
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
@@ -1354,12 +1365,23 @@ impl Channel {
 	}
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent funding_locked when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent funding_locked when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 		let non_shutdown_state = self.channel_state & (!BOTH_SIDES_SHUTDOWN_MASK);
 		if non_shutdown_state == ChannelState::FundingSent as u32 {
 			self.channel_state |= ChannelState::TheirFundingLocked as u32;
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
 			self.channel_update_count += 1;
+		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
+				self.cur_local_commitment_transaction_number == (1 << 48) - 2 &&
+				self.cur_remote_commitment_transaction_number == (1 << 48) - 2 {
+			if self.their_cur_commitment_point != Some(msg.next_per_commitment_point) {
+				return Err(HandleError{err: "Peer sent a reconnect funding_locked with a different point", action: None});
+			}
+			// They probably disconnected/reconnected and re-sent the funding_locked, which is required
+			return Ok(());
 		} else {
 			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", action: None});
 		}
@@ -1410,6 +1432,9 @@ impl Channel {
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
+		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent update_add_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_add_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
 		}
 		if msg.amount_msat > self.channel_value_satoshis * 1000 {
 			return Err(HandleError{err: "Remote side tried to send more than the total value of the channel", action: None});
@@ -1489,6 +1514,9 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent update_fulfill_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 
 		let mut sha = Sha256::new();
 		sha.input(&msg.payment_preimage);
@@ -1502,6 +1530,9 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent update_fail_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fail_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
@@ -1510,6 +1541,9 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
 		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent update_fail_malformed_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fail_malformed_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
@@ -1517,6 +1551,9 @@ impl Channel {
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got commitment signed message when channel was not in an operational state", action: None});
+		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent commitment_signed when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent commitment_signed when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
 		}
 
 		let funding_script = self.get_funding_redeemscript();
@@ -1680,6 +1717,9 @@ impl Channel {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", action: None});
 		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent revoke_and_ack when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent revoke_and_ack when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
 			if PublicKey::from_secret_key(&self.secp_ctx, &secp_call!(SecretKey::from_slice(&self.secp_ctx, &msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret", self.channel_id())) != their_prev_commitment_point {
 				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", action: None});
@@ -1789,6 +1829,7 @@ impl Channel {
 	pub fn remove_uncommitted_htlcs(&mut self) -> Vec<(HTLCSource, [u8; 32])> {
 		let mut outbound_drops = Vec::new();
 
+		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 		if self.channel_state < ChannelState::FundingSent as u32 {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
 			return outbound_drops;
@@ -1845,6 +1886,9 @@ impl Channel {
 		if self.channel_outbound {
 			return Err(HandleError{err: "Non-funding remote tried to update channel fee", action: None});
 		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent update_fee when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fee when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.channel_update_count += 1;
 		self.feerate_per_kw = msg.feerate_per_kw as u64;
@@ -1852,6 +1896,9 @@ impl Channel {
 	}
 
 	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), HandleError> {
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent shutdown when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent shutdown when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
 		if self.channel_state < ChannelState::FundingSent as u32 {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
 			self.channel_update_count += 1;
@@ -1951,6 +1998,9 @@ impl Channel {
 	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), HandleError> {
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
 			return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", action: None});
+		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Peer sent closing_signed when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent closing_signed when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
 		}
 		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
 			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", action: None});
@@ -2128,7 +2178,7 @@ impl Channel {
 	/// is_usable() and considers things like the channel being temporarily disabled.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_live(&self) -> bool {
-		self.is_usable()
+		self.is_usable() && (self.channel_state & (ChannelState::PeerDisconnected as u32) == 0)
 	}
 
 	/// Returns true if funding_created was sent/received.
@@ -2428,6 +2478,16 @@ impl Channel {
 			return Err(HandleError{err: "Cannot send less than their minimum HTLC value", action: None});
 		}
 
+		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
+			// Note that this should never really happen, if we're !is_live() on receipt of an
+			// incoming HTLC for relay will result in us rejecting the HTLC and we won't allow
+			// the user to send directly into a !is_live() channel. However, if we
+			// disconnected during the time the previous hop was doing the commitment dance we may
+			// end up getting here after the forwarding delay. In any case, returning an
+			// IgnoreError will get ChannelManager to do the right thing and fail backwards now.
+			return Err(HandleError{err: "Cannot send an HTLC while disconnected", action: Some(ErrorAction::IgnoreError)});
+		}
+
 		let (_, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(false);
 		if outbound_htlc_count + 1 > self.their_max_accepted_htlcs as u32 {
 			return Err(HandleError{err: "Cannot push more than their max accepted HTLCs", action: None});
@@ -2491,6 +2551,9 @@ impl Channel {
 		}
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
 			panic!("Cannot create commitment tx until remote revokes their previous commitment");
+		}
+		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
+			panic!("Cannot create commitment tx while disconnected, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
 		let mut have_updates = false; // TODO initialize with "have we sent a fee update?"
 		for htlc in self.pending_outbound_htlcs.iter() {
@@ -2585,6 +2648,9 @@ impl Channel {
 			return Err(HandleError{err: "Shutdown already in progress", action: None});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(HandleError{err: "Cannot begin shutdown while peer is disconnected, maybe force-close instead?", action: None});
+		}
 
 		let our_closing_script = self.get_closing_scriptpubkey();
 
