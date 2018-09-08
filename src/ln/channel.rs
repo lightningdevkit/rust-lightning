@@ -2390,12 +2390,13 @@ impl Channel {
 	/// Creates a signed commitment transaction to send to the remote peer.
 	/// Always returns a Channel-failing HandleError::action if an immediately-preceding (read: the
 	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
+	/// May panic if called except immediately after a successful, Ok(Some(_))-returning send_htlc.
 	pub fn send_commitment(&mut self) -> Result<(msgs::CommitmentSigned, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Cannot create commitment tx until channel is fully established", action: None});
+			panic!("Cannot create commitment tx until channel is fully established");
 		}
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
-			return Err(HandleError{err: "Cannot create commitment tx until remote revokes their previous commitment", action: None});
+			panic!("Cannot create commitment tx until remote revokes their previous commitment");
 		}
 		let mut have_updates = false; // TODO initialize with "have we sent a fee update?"
 		for htlc in self.pending_htlcs.iter() {
@@ -2405,7 +2406,7 @@ impl Channel {
 			if have_updates { break; }
 		}
 		if !have_updates {
-			return Err(HandleError{err: "Cannot create commitment tx until we have some updates to send", action: None});
+			panic!("Cannot create commitment tx until we have some updates to send");
 		}
 		self.send_commitment_no_status_check()
 	}
