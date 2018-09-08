@@ -147,7 +147,12 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	/// completed and we are sure the remote peer has the private key for the given node_id.
 	pub fn get_peer_node_ids(&self) -> Vec<PublicKey> {
 		let peers = self.peers.lock().unwrap();
-		peers.peers.values().filter_map(|p| p.their_node_id).collect()
+		peers.peers.values().filter_map(|p| {
+			if !p.channel_encryptor.is_ready_for_encryption() || p.their_global_features.is_none() {
+				return None;
+			}
+			p.their_node_id
+		}).collect()
 	}
 
 	/// Indicates a new outbound connection has been established to a node with the given node_id.
