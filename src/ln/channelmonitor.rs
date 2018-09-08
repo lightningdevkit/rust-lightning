@@ -46,10 +46,11 @@ pub enum ChannelMonitorUpdateErr {
 /// channel's monitor everywhere (including remote watchtowers) *before* this function returns. If
 /// an update occurs and a remote watchtower is left with old state, it may broadcast transactions
 /// which we have revoked, allowing our counterparty to claim all funds in the channel!
-/// A call to add_update_monitor is needed to register outpoint and its txid with ChainWatchInterface 
-/// after setting funding_txo in a ChannelMonitor
 pub trait ManyChannelMonitor: Send + Sync {
 	/// Adds or updates a monitor for the given `funding_txo`.
+	/// Implementor must also ensure that the funding_txo outpoint is registered with any relevant
+	/// ChainWatchInterfaces such that the provided monitor receives block_connected callbacks with
+	/// any spends of it.
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
@@ -471,7 +472,7 @@ impl ChannelMonitor {
 	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
 	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
 	/// provides slightly better privacy.
-	/// It's the responsability of the caller to register outpoint and script with passing the former
+	/// It's the responsibility of the caller to register outpoint and script with passing the former
 	/// value as key to add_update_monitor.
 	pub(super) fn set_funding_info(&mut self, funding_info: (OutPoint, Script)) {
 		self.funding_txo = Some(funding_info);
