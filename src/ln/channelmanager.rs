@@ -1902,7 +1902,27 @@ impl ChannelManager {
 		Ok(())
 	}
 
-
+	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>), MsgHandleErrInternal> {
+		let (res, chan_monitor) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
+			match channel_state.by_id.get_mut(&msg.channel_id) {
+				Some(chan) => {
+					if chan.get_their_node_id() != *their_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					}
+					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor) = chan.channel_reestablish(msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					(Ok((funding_locked, revoke_and_ack, commitment_update)), channel_monitor)
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			}
+		};
+		if let Some(monitor) = chan_monitor {
+			if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+				unimplemented!();
+			}
+		}
+		res
+	}
 }
 
 impl events::EventsProvider for ChannelManager {
@@ -2124,7 +2144,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>), HandleError> {
-		Ok((None, None, None))
+		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), their_node_id)
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
@@ -2156,7 +2176,7 @@ impl ChannelMessageHandler for ChannelManager {
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
 						//TODO: mark channel disabled (and maybe announce such after a timeout).
-						let failed_adds = chan.remove_uncommitted_htlcs();
+						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused();
 						if !failed_adds.is_empty() {
 							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 							failed_payments.push((chan_update, failed_adds));
@@ -2188,8 +2208,25 @@ impl ChannelMessageHandler for ChannelManager {
 		}
 	}
 
-	fn peer_connected(&self, _their_node_id: &PublicKey) -> Vec<msgs::ChannelReestablish> {
-		Vec::new()
+	fn peer_connected(&self, their_node_id: &PublicKey) -> Vec<msgs::ChannelReestablish> {
+		let mut res = Vec::new();
+		let mut channel_state = self.channel_state.lock().unwrap();
+		channel_state.by_id.retain(|_, chan| {
+			if chan.get_their_node_id() == *their_node_id {
+				if !chan.have_received_message() {
+					// If we created this (outbound) channel while we were disconnected from the
+					// peer we probably failed to send the open_channel message, which is now
+					// lost. We can't have had anything pending related to this channel, so we just
+					// drop it.
+					false
+				} else {
+					res.push(chan.get_channel_reestablish());
+					true
+				}
+			} else { true }
+		});
+		//TODO: Also re-broadcast announcement_signatures
+		res
 	}
 
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {

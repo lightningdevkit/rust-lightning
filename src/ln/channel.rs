@@ -1826,7 +1826,9 @@ impl Channel {
 	/// HTLCs that we intended to add but haven't as we were waiting on a remote revoke.
 	/// Returns the set of PendingHTLCStatuses from remote uncommitted HTLCs (which we're
 	/// implicitly dropping) and the payment_hashes of HTLCs we tried to add but are dropping.
-	pub fn remove_uncommitted_htlcs(&mut self) -> Vec<(HTLCSource, [u8; 32])> {
+	/// No further message handling calls may be made until a channel_reestablish dance has
+	/// completed.
+	pub fn remove_uncommitted_htlcs_and_mark_paused(&mut self) -> Vec<(HTLCSource, [u8; 32])> {
 		let mut outbound_drops = Vec::new();
 
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
@@ -1835,12 +1837,14 @@ impl Channel {
 			return outbound_drops;
 		}
 
+		let mut inbound_drop_count = 0;
 		self.pending_inbound_htlcs.retain(|htlc| {
 			match htlc.state {
 				InboundHTLCState::RemoteAnnounced => {
 					// They sent us an update_add_htlc but we never got the commitment_signed.
 					// We'll tell them what commitment_signed we're expecting next and they'll drop
 					// this HTLC accordingly
+					inbound_drop_count += 1;
 					false
 				},
 				InboundHTLCState::AwaitingRemoteRevokeToAnnounce|InboundHTLCState::AwaitingAnnouncedRemoteRevoke => {
@@ -1879,6 +1883,8 @@ impl Channel {
 				&HTLCUpdateAwaitingACK::ClaimHTLC {..} | &HTLCUpdateAwaitingACK::FailHTLC {..} => true,
 			}
 		});
+		self.channel_state |= ChannelState::PeerDisconnected as u32;
+		log_debug!(self, "Peer disconnection resulted in {} remote-announced HTLC drops and {} waiting-to-locally-announced HTLC drops on channel {}", outbound_drops.len(), inbound_drop_count, log_bytes!(self.channel_id()));
 		outbound_drops
 	}
 
@@ -1893,6 +1899,83 @@ impl Channel {
 		self.channel_update_count += 1;
 		self.feerate_per_kw = msg.feerate_per_kw as u64;
 		Ok(())
+	}
+
+	/// May panic if some calls other than message-handling calls (which will all Err immediately)
+	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
+	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>), HandleError> {
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
+			return Err(HandleError{err: "Peer sent a loose channel_reestablish not after reconnect", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent a loose channel_reestablish not after reconnect".to_string(), channel_id: msg.channel_id}})});
+		}
+
+		if msg.next_local_commitment_number == 0 || msg.next_local_commitment_number >= 0xffffffffffff ||
+				msg.next_remote_commitment_number == 0 || msg.next_remote_commitment_number >= 0xffffffffffff {
+			return Err(HandleError{err: "Peer send garbage channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer send garbage channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
+
+		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
+		// remaining cases either succeed or ErrorMessage-fail).
+		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
+
+		let mut required_revoke = None;
+		if msg.next_remote_commitment_number == 0xffffffffffff - self.cur_local_commitment_transaction_number {
+		} else if msg.next_remote_commitment_number == 0xfffffffffffe - self.cur_local_commitment_transaction_number {
+			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
+			let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number + 2);
+			required_revoke = Some(msgs::RevokeAndACK {
+				channel_id: self.channel_id,
+				per_commitment_secret,
+				next_per_commitment_point,
+			});
+		} else {
+			return Err(HandleError{err: "Peer attempted to reestablish channel with a very old local commitment transaction", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer attempted to reestablish channel with a very old remote commitment transaction".to_string(), channel_id: msg.channel_id}})});
+		}
+
+		if msg.next_local_commitment_number == 0xffffffffffff - self.cur_remote_commitment_transaction_number {
+			if msg.next_remote_commitment_number == 0xffffffffffff - self.cur_local_commitment_transaction_number {
+				log_debug!(self, "Reconnected channel {} with no lost commitment txn", log_bytes!(self.channel_id()));
+				if msg.next_local_commitment_number == 1 && msg.next_remote_commitment_number == 1 {
+					let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+					let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+					return Ok((Some(msgs::FundingLocked {
+						channel_id: self.channel_id(),
+						next_per_commitment_point: next_per_commitment_point,
+					}), None, None, None));
+				}
+			}
+
+			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+				// We're up-to-date and not waiting on a remote revoke (if we are our
+				// channel_reestablish should result in them sending a revoke_and_ack), but we may
+				// have received some updates while we were disconnected. Free the holding cell
+				// now!
+				match self.free_holding_cell_htlcs() {
+					Err(e) => {
+						if let &Some(msgs::ErrorAction::DisconnectPeer{msg: Some(_)}) = &e.action {
+						} else if let &Some(msgs::ErrorAction::SendErrorMessage{msg: _}) = &e.action {
+						} else {
+							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
+						}
+						return Err(e);
+					},
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((None, required_revoke, Some(commitment_update), Some(channel_monitor))),
+					Ok(None) => return Ok((None, required_revoke, None, None)),
+				}
+			} else {
+				return Ok((None, required_revoke, None, None));
+			}
+		} else if msg.next_local_commitment_number == 0xfffffffffffe - self.cur_remote_commitment_transaction_number {
+			return Ok((None, required_revoke,
+					Some(msgs::CommitmentUpdate {
+						update_add_htlcs: Vec::new(),
+						update_fulfill_htlcs: Vec::new(),
+						update_fail_htlcs: Vec::new(),
+						update_fail_malformed_htlcs: Vec::new(),
+						commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
+					}), None));
+		} else {
+			return Err(HandleError{err: "Peer attempted to reestablish channel with a very old remote commitment transaction", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer attempted to reestablish channel with a very old remote commitment transaction".to_string(), channel_id: msg.channel_id}})});
+		}
 	}
 
 	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), HandleError> {
@@ -2165,6 +2248,11 @@ impl Channel {
 		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
 
 		res as u32
+	}
+
+	/// Returns true if we've ever received a message from the remote end for this Channel
+	pub fn have_received_message(&self) -> bool {
+		self.channel_state > (ChannelState::OurInitSent as u32)
 	}
 
 	/// Returns true if this channel is fully established and not known to be closing.
@@ -2455,6 +2543,18 @@ impl Channel {
 		let sig = self.secp_ctx.sign(&msghash, &self.local_keys.funding_key);
 
 		Ok((msg, sig))
+	}
+
+	/// May panic if called on a channel that wasn't immediately-previously
+	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
+	pub fn get_channel_reestablish(&self) -> msgs::ChannelReestablish {
+		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
+		msgs::ChannelReestablish {
+			channel_id: self.channel_id(),
+			next_local_commitment_number: 0xffffffffffff - self.cur_local_commitment_transaction_number,
+			next_remote_commitment_number: 0xffffffffffff - self.cur_remote_commitment_transaction_number,
+			data_loss_protect: None,
+		}
 	}
 
 
