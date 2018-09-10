@@ -668,17 +668,17 @@ impl MsgEncodable for Pong {
 
 impl MsgDecodable for OpenChannel {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError> {
-		if v.len() < 2*32+6*8+4+2*2+6*33+1 {
+		if v.len() < 2*32+6*8+4+2*2+6*33+1+2 {
 			return Err(DecodeError::ShortRead);
 		}
 		let ctx = Secp256k1::without_caps();
 
+		let len = byte_utils::slice_to_be16(&v[319..321]) as usize;
+		if v.len() < 321+len {
+			return Err(DecodeError::ShortRead);
+		}
 		let mut shutdown_scriptpubkey = None;
-		if v.len() >= 321 {
-			let len = byte_utils::slice_to_be16(&v[319..321]) as usize;
-			if v.len() < 321+len {
-				return Err(DecodeError::ShortRead);
-			}
+		if len > 0 {
 			shutdown_scriptpubkey = Some(Script::from(v[321..321+len].to_vec()));
 		}
 		let mut temp_channel_id = [0; 32];
@@ -710,7 +710,7 @@ impl MsgEncodable for OpenChannel {
 	fn encode(&self) -> Vec<u8> {
 		let mut res = match &self.shutdown_scriptpubkey {
 			&Some(ref script) => Vec::with_capacity(319 + 2 + script.len()),
-			&None => Vec::with_capacity(319),
+			&None => Vec::with_capacity(319 + 2),
 		};
 		res.extend_from_slice(&serialize(&self.chain_hash).unwrap());
 		res.extend_from_slice(&serialize(&self.temporary_channel_id).unwrap());
@@ -733,6 +733,9 @@ impl MsgEncodable for OpenChannel {
 		if let &Some(ref script) = &self.shutdown_scriptpubkey {
 			res.extend_from_slice(&byte_utils::be16_to_array(script.len() as u16));
 			res.extend_from_slice(&script[..]);
+		}
+		else {
+			res.extend_from_slice(&byte_utils::be16_to_array(0u16));
 		}
 		res
 	}
