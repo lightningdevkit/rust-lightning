@@ -1,7 +1,7 @@
 use secp256k1::key::{SecretKey,PublicKey};
 
 use ln::msgs;
-use ln::msgs::{MsgEncodable,MsgDecodable};
+use util::ser::{Writer, Reader, Writeable, Readable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use util::byte_utils;
 use util::events::{EventsProvider,Event};
@@ -113,15 +113,15 @@ pub struct PeerManager<Descriptor: SocketDescriptor> {
 }
 
 macro_rules! encode_msg {
-	($msg: expr, $msg_code: expr) => {
-		{
-			let just_msg = $msg.encode();
-			let mut encoded_msg = Vec::with_capacity(just_msg.len() + 2);
-			encoded_msg.extend_from_slice(&byte_utils::be16_to_array($msg_code));
-			encoded_msg.extend_from_slice(&just_msg[..]);
-			encoded_msg
-		}
-	}
+	($msg: expr, $msg_code: expr) => {{
+		let mut w = Writer::new(::std::io::Cursor::new(vec![]));
+		0u16.write(&mut w).unwrap();
+		$msg.write(&mut w).unwrap();
+		let mut msg = w.into_inner().into_inner();
+		let len = msg.len();
+		msg[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
+		msg
+	}}
 }
 
 //TODO: Really should do something smarter for this
@@ -365,7 +365,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::Io(_) => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::InvalidValue => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::InvalidLength => return Err(PeerHandleError{ no_connection_possible: false }),
 											}
 										}
 									};
@@ -438,10 +437,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Need an init message as first message
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}
+										let mut reader = Reader::new(::std::io::Cursor::new(&msg_data[2..]));
 										match msg_type {
 											// Connection control:
 											16 => {
-												let msg = try_potential_decodeerror!(msgs::Init::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::Init::read(&mut reader));
 												if msg.global_features.requires_unknown_bits() {
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
@@ -467,7 +467,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											17 => {
-												let msg = try_potential_decodeerror!(msgs::ErrorMessage::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::ErrorMessage::read(&mut reader));
 												let mut data_is_printable = true;
 												for b in msg.data.bytes() {
 													if b < 32 || b > 126 {
@@ -488,38 +488,38 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 
 											18 => {
-												let msg = try_potential_decodeerror!(msgs::Ping::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::Ping::read(&mut reader));
 												if msg.ponglen < 65532 {
 													let resp = msgs::Pong { byteslen: msg.ponglen };
 													encode_and_send_msg!(resp, 19);
 												}
 											},
 											19 => {
-												try_potential_decodeerror!(msgs::Pong::decode(&msg_data[2..]));
+												try_potential_decodeerror!(msgs::Pong::read(&mut reader));
 											},
 
 											// Channel control:
 											32 => {
-												let msg = try_potential_decodeerror!(msgs::OpenChannel::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
 												let resp = try_potential_handleerror!(self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), &msg));
 												encode_and_send_msg!(resp, 33);
 											},
 											33 => {
-												let msg = try_potential_decodeerror!(msgs::AcceptChannel::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::AcceptChannel::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), &msg));
 											},
 
 											34 => {
-												let msg = try_potential_decodeerror!(msgs::FundingCreated::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::FundingCreated::read(&mut reader));
 												let resp = try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg));
 												encode_and_send_msg!(resp, 35);
 											},
 											35 => {
-												let msg = try_potential_decodeerror!(msgs::FundingSigned::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::FundingSigned::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_signed(&peer.their_node_id.unwrap(), &msg));
 											},
 											36 => {
-												let msg = try_potential_decodeerror!(msgs::FundingLocked::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::FundingLocked::read(&mut reader));
 												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg));
 												match resp_option {
 													Some(resp) => encode_and_send_msg!(resp, 259),
@@ -528,7 +528,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 
 											38 => {
-												let msg = try_potential_decodeerror!(msgs::Shutdown::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::Shutdown::read(&mut reader));
 												let resp_options = try_potential_handleerror!(self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg));
 												if let Some(resp) = resp_options.0 {
 													encode_and_send_msg!(resp, 38);
@@ -538,7 +538,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											39 => {
-												let msg = try_potential_decodeerror!(msgs::ClosingSigned::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::ClosingSigned::read(&mut reader));
 												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg));
 												if let Some(resp) = resp_option {
 													encode_and_send_msg!(resp, 39);
@@ -546,27 +546,27 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 
 											128 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateAddHTLC::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::UpdateAddHTLC::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 											130 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFulfillHTLC::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::UpdateFulfillHTLC::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 											131 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::read(&mut reader));
 												let chan_update = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
 												if let Some(update) = chan_update {
 													self.message_handler.route_handler.handle_htlc_fail_channel_update(&update);
 												}
 											},
 											135 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 
 											132 => {
-												let msg = try_potential_decodeerror!(msgs::CommitmentSigned::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::CommitmentSigned::read(&mut reader));
 												let resps = try_potential_handleerror!(self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg));
 												encode_and_send_msg!(resps.0, 133);
 												if let Some(resp) = resps.1 {
@@ -574,7 +574,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											133 => {
-												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::read(&mut reader));
 												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
 												match resp_option {
 													Some(resps) => {
@@ -593,18 +593,18 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											134 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFee::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::UpdateFee::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fee(&peer.their_node_id.unwrap(), &msg));
 											},
 											136 => { }, // TODO: channel_reestablish
 
 											// Routing control:
 											259 => {
-												let msg = try_potential_decodeerror!(msgs::AnnouncementSignatures::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::AnnouncementSignatures::read(&mut reader));
 												try_potential_handleerror!(self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg));
 											},
 											256 => {
-												let msg = try_potential_decodeerror!(msgs::ChannelAnnouncement::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::ChannelAnnouncement::read(&mut reader));
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_announcement(&msg));
 
 												if should_forward {
@@ -612,7 +612,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											257 => {
-												let msg = try_potential_decodeerror!(msgs::NodeAnnouncement::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::NodeAnnouncement::read(&mut reader));
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
 
 												if should_forward {
@@ -620,7 +620,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											258 => {
-												let msg = try_potential_decodeerror!(msgs::ChannelUpdate::decode(&msg_data[2..]));
+												let msg = try_potential_decodeerror!(msgs::ChannelUpdate::read(&mut reader));
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
 
 												if should_forward {
