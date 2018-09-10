@@ -39,6 +39,11 @@ pub fn be16_to_array(u: u16) -> [u8; 2] {
 	v
 }
 #[inline]
+pub fn be16_to_array_inplace(u: u16, v: &mut [u8]) {
+	v[0] = ((u >> 8*1) & 0xff) as u8;
+	v[1] = ((u >> 8*0) & 0xff) as u8;
+}
+#[inline]
 pub fn be32_to_array(u: u32) -> [u8; 4] {
 	let mut v = [0; 4];
 	v[0] = ((u >> 8*3) & 0xff) as u8;
