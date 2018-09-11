@@ -3089,9 +3089,11 @@ mod tests {
 
 	#[derive(PartialEq)]
 	enum HTLCType { NONE, TIMEOUT, SUCCESS }
-	fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction> {
+	#[derive(PartialEq)]
+	enum PenaltyType { NONE, HTLC }
+	fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction), commitment_tx: Option<Transaction>, revoked_tx: Option<Transaction>, has_htlc_tx: HTLCType, has_penalty_tx: PenaltyType) -> Vec<Transaction> {
 		let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert!(node_txn.len() >= if commitment_tx.is_some() { 0 } else { 1 } + if has_htlc_tx == HTLCType::NONE { 0 } else { 1 });
+		assert!(node_txn.len() >= if has_htlc_tx == HTLCType::NONE { 0 } else { 1 } + if has_penalty_tx == PenaltyType::NONE { 0 } else { 1 });
 
 		let mut res = Vec::with_capacity(2);
 
@@ -3107,7 +3109,9 @@ mod tests {
 				}
 			}
 		}
-		assert_eq!(res.len(), 1);
+		if !revoked_tx.is_some() && !(has_penalty_tx == PenaltyType::HTLC) {
+			assert_eq!(res.len(), 1);
+		}
 
 		if has_htlc_tx != HTLCType::NONE {
 			for tx in node_txn.iter() {
@@ -3125,6 +3129,20 @@ mod tests {
 				}
 			}
 			assert_eq!(res.len(), 2);
+		}
+
+		if has_penalty_tx == PenaltyType::HTLC {
+			let revoked_tx = revoked_tx.unwrap();
+			for tx in node_txn.iter() {
+				if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.txid() {
+					let mut funding_tx_map = HashMap::new();
+					funding_tx_map.insert(revoked_tx.txid(), revoked_tx.clone());
+					tx.verify(&funding_tx_map).unwrap();
+					res.push(tx.clone());
+					break;
+				}
+			}
+			assert_eq!(res.len(), 1);
 		}
 		node_txn.clear();
 		res
@@ -3203,10 +3221,10 @@ mod tests {
 		// Simple case with no pending HTLCs:
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), true);
 		{
-			let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
+			let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, None, HTLCType::NONE, PenaltyType::NONE);
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
-			test_txn_broadcast(&nodes[0], &chan_1, None, HTLCType::NONE);
+			test_txn_broadcast(&nodes[0], &chan_1, None, None, HTLCType::NONE, PenaltyType::NONE);
 		}
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -3218,10 +3236,10 @@ mod tests {
 		// Simple case of one pending HTLC to HTLC-Timeout
 		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), true);
 		{
-			let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
+			let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, None, HTLCType::TIMEOUT, PenaltyType::NONE);
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
-			test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::NONE);
+			test_txn_broadcast(&nodes[2], &chan_2, None, None, HTLCType::NONE, PenaltyType::NONE);
 		}
 		get_announce_close_broadcast_events(&nodes, 1, 2);
 		assert_eq!(nodes[1].node.list_channels().len(), 0);
@@ -3255,7 +3273,7 @@ mod tests {
 		// HTLC-Timeout and a nodes[3] claim against it (+ its own announces)
 		nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id(), true);
 		{
-			let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
+			let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, None, HTLCType::TIMEOUT, PenaltyType::NONE);
 
 			// Claim the payment on nodes[3], giving it knowledge of the preimage
 			claim_funds!(nodes[3], nodes[2], payment_preimage_1);
@@ -3280,9 +3298,9 @@ mod tests {
 				nodes[3].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
 
-			let node_txn = test_txn_broadcast(&nodes[3], &chan_4, None, HTLCType::TIMEOUT);
+			let node_txn = test_txn_broadcast(&nodes[3], &chan_4, None, None, HTLCType::TIMEOUT, PenaltyType::NONE);
 
-			// Claim the payment on nodes[3], giving it knowledge of the preimage
+			// Claim the payment on nodes[4], giving it knowledge of the preimage
 			claim_funds!(nodes[4], nodes[3], payment_preimage_2);
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -3292,7 +3310,7 @@ mod tests {
 				nodes[4].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
 
-			test_txn_broadcast(&nodes[4], &chan_4, None, HTLCType::SUCCESS);
+			test_txn_broadcast(&nodes[4], &chan_4, None, None, HTLCType::SUCCESS, PenaltyType::NONE);
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[4].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, TEST_FINAL_CLTV - 5);
@@ -3327,15 +3345,13 @@ mod tests {
 				node_txn[0].verify(&funding_tx_map).unwrap();
 				node_txn.swap_remove(0);
 			}
-			test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
+			test_txn_broadcast(&nodes[1], &chan_5, None, None, HTLCType::NONE, PenaltyType::NONE);
 
 			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-			let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
+			let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), None, HTLCType::TIMEOUT, PenaltyType::NONE);
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
-
-			//TODO: At this point nodes[1] should claim the revoked HTLC-Timeout output, but that's
-			//not yet implemented in ChannelMonitor
+			test_txn_broadcast(&nodes[1], &chan_5, None, Some(node_txn[1].clone()), HTLCType::NONE, PenaltyType::HTLC);
 		}
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
