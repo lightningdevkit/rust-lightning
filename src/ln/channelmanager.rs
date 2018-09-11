@@ -985,6 +985,9 @@ impl ChannelManager {
 				if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
 					return Err(HandleError{err: "Node ID mismatch on first hop!", action: None});
 				}
+				if !chan.is_live() {
+					return Err(HandleError{err: "Peer for first hop currently disconnected!", action: None});
+				}
 				chan.send_htlc_and_commit(htlc_msat, payment_hash, htlc_cltv, onion_packet)?
 			};
 
