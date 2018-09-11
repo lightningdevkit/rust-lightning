@@ -3061,6 +3061,32 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn duplicate_htlc_test() {
+		// Test that we accept duplicate payment_hash HTLCs across the network and that
+		// claiming/failing them are all separate and don't effect each other
+		let mut nodes = create_network(6);
+
+		// Create some initial channels to route via 3 to 4/5 from 0/1/2
+		create_announced_chan_between_nodes(&nodes, 0, 3);
+		create_announced_chan_between_nodes(&nodes, 1, 3);
+		create_announced_chan_between_nodes(&nodes, 2, 3);
+		create_announced_chan_between_nodes(&nodes, 3, 4);
+		create_announced_chan_between_nodes(&nodes, 3, 5);
+
+		let (payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], 1000000);
+
+		*nodes[0].network_payment_count.borrow_mut() -= 1;
+		assert_eq!(route_payment(&nodes[1], &vec!(&nodes[3])[..], 1000000).0, payment_preimage);
+
+		*nodes[0].network_payment_count.borrow_mut() -= 1;
+		assert_eq!(route_payment(&nodes[2], &vec!(&nodes[3], &nodes[5])[..], 1000000).0, payment_preimage);
+
+		claim_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], payment_preimage);
+		fail_payment(&nodes[2], &vec!(&nodes[3], &nodes[5])[..], payment_hash);
+		claim_payment(&nodes[1], &vec!(&nodes[3])[..], payment_preimage);
+	}
+
 	#[derive(PartialEq)]
 	enum HTLCType { NONE, TIMEOUT, SUCCESS }
 	fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction> {
