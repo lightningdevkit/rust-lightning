@@ -166,6 +166,7 @@ pub struct ChannelMonitor {
 	key_storage: KeyStorage,
 	delayed_payment_base_key: PublicKey,
 	their_htlc_base_key: Option<PublicKey>,
+	their_delayed_payment_base_key: Option<PublicKey>,
 	// first is the idx of the first of the two revocation points
 	their_cur_revocation_points: Option<(u64, PublicKey, Option<PublicKey>)>,
 
@@ -207,6 +208,7 @@ impl Clone for ChannelMonitor {
 			key_storage: self.key_storage.clone(),
 			delayed_payment_base_key: self.delayed_payment_base_key.clone(),
 			their_htlc_base_key: self.their_htlc_base_key.clone(),
+			their_delayed_payment_base_key: self.their_delayed_payment_base_key.clone(),
 			their_cur_revocation_points: self.their_cur_revocation_points.clone(),
 
 			our_to_self_delay: self.our_to_self_delay,
@@ -238,6 +240,7 @@ impl PartialEq for ChannelMonitor {
 			self.key_storage != other.key_storage ||
 			self.delayed_payment_base_key != other.delayed_payment_base_key ||
 			self.their_htlc_base_key != other.their_htlc_base_key ||
+			self.their_delayed_payment_base_key != other.their_delayed_payment_base_key ||
 			self.their_cur_revocation_points != other.their_cur_revocation_points ||
 			self.our_to_self_delay != other.our_to_self_delay ||
 			self.their_to_self_delay != other.their_to_self_delay ||
@@ -274,6 +277,7 @@ impl ChannelMonitor {
 			},
 			delayed_payment_base_key: delayed_payment_base_key.clone(),
 			their_htlc_base_key: None,
+			their_delayed_payment_base_key: None,
 			their_cur_revocation_points: None,
 
 			our_to_self_delay: our_to_self_delay,
@@ -478,8 +482,10 @@ impl ChannelMonitor {
 		self.funding_txo = Some(funding_info);
 	}
 
-	pub(super) fn set_their_htlc_base_key(&mut self, their_htlc_base_key: &PublicKey) {
+	/// We log these base keys at channel opening to being able to rebuild redeemscript in case of leaked revoked commit tx
+	pub(super) fn set_their_base_keys(&mut self, their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey) {
 		self.their_htlc_base_key = Some(their_htlc_base_key.clone());
+		self.their_delayed_payment_base_key = Some(their_delayed_payment_base_key.clone());
 	}
 
 	pub(super) fn set_their_to_self_delay(&mut self, their_to_self_delay: u16) {
@@ -531,6 +537,7 @@ impl ChannelMonitor {
 
 		res.extend_from_slice(&self.delayed_payment_base_key.serialize());
 		res.extend_from_slice(&self.their_htlc_base_key.as_ref().unwrap().serialize());
+		res.extend_from_slice(&self.their_delayed_payment_base_key.as_ref().unwrap().serialize());
 
 		match self.their_cur_revocation_points {
 			Some((idx, pubkey, second_option)) => {
@@ -705,6 +712,7 @@ impl ChannelMonitor {
 
 		let delayed_payment_base_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
 		let their_htlc_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
+		let their_delayed_payment_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
 
 		let their_cur_revocation_points = {
 			let first_idx = byte_utils::slice_to_be48(read_bytes!(6));
@@ -867,6 +875,7 @@ impl ChannelMonitor {
 			key_storage,
 			delayed_payment_base_key,
 			their_htlc_base_key,
+			their_delayed_payment_base_key,
 			their_cur_revocation_points,
 
 			our_to_self_delay,

@@ -570,7 +570,7 @@ impl Channel {
 		                                              &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key),
 		                                              &chan_keys.htlc_base_key,
 		                                              BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
-		channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
+		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
 
 		let mut chan = Channel {
@@ -1236,7 +1236,7 @@ impl Channel {
 		// max_accepted_htlcs too small
 		// dust_limit_satoshis too small
 
-		self.channel_monitor.set_their_htlc_base_key(&msg.htlc_basepoint);
+		self.channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
 		self.their_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
