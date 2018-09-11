@@ -1021,6 +1021,8 @@ impl Channel {
 		Ok(our_sig)
 	}
 
+	/// May return an IgnoreError, but should not, and will always return Ok(_) when
+	/// debug_assertions are turned on
 	fn get_update_fulfill_htlc(&mut self, htlc_id_arg: u64, payment_preimage_arg: [u8; 32]) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitor>), HandleError> {
 		// Either ChannelFunded got set (which means it wont bet unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -1040,14 +1042,17 @@ impl Channel {
 		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				assert_eq!(htlc.payment_hash, payment_hash_calc);
-				if htlc.state != InboundHTLCState::LocalRemoved {
-					pending_idx = idx;
-					break;
+				if htlc.state != InboundHTLCState::Committed {
+					debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
+					// Don't return in release mode here so that we can update channel_monitor
 				}
+				pending_idx = idx;
+				break;
 			}
 		}
 		if pending_idx == std::usize::MAX {
-			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: None});
+			debug_assert!(false, "Unable to find a pending HTLC which matched the given HTLC ID");
+			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: Some(msgs::ErrorAction::IgnoreError)});
 		}
 
 		// Now update local state:
@@ -1061,12 +1066,14 @@ impl Channel {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							debug_assert!(false, "Tried to fulfill an HTLC we already had a pending fulfill for");
 							return Ok((None, None));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: None});
+							debug_assert!(false, "Tried to fulfill an HTLC we already had a holding-cell failure on");
+							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: Some(msgs::ErrorAction::IgnoreError)});
 						}
 					},
 					_ => {}
@@ -1080,21 +1087,12 @@ impl Channel {
 
 		{
 			let htlc = &mut self.pending_inbound_htlcs[pending_idx];
-			if htlc.state == InboundHTLCState::Committed {
-				htlc.state = InboundHTLCState::LocalRemoved;
-				htlc.local_removed_fulfilled = true;
-			} else if htlc.state == InboundHTLCState::RemoteAnnounced || htlc.state == InboundHTLCState::AwaitingRemoteRevokeToAnnounce || htlc.state == InboundHTLCState::AwaitingAnnouncedRemoteRevoke {
-				// Theoretically we can hit this if we get the preimage on an HTLC prior to us
-				// having forwarded it to anyone. This implies that the sender is busted as someone
-				// else knows the preimage, but handling this case and implementing the logic to
-				// take their money would be a lot of (never-tested) code to handle a case that
-				// hopefully never happens. Instead, we make sure we get the preimage into the
-				// channel_monitor and pretend we didn't just see the preimage.
+			if htlc.state != InboundHTLCState::Committed {
+				debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
 				return Ok((None, Some(self.channel_monitor.clone())));
-			} else {
-				// LocalRemoved handled in the search loop
-				panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
 			}
+			htlc.state = InboundHTLCState::LocalRemoved;
+			htlc.local_removed_fulfilled = true;
 		}
 
 		Ok((Some(msgs::UpdateFulfillHTLC {
@@ -1115,11 +1113,28 @@ impl Channel {
 		}
 	}
 
+	/// May return an IgnoreError, but should not, and will always return Ok(_) when
+	/// debug_assertions are turned on
 	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
+
+		let mut pending_idx = std::usize::MAX;
+		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
+			if htlc.htlc_id == htlc_id_arg {
+				if htlc.state != InboundHTLCState::Committed {
+					debug_assert!(false, "Have an inbound HTLC we tried to fail before it was fully committed to");
+					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: Some(msgs::ErrorAction::IgnoreError)});
+				}
+				pending_idx = idx;
+			}
+		}
+		if pending_idx == std::usize::MAX {
+			debug_assert!(false, "Unable to find a pending HTLC which matched the given HTLC ID");
+			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: Some(msgs::ErrorAction::IgnoreError)});
+		}
 
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
@@ -1127,11 +1142,13 @@ impl Channel {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: None});
+							debug_assert!(false, "Unable to find a pending HTLC which matched the given HTLC ID");
+							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: Some(msgs::ErrorAction::IgnoreError)});
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							debug_assert!(false, "Tried to fail an HTLC that we already had a pending failure for");
 							return Ok(None);
 						}
 					},
@@ -1145,23 +1162,10 @@ impl Channel {
 			return Ok(None);
 		}
 
-		let mut htlc_amount_msat = 0;
-		for htlc in self.pending_inbound_htlcs.iter_mut() {
-			if htlc.htlc_id == htlc_id_arg {
-				if htlc.state == InboundHTLCState::Committed {
-					htlc.state = InboundHTLCState::LocalRemoved;
-				} else if htlc.state == InboundHTLCState::RemoteAnnounced {
-					panic!("Somehow forwarded HTLC prior to remote revocation!");
-				} else if htlc.state == InboundHTLCState::LocalRemoved {
-					return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: None});
-				} else {
-					panic!("Have an inbound HTLC when not awaiting remote revoke that had a garbage state");
-				}
-				htlc_amount_msat += htlc.amount_msat;
-			}
-		}
-		if htlc_amount_msat == 0 {
-			return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: None});
+		{
+			let htlc = &mut self.pending_inbound_htlcs[pending_idx];
+			htlc.state = InboundHTLCState::LocalRemoved;
+			htlc.local_removed_fulfilled = false;
 		}
 
 		Ok(Some(msgs::UpdateFailHTLC {
@@ -1617,7 +1621,10 @@ impl Channel {
 							match self.get_update_fulfill_htlc(htlc_id, payment_preimage) {
 								Ok(update_fulfill_msg_option) => update_fulfill_htlcs.push(update_fulfill_msg_option.0.unwrap()),
 								Err(e) => {
-									err = Some(e);
+									if let Some(msgs::ErrorAction::IgnoreError) = e.action {}
+									else {
+										panic!("Got a non-IgnoreError action trying to fulfill holding cell HTLC");
+									}
 								}
 							}
 						},
@@ -1625,7 +1632,10 @@ impl Channel {
 							match self.get_update_fail_htlc(htlc_id, err_packet.clone()) {
 								Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
 								Err(e) => {
-									err = Some(e);
+									if let Some(msgs::ErrorAction::IgnoreError) = e.action {}
+									else {
+										panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
+									}
 								}
 							}
 						},
@@ -1639,6 +1649,12 @@ impl Channel {
 			//fail it back the route, if its a temporary issue we can ignore it...
 			match err {
 				None => {
+					if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() {
+						// This should never actually happen and indicates we got some Errs back
+						// from update_fulfill_htlc/update_fail_htlc, but we handle it anyway in
+						// case there is some strange way to hit duplicate HTLC removes.
+						return Ok(None);
+					}
 					let (commitment_signed, monitor_update) = self.send_commitment_no_status_check()?;
 					Ok(Some((msgs::CommitmentUpdate {
 						update_add_htlcs,
