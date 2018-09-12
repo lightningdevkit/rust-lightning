@@ -1744,16 +1744,12 @@ impl<R: ::std::io::Read> Readable<R> for ChannelReestablish{
 			next_local_commitment_number: Readable::read(r)?,
 			next_remote_commitment_number: Readable::read(r)?,
 			data_loss_protect: {
-				let mut buf = [0; 32+33];
-				match r.read_exact(&mut buf) {
-					Ok(()) => Some(DataLossProtect {
-						your_last_per_commitment_secret: {
-							let mut a: [u8; 32] = Default::default();
-							a.copy_from_slice(&buf[..32]);
-							a
-						},
-						my_current_per_commitment_point: secp_pubkey!(&Secp256k1::without_caps(), &buf[32..]),
-					}),
+				match <[u8; 32] as Readable<R>>::read(r) {
+					Ok(your_last_per_commitment_secret) =>
+						Some(DataLossProtect {
+							your_last_per_commitment_secret,
+							my_current_per_commitment_point: Readable::read(r)?,
+						}),
 					Err(DecodeError::ShortRead) => None,
 					Err(e) => return Err(e)
 				}
@@ -1893,11 +1889,7 @@ impl<R: ::std::io::Read> Readable<R> for OnionPacket {
 				r.read_exact(&mut buf)?;
 				PublicKey::from_slice(&Secp256k1::without_caps(), &buf)
 			},
-			hop_data: {
-				let mut buf = [0u8;20*65];
-				r.read_exact(&mut buf)?;
-				buf
-			},
+			hop_data: Readable::read(r)?,
 			hmac: Readable::read(r)?,
 		})
 	}
