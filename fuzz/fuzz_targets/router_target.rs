@@ -8,10 +8,11 @@ use bitcoin::blockdata::script::{Script, Builder};
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface, ChainListener};
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
-use lightning::ln::msgs::{MsgDecodable, RoutingMessageHandler};
+use lightning::ln::msgs::{RoutingMessageHandler};
 use lightning::ln::router::{Router, RouteHint};
 use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
+use lightning::util::ser::{Reader, Readable};
 
 use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
@@ -119,8 +120,9 @@ pub fn do_test(data: &[u8]) {
 	}
 
 	macro_rules! decode_msg {
-		($MsgType: path, $len: expr) => {
-			match <($MsgType)>::decode(get_slice!($len)) {
+		($MsgType: path, $len: expr) => {{
+			let mut reader = Reader::new(::std::io::Cursor::new(get_slice!($len)));
+			match <($MsgType)>::read(&mut reader) {
 				Ok(msg) => msg,
 				Err(e) => match e {
 					msgs::DecodeError::UnknownRealmByte => return,
@@ -131,9 +133,11 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
+					msgs::DecodeError::InvalidValue => panic!("Should not happen with p2p message decoding"),
+					msgs::DecodeError::Io(e) => panic!(format!("{}", e)),
 				}
 			}
-		}
+		}}
 	}
 
 	macro_rules! decode_msg_with_len16 {
