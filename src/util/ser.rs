@@ -24,11 +24,10 @@ pub trait Writeable<W: Write> {
 
 pub trait Readable<R>
 	where Self: Sized,
-				R: Read
+	      R: Read
 {
 	fn read(reader: &mut Reader<R>) -> Result<Self, DecodeError>;
 }
-
 
 impl<W: Write> Writer<W> {
 	pub fn new(writer: W) -> Writer<W> {
@@ -157,12 +156,13 @@ macro_rules! impl_array {
 impl_array!(32); // for channel id & hmac
 impl_array!(33); // for PublicKey
 impl_array!(64); // for Signature
+impl_array!(1300); // for OnionPacket.hop_data
 
 // HashMap
 impl<W, K, V> Writeable<W> for HashMap<K, V>
 	where W: Write,
-		  K: Writeable<W> + Eq + Hash,
-		  V: Writeable<W>
+	      K: Writeable<W> + Eq + Hash,
+	      V: Writeable<W>
 {
 	#[inline]
 	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
@@ -177,8 +177,8 @@ impl<W, K, V> Writeable<W> for HashMap<K, V>
 
 impl<R, K, V> Readable<R> for HashMap<K, V>
 	where R: Read,
-				K: Readable<R> + Eq + Hash,
-				V: Readable<R>
+	      K: Readable<R> + Eq + Hash,
+	      V: Readable<R>
 {
 	#[inline]
 	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
@@ -196,10 +196,10 @@ impl<W: Write, T: Writeable<W>> Writeable<W> for Vec<T> {
 	#[inline]
 	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
 		let byte_size = (self.len() as usize)
-											.checked_mul(mem::size_of::<T>())
-											.ok_or(DecodeError::InvalidLength)?;
+		                .checked_mul(mem::size_of::<T>())
+		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
-				return Err(DecodeError::InvalidLength);
+				return Err(DecodeError::BadLengthDescriptor);
 		}
 		(self.len() as u16).write(w)?;
 		// performance with Vec<u8>
@@ -215,10 +215,10 @@ impl<R: Read, T: Readable<R>> Readable<R> for Vec<T> {
 	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
 			let len: u16 = Readable::read(r)?;
 			let byte_size = (len as usize)
-												.checked_mul(mem::size_of::<T>())
-												.ok_or(DecodeError::InvalidLength)?;
+			                .checked_mul(mem::size_of::<T>())
+			                .ok_or(DecodeError::BadLengthDescriptor)?;
 			if byte_size > MAX_BUF_SIZE {
-					return Err(DecodeError::InvalidLength);
+					return Err(DecodeError::BadLengthDescriptor);
 			}
 			let mut ret = Vec::with_capacity(len as usize);
 			for _ in 0..len { ret.push(T::read(r)?); }
@@ -243,9 +243,10 @@ impl<R: Read> Readable<R> for Script {
 
 impl<W: Write> Writeable<W> for Option<Script> {
 	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
-		Ok(if let &Some(ref script) = self {
+		if let &Some(ref script) = self {
 			script.write(w)?;
-		})
+		}
+		Ok(())
 	}
 }
 

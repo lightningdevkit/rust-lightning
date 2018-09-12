@@ -48,8 +48,6 @@ pub enum DecodeError {
 	Io(::std::io::Error),
 	/// Invalid value found when decoding
 	InvalidValue,
-	/// Data too big
-	InvalidLength,
 }
 pub trait MsgDecodable: Sized {
 	fn decode(v: &[u8]) -> Result<Self, DecodeError>;
@@ -528,7 +526,6 @@ impl Error for DecodeError {
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 			DecodeError::Io(ref e) => e.description(),
 			DecodeError::InvalidValue => "Invalid value in the bytes",
-			DecodeError::InvalidLength => "Data size is too big",
 		}
 	}
 }
