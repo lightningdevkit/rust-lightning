@@ -600,7 +600,7 @@ impl ChannelManager {
 	}
 
 	/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-	fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), HandleError> {
+	fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
 		let mut cur_value_msat = 0u64;
 		let mut cur_cltv = starting_htlc_offset;
 		let mut last_short_channel_id = 0;
@@ -625,11 +625,11 @@ impl ChannelManager {
 			};
 			cur_value_msat += hop.fee_msat;
 			if cur_value_msat >= 21000000 * 100000000 * 1000 {
-				return Err(HandleError{err: "Channel fees overflowed?!", action: None});
+				return Err(APIError::RouteError{err: "Channel fees overflowed?!"});
 			}
 			cur_cltv += hop.cltv_expiry_delta as u32;
 			if cur_cltv >= 500000000 {
-				return Err(HandleError{err: "Channel CLTV overflowed?!", action: None});
+				return Err(APIError::RouteError{err: "Channel CLTV overflowed?!"});
 			}
 			last_short_channel_id = hop.short_channel_id;
 		}
@@ -656,7 +656,7 @@ impl ChannelManager {
 	}
 
 	const ZERO:[u8; 21*65] = [0; 21*65];
-	fn construct_onion_packet(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, associated_data: &[u8; 32]) -> Result<msgs::OnionPacket, HandleError> {
+	fn construct_onion_packet(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, associated_data: &[u8; 32]) -> msgs::OnionPacket {
 		let mut buf = Vec::with_capacity(21*65);
 		buf.resize(21*65, 0);
 
@@ -697,12 +697,12 @@ impl ChannelManager {
 			hmac.raw_result(&mut hmac_res);
 		}
 
-		Ok(msgs::OnionPacket{
+		msgs::OnionPacket{
 			version: 0,
 			public_key: Ok(onion_keys.first().unwrap().ephemeral_pubkey),
 			hop_data: packet_data,
 			hmac: hmac_res,
-		})
+		}
 	}
 
 	/// Encrypts a failure packet. raw_packet can either be a
@@ -973,14 +973,16 @@ impl ChannelManager {
 	/// payment") and prevent double-sends yourself.
 	/// See-also docs on Channel::send_htlc_and_commit.
 	/// May generate a SendHTLCs event on success, which should be relayed.
-	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), HandleError> {
+	/// Raises APIError::RoutError when invalid route or forward parameter
+	/// (cltv_delta, fee, node public key) is specified
+	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), APIError> {
 		if route.hops.len() < 1 || route.hops.len() > 20 {
-			return Err(HandleError{err: "Route didn't go anywhere/had bogus size", action: None});
+			return Err(APIError::RouteError{err: "Route didn't go anywhere/had bogus size"});
 		}
 		let our_node_id = self.get_our_node_id();
 		for (idx, hop) in route.hops.iter().enumerate() {
 			if idx != route.hops.len() - 1 && hop.pubkey == our_node_id {
-				return Err(HandleError{err: "Route went through us but wasn't a simple rebalance loop to us", action: None});
+			return Err(APIError::RouteError{err: "Route went through us but wasn't a simple rebalance loop to us"});
 			}
 		}
 
@@ -992,34 +994,32 @@ impl ChannelManager {
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
-		//TODO: This should return something other than HandleError, that's really intended for
-		//p2p-returns only.
 		let onion_keys = secp_call!(ChannelManager::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
-				HandleError{err: "Pubkey along hop was maliciously selected", action: Some(msgs::ErrorAction::IgnoreError)});
+				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
-		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash)?;
+		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
 
 		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 
 			let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
-				None => return Err(HandleError{err: "No channel available with first hop!", action: None}),
-				Some(id) => id.clone()
+				None => return Err(APIError::RouteError{err: "No channel available with first hop!"}),
+				Some(id) => id.clone(),
 			};
 
 			let res = {
 				let chan = channel_state.by_id.get_mut(&id).unwrap();
 				if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
-					return Err(HandleError{err: "Node ID mismatch on first hop!", action: None});
+					return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
 				}
 				if !chan.is_live() {
-					return Err(HandleError{err: "Peer for first hop currently disconnected!", action: None});
+					return Err(APIError::RouteError{err: "Peer for first hop currently disconnected!"});
 				}
 				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 					route: route.clone(),
 					session_priv: session_priv.clone(),
-				}, onion_packet)?
+				}, onion_packet).map_err(|he| APIError::RouteError{err: he.err})?
 			};
 
 			let first_hop_node_id = route.hops.first().unwrap().pubkey;
