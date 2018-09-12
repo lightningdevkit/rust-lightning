@@ -36,16 +36,31 @@ use std::sync::{Mutex,MutexGuard,Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
 
+/// We hold various information about HTLC relay in the HTLC objects in Channel itself:
+///
+/// Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
+/// forward the HTLC with information it will give back to us when it does so, or if it should Fail
+/// the HTLC with the relevant message for the Channel to handle giving to the remote peer.
+///
+/// When a Channel forwards an HTLC to its peer, it will give us back the PendingForwardHTLCInfo
+/// which we will use to construct an outbound HTLC, with a relevant HTLCSource::PreviousHopData
+/// filled in to indicate where it came from (which we can use to either fail-backwards or fulfill
+/// the HTLC backwards along the relevant path).
+/// Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
+/// our payment, which we can use to decode errors or inform the user that the payment was sent.
 mod channel_held_info {
 	use ln::msgs;
+	use ln::router::Route;
+	use secp256k1::key::SecretKey;
+	use secp256k1::ecdh::SharedSecret;
 
 	/// Stores the info we will need to send when we want to forward an HTLC onwards
 	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 	pub struct PendingForwardHTLCInfo {
 		pub(super) onion_packet: Option<msgs::OnionPacket>,
+		pub(super) incoming_shared_secret: SharedSecret,
 		pub(super) payment_hash: [u8; 32],
 		pub(super) short_channel_id: u64,
-		pub(super) prev_short_channel_id: u64,
 		pub(super) amt_to_forward: u64,
 		pub(super) outgoing_cltv_value: u32,
 	}
@@ -66,14 +81,44 @@ mod channel_held_info {
 	#[cfg(feature = "fuzztarget")]
 	impl PendingHTLCStatus {
 		pub fn dummy() -> Self {
+			let secp_ctx = ::secp256k1::Secp256k1::signing_only();
 			PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
 				onion_packet: None,
+				incoming_shared_secret: SharedSecret::new(&secp_ctx,
+						&::secp256k1::key::PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[1; 32]).unwrap()),
+						&SecretKey::from_slice(&secp_ctx, &[1; 32]).unwrap()),
 				payment_hash: [0; 32],
 				short_channel_id: 0,
-				prev_short_channel_id: 0,
 				amt_to_forward: 0,
 				outgoing_cltv_value: 0,
 			})
+		}
+	}
+
+	/// Tracks the inbound corresponding to an outbound HTLC
+	#[derive(Clone)]
+	pub struct HTLCPreviousHopData {
+		pub(super) short_channel_id: u64,
+		pub(super) htlc_id: u64,
+		pub(super) incoming_packet_shared_secret: SharedSecret,
+	}
+
+	/// Tracks the inbound corresponding to an outbound HTLC
+	#[derive(Clone)]
+	pub enum HTLCSource {
+		PreviousHopData(HTLCPreviousHopData),
+		OutboundRoute {
+			route: Route,
+			session_priv: SecretKey,
+		},
+	}
+	#[cfg(any(test, feature = "fuzztarget"))]
+	impl HTLCSource {
+		pub fn dummy() -> Self {
+			HTLCSource::OutboundRoute {
+				route: Route { hops: Vec::new() },
+				session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
+			}
 		}
 	}
 
@@ -101,24 +146,6 @@ mod channel_held_info {
 pub use self::channel_held_info::*;
 #[cfg(not(feature = "fuzztarget"))]
 pub(crate) use self::channel_held_info::*;
-
-enum PendingOutboundHTLC {
-	IntermediaryHopData {
-		source_short_channel_id: u64,
-		incoming_packet_shared_secret: SharedSecret,
-	},
-	OutboundRoute {
-		route: Route,
-		session_priv: SecretKey,
-	},
-	/// Used for channel rebalancing
-	CycledRoute {
-		source_short_channel_id: u64,
-		incoming_packet_shared_secret: SharedSecret,
-		route: Route,
-		session_priv: SecretKey,
-	}
-}
 
 struct MsgHandleErrInternal {
 	err: msgs::HandleError,
@@ -171,6 +198,12 @@ impl MsgHandleErrInternal {
 /// probably increase this significantly.
 const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u32 = 50;
 
+struct HTLCForwardInfo {
+	prev_short_channel_id: u64,
+	prev_htlc_id: u64,
+	forward_info: PendingForwardHTLCInfo,
+}
+
 struct ChannelHolder {
 	by_id: HashMap<[u8; 32], Channel>,
 	short_to_id: HashMap<u64, [u8; 32]>,
@@ -179,18 +212,18 @@ struct ChannelHolder {
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about there existing a channel with the short id here, nor the short
 	/// ids in the PendingForwardHTLCInfo!
-	forward_htlcs: HashMap<u64, Vec<PendingForwardHTLCInfo>>,
+	forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	claimable_htlcs: HashMap<[u8; 32], PendingOutboundHTLC>,
+	claimable_htlcs: HashMap<[u8; 32], Vec<HTLCPreviousHopData>>,
 }
 struct MutChannelHolder<'a> {
 	by_id: &'a mut HashMap<[u8; 32], Channel>,
 	short_to_id: &'a mut HashMap<u64, [u8; 32]>,
 	next_forward: &'a mut Instant,
-	forward_htlcs: &'a mut HashMap<u64, Vec<PendingForwardHTLCInfo>>,
-	claimable_htlcs: &'a mut HashMap<[u8; 32], PendingOutboundHTLC>,
+	forward_htlcs: &'a mut HashMap<u64, Vec<HTLCForwardInfo>>,
+	claimable_htlcs: &'a mut HashMap<[u8; 32], Vec<HTLCPreviousHopData>>,
 }
 impl ChannelHolder {
 	fn borrow_parts(&mut self) -> MutChannelHolder {
@@ -392,7 +425,7 @@ impl ChannelManager {
 	/// pending HTLCs, the channel will be closed on chain.
 	/// May generate a SendShutdown event on success, which should be relayed.
 	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), HandleError> {
-		let (res, node_id, chan_option) = {
+		let (mut res, node_id, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 			match channel_state.by_id.entry(channel_id.clone()) {
@@ -408,9 +441,9 @@ impl ChannelManager {
 				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", action: None})
 			}
 		};
-		for payment_hash in res.1 {
+		for htlc_source in res.1.drain(..) {
 			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 		}
 		let chan_update = if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
@@ -433,11 +466,11 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn finish_force_close_channel(&self, shutdown_res: (Vec<Transaction>, Vec<[u8; 32]>)) {
-		let (local_txn, failed_htlcs) = shutdown_res;
-		for payment_hash in failed_htlcs {
+	fn finish_force_close_channel(&self, shutdown_res: (Vec<Transaction>, Vec<(HTLCSource, [u8; 32])>)) {
+		let (local_txn, mut failed_htlcs) = shutdown_res;
+		for htlc_source in failed_htlcs.drain(..) {
 			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 		}
 		for tx in local_txn {
 			self.tx_broadcaster.broadcast_transaction(&tx);
@@ -722,7 +755,7 @@ impl ChannelManager {
 		ChannelManager::encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 	}
 
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, Option<SharedSecret>, MutexGuard<ChannelHolder>) {
+	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder>) {
 		macro_rules! get_onion_hash {
 			() => {
 				{
@@ -742,7 +775,7 @@ impl ChannelManager {
 				htlc_id: msg.htlc_id,
 				sha256_of_onion: get_onion_hash!(),
 				failure_code: 0x8000 | 0x4000 | 6,
-			})), None, self.channel_state.lock().unwrap());
+			})), self.channel_state.lock().unwrap());
 		}
 
 		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key);
@@ -760,7 +793,7 @@ impl ChannelManager {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
-					})), Some(shared_secret), channel_state.unwrap());
+					})), channel_state.unwrap());
 				}
 			}
 		}
@@ -818,7 +851,7 @@ impl ChannelManager {
 					onion_packet: None,
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
-					prev_short_channel_id: 0,
+					incoming_shared_secret: shared_secret.clone(),
 					amt_to_forward: next_hop_data.data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
 				})
@@ -858,7 +891,7 @@ impl ChannelManager {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: next_hop_data.data.short_channel_id,
-					prev_short_channel_id: 0,
+					incoming_shared_secret: shared_secret.clone(),
 					amt_to_forward: next_hop_data.data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
 				})
@@ -896,7 +929,7 @@ impl ChannelManager {
 			}
 		}
 
-		(pending_forward_info, Some(shared_secret), channel_state.unwrap())
+		(pending_forward_info, channel_state.unwrap())
 	}
 
 	/// only fails if the channel does not yet have an assigned short_id
@@ -975,11 +1008,6 @@ impl ChannelManager {
 				Some(id) => id.clone()
 			};
 
-			let claimable_htlc_entry = channel_state.claimable_htlcs.entry(payment_hash.clone());
-			if let hash_map::Entry::Occupied(_) = claimable_htlc_entry {
-				return Err(HandleError{err: "Already had pending HTLC with the same payment_hash", action: None});
-			}
-
 			let res = {
 				let chan = channel_state.by_id.get_mut(&id).unwrap();
 				if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
@@ -988,15 +1016,13 @@ impl ChannelManager {
 				if !chan.is_live() {
 					return Err(HandleError{err: "Peer for first hop currently disconnected!", action: None});
 				}
-				chan.send_htlc_and_commit(htlc_msat, payment_hash, htlc_cltv, onion_packet)?
+				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
+					route: route.clone(),
+					session_priv: session_priv.clone(),
+				}, onion_packet)?
 			};
 
 			let first_hop_node_id = route.hops.first().unwrap().pubkey;
-
-			claimable_htlc_entry.or_insert(PendingOutboundHTLC::OutboundRoute {
-				route,
-				session_priv,
-			});
 
 			match res {
 				Some(msgs) => (first_hop_node_id, msgs),
@@ -1005,7 +1031,7 @@ impl ChannelManager {
 		};
 
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!(); // maybe remove from claimable_htlcs?
+			unimplemented!();
 		}
 
 		let mut events = self.pending_events.lock().unwrap();
@@ -1060,7 +1086,7 @@ impl ChannelManager {
 			}
 		}; // Release channel lock for install_watch_outpoint call,
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!(); // maybe remove from claimable_htlcs?
+			unimplemented!();
 		}
 		add_pending_event!(events::Event::SendFundingCreated {
 			node_id: chan.get_their_node_id(),
@@ -1110,14 +1136,19 @@ impl ChannelManager {
 				return;
 			}
 
-			for (short_chan_id, pending_forwards) in channel_state.forward_htlcs.drain() {
+			for (short_chan_id, mut pending_forwards) in channel_state.forward_htlcs.drain() {
 				if short_chan_id != 0 {
 					let forward_chan_id = match channel_state.short_to_id.get(&short_chan_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => {
 							failed_forwards.reserve(pending_forwards.len());
-							for forward_info in pending_forwards {
-								failed_forwards.push((forward_info.payment_hash, 0x4000 | 10, None));
+							for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
+								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+									short_channel_id: prev_short_channel_id,
+									htlc_id: prev_htlc_id,
+									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+								});
+								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
 							}
 							continue;
 						}
@@ -1125,11 +1156,16 @@ impl ChannelManager {
 					let forward_chan = &mut channel_state.by_id.get_mut(&forward_chan_id).unwrap();
 
 					let mut add_htlc_msgs = Vec::new();
-					for forward_info in pending_forwards {
-						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, forward_info.onion_packet.unwrap()) {
+					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
+						let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+							short_channel_id: prev_short_channel_id,
+							htlc_id: prev_htlc_id,
+							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+						});
+						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
 							Err(_e) => {
 								let chan_update = self.get_channel_update(forward_chan).unwrap();
-								failed_forwards.push((forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
+								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
 								continue;
 							},
 							Ok(update_add) => {
@@ -1174,7 +1210,16 @@ impl ChannelManager {
 						}));
 					}
 				} else {
-					for forward_info in pending_forwards {
+					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
+						let prev_hop_data = HTLCPreviousHopData {
+							short_channel_id: prev_short_channel_id,
+							htlc_id: prev_htlc_id,
+							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+						};
+						match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
+							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
+							hash_map::Entry::Vacant(mut entry) => { entry.insert(vec![prev_hop_data]); },
+						};
 						new_events.push((None, events::Event::PaymentReceived {
 							payment_hash: forward_info.payment_hash,
 							amt: forward_info.amt_to_forward,
@@ -1184,10 +1229,10 @@ impl ChannelManager {
 			}
 		}
 
-		for failed_forward in failed_forwards.drain(..) {
-			match failed_forward.2 {
-				None => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: Vec::new() }),
-				Some(chan_update) => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failed_forward.0, HTLCFailReason::Reason { failure_code: failed_forward.1, data: chan_update.encode_with_len() }),
+		for (htlc_source, payment_hash, failure_code, update) in failed_forwards.drain(..) {
+			match update {
+				None => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code, data: Vec::new() }),
+				Some(chan_update) => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code, data: chan_update.encode_with_len() }),
 			};
 		}
 
@@ -1211,7 +1256,15 @@ impl ChannelManager {
 
 	/// Indicates that the preimage for payment_hash is unknown after a PaymentReceived event.
 	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32]) -> bool {
-		self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: Vec::new() })
+		let mut channel_state = Some(self.channel_state.lock().unwrap());
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
+		if let Some(mut sources) = removed_source {
+			for htlc_with_hash in sources.drain(..) {
+				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
+				self.fail_htlc_backwards_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: Vec::new() });
+			}
+			true
+		} else { false }
 	}
 
 	/// Fails an HTLC backwards to the sender of it to us.
@@ -1220,37 +1273,17 @@ impl ChannelManager {
 	/// to fail and take the channel_state lock for each iteration (as we take ownership and may
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
-	fn fail_htlc_backwards_internal(&self, mut channel_state: MutexGuard<ChannelHolder>, payment_hash: &[u8; 32], onion_error: HTLCFailReason) -> bool {
-		let mut pending_htlc = {
-			match channel_state.claimable_htlcs.remove(payment_hash) {
-				Some(pending_htlc) => pending_htlc,
-				None => return false,
-			}
-		};
-
-		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { source_short_channel_id, incoming_packet_shared_secret, route, session_priv } => {
-				channel_state.claimable_htlcs.insert(payment_hash.clone(), PendingOutboundHTLC::OutboundRoute {
-					route,
-					session_priv,
-				});
-				pending_htlc = PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret };
-			},
-			_ => {}
-		}
-
-		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { .. } => unreachable!(),
-			PendingOutboundHTLC::OutboundRoute { .. } => {
+	fn fail_htlc_backwards_internal(&self, mut channel_state: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &[u8; 32], onion_error: HTLCFailReason) {
+		match source {
+			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state);
 
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push(events::Event::PaymentFailed {
 					payment_hash: payment_hash.clone()
 				});
-				false
 			},
-			PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret } => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
 						let packet = ChannelManager::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
@@ -1262,17 +1295,17 @@ impl ChannelManager {
 				};
 
 				let (node_id, fail_msgs) = {
-					let chan_id = match channel_state.short_to_id.get(&source_short_channel_id) {
+					let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
-						None => return false
+						None => return
 					};
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-					match chan.get_update_fail_htlc_and_commit(payment_hash, err_packet) {
+					match chan.get_update_fail_htlc_and_commit(htlc_id, err_packet) {
 						Ok(msg) => (chan.get_their_node_id(), msg),
 						Err(_e) => {
 							//TODO: Do something with e?
-							return false;
+							return;
 						},
 					}
 				};
@@ -1299,8 +1332,6 @@ impl ChannelManager {
 					},
 					None => {},
 				}
-
-				true
 			},
 		}
 	}
@@ -1310,69 +1341,51 @@ impl ChannelManager {
 	/// should probably kick the net layer to go send messages if this returns true!
 	/// May panic if called except in response to a PaymentReceived event.
 	pub fn claim_funds(&self, payment_preimage: [u8; 32]) -> bool {
-		self.claim_funds_internal(payment_preimage, true)
-	}
-	fn claim_funds_internal(&self, payment_preimage: [u8; 32], from_user: bool) -> bool {
 		let mut sha = Sha256::new();
 		sha.input(&payment_preimage);
 		let mut payment_hash = [0; 32];
 		sha.result(&mut payment_hash);
 
-		let mut channel_state = self.channel_state.lock().unwrap();
-		let mut pending_htlc = {
-			match channel_state.claimable_htlcs.remove(&payment_hash) {
-				Some(pending_htlc) => pending_htlc,
-				None => return false,
+		let mut channel_state = Some(self.channel_state.lock().unwrap());
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
+		if let Some(mut sources) = removed_source {
+			for htlc_with_hash in sources.drain(..) {
+				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
+				self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_preimage);
 			}
-		};
-
-		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { source_short_channel_id, incoming_packet_shared_secret, route, session_priv } => {
-				if from_user { // This was the end hop back to us
-					pending_htlc = PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret };
-					channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::OutboundRoute { route, session_priv });
-				} else { // This came from the first upstream node
-					// Bank error in our favor! Maybe we should tell the user this somehow???
-					pending_htlc = PendingOutboundHTLC::OutboundRoute { route, session_priv };
-					channel_state.claimable_htlcs.insert(payment_hash, PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, incoming_packet_shared_secret });
-				}
-			},
-			_ => {},
-		}
-
-		match pending_htlc {
-			PendingOutboundHTLC::CycledRoute { .. } => unreachable!(),
-			PendingOutboundHTLC::OutboundRoute { .. } => {
-				if from_user {
-					panic!("Called claim_funds with a preimage for an outgoing payment. There is nothing we can do with this, and something is seriously wrong if you knew this...");
-				}
+			true
+		} else { false }
+	}
+	fn claim_funds_internal(&self, mut channel_state: MutexGuard<ChannelHolder>, source: HTLCSource, payment_preimage: [u8; 32]) {
+		match source {
+			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state);
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push(events::Event::PaymentSent {
 					payment_preimage
 				});
-				false
 			},
-			PendingOutboundHTLC::IntermediaryHopData { source_short_channel_id, .. } => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, .. }) => {
+				//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 				let (node_id, fulfill_msgs) = {
-					let chan_id = match channel_state.short_to_id.get(&source_short_channel_id) {
+					let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => {
 							// TODO: There is probably a channel manager somewhere that needs to
 							// learn the preimage as the channel already hit the chain and that's
 							// why its missing.
-							return false
+							return
 						}
 					};
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-					match chan.get_update_fulfill_htlc_and_commit(payment_preimage) {
+					match chan.get_update_fulfill_htlc_and_commit(htlc_id, payment_preimage) {
 						Ok(msg) => (chan.get_their_node_id(), msg),
 						Err(_e) => {
 							// TODO: There is probably a channel manager somewhere that needs to
 							// learn the preimage as the channel may be about to hit the chain.
 							//TODO: Do something with e?
-							return false;
+							return
 						},
 					}
 				};
@@ -1397,7 +1410,6 @@ impl ChannelManager {
 						}
 					});
 				}
-				true
 			},
 		}
 	}
@@ -1556,7 +1568,7 @@ impl ChannelManager {
 	}
 
 	fn internal_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), MsgHandleErrInternal> {
-		let (res, chan_option) = {
+		let (mut res, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 
@@ -1577,9 +1589,9 @@ impl ChannelManager {
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
 		};
-		for payment_hash in res.2 {
+		for htlc_source in res.2.drain(..) {
 			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 		}
 		if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
@@ -1642,38 +1654,10 @@ impl ChannelManager {
 		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let (mut pending_forward_info, shared_secret, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = channel_state_lock.borrow_parts();
 
-		let claimable_htlcs_entry = channel_state.claimable_htlcs.entry(msg.payment_hash.clone());
-
-		// We dont correctly handle payments that route through us twice on their way to their
-		// destination. That's OK since those nodes are probably busted or trying to do network
-		// mapping through repeated loops. In either case, we want them to stop talking to us, so
-		// we send permanent_node_failure.
-		let mut will_forward = false;
-		if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { short_channel_id, .. }) = pending_forward_info {
-			if let &hash_map::Entry::Occupied(ref e) = &claimable_htlcs_entry {
-				let mut acceptable_cycle = false;
-				if let &PendingOutboundHTLC::OutboundRoute { .. } = e.get() {
-					acceptable_cycle = short_channel_id == 0;
-				}
-				if !acceptable_cycle {
-					log_info!(self, "Failed to accept incoming HTLC: Payment looped through us twice");
-					pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-						channel_id: msg.channel_id,
-						htlc_id: msg.htlc_id,
-						reason: ChannelManager::build_first_hop_failure_packet(&shared_secret.unwrap(), 0x4000 | 0x2000 | 2, &[0;0]),
-					}));
-				} else {
-					will_forward = true;
-				}
-			} else {
-				will_forward = true;
-			}
-		}
-
-		let (source_short_channel_id, res) = match channel_state.by_id.get_mut(&msg.channel_id) {
+		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					//TODO: here MsgHandleErrInternal, #153 case
@@ -1682,66 +1666,31 @@ impl ChannelManager {
 				if !chan.is_usable() {
 					return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Channel not yet available for receiving HTLCs", action: Some(msgs::ErrorAction::IgnoreError)}));
 				}
-				let short_channel_id = chan.get_short_channel_id().unwrap();
-				if let PendingHTLCStatus::Forward(ref mut forward_info) = pending_forward_info {
-					forward_info.prev_short_channel_id = short_channel_id;
-				}
-				(short_channel_id, chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?)
+				chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
-		};
-
-		if will_forward {
-			match claimable_htlcs_entry {
-				hash_map::Entry::Occupied(mut e) => {
-					let outbound_route = e.get_mut();
-					let (route, session_priv) = match outbound_route {
-						&mut PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-							(route.clone(), session_priv.clone())
-						},
-						_ => unreachable!(),
-					};
-					*outbound_route = PendingOutboundHTLC::CycledRoute {
-						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret.unwrap(),
-						route,
-						session_priv,
-					};
-				},
-				hash_map::Entry::Vacant(e) => {
-					e.insert(PendingOutboundHTLC::IntermediaryHopData {
-						source_short_channel_id,
-						incoming_packet_shared_secret: shared_secret.unwrap(),
-					});
-				}
-			}
 		}
-
-		Ok(res)
 	}
 
 	fn internal_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
-		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
-		// Claim funds first, cause we don't really care if the channel we received the message on
-		// is broken, we may have enough info to get our own money!
-		self.claim_funds_internal(msg.payment_preimage.clone(), false);
-
 		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.get_mut(&msg.channel_id) {
+		let htlc_source = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.update_fulfill_htlc(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+				chan.update_fulfill_htlc(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?.clone()
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
-		}
+		};
+		self.claim_funds_internal(channel_state, htlc_source, msg.payment_preimage.clone());
+		Ok(())
 	}
 
 	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, MsgHandleErrInternal> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let payment_hash = match channel_state.by_id.get_mut(&msg.channel_id) {
+		let htlc_source = match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					//TODO: here and below MsgHandleErrInternal, #153 case
@@ -1752,66 +1701,62 @@ impl ChannelManager {
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}?;
 
-		if let Some(pending_htlc) = channel_state.claimable_htlcs.get(&payment_hash) {
-			match pending_htlc {
-				&PendingOutboundHTLC::OutboundRoute { ref route, ref session_priv } => {
-					// Handle packed channel/node updates for passing back for the route handler
-					let mut packet_decrypted = msg.reason.data.clone();
-					let mut res = None;
-					Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
-						if res.is_some() { return; }
+		match htlc_source {
+			&HTLCSource::OutboundRoute { ref route, ref session_priv, .. } => {
+				// Handle packed channel/node updates for passing back for the route handler
+				let mut packet_decrypted = msg.reason.data.clone();
+				let mut res = None;
+				Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
+					if res.is_some() { return; }
 
-						let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+					let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
 
-						let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-						decryption_tmp.resize(packet_decrypted.len(), 0);
-						let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-						chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-						packet_decrypted = decryption_tmp;
+					let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
+					decryption_tmp.resize(packet_decrypted.len(), 0);
+					let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+					chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
+					packet_decrypted = decryption_tmp;
 
-						if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
-							if err_packet.failuremsg.len() >= 2 {
-								let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+					if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
+						if err_packet.failuremsg.len() >= 2 {
+							let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
 
-								let mut hmac = Hmac::new(Sha256::new(), &um);
-								hmac.input(&err_packet.encode()[32..]);
-								let mut calc_tag = [0u8; 32];
-								hmac.raw_result(&mut calc_tag);
-								if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
-									const UNKNOWN_CHAN: u16 = 0x4000|10;
-									const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
-									match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
-										TEMP_CHAN_FAILURE => {
-											if err_packet.failuremsg.len() >= 4 {
-												let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
-												if err_packet.failuremsg.len() >= 4 + update_len {
-													if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
-														res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
-															msg: chan_update,
-														});
-													}
+							let mut hmac = Hmac::new(Sha256::new(), &um);
+							hmac.input(&err_packet.encode()[32..]);
+							let mut calc_tag = [0u8; 32];
+							hmac.raw_result(&mut calc_tag);
+							if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
+								const UNKNOWN_CHAN: u16 = 0x4000|10;
+								const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
+								match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
+									TEMP_CHAN_FAILURE => {
+										if err_packet.failuremsg.len() >= 4 {
+											let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
+											if err_packet.failuremsg.len() >= 4 + update_len {
+												if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
+													res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
+														msg: chan_update,
+													});
 												}
 											}
-										},
-										UNKNOWN_CHAN => {
-											// No such next-hop. We know this came from the
-											// current node as the HMAC validated.
-											res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-												short_channel_id: route_hop.short_channel_id
-											});
-										},
-										_ => {}, //TODO: Enumerate all of these!
-									}
+										}
+									},
+									UNKNOWN_CHAN => {
+										// No such next-hop. We know this came from the
+										// current node as the HMAC validated.
+										res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
+											short_channel_id: route_hop.short_channel_id
+										});
+									},
+									_ => {}, //TODO: Enumerate all of these!
 								}
 							}
 						}
-					}).unwrap();
-					Ok(res)
-				},
-				_ => { Ok(None) },
-			}
-		} else {
-			Ok(None)
+					}
+				}).unwrap();
+				Ok(res)
+			},
+			_ => { Ok(None) },
 		}
 	}
 
@@ -1823,7 +1768,8 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				Ok(())
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}
@@ -1851,7 +1797,7 @@ impl ChannelManager {
 	}
 
 	fn internal_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, MsgHandleErrInternal> {
-		let (res, mut pending_forwards, mut pending_failures, chan_monitor) = {
+		let ((res, mut pending_forwards, mut pending_failures, chan_monitor), short_channel_id) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -1859,7 +1805,7 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?
+					(chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?, chan.get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
@@ -1868,7 +1814,7 @@ impl ChannelManager {
 			unimplemented!();
 		}
 		for failure in pending_failures.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), &failure.0, failure.1);
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 		}
 
 		let mut forward_event = None;
@@ -1878,13 +1824,13 @@ impl ChannelManager {
 				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
 				channel_state.next_forward = forward_event.unwrap();
 			}
-			for forward_info in pending_forwards.drain(..) {
+			for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(forward_info);
+						entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id: short_channel_id, prev_htlc_id, forward_info });
 					},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(forward_info));
+						entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id: short_channel_id, prev_htlc_id, forward_info }));
 					}
 				}
 			}
@@ -2266,8 +2212,10 @@ mod tests {
 
 	use rand::{thread_rng,Rng};
 
+	use std::cell::RefCell;
 	use std::collections::HashMap;
 	use std::default::Default;
+	use std::rc::Rc;
 	use std::sync::{Arc, Mutex};
 	use std::time::Instant;
 	use std::mem;
@@ -2438,9 +2386,10 @@ mod tests {
 		chan_monitor: Arc<test_utils::TestChannelMonitor>,
 		node: Arc<ChannelManager>,
 		router: Router,
+		network_payment_count: Rc<RefCell<u8>>,
+		network_chan_count: Rc<RefCell<u32>>,
 	}
 
-	static mut CHAN_COUNT: u32 = 0;
 	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 10001, 42).unwrap();
 
@@ -2456,7 +2405,7 @@ mod tests {
 
 		node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_chan).unwrap();
 
-		let chan_id = unsafe { CHAN_COUNT };
+		let chan_id = *node_a.network_chan_count.borrow();
 		let tx;
 		let funding_output;
 
@@ -2562,9 +2511,7 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		unsafe {
-			CHAN_COUNT += 1;
-		}
+		*node_a.network_chan_count.borrow_mut() += 1;
 
 		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id, tx)
 	}
@@ -2666,10 +2613,9 @@ mod tests {
 		}
 	}
 
-	static mut PAYMENT_COUNT: u8 = 0;
 	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
-		let our_payment_preimage = unsafe { [PAYMENT_COUNT; 32] };
-		unsafe { PAYMENT_COUNT += 1 };
+		let our_payment_preimage = [*origin_node.network_payment_count.borrow(); 32];
+		*origin_node.network_payment_count.borrow_mut() += 1;
 		let our_payment_hash = {
 			let mut sha = Sha256::new();
 			sha.input(&our_payment_preimage[..]);
@@ -2861,8 +2807,8 @@ mod tests {
 			assert_eq!(hop.pubkey, node.node.get_our_node_id());
 		}
 
-		let our_payment_preimage = unsafe { [PAYMENT_COUNT; 32] };
-		unsafe { PAYMENT_COUNT += 1 };
+		let our_payment_preimage = [*origin_node.network_payment_count.borrow(); 32];
+		*origin_node.network_payment_count.borrow_mut() += 1;
 		let our_payment_hash = {
 			let mut sha = Sha256::new();
 			sha.input(&our_payment_preimage[..]);
@@ -2973,6 +2919,9 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 
+		let chan_count = Rc::new(RefCell::new(0));
+		let payment_count = Rc::new(RefCell::new(0));
+
 		for _ in 0..node_count {
 			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
@@ -2985,7 +2934,10 @@ mod tests {
 			};
 			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger)).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id), chain_monitor.clone(), Arc::clone(&logger));
-			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router });
+			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router,
+				network_payment_count: payment_count.clone(),
+				network_chan_count: chan_count.clone(),
+			});
 		}
 
 		nodes
@@ -3107,6 +3059,32 @@ mod tests {
 			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
 			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
 		}
+	}
+
+	#[test]
+	fn duplicate_htlc_test() {
+		// Test that we accept duplicate payment_hash HTLCs across the network and that
+		// claiming/failing them are all separate and don't effect each other
+		let mut nodes = create_network(6);
+
+		// Create some initial channels to route via 3 to 4/5 from 0/1/2
+		create_announced_chan_between_nodes(&nodes, 0, 3);
+		create_announced_chan_between_nodes(&nodes, 1, 3);
+		create_announced_chan_between_nodes(&nodes, 2, 3);
+		create_announced_chan_between_nodes(&nodes, 3, 4);
+		create_announced_chan_between_nodes(&nodes, 3, 5);
+
+		let (payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], 1000000);
+
+		*nodes[0].network_payment_count.borrow_mut() -= 1;
+		assert_eq!(route_payment(&nodes[1], &vec!(&nodes[3])[..], 1000000).0, payment_preimage);
+
+		*nodes[0].network_payment_count.borrow_mut() -= 1;
+		assert_eq!(route_payment(&nodes[2], &vec!(&nodes[3], &nodes[5])[..], 1000000).0, payment_preimage);
+
+		claim_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], payment_preimage);
+		fail_payment(&nodes[2], &vec!(&nodes[3], &nodes[5])[..], payment_hash);
+		claim_payment(&nodes[1], &vec!(&nodes[3])[..], payment_preimage);
 	}
 
 	#[derive(PartialEq)]
