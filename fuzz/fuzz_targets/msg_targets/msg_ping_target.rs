@@ -3,16 +3,15 @@
 
 extern crate lightning;
 
+use lightning::ln::msgs;
 use lightning::util::reset_rng_state;
 
-use lightning::ln::msgs::{MsgEncodable, MsgDecodable, Ping};
+mod utils;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	if let Ok(msg) = Ping::decode(data) {
-		let _ = msg.encode();
-	}
+	test_msg_simple!(msgs::Ping, data);
 }
 
 #[cfg(feature = "afl")]

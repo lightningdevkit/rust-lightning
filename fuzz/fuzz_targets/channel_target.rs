@@ -10,11 +10,12 @@ use bitcoin::network::serialize::{serialize, BitcoinHash};
 use lightning::ln::channel::{Channel, ChannelKeys};
 use lightning::ln::channelmanager::{HTLCFailReason, PendingHTLCStatus};
 use lightning::ln::msgs;
-use lightning::ln::msgs::{MsgDecodable, ErrorAction};
+use lightning::ln::msgs::{ErrorAction};
 use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
 use lightning::chain::transaction::OutPoint;
 use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
+use lightning::util::ser::{Readable, Reader};
 
 mod utils;
 
@@ -119,8 +120,9 @@ pub fn do_test(data: &[u8]) {
 	}
 
 	macro_rules! decode_msg {
-		($MsgType: path, $len: expr) => {
-			match <($MsgType)>::decode(get_slice!($len)) {
+		($MsgType: path, $len: expr) => {{
+			let mut reader = Reader::new(::std::io::Cursor::new(get_slice!($len)));
+			match <($MsgType)>::read(&mut reader) {
 				Ok(msg) => msg,
 				Err(e) => match e {
 					msgs::DecodeError::UnknownRealmByte => return,
@@ -131,9 +133,11 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
+					msgs::DecodeError::InvalidValue => panic!("Should not happen with p2p message decoding"),
+					msgs::DecodeError::Io(e) => panic!(format!("{}", e)),
 				}
 			}
-		}
+		}}
 	}
 
 	macro_rules! decode_msg_with_len16 {
@@ -143,19 +147,7 @@ pub fn do_test(data: &[u8]) {
 					Some(slice) => slice,
 					None => return,
 				}[$begin_len..$begin_len + 2]);
-				match <($MsgType)>::decode(get_slice!($begin_len as usize + 2 + (extra_len as usize)*$factor)) {
-					Ok(msg) => msg,
-					Err(e) => match e {
-						msgs::DecodeError::UnknownRealmByte => return,
-						msgs::DecodeError::UnknownRequiredFeature => return,
-						msgs::DecodeError::BadPublicKey => return,
-						msgs::DecodeError::BadSignature => return,
-						msgs::DecodeError::BadText => return,
-						msgs::DecodeError::ExtraAddressesPerType => return,
-						msgs::DecodeError::BadLengthDescriptor => return,
-						msgs::DecodeError::ShortRead => panic!("We picked the length..."),
-					}
-				}
+				decode_msg!($MsgType, $begin_len as usize + 2 + (extra_len as usize)*$factor)
 			}
 		}
 	}
