@@ -118,7 +118,8 @@ macro_rules! encode_msg {
 		0u16.write(&mut w).unwrap();
 		$msg.write(&mut w).unwrap();
 		let mut msg = w.into_inner().into_inner();
-		byte_utils::be16_to_array_inplace(msg.len() as u16-2, &mut msg[..2]);
+		let len = msg.len();
+		msg[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
 		msg
 	}}
 }
