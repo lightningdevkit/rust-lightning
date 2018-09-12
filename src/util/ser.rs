@@ -124,29 +124,27 @@ impl_writeable_primitive!(u16, write_u16, read_u16);
 impl_writeable_primitive!(u8, write_u8, read_u8);
 impl_writeable_primitive!(bool, write_bool, read_bool);
 
-// Arrays
+// u8 arrays
 macro_rules! impl_array {
 	( $size:expr ) => (
-		impl<W, T> Writeable<W> for [T; $size]
-			where W: Write,
-						T: Writeable<W>,
+		impl<W> Writeable<W> for [u8; $size]
+			where W: Write
 		{
 			#[inline]
 			fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
-					for i in self.iter() { i.write(w)?; }
-					Ok(())
+				w.write_all(self)?;
+				Ok(())
 			}
 		}
 
-		impl<R, T> Readable<R> for [T; $size]
-			where R: Read,
-						T: Readable<R> + Copy,
+		impl<R> Readable<R> for [u8; $size]
+			where R: Read
 		{
 			#[inline]
 			fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
-				let mut ret = [T::read(r)?; $size];
-				for item in ret.iter_mut().take($size).skip(1) { *item = T::read(r)?; }
-				Ok(ret)
+				let mut buf = [0u8; $size];
+				r.read_exact(&mut buf)?;
+				Ok(buf)
 			}
 		}
 	);
