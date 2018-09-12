@@ -12,6 +12,7 @@ macro_rules! test_msg {
 				msg.write(&mut w).unwrap();
 
 				let buf = w.into_inner().into_inner();
+				assert_eq!(buf.len(), p);
 				assert_eq!(&r.into_inner().into_inner()[..p], &buf[..p]);
 			}
 		}
@@ -60,7 +61,7 @@ macro_rules! test_msg_hole {
 				let p = w.get_ref().position() as usize;
 
 				let buf = w.into_inner().into_inner();
-				eprintln!("buf({})", buf.len());
+				assert_eq!(buf.len(),p);
 				assert_eq!(&r.get_ref().get_ref()[..$hole], &buf[..$hole]);
 				assert_eq!(&r.get_ref().get_ref()[$hole+$hole_len..p], &buf[$hole+$hole_len..]);
 			}
