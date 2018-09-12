@@ -13,7 +13,7 @@ use ln::msgs::DecodeError;
 
 use util::byte_utils::{be64_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be64};
 
-const MAX_BUF_SIZE: usize = 16 * 1024;
+const MAX_BUF_SIZE: usize = 64 * 1024;
 
 pub struct Writer<W> { writer: W }
 pub struct Reader<R> { reader: R }
