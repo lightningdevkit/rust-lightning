@@ -183,7 +183,7 @@ impl<R, K, V> Readable<R> for HashMap<K, V>
 		let len: u16 = Readable::read(r)?;
 		let mut ret = HashMap::with_capacity(len as usize);
 		for _ in 0..len {
-				ret.insert(K::read(r)?, V::read(r)?);
+			ret.insert(K::read(r)?, V::read(r)?);
 		}
 		Ok(ret)
 	}
@@ -197,7 +197,7 @@ impl<W: Write, T: Writeable<W>> Writeable<W> for Vec<T> {
 		                .checked_mul(mem::size_of::<T>())
 		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
-				return Err(DecodeError::BadLengthDescriptor);
+			return Err(DecodeError::BadLengthDescriptor);
 		}
 		(self.len() as u16).write(w)?;
 		// performance with Vec<u8>
@@ -211,16 +211,16 @@ impl<W: Write, T: Writeable<W>> Writeable<W> for Vec<T> {
 impl<R: Read, T: Readable<R>> Readable<R> for Vec<T> {
 	#[inline]
 	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
-			let len: u16 = Readable::read(r)?;
-			let byte_size = (len as usize)
-			                .checked_mul(mem::size_of::<T>())
-			                .ok_or(DecodeError::BadLengthDescriptor)?;
-			if byte_size > MAX_BUF_SIZE {
-					return Err(DecodeError::BadLengthDescriptor);
-			}
-			let mut ret = Vec::with_capacity(len as usize);
-			for _ in 0..len { ret.push(T::read(r)?); }
-			Ok(ret)
+		let len: u16 = Readable::read(r)?;
+		let byte_size = (len as usize)
+		                .checked_mul(mem::size_of::<T>())
+		                .ok_or(DecodeError::BadLengthDescriptor)?;
+		if byte_size > MAX_BUF_SIZE {
+			return Err(DecodeError::BadLengthDescriptor);
+		}
+		let mut ret = Vec::with_capacity(len as usize);
+		for _ in 0..len { ret.push(T::read(r)?); }
+		Ok(ret)
 	}
 }
 
