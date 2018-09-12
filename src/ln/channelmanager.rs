@@ -28,6 +28,7 @@ use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
 use chain::keysinterface::KeysInterface;
+use util::configurations::UserConfig;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -320,14 +321,13 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// block_connected() to step towards your best block) upon deserialization before using the
 /// object!
 pub struct ChannelManager {
+	default_configuration : UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
 	monitor: Arc<ManyChannelMonitor>,
 	chain_monitor: Arc<ChainWatchInterface>,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
-	announce_channels_publicly: bool,
-	fee_proportional_millionths: u32,
 	latest_block_height: AtomicUsize,
 	last_block_hash: Mutex<Sha256dHash>,
 	secp_ctx: Secp256k1<secp256k1::All>,
@@ -411,22 +411,18 @@ impl ChannelManager {
 	/// This is the main "logic hub" for all channel-related actions, and implements
 	/// ChannelMessageHandler.
 	///
-	/// fee_proportional_millionths is an optional fee to charge any payments routed through us.
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, keys_manager: Arc<KeysInterface>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config : UserConfig) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
-
 		let res = Arc::new(ChannelManager {
+			default_configuration : config.clone(),
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: feeest.clone(),
 			monitor: monitor.clone(),
 			chain_monitor,
 			tx_broadcaster,
-
-			announce_channels_publicly,
-			fee_proportional_millionths,
 			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value
 			last_block_hash: Mutex::new(Default::default()),
 			secp_ctx,
@@ -465,7 +461,7 @@ impl ChannelManager {
 	///
 	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat being greater than channel_value_satoshis * 1k
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
-		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, self.announce_channels_publicly, user_id, Arc::clone(&self.logger))?;
+		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), &self.default_configuration)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator);
 
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -1071,7 +1067,7 @@ impl ChannelManager {
 					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
 						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
 					}
-					let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
+					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
 					}
@@ -1125,7 +1121,7 @@ impl ChannelManager {
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
 			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
 			fee_base_msat: chan.get_our_fee_base_msat(&*self.fee_estimator),
-			fee_proportional_millionths: self.fee_proportional_millionths,
+			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
 
@@ -1682,7 +1678,7 @@ impl ChannelManager {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))
+		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), msg, 0, Arc::clone(&self.logger), &self.default_configuration)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
@@ -1708,7 +1704,7 @@ impl ChannelManager {
 						//TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
-					chan.accept_channel(&msg)
+					chan.accept_channel(&msg, &self.default_configuration)
 						.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.temporary_channel_id))?;
 					(chan.get_value_satoshis(), chan.get_funding_redeemscript().to_v0_p2wsh(), chan.get_user_id())
 				},
@@ -2958,8 +2954,6 @@ impl Writeable for ChannelManager {
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
 
 		self.genesis_hash.write(writer)?;
-		self.announce_channels_publicly.write(writer)?;
-		self.fee_proportional_millionths.write(writer)?;
 		(self.latest_block_height.load(Ordering::Acquire) as u32).write(writer)?;
 		self.last_block_hash.lock().unwrap().write(writer)?;
 
@@ -3041,6 +3035,9 @@ pub struct ChannelManagerReadArgs<'a> {
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: Arc<Logger>,
+	/// This is the default settings used by the channel manager to open new channels
+	/// This also contoins the handshake limits used when accepting new channels
+	pub default_config : UserConfig,
 
 
 	/// A map from channel funding outpoints to ChannelMonitors for those channels (ie
@@ -3065,8 +3062,6 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 		}
 
 		let genesis_hash: Sha256dHash = Readable::read(reader)?;
-		let announce_channels_publicly: bool = Readable::read(reader)?;
-		let fee_proportional_millionths: u32 = Readable::read(reader)?;
 		let latest_block_height: u32 = Readable::read(reader)?;
 		let last_block_hash: Sha256dHash = Readable::read(reader)?;
 
@@ -3138,9 +3133,6 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			monitor: args.monitor,
 			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
-
-			announce_channels_publicly,
-			fee_proportional_millionths,
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),
 			last_block_hash: Mutex::new(last_block_hash),
 			secp_ctx: Secp256k1::new(),
@@ -3159,6 +3151,7 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			total_consistency_lock: RwLock::new(()),
 			keys_manager: args.keys_manager,
 			logger: args.logger,
+			default_configuration : args.default_config,
 		};
 
 		for close_res in closed_channels.drain(..) {
@@ -3188,6 +3181,7 @@ mod tests {
 	use util::errors::APIError;
 	use util::logger::Logger;
 	use util::ser::{Writeable, Writer, ReadableArgs};
+	use util::configurations::{UserConfig};
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -4036,6 +4030,8 @@ mod tests {
 	}
 
 	fn create_network(node_count: usize) -> Vec<Node> {
+		use util::configurations::UserConfig;
+
 		let mut nodes = Vec::new();
 		let mut rng = thread_rng();
 		let secp_ctx = Secp256k1::new();
@@ -4052,7 +4048,9 @@ mod tests {
 			rng.fill_bytes(&mut seed);
 			let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)));
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
-			let node = ChannelManager::new(0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
+			let mut config = UserConfig::new();
+			config.channel_options.announced_channel = true;
+			config.channel_limits.force_announced_channel_preference = false;let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), config).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
 			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, node_seed: seed,
 				network_payment_count: payment_count.clone(),
@@ -6887,11 +6885,13 @@ mod tests {
 		assert!(chan_0_monitor_read.is_empty());
 
 		let mut nodes_0_read = &nodes_0_serialized[..];
+		let config = UserConfig::new();
 		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 		let (_, nodes_0_deserialized) = {
 			let mut channel_monitors = HashMap::new();
 			channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
 			<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+				default_config: config,
 				keys_manager,
 				fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
 				monitor: nodes[0].chan_monitor.clone(),
@@ -6951,11 +6951,13 @@ mod tests {
 		assert!(chan_0_monitor_read.is_empty());
 
 		let mut nodes_0_read = &nodes_0_serialized[..];
+		let config = UserConfig::new();
 		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 		let (_, nodes_0_deserialized) = {
 			let mut channel_monitors = HashMap::new();
 			channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
 			<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+				default_config : config,
 				keys_manager,
 				fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
 				monitor: nodes[0].chan_monitor.clone(),
@@ -7014,8 +7016,10 @@ mod tests {
 		}
 
 		let mut nodes_0_read = &nodes_0_serialized[..];
+		let config = UserConfig::new();
 		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 		let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+			default_config : config,
 			keys_manager,
 			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
 			monitor: nodes[0].chan_monitor.clone(),

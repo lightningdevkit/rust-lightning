@@ -28,3 +28,6 @@ pub use self::rng::reset_rng_state;
 
 #[cfg(test)]
 pub(crate) mod test_utils;
+
+//config struct that is used to store defaults for channel handshake limits and channel settings
+pub mod configurations;
