@@ -46,7 +46,7 @@ pub enum DecodeError {
 	BadLengthDescriptor,
 	/// Error from std::io
 	Io(::std::io::Error),
-	/// Invalid value found when decoding
+	/// 1 or 0 is not found for boolean value
 	InvalidValue,
 }
 pub trait MsgDecodable: Sized {
@@ -525,7 +525,7 @@ impl Error for DecodeError {
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 			DecodeError::Io(ref e) => e.description(),
-			DecodeError::InvalidValue => "Invalid value in the bytes",
+			DecodeError::InvalidValue => "0 or 1 is not found for boolean",
 		}
 	}
 }
