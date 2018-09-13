@@ -1352,9 +1352,14 @@ impl ChannelMonitor {
 	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface)-> Vec<(Sha256dHash, Vec<TxOut>)> {
 		let mut watch_outputs = Vec::new();
 		for tx in txn_matched {
-			let mut txn: Vec<Transaction> = Vec::new();
-			for txin in tx.input.iter() {
-				if self.funding_txo.is_none() || (txin.previous_output.txid == self.funding_txo.as_ref().unwrap().0.txid && txin.previous_output.vout == self.funding_txo.as_ref().unwrap().0.index as u32) {
+			if tx.input.len() == 1 {
+				// Assuming our keys were not leaked (in which case we're screwed no matter what),
+				// commitment transactions and HTLC transactions will all only ever have one input,
+				// which is an easy way to filter out any potential non-matching txn for lazy
+				// filters.
+				let prevout = &tx.input[0].previous_output;
+				let mut txn: Vec<Transaction> = Vec::new();
+				if self.funding_txo.is_none() || (prevout.txid == self.funding_txo.as_ref().unwrap().0.txid && prevout.vout == self.funding_txo.as_ref().unwrap().0.index as u32) {
 					let (remote_txn, new_outputs) = self.check_spend_remote_transaction(tx, height);
 					txn = remote_txn;
 					if !new_outputs.1.is_empty() {
