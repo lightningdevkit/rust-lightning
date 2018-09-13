@@ -2614,6 +2614,54 @@ mod tests {
 		}
 	}
 
+	macro_rules! commitment_signed_dance {
+		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
+			{
+				{
+					let added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
+					assert!(added_monitors.is_empty());
+				}
+				let (as_revoke_and_ack, as_commitment_signed) = $node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed).unwrap();
+				{
+					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
+					assert_eq!(added_monitors.len(), 1);
+					added_monitors.clear();
+				}
+				{
+					let added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
+					assert!(added_monitors.is_empty());
+				}
+				assert!($node_b.node.handle_revoke_and_ack(&$node_a.node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+				{
+					let mut added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
+					assert_eq!(added_monitors.len(), 1);
+					added_monitors.clear();
+				}
+				let (bs_revoke_and_ack, bs_none) = $node_b.node.handle_commitment_signed(&$node_a.node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
+				assert!(bs_none.is_none());
+				{
+					let mut added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
+					assert_eq!(added_monitors.len(), 1);
+					added_monitors.clear();
+				}
+				if $fail_backwards {
+					assert!($node_a.node.get_and_clear_pending_events().is_empty());
+				}
+				assert!($node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack).unwrap().is_none());
+				{
+					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
+					if $fail_backwards {
+						assert_eq!(added_monitors.len(), 2);
+						assert!(added_monitors[0].0 != added_monitors[1].0);
+					} else {
+						assert_eq!(added_monitors.len(), 1);
+					}
+					added_monitors.clear();
+				}
+			}
+		}
+	}
+
 	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
 		let our_payment_preimage = [*origin_node.network_payment_count.borrow(); 32];
 		*origin_node.network_payment_count.borrow_mut() += 1;
@@ -2648,26 +2696,7 @@ mod tests {
 				assert_eq!(added_monitors.len(), 0);
 			}
 
-			let revoke_and_ack = node.node.handle_commitment_signed(&prev_node.node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
-			{
-				let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				added_monitors.clear();
-			}
-			assert!(prev_node.node.handle_revoke_and_ack(&node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-			let prev_revoke_and_ack = prev_node.node.handle_commitment_signed(&node.node.get_our_node_id(), &revoke_and_ack.1.unwrap()).unwrap();
-			{
-				let mut added_monitors = prev_node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 2);
-				added_monitors.clear();
-			}
-			assert!(node.node.handle_revoke_and_ack(&prev_node.node.get_our_node_id(), &prev_revoke_and_ack.0).unwrap().is_none());
-			assert!(prev_revoke_and_ack.1.is_none());
-			{
-				let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				added_monitors.clear();
-			}
+			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 
 			let events_1 = node.node.get_and_clear_pending_events();
 			assert_eq!(events_1.len(), 1);
@@ -2727,26 +2756,7 @@ mod tests {
 						}
 						added_monitors.clear();
 					}
-					let revoke_and_commit = $node.node.handle_commitment_signed(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					assert!($prev_node.node.handle_revoke_and_ack(&$node.node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
-					let revoke_and_ack = $prev_node.node.handle_commitment_signed(&$node.node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
-					assert!(revoke_and_ack.1.is_none());
-					{
-						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 2);
-						added_monitors.clear();
-					}
-					assert!($node.node.handle_revoke_and_ack(&$prev_node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
+					commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, false);
 				}
 			}
 		}
@@ -2843,38 +2853,7 @@ mod tests {
 			($node: expr, $prev_node: expr, $last_node: expr) => {
 				{
 					$node.node.handle_update_fail_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
-					let revoke_and_commit = $node.node.handle_commitment_signed(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
-
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					assert!($prev_node.node.handle_revoke_and_ack(&$node.node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
-					{
-						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					let revoke_and_ack = $prev_node.node.handle_commitment_signed(&$node.node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
-					{
-						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					assert!(revoke_and_ack.1.is_none());
-					assert!($node.node.get_and_clear_pending_events().is_empty());
-					assert!($node.node.handle_revoke_and_ack(&$prev_node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						if $last_node {
-							assert_eq!(added_monitors.len(), 1);
-						} else {
-							assert_eq!(added_monitors.len(), 2);
-							assert!(added_monitors[0].0 != added_monitors[1].0);
-						}
-						added_monitors.clear();
-					}
+					commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, !$last_node);
 				}
 			}
 		}
