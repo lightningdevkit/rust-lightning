@@ -2390,6 +2390,13 @@ mod tests {
 		network_payment_count: Rc<RefCell<u8>>,
 		network_chan_count: Rc<RefCell<u32>>,
 	}
+	impl Drop for Node {
+		fn drop(&mut self) {
+			// Check that we processed all pending events
+			assert_eq!(self.node.get_and_clear_pending_events().len(), 0);
+			assert_eq!(self.chan_monitor.added_monitors.lock().unwrap().len(), 0);
+		}
+	}
 
 	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 10001, 42).unwrap();
@@ -3036,12 +3043,6 @@ mod tests {
 		close_channel(&nodes[2], &nodes[3], &chan_3.2, chan_3.3, true);
 		close_channel(&nodes[1], &nodes[3], &chan_4.2, chan_4.3, false);
 		close_channel(&nodes[1], &nodes[3], &chan_5.2, chan_5.3, false);
-
-		// Check that we processed all pending events
-		for node in nodes {
-			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
-			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
-		}
 	}
 
 	#[test]
@@ -3351,12 +3352,6 @@ mod tests {
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 		assert_eq!(nodes[1].node.list_channels().len(), 0);
-
-		// Check that we processed all pending events
-		for node in nodes {
-			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
-			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
-		}
 	}
 
 	#[test]
@@ -3540,6 +3535,16 @@ mod tests {
 		}
 		while !headers.is_empty() {
 			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		{
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+					assert_eq!(flags & 0b10, 0b10);
+				},
+				_ => panic!("Unexpected event"),
+			}
 		}
 		let channel_state = nodes[0].node.channel_state.lock().unwrap();
 		assert_eq!(channel_state.by_id.len(), 0);
