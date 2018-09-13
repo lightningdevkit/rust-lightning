@@ -1263,16 +1263,16 @@ impl Channel {
 	fn funding_created_signature(&mut self, sig: &Signature) -> Result<(Transaction, Signature), HandleError> {
 		let funding_script = self.get_funding_redeemscript();
 
-		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false).0;
-		let remote_sighash = Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
-
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false).0;
 		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
 		secp_call!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey.unwrap()), "Invalid funding_created signature from peer", self.channel_id());
+
+		let remote_keys = self.build_remote_transaction_keys()?;
+		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false).0;
+		let remote_sighash = Message::from_slice(&bip143::SighashComponents::new(&remote_initial_commitment_tx).sighash_all(&remote_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
 		Ok((remote_initial_commitment_tx, self.secp_ctx.sign(&remote_sighash, &self.local_keys.funding_key)))
