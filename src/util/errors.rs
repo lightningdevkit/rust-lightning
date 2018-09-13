@@ -10,13 +10,17 @@ pub enum APIError {
 	/// For example, this may be returned if the feerate implies we cannot open a channel at the
 	/// requested value, but opening a larger channel would succeed.
 	FeeRateTooHigh {err: String, feerate: u64},
+
+	/// Invalid route or parameters (cltv_delta, fee, pubkey) was specified
+	RouteError {err: &'static str},
 }
 
 impl fmt::Debug for APIError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			APIError::APIMisuseError {ref err} => f.write_str(err),
-			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate)
+			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
+			APIError::RouteError {ref err} => f.write_str(err),
 		}
 	}
 }
