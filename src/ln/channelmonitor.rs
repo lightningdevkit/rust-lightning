@@ -1210,35 +1210,32 @@ impl ChannelMonitor {
 	}
 
 	/// Attempst to claim a remote HTLC-Success/HTLC-Timeout s outputs using the revocation key
-	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64) -> Vec<Transaction> {
-		let mut txn_to_broadcast = Vec::new();
-
+	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64) -> Option<Transaction> {
 		let htlc_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
 				match $thing {
 					Ok(a) => a,
-					Err(_) => return txn_to_broadcast
+					Err(_) => return None
 				}
 			};
 		}
 
 		let secret = self.get_secret(commitment_number).unwrap();
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&self.secp_ctx, &secret));
+		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 		let revocation_pubkey = match self.key_storage {
 			KeyStorage::PrivMode { ref revocation_base_key, .. } => {
-				let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 				ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &revocation_base_key)))
 			},
 			KeyStorage::SigsMode { ref revocation_base_key, .. } => {
-				let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 				ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &revocation_base_key))
 			},
 		};
 		let delayed_key = match self.their_delayed_payment_base_key {
-			None => return txn_to_broadcast,
-			Some(their_delayed_payment_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &their_delayed_payment_base_key)),
+			None => return None,
+			Some(their_delayed_payment_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &their_delayed_payment_base_key)),
 		};
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.their_to_self_delay.unwrap(), &delayed_key);
 		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
@@ -1290,9 +1287,8 @@ impl ChannelMonitor {
 			spend_tx.input[0].witness.push(vec!(1));
 			spend_tx.input[0].witness.push(redeemscript.into_bytes());
 
-			txn_to_broadcast.push(spend_tx);
-		}
-		txn_to_broadcast
+			Some(spend_tx)
+		} else { None }
 	}
 
 	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx) -> Vec<Transaction> {
@@ -1356,9 +1352,14 @@ impl ChannelMonitor {
 	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface)-> Vec<(Sha256dHash, Vec<TxOut>)> {
 		let mut watch_outputs = Vec::new();
 		for tx in txn_matched {
-			let mut txn: Vec<Transaction> = Vec::new();
-			for txin in tx.input.iter() {
-				if self.funding_txo.is_none() || (txin.previous_output.txid == self.funding_txo.as_ref().unwrap().0.txid && txin.previous_output.vout == self.funding_txo.as_ref().unwrap().0.index as u32) {
+			if tx.input.len() == 1 {
+				// Assuming our keys were not leaked (in which case we're screwed no matter what),
+				// commitment transactions and HTLC transactions will all only ever have one input,
+				// which is an easy way to filter out any potential non-matching txn for lazy
+				// filters.
+				let prevout = &tx.input[0].previous_output;
+				let mut txn: Vec<Transaction> = Vec::new();
+				if self.funding_txo.is_none() || (prevout.txid == self.funding_txo.as_ref().unwrap().0.txid && prevout.vout == self.funding_txo.as_ref().unwrap().0.index as u32) {
 					let (remote_txn, new_outputs) = self.check_spend_remote_transaction(tx, height);
 					txn = remote_txn;
 					if !new_outputs.1.is_empty() {
@@ -1369,8 +1370,10 @@ impl ChannelMonitor {
 					}
 				} else {
 					let remote_commitment_txn_on_chain = self.remote_commitment_txn_on_chain.lock().unwrap();
-					for commitment_number in remote_commitment_txn_on_chain.get(&txin.previous_output.txid) {
-						txn =  self.check_spend_remote_htlc(tx, *commitment_number);
+					if let Some(commitment_number) = remote_commitment_txn_on_chain.get(&prevout.txid) {
+						if let Some(tx) = self.check_spend_remote_htlc(tx, *commitment_number) {
+							txn.push(tx);
+						}
 					}
 				}
 				for tx in txn.iter() {
