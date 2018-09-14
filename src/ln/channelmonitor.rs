@@ -63,6 +63,9 @@ pub trait ManyChannelMonitor: Send + Sync {
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
 pub struct SimpleManyChannelMonitor<Key> {
+	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
+	pub monitors: Mutex<HashMap<Key, ChannelMonitor>>,
+	#[cfg(not(test))]
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	chain_monitor: Arc<ChainWatchInterface>,
 	broadcaster: Arc<BroadcasterInterface>
@@ -1222,7 +1225,7 @@ impl ChannelMonitor {
 			};
 		}
 
-		let secret = self.get_secret(commitment_number).unwrap();
+		let secret = ignore_error!(self.get_secret(commitment_number));
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&self.secp_ctx, &secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 		let revocation_pubkey = match self.key_storage {
@@ -1268,7 +1271,6 @@ impl ChannelMonitor {
 				input: inputs,
 				output: outputs,
 			};
-
 
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
 

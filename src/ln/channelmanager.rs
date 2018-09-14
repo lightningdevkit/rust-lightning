@@ -2198,6 +2198,7 @@ mod tests {
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::network::serialize::serialize;
@@ -2614,6 +2615,54 @@ mod tests {
 		}
 	}
 
+	macro_rules! commitment_signed_dance {
+		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
+			{
+				{
+					let added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
+					assert!(added_monitors.is_empty());
+				}
+				let (as_revoke_and_ack, as_commitment_signed) = $node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed).unwrap();
+				{
+					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
+					assert_eq!(added_monitors.len(), 1);
+					added_monitors.clear();
+				}
+				{
+					let added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
+					assert!(added_monitors.is_empty());
+				}
+				assert!($node_b.node.handle_revoke_and_ack(&$node_a.node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+				{
+					let mut added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
+					assert_eq!(added_monitors.len(), 1);
+					added_monitors.clear();
+				}
+				let (bs_revoke_and_ack, bs_none) = $node_b.node.handle_commitment_signed(&$node_a.node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
+				assert!(bs_none.is_none());
+				{
+					let mut added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
+					assert_eq!(added_monitors.len(), 1);
+					added_monitors.clear();
+				}
+				if $fail_backwards {
+					assert!($node_a.node.get_and_clear_pending_events().is_empty());
+				}
+				assert!($node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack).unwrap().is_none());
+				{
+					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
+					if $fail_backwards {
+						assert_eq!(added_monitors.len(), 2);
+						assert!(added_monitors[0].0 != added_monitors[1].0);
+					} else {
+						assert_eq!(added_monitors.len(), 1);
+					}
+					added_monitors.clear();
+				}
+			}
+		}
+	}
+
 	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
 		let our_payment_preimage = [*origin_node.network_payment_count.borrow(); 32];
 		*origin_node.network_payment_count.borrow_mut() += 1;
@@ -2648,26 +2697,7 @@ mod tests {
 				assert_eq!(added_monitors.len(), 0);
 			}
 
-			let revoke_and_ack = node.node.handle_commitment_signed(&prev_node.node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
-			{
-				let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				added_monitors.clear();
-			}
-			assert!(prev_node.node.handle_revoke_and_ack(&node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-			let prev_revoke_and_ack = prev_node.node.handle_commitment_signed(&node.node.get_our_node_id(), &revoke_and_ack.1.unwrap()).unwrap();
-			{
-				let mut added_monitors = prev_node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 2);
-				added_monitors.clear();
-			}
-			assert!(node.node.handle_revoke_and_ack(&prev_node.node.get_our_node_id(), &prev_revoke_and_ack.0).unwrap().is_none());
-			assert!(prev_revoke_and_ack.1.is_none());
-			{
-				let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				added_monitors.clear();
-			}
+			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 
 			let events_1 = node.node.get_and_clear_pending_events();
 			assert_eq!(events_1.len(), 1);
@@ -2727,26 +2757,7 @@ mod tests {
 						}
 						added_monitors.clear();
 					}
-					let revoke_and_commit = $node.node.handle_commitment_signed(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					assert!($prev_node.node.handle_revoke_and_ack(&$node.node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
-					let revoke_and_ack = $prev_node.node.handle_commitment_signed(&$node.node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
-					assert!(revoke_and_ack.1.is_none());
-					{
-						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 2);
-						added_monitors.clear();
-					}
-					assert!($node.node.handle_revoke_and_ack(&$prev_node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
+					commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, false);
 				}
 			}
 		}
@@ -2843,38 +2854,7 @@ mod tests {
 			($node: expr, $prev_node: expr, $last_node: expr) => {
 				{
 					$node.node.handle_update_fail_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
-					let revoke_and_commit = $node.node.handle_commitment_signed(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().1).unwrap();
-
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					assert!($prev_node.node.handle_revoke_and_ack(&$node.node.get_our_node_id(), &revoke_and_commit.0).unwrap().is_none());
-					{
-						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					let revoke_and_ack = $prev_node.node.handle_commitment_signed(&$node.node.get_our_node_id(), &revoke_and_commit.1.unwrap()).unwrap();
-					{
-						let mut added_monitors = $prev_node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
-					assert!(revoke_and_ack.1.is_none());
-					assert!($node.node.get_and_clear_pending_events().is_empty());
-					assert!($node.node.handle_revoke_and_ack(&$prev_node.node.get_our_node_id(), &revoke_and_ack.0).unwrap().is_none());
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						if $last_node {
-							assert_eq!(added_monitors.len(), 1);
-						} else {
-							assert_eq!(added_monitors.len(), 2);
-							assert!(added_monitors[0].0 != added_monitors[1].0);
-						}
-						added_monitors.clear();
-					}
+					commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, !$last_node);
 				}
 			}
 		}
@@ -3378,6 +3358,167 @@ mod tests {
 			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
 			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
 		}
+	}
+
+	#[test]
+	fn test_htlc_ignore_latest_remote_commitment() {
+		// Test that HTLC transactions spending the latest remote commitment transaction are simply
+		// ignored if we cannot claim them. This originally tickled an invalid unwrap().
+		let nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		route_payment(&nodes[0], &[&nodes[1]], 10000000);
+		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
+		{
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+					assert_eq!(flags & 0b10, 0b10);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 2);
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0], &node_txn[1]], &[1; 2]);
+
+		{
+			let events = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+					assert_eq!(flags & 0b10, 0b10);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+
+		// Duplicate the block_connected call since this may happen due to other listeners
+		// registering new transactions
+		nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0], &node_txn[1]], &[1; 2]);
+	}
+
+	#[test]
+	fn test_force_close_fail_back() {
+		// Check which HTLCs are failed-backwards on channel force-closure
+		let mut nodes = create_network(3);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, 42).unwrap();
+
+		let our_payment_preimage = [*nodes[0].network_payment_count.borrow(); 32];
+		*nodes[0].network_payment_count.borrow_mut() += 1;
+		let our_payment_hash = {
+			let mut sha = Sha256::new();
+			sha.input(&our_payment_preimage[..]);
+			let mut ret = [0; 32];
+			sha.result(&mut ret);
+			ret
+		};
+
+		let mut payment_event = {
+			nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+			{
+				let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+				assert_eq!(added_monitors.len(), 1);
+				added_monitors.clear();
+			}
+
+			let mut events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
+		};
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+
+		let events_1 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+
+		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
+		nodes[1].node.process_pending_htlc_forwards();
+
+		let mut events_2 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		payment_event = SendEvent::from_event(events_2.remove(0));
+		assert_eq!(payment_event.msgs.len(), 1);
+
+		{
+			let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+
+		{
+			let mut added_monitors = nodes[2].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+
+		// nodes[2] now has the latest commitment transaction, but hasn't revoked its previous
+		// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
+		// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
+
+		nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id);
+		let events_3 = nodes[2].node.get_and_clear_pending_events();
+		assert_eq!(events_3.len(), 1);
+		match events_3[0] {
+			Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+				assert_eq!(flags & 0b10, 0b10);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		let tx = {
+			let mut node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			// Note that we don't bother broadcasting the HTLC-Success transaction here as we don't
+			// have a use for it unless nodes[2] learns the preimage somehow, the funds will go
+			// back to nodes[1] upon timeout otherwise.
+			assert_eq!(node_txn.len(), 1);
+			node_txn.remove(0)
+		};
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&tx], &[1]);
+
+		let events_4 = nodes[1].node.get_and_clear_pending_events();
+		// Note no UpdateHTLCs event here from nodes[1] to nodes[0]!
+		assert_eq!(events_4.len(), 1);
+		match events_4[0] {
+			Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+				assert_eq!(flags & 0b10, 0b10);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		// Now check that if we add the preimage to ChannelMonitor it broadcasts our HTLC-Success..
+		{
+			let mut monitors = nodes[2].chan_monitor.simple_monitor.monitors.lock().unwrap();
+			monitors.get_mut(&OutPoint::new(Sha256dHash::from(&payment_event.commitment_msg.channel_id[..]), 0)).unwrap()
+				.provide_payment_preimage(&our_payment_hash, &our_payment_preimage);
+		}
+		nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&tx], &[1]);
+		let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].previous_output.txid, tx.txid());
+		assert_eq!(node_txn[0].lock_time, 0); // Must be an HTLC-Success
+		assert_eq!(node_txn[0].input[0].witness.len(), 5); // Must be an HTLC-Success
+		let mut funding_tx_map = HashMap::new();
+		funding_tx_map.insert(tx.txid(), tx);
+		node_txn[0].verify(&funding_tx_map).unwrap();
 	}
 
 	#[test]

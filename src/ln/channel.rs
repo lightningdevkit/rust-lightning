@@ -2551,10 +2551,7 @@ impl Channel {
 			}
 		}
 
-		for htlc in self.pending_outbound_htlcs.drain(..) {
-			if htlc.state == OutboundHTLCState::LocalAnnounced {
-				dropped_outbound_htlcs.push((htlc.source, htlc.payment_hash));
-			}
+		for _htlc in self.pending_outbound_htlcs.drain(..) {
 			//TODO: Do something with the remaining HTLCs
 			//(we need to have the ChannelManager monitor them so we can claim the inbound HTLCs
 			//which correspond)
