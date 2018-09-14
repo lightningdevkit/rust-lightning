@@ -14,17 +14,25 @@ use util::byte_utils::{be64_to_array, be32_to_array, be16_to_array, slice_to_be1
 
 const MAX_BUF_SIZE: usize = 64 * 1024;
 
-/// A trait that is similar to std::io::Write.
-/// An impl is provided for any type that also impls std::io::Write.
+/// A trait that is similar to std::io::Write but has one extra function which can be used to size
+/// buffers being written into.
+/// An impl is provided for any type that also impls std::io::Write which simply ignores size
+/// hints.
 pub trait Writer {
 	/// Writes the given buf out. See std::io::Write::write_all for more
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error>;
+	/// Hints that data of the given size is about the be written. This may not always be called
+	/// prior to data being written and may be safely ignored.
+	fn size_hint(&mut self, size: usize);
 }
 
 impl<W: ::std::io::Write> Writer for W {
+	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		<Self as ::std::io::Write>::write_all(self, buf)
 	}
+	#[inline]
+	fn size_hint(&mut self, _size: usize) { }
 }
 
 /// A trait that various rust-lightning types implement allowing them to be written out to a Writer
