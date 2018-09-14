@@ -7,6 +7,7 @@ use lightning::ln::msgs;
 use lightning::util::reset_rng_state;
 
 mod utils;
+use utils::VecWriter;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
