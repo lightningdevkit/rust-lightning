@@ -15,25 +15,36 @@ use util::byte_utils::{be64_to_array, be32_to_array, be16_to_array, slice_to_be1
 
 const MAX_BUF_SIZE: usize = 64 * 1024;
 
-pub struct Writer<W> { writer: W }
-pub struct Reader<R> { reader: R }
+/// A struct that holds an std::io::Write-impl'ing object and implements various
+/// rust-lightning-specific write functions.
+pub struct Writer<W: Write> { writer: W }
+/// A struct that holds an std::io::Read-impl'ing object and implements various
+/// rust-lightning-specific read functions.
+pub struct Reader<R: Read> { reader: R }
 
+/// A trait that various rust-lightning types implement allowing them to be written out to a Writer
 pub trait Writeable<W: Write> {
+	/// Writes self out to the given Writer
 	fn write(&self, writer: &mut Writer<W>) -> Result<(), DecodeError>;
 }
 
+/// A trait that various rust-lightning types implement allowing them to be read in from a Reader
 pub trait Readable<R>
 	where Self: Sized,
 	      R: Read
 {
+	/// Reads a Self in from the given Reader
 	fn read(reader: &mut Reader<R>) -> Result<Self, DecodeError>;
 }
 
 impl<W: Write> Writer<W> {
+	/// Creates a new Writer from an std::io::Write-impl'ing object
 	pub fn new(writer: W) -> Writer<W> {
 		return Writer { writer }
 	}
+	/// Consumes this object and returns the original writer
 	pub fn into_inner(self) -> W { self.writer }
+	/// Gets a reference to the original writer
 	pub fn get_ref(&self) -> &W { &self.writer }
 	fn write_u64(&mut self, v: u64) -> Result<(), DecodeError> {
 		Ok(self.writer.write_all(&be64_to_array(v))?)
@@ -50,16 +61,19 @@ impl<W: Write> Writer<W> {
 	fn write_bool(&mut self, v: bool) -> Result<(), DecodeError> {
 		Ok(self.writer.write_all(&[if v {1} else {0}])?)
 	}
-	pub fn write_all(&mut self, v: &[u8]) -> Result<(), DecodeError> {
+	pub(crate) fn write_all(&mut self, v: &[u8]) -> Result<(), DecodeError> {
 		Ok(self.writer.write_all(v)?)
 	}
 }
 
 impl<R: Read> Reader<R> {
+	/// Creates a new Reader from an std::io::Read-impl'ing object
 	pub fn new(reader: R) -> Reader<R> {
 		return Reader { reader }
 	}
+	/// Consumes this object and returns the original reader
 	pub fn into_inner(self) -> R { self.reader }
+	/// Gets a reference to the original reader
 	pub fn get_ref(&self) -> &R { &self.reader }
 
 	fn read_u64(&mut self) -> Result<u64, DecodeError> {
@@ -93,10 +107,10 @@ impl<R: Read> Reader<R> {
 		}
 		Ok(buf[0] == 1)
 	}
-	pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), DecodeError> {
+	pub(crate) fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), DecodeError> {
 		Ok(self.reader.read_exact(buf)?)
 	}
-	pub fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize, DecodeError> {
+	pub(crate) fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize, DecodeError> {
 		Ok(self.reader.read_to_end(buf)?)
 	}
 }
@@ -303,25 +317,6 @@ impl<R: Read> Readable<R> for Signature {
 		match Signature::from_compact(&Secp256k1::without_caps(), &buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::BadSignature),
-		}
-	}
-}
-
-macro_rules! impl_writeable {
-	($st:ident, {$($field:ident),*}) => {
-		impl<W: ::std::io::Write> Writeable<W> for $st {
-			fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
-				$( self.$field.write(w)?; )*
-				Ok(())
-			}
-		}
-
-		impl<R: ::std::io::Read> Readable<R> for $st {
-			fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
-				Ok(Self {
-					$($field: Readable::read(r)?),*
-				})
-			}
 		}
 	}
 }
