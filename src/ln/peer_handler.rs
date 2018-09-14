@@ -1,7 +1,7 @@
 use secp256k1::key::{SecretKey,PublicKey};
 
 use ln::msgs;
-use util::ser::{Writer, Reader, Writeable, Readable};
+use util::ser::{Writeable, Readable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use util::byte_utils;
 use util::events::{EventsProvider,Event};
@@ -114,10 +114,10 @@ pub struct PeerManager<Descriptor: SocketDescriptor> {
 
 macro_rules! encode_msg {
 	($msg: expr, $msg_code: expr) => {{
-		let mut w = Writer::new(::std::io::Cursor::new(vec![]));
+		let mut w = ::std::io::Cursor::new(vec![]);
 		0u16.write(&mut w).unwrap();
 		$msg.write(&mut w).unwrap();
-		let mut msg = w.into_inner().into_inner();
+		let mut msg = w.into_inner();
 		let len = msg.len();
 		msg[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
 		msg
@@ -437,7 +437,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Need an init message as first message
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}
-										let mut reader = Reader::new(::std::io::Cursor::new(&msg_data[2..]));
+										let mut reader = ::std::io::Cursor::new(&msg_data[2..]);
 										match msg_type {
 											// Connection control:
 											16 => {

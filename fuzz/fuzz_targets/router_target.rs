@@ -12,7 +12,7 @@ use lightning::ln::msgs::{RoutingMessageHandler};
 use lightning::ln::router::{Router, RouteHint};
 use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Reader, Readable};
+use lightning::util::ser::Readable;
 
 use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
@@ -121,7 +121,7 @@ pub fn do_test(data: &[u8]) {
 
 	macro_rules! decode_msg {
 		($MsgType: path, $len: expr) => {{
-			let mut reader = Reader::new(::std::io::Cursor::new(get_slice!($len)));
+			let mut reader = ::std::io::Cursor::new(get_slice!($len));
 			match <($MsgType)>::read(&mut reader) {
 				Ok(msg) => msg,
 				Err(e) => match e {

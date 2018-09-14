@@ -7,10 +7,11 @@ use bitcoin::blockdata::script::Script;
 
 use std::error::Error;
 use std::{cmp, fmt};
+use std::io::Read;
 use std::result::Result;
 
 use util::{byte_utils, internal_traits, events};
-use util::ser::{Readable, Reader, Writeable, Writer};
+use util::ser::{Readable, Writeable, Writer};
 
 pub trait MsgEncodable {
 	fn encode(&self) -> Vec<u8>;
@@ -1728,8 +1729,8 @@ impl_writeable!(AnnouncementSignatures, {
 	bitcoin_signature
 });
 
-impl<W: ::std::io::Write> Writeable<W> for ChannelReestablish {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for ChannelReestablish {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.channel_id.write(w)?;
 		self.next_local_commitment_number.write(w)?;
 		self.next_remote_commitment_number.write(w)?;
@@ -1741,8 +1742,8 @@ impl<W: ::std::io::Write> Writeable<W> for ChannelReestablish {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for ChannelReestablish{
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for ChannelReestablish{
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			next_local_commitment_number: Readable::read(r)?,
@@ -1871,8 +1872,8 @@ impl_writeable!(OnionErrorPacket, {
 	data
 });
 
-impl<W: ::std::io::Write> Writeable<W> for OnionPacket {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for OnionPacket {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.version.write(w)?;
 		match self.public_key {
 			Ok(pubkey) => pubkey.write(w)?,
@@ -1884,8 +1885,8 @@ impl<W: ::std::io::Write> Writeable<W> for OnionPacket {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for OnionPacket {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for OnionPacket {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(OnionPacket {
 			version: Readable::read(r)?,
 			public_key: {
@@ -1908,8 +1909,8 @@ impl_writeable!(UpdateAddHTLC, {
 	onion_routing_packet
 });
 
-impl<W: ::std::io::Write> Writeable<W> for OnionRealm0HopData {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for OnionRealm0HopData {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.short_channel_id.write(w)?;
 		self.amt_to_forward.write(w)?;
 		self.outgoing_cltv_value.write(w)?;
@@ -1918,8 +1919,8 @@ impl<W: ::std::io::Write> Writeable<W> for OnionRealm0HopData {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for OnionRealm0HopData {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for OnionRealm0HopData {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(OnionRealm0HopData {
 			short_channel_id: Readable::read(r)?,
 			amt_to_forward: Readable::read(r)?,
@@ -1932,8 +1933,8 @@ impl<R: ::std::io::Read> Readable<R> for OnionRealm0HopData {
 	}
 }
 
-impl<W: ::std::io::Write> Writeable<W> for OnionHopData {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for OnionHopData {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.realm.write(w)?;
 		self.data.write(w)?;
 		self.hmac.write(w)?;
@@ -1941,8 +1942,8 @@ impl<W: ::std::io::Write> Writeable<W> for OnionHopData {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for OnionHopData {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for OnionHopData {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(OnionHopData {
 			realm: {
 				let r: u8 = Readable::read(r)?;
@@ -1957,16 +1958,16 @@ impl<R: ::std::io::Read> Readable<R> for OnionHopData {
 	}
 }
 
-impl<W: ::std::io::Write> Writeable<W> for Ping {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for Ping {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.ponglen.write(w)?;
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for Ping {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for Ping {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Ping {
 			ponglen: Readable::read(r)?,
 			byteslen: {
@@ -1978,15 +1979,15 @@ impl<R: ::std::io::Read> Readable<R> for Ping {
 	}
 }
 
-impl<W: ::std::io::Write> Writeable<W> for Pong {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for Pong {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for Pong {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for Pong {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Pong {
 			byteslen: {
 				let byteslen = Readable::read(r)?;
@@ -1997,8 +1998,8 @@ impl<R: ::std::io::Read> Readable<R> for Pong {
 	}
 }
 
-impl<W: ::std::io::Write> Writeable<W> for UnsignedChannelAnnouncement {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for UnsignedChannelAnnouncement {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.features.write(w)?;
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
@@ -2011,8 +2012,8 @@ impl<W: ::std::io::Write> Writeable<W> for UnsignedChannelAnnouncement {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for UnsignedChannelAnnouncement {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for UnsignedChannelAnnouncement {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			features: {
 				let f: GlobalFeatures = Readable::read(r)?;
@@ -2044,8 +2045,8 @@ impl_writeable!(ChannelAnnouncement,{
 	contents
 });
 
-impl<W: ::std::io::Write> Writeable<W> for UnsignedChannelUpdate {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for UnsignedChannelUpdate {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
@@ -2059,8 +2060,8 @@ impl<W: ::std::io::Write> Writeable<W> for UnsignedChannelUpdate {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for UnsignedChannelUpdate {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for UnsignedChannelUpdate {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
@@ -2084,16 +2085,16 @@ impl_writeable!(ChannelUpdate, {
 	contents
 });
 
-impl<W: ::std::io::Write> Writeable<W> for ErrorMessage {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for ErrorMessage {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.channel_id.write(w)?;
 		self.data.as_bytes().to_vec().write(w)?; // write with size prefix
 		Ok(())
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for ErrorMessage {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for ErrorMessage {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
@@ -2110,8 +2111,8 @@ impl<R: ::std::io::Read> Readable<R> for ErrorMessage {
 	}
 }
 
-impl<W: ::std::io::Write> Writeable<W> for UnsignedNodeAnnouncement {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for UnsignedNodeAnnouncement {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.features.write(w)?;
 		self.timestamp.write(w)?;
 		self.node_id.write(w)?;
@@ -2156,8 +2157,8 @@ impl<W: ::std::io::Write> Writeable<W> for UnsignedNodeAnnouncement {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for UnsignedNodeAnnouncement {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let features: GlobalFeatures = Readable::read(r)?;
 		if features.requires_unknown_bits() {
 			return Err(DecodeError::UnknownRequiredFeature);
