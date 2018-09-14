@@ -256,6 +256,8 @@ enum ChannelState {
 }
 const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32);
 
+const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -436,8 +438,8 @@ impl Channel {
 			channel_value_satoshis: channel_value_satoshis,
 
 			local_keys: chan_keys,
-			cur_local_commitment_transaction_number: (1 << 48) - 1,
-			cur_remote_commitment_transaction_number: (1 << 48) - 1,
+			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -594,8 +596,8 @@ impl Channel {
 			announce_publicly: their_announce,
 
 			local_keys: chan_keys,
-			cur_local_commitment_transaction_number: (1 << 48) - 1,
-			cur_remote_commitment_transaction_number: (1 << 48) - 1,
+			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: msg.push_msat,
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -693,7 +695,7 @@ impl Channel {
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
 	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool) -> (Transaction, Vec<HTLCOutputInCommitment>) {
-		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (0xffffffffffff - commitment_number);
+		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
@@ -1303,7 +1305,9 @@ impl Channel {
 			// channel.
 			return Err(HandleError{err: "Received funding_created after we got the channel!", action: Some(msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: self.channel_id, data: "Received funding_created after we got the channel!".to_string()}})});
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 1 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
+				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
+				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -1342,7 +1346,9 @@ impl Channel {
 		if self.channel_state != ChannelState::FundingCreated as u32 {
 			return Err(HandleError{err: "Received funding_signed in strange state!", action: None});
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 2 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
+				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER - 1 ||
+				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -1375,8 +1381,9 @@ impl Channel {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
 			self.channel_update_count += 1;
 		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
-				self.cur_local_commitment_transaction_number == (1 << 48) - 2 &&
-				self.cur_remote_commitment_transaction_number == (1 << 48) - 2 {
+				// Note that funding_signed/funding_created will have decremented both by 1!
+				self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
+				self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
 			if self.their_cur_commitment_point != Some(msg.next_per_commitment_point) {
 				return Err(HandleError{err: "Peer sent a reconnect funding_locked with a different point", action: None});
 			}
@@ -1908,8 +1915,8 @@ impl Channel {
 			return Err(HandleError{err: "Peer sent a loose channel_reestablish not after reconnect", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent a loose channel_reestablish not after reconnect".to_string(), channel_id: msg.channel_id}})});
 		}
 
-		if msg.next_local_commitment_number == 0 || msg.next_local_commitment_number >= 0xffffffffffff ||
-				msg.next_remote_commitment_number == 0 || msg.next_remote_commitment_number >= 0xffffffffffff {
+		if msg.next_local_commitment_number == 0 || msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
+				msg.next_remote_commitment_number == 0 || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER {
 			return Err(HandleError{err: "Peer send garbage channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer send garbage channel_reestablish".to_string(), channel_id: msg.channel_id}})});
 		}
 
@@ -1918,8 +1925,10 @@ impl Channel {
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
 
 		let mut required_revoke = None;
-		if msg.next_remote_commitment_number == 0xffffffffffff - self.cur_local_commitment_transaction_number {
-		} else if msg.next_remote_commitment_number == 0xfffffffffffe - self.cur_local_commitment_transaction_number {
+		if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
+			// Remote isn't waiting on any RevokeAndACK from us!
+			// Note that if we need to repeat our FundingLocked we'll do that in the next if block.
+		} else if msg.next_remote_commitment_number == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_local_commitment_transaction_number {
 			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
 			let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number + 2);
 			required_revoke = Some(msgs::RevokeAndACK {
@@ -1931,8 +1940,8 @@ impl Channel {
 			return Err(HandleError{err: "Peer attempted to reestablish channel with a very old local commitment transaction", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer attempted to reestablish channel with a very old remote commitment transaction".to_string(), channel_id: msg.channel_id}})});
 		}
 
-		if msg.next_local_commitment_number == 0xffffffffffff - self.cur_remote_commitment_transaction_number {
-			if msg.next_remote_commitment_number == 0xffffffffffff - self.cur_local_commitment_transaction_number {
+		if msg.next_local_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number {
+			if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
 				log_debug!(self, "Reconnected channel {} with no lost commitment txn", log_bytes!(self.channel_id()));
 				if msg.next_local_commitment_number == 1 && msg.next_remote_commitment_number == 1 {
 					let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
@@ -1964,7 +1973,7 @@ impl Channel {
 			} else {
 				return Ok((None, required_revoke, None, None));
 			}
-		} else if msg.next_local_commitment_number == 0xfffffffffffe - self.cur_remote_commitment_transaction_number {
+		} else if msg.next_local_commitment_number == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_remote_commitment_transaction_number {
 			return Ok((None, required_revoke,
 					Some(msgs::CommitmentUpdate {
 						update_add_htlcs: Vec::new(),
@@ -2389,7 +2398,7 @@ impl Channel {
 			panic!("Cannot generate an open_channel after we've moved forward");
 		}
 
-		if self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
@@ -2425,7 +2434,7 @@ impl Channel {
 		if self.channel_state != (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32) {
 			panic!("Tried to send accept_channel after channel had moved forward");
 		}
-		if self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
@@ -2474,7 +2483,9 @@ impl Channel {
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
 			panic!("Tried to get a funding_created messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) || self.cur_remote_commitment_transaction_number != (1 << 48) - 1 || self.cur_local_commitment_transaction_number != (1 << 48) - 1 {
+		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
+				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
+				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -2551,8 +2562,8 @@ impl Channel {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
-			next_local_commitment_number: 0xffffffffffff - self.cur_local_commitment_transaction_number,
-			next_remote_commitment_number: 0xffffffffffff - self.cur_remote_commitment_transaction_number,
+			next_local_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number,
+			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number,
 			data_loss_protect: None,
 		}
 	}
