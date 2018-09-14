@@ -63,6 +63,9 @@ pub trait ManyChannelMonitor: Send + Sync {
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
 pub struct SimpleManyChannelMonitor<Key> {
+	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
+	pub monitors: Mutex<HashMap<Key, ChannelMonitor>>,
+	#[cfg(not(test))]
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	chain_monitor: Arc<ChainWatchInterface>,
 	broadcaster: Arc<BroadcasterInterface>
