@@ -3381,6 +3381,48 @@ mod tests {
 	}
 
 	#[test]
+	fn test_htlc_ignore_latest_remote_commitment() {
+		// Test that HTLC transactions spending the latest remote commitment transaction are simply
+		// ignored if we cannot claim them. This originally tickled an invalid unwrap().
+		let nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		route_payment(&nodes[0], &[&nodes[1]], 10000000);
+		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
+		{
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+					assert_eq!(flags & 0b10, 0b10);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 2);
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0], &node_txn[1]], &[1; 2]);
+
+		{
+			let events = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+					assert_eq!(flags & 0b10, 0b10);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+
+		// Duplicate the block_connected call since this may happen due to other listeners
+		// registering new transactions
+		nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0], &node_txn[1]], &[1; 2]);
+	}
+
+	#[test]
 	fn test_unconf_chan() {
 		// After creating a chan between nodes, we disconnect all blocks previously seen to force a channel close on nodes[0] side
 		let nodes = create_network(2);
