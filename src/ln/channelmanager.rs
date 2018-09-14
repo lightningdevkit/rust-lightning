@@ -1218,7 +1218,7 @@ impl ChannelManager {
 						};
 						match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
 							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
-							hash_map::Entry::Vacant(mut entry) => { entry.insert(vec![prev_hop_data]); },
+							hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
 						};
 						new_events.push((None, events::Event::PaymentReceived {
 							payment_hash: forward_info.payment_hash,
@@ -2198,7 +2198,6 @@ mod tests {
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
-	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::network::serialize::serialize;
