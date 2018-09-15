@@ -456,13 +456,17 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	// Channel-to-announce:
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), HandleError>;
 
-	// Error conditions:
+	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
 	/// is believed to be possible in the future (eg they're sending us messages we don't
 	/// understand or indicate they require unknown feature bits), no_connection_possible is set
 	/// and any outstanding channels should be failed.
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
+	fn peer_connected(&self, their_node_id: &PublicKey) -> Vec<ChannelReestablish>;
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(Option<FundingLocked>, Option<RevokeAndACK>, Option<CommitmentUpdate>), HandleError>;
+
+	// Error:
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
 }
 
