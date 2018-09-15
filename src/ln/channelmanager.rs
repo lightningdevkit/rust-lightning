@@ -1218,7 +1218,7 @@ impl ChannelManager {
 						};
 						match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
 							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
-							hash_map::Entry::Vacant(mut entry) => { entry.insert(vec![prev_hop_data]); },
+							hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
 						};
 						new_events.push((None, events::Event::PaymentReceived {
 							payment_hash: forward_info.payment_hash,
@@ -2198,7 +2198,6 @@ mod tests {
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
-	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::network::serialize::serialize;
@@ -2390,6 +2389,13 @@ mod tests {
 		router: Router,
 		network_payment_count: Rc<RefCell<u8>>,
 		network_chan_count: Rc<RefCell<u32>>,
+	}
+	impl Drop for Node {
+		fn drop(&mut self) {
+			// Check that we processed all pending events
+			assert_eq!(self.node.get_and_clear_pending_events().len(), 0);
+			assert_eq!(self.chan_monitor.added_monitors.lock().unwrap().len(), 0);
+		}
 	}
 
 	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
@@ -2735,7 +2741,7 @@ mod tests {
 		(our_payment_preimage, our_payment_hash)
 	}
 
-	fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: [u8; 32]) {
+	fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_preimage: [u8; 32]) {
 		assert!(expected_route.last().unwrap().node.claim_funds(our_payment_preimage));
 		{
 			let mut added_monitors = expected_route.last().unwrap().chan_monitor.added_monitors.lock().unwrap();
@@ -2764,40 +2770,51 @@ mod tests {
 
 		let mut expected_next_node = expected_route.last().unwrap().node.get_our_node_id();
 		let mut prev_node = expected_route.last().unwrap();
-		for node in expected_route.iter().rev() {
+		for (idx, node) in expected_route.iter().rev().enumerate() {
 			assert_eq!(expected_next_node, node.node.get_our_node_id());
 			if next_msgs.is_some() {
 				update_fulfill_dance!(node, prev_node, false);
 			}
 
 			let events = node.node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
-					assert!(update_add_htlcs.is_empty());
-					assert_eq!(update_fulfill_htlcs.len(), 1);
-					assert!(update_fail_htlcs.is_empty());
-					assert!(update_fail_malformed_htlcs.is_empty());
-					expected_next_node = node_id.clone();
-					next_msgs = Some((update_fulfill_htlcs[0].clone(), commitment_signed.clone()));
-				},
-				_ => panic!("Unexpected event"),
-			};
+			if !skip_last || idx != expected_route.len() - 1 {
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+						assert!(update_add_htlcs.is_empty());
+						assert_eq!(update_fulfill_htlcs.len(), 1);
+						assert!(update_fail_htlcs.is_empty());
+						assert!(update_fail_malformed_htlcs.is_empty());
+						expected_next_node = node_id.clone();
+						next_msgs = Some((update_fulfill_htlcs[0].clone(), commitment_signed.clone()));
+					},
+					_ => panic!("Unexpected event"),
+				}
+			} else {
+				assert!(events.is_empty());
+			}
+			if !skip_last && idx == expected_route.len() - 1 {
+				assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
+			}
 
 			prev_node = node;
 		}
 
-		assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
-		update_fulfill_dance!(origin_node, expected_route.first().unwrap(), true);
-
-		let events = origin_node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentSent { payment_preimage } => {
-				assert_eq!(payment_preimage, our_payment_preimage);
-			},
-			_ => panic!("Unexpected event"),
+		if !skip_last {
+			update_fulfill_dance!(origin_node, expected_route.first().unwrap(), true);
+			let events = origin_node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentSent { payment_preimage } => {
+					assert_eq!(payment_preimage, our_payment_preimage);
+				},
+				_ => panic!("Unexpected event"),
+			}
 		}
+	}
+
+	fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: [u8; 32]) {
+		claim_payment_along_route(origin_node, expected_route, false, our_payment_preimage);
 	}
 
 	const TEST_FINAL_CLTV: u32 = 32;
@@ -2841,7 +2858,7 @@ mod tests {
 		claim_payment(&origin, expected_route, our_payment_preimage);
 	}
 
-	fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_hash: [u8; 32]) {
+	fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: [u8; 32]) {
 		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
 		{
 			let mut added_monitors = expected_route.last().unwrap().chan_monitor.added_monitors.lock().unwrap();
@@ -2861,40 +2878,55 @@ mod tests {
 
 		let mut expected_next_node = expected_route.last().unwrap().node.get_our_node_id();
 		let mut prev_node = expected_route.last().unwrap();
-		for node in expected_route.iter().rev() {
+		for (idx, node) in expected_route.iter().rev().enumerate() {
 			assert_eq!(expected_next_node, node.node.get_our_node_id());
 			if next_msgs.is_some() {
-				update_fail_dance!(node, prev_node, false);
+				// We may be the "last node" for the purpose of the commitment dance if we're
+				// skipping the last node (implying it is disconnected) and we're the
+				// second-to-last node!
+				update_fail_dance!(node, prev_node, skip_last && idx == expected_route.len() - 1);
 			}
 
 			let events = node.node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
-					assert!(update_add_htlcs.is_empty());
-					assert!(update_fulfill_htlcs.is_empty());
-					assert_eq!(update_fail_htlcs.len(), 1);
-					assert!(update_fail_malformed_htlcs.is_empty());
-					expected_next_node = node_id.clone();
-					next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
-				},
-				_ => panic!("Unexpected event"),
-			};
+			if !skip_last || idx != expected_route.len() - 1 {
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+						assert!(update_add_htlcs.is_empty());
+						assert!(update_fulfill_htlcs.is_empty());
+						assert_eq!(update_fail_htlcs.len(), 1);
+						assert!(update_fail_malformed_htlcs.is_empty());
+						expected_next_node = node_id.clone();
+						next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
+					},
+					_ => panic!("Unexpected event"),
+				}
+			} else {
+				assert!(events.is_empty());
+			}
+			if !skip_last && idx == expected_route.len() - 1 {
+				assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
+			}
 
 			prev_node = node;
 		}
 
-		assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
-		update_fail_dance!(origin_node, expected_route.first().unwrap(), true);
+		if !skip_last {
+			update_fail_dance!(origin_node, expected_route.first().unwrap(), true);
 
-		let events = origin_node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentFailed { payment_hash } => {
-				assert_eq!(payment_hash, our_payment_hash);
-			},
-			_ => panic!("Unexpected event"),
+			let events = origin_node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { payment_hash } => {
+					assert_eq!(payment_hash, our_payment_hash);
+				},
+				_ => panic!("Unexpected event"),
+			}
 		}
+	}
+
+	fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_hash: [u8; 32]) {
+		fail_payment_along_route(origin_node, expected_route, false, our_payment_hash);
 	}
 
 	fn create_network(node_count: usize) -> Vec<Node> {
@@ -3037,12 +3069,6 @@ mod tests {
 		close_channel(&nodes[2], &nodes[3], &chan_3.2, chan_3.3, true);
 		close_channel(&nodes[1], &nodes[3], &chan_4.2, chan_4.3, false);
 		close_channel(&nodes[1], &nodes[3], &chan_5.2, chan_5.3, false);
-
-		// Check that we processed all pending events
-		for node in nodes {
-			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
-			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
-		}
 	}
 
 	#[test]
@@ -3352,12 +3378,6 @@ mod tests {
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 		assert_eq!(nodes[1].node.list_channels().len(), 0);
-
-		// Check that we processed all pending events
-		for node in nodes {
-			assert_eq!(node.node.get_and_clear_pending_events().len(), 0);
-			assert_eq!(node.chan_monitor.added_monitors.lock().unwrap().len(), 0);
-		}
 	}
 
 	#[test]
@@ -3541,6 +3561,16 @@ mod tests {
 		}
 		while !headers.is_empty() {
 			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		{
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
+					assert_eq!(flags & 0b10, 0b10);
+				},
+				_ => panic!("Unexpected event"),
+			}
 		}
 		let channel_state = nodes[0].node.channel_state.lock().unwrap();
 		assert_eq!(channel_state.by_id.len(), 0);

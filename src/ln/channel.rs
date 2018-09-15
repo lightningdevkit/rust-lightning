@@ -2431,8 +2431,6 @@ impl Channel {
 	}
 	/// Only fails in case of bad keys
 	fn send_commitment_no_status_check(&mut self) -> Result<(msgs::CommitmentSigned, ChannelMonitor), HandleError> {
-		let funding_script = self.get_funding_redeemscript();
-
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
@@ -2446,6 +2444,22 @@ impl Channel {
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke;
 			}
 		}
+
+		match self.send_commitment_no_state_update() {
+			Ok((res, remote_commitment_tx)) => {
+				// Update state now that we've passed all the can-fail calls...
+				self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_commitment_tx.0, remote_commitment_tx.1, self.cur_remote_commitment_transaction_number);
+				self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
+				Ok((res, self.channel_monitor.clone()))
+			},
+			Err(e) => Err(e),
+		}
+	}
+
+	/// Only fails in case of bad keys. Used for channel_reestablish commitment_signed generation
+	/// when we shouldn't change HTLC/channel state.
+	fn send_commitment_no_state_update(&self) -> Result<(msgs::CommitmentSigned, (Transaction, Vec<HTLCOutputInCommitment>)), HandleError> {
+		let funding_script = self.get_funding_redeemscript();
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true);
@@ -2463,15 +2477,11 @@ impl Channel {
 			htlc_sigs.push(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key));
 		}
 
-		// Update state now that we've passed all the can-fail calls...
-		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_commitment_tx.0, remote_commitment_tx.1, self.cur_remote_commitment_transaction_number);
-		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
-
 		Ok((msgs::CommitmentSigned {
 			channel_id: self.channel_id,
 			signature: our_sig,
 			htlc_signatures: htlc_sigs,
-		}, self.channel_monitor.clone()))
+		}, remote_commitment_tx))
 	}
 
 	/// Adds a pending outbound HTLC to this channel, and creates a signed commitment transaction
