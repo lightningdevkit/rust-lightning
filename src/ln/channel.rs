@@ -2168,7 +2168,7 @@ impl Channel {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> Result<msgs::OpenChannel, APIError> {
+	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> msgs::OpenChannel {
 		if !self.channel_outbound {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -2182,7 +2182,7 @@ impl Channel {
 
 		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 
-		Ok(msgs::OpenChannel {
+		msgs::OpenChannel {
 			chain_hash: chain_hash,
 			temporary_channel_id: self.channel_id,
 			funding_satoshis: self.channel_value_satoshis,
@@ -2202,7 +2202,7 @@ impl Channel {
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			channel_flags: if self.announce_publicly {1} else {0},
 			shutdown_scriptpubkey: None,
-		})
+		}
 	}
 
 	pub fn get_accept_channel(&self) -> msgs::AcceptChannel {

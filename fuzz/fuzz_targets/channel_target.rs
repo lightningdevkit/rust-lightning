@@ -197,7 +197,7 @@ pub fn do_test(data: &[u8]) {
 			Ok(chan) => chan,
 			Err(_) => return,
 		};
-		chan.get_open_channel(Sha256dHash::from(get_slice!(32)), &fee_est).unwrap();
+		chan.get_open_channel(Sha256dHash::from(get_slice!(32)), &fee_est);
 		let accept_chan = if get_slice!(1)[0] == 0 {
 			decode_msg_with_len16!(msgs::AcceptChannel, 270, 1)
 		} else {
