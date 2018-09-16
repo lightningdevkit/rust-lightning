@@ -742,8 +742,8 @@ impl_writeable!(AnnouncementSignatures, 32+8+64*2, {
 	bitcoin_signature
 });
 
-impl<W: Writer> Writeable<W> for ChannelReestablish {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for ChannelReestablish {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(if self.data_loss_protect.is_some() { 32+2*8+33+32 } else { 32+2*8 });
 		self.channel_id.write(w)?;
 		self.next_local_commitment_number.write(w)?;
@@ -905,8 +905,8 @@ impl_writeable_len_match!(OnionErrorPacket, {
 	data
 });
 
-impl<W: Writer> Writeable<W> for OnionPacket {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for OnionPacket {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(1 + 33 + 20*65 + 32);
 		self.version.write(w)?;
 		match self.public_key {
@@ -943,8 +943,8 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 	onion_routing_packet
 });
 
-impl<W: Writer> Writeable<W> for OnionRealm0HopData {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for OnionRealm0HopData {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(32);
 		self.short_channel_id.write(w)?;
 		self.amt_to_forward.write(w)?;
@@ -968,8 +968,8 @@ impl<R: Read> Readable<R> for OnionRealm0HopData {
 	}
 }
 
-impl<W: Writer> Writeable<W> for OnionHopData {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for OnionHopData {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(65);
 		self.realm.write(w)?;
 		self.data.write(w)?;
@@ -994,8 +994,8 @@ impl<R: Read> Readable<R> for OnionHopData {
 	}
 }
 
-impl<W: Writer> Writeable<W> for Ping {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for Ping {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(self.byteslen as usize + 4);
 		self.ponglen.write(w)?;
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
@@ -1016,8 +1016,8 @@ impl<R: Read> Readable<R> for Ping {
 	}
 }
 
-impl<W: Writer> Writeable<W> for Pong {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for Pong {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(self.byteslen as usize + 2);
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
@@ -1036,8 +1036,8 @@ impl<R: Read> Readable<R> for Pong {
 	}
 }
 
-impl<W: Writer> Writeable<W> for UnsignedChannelAnnouncement {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for UnsignedChannelAnnouncement {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(2 + 2*32 + 4*33 + self.features.flags.len() + self.excess_data.len());
 		self.features.write(w)?;
 		self.chain_hash.write(w)?;
@@ -1087,8 +1087,8 @@ impl_writeable_len_match!(ChannelAnnouncement, {
 	contents
 });
 
-impl<W: Writer> Writeable<W> for UnsignedChannelUpdate {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for UnsignedChannelUpdate {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(64 + self.excess_data.len());
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
@@ -1131,8 +1131,8 @@ impl_writeable_len_match!(ChannelUpdate, {
 	contents
 });
 
-impl<W: Writer> Writeable<W> for ErrorMessage {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for ErrorMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(32 + 2 + self.data.len());
 		self.channel_id.write(w)?;
 		(self.data.len() as u16).write(w)?;
@@ -1159,8 +1159,8 @@ impl<R: Read> Readable<R> for ErrorMessage {
 	}
 }
 
-impl<W: Writer> Writeable<W> for UnsignedNodeAnnouncement {
-	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+impl Writeable for UnsignedNodeAnnouncement {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(64 + 76 + self.features.flags.len() + self.addresses.len()*38 + self.excess_address_data.len() + self.excess_data.len());
 		self.features.write(w)?;
 		self.timestamp.write(w)?;

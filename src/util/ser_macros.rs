@@ -1,7 +1,7 @@
 macro_rules! impl_writeable {
 	($st:ident, $len: expr, {$($field:ident),*}) => {
-		impl<W: Writer> Writeable<W> for $st {
-			fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		impl Writeable for $st {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 				w.size_hint($len);
 				$( self.$field.write(w)?; )*
 				Ok(())
@@ -19,8 +19,8 @@ macro_rules! impl_writeable {
 }
 macro_rules! impl_writeable_len_match {
 	($st:ident, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
-		impl<W: Writer> Writeable<W> for $st {
-			fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		impl Writeable for $st {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 				w.size_hint(match *self {
 					$($m => $l,)*
 				});
