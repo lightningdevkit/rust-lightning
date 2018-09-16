@@ -2,7 +2,6 @@ use std::result::Result;
 use std::io::Read;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::mem;
 
 use secp256k1::{Secp256k1, Signature};
 use secp256k1::key::PublicKey;
@@ -163,17 +162,34 @@ impl<R, K, V> Readable<R> for HashMap<K, V>
 }
 
 // Vectors
-impl<W: Writer, T: Writeable<W>> Writeable<W> for Vec<T> {
+impl<W: Writer> Writeable<W> for Vec<u8> {
+	#[inline]
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+		(self.len() as u16).write(w)?;
+		Ok(w.write_all(&self)?)
+	}
+}
+
+impl<R: Read> Readable<R> for Vec<u8> {
+	#[inline]
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let len: u16 = Readable::read(r)?;
+		let mut ret = Vec::with_capacity(len as usize);
+		ret.resize(len as usize, 0);
+		r.read_exact(&mut ret)?;
+		Ok(ret)
+	}
+}
+impl<W: Writer> Writeable<W> for Vec<Signature> {
 	#[inline]
 	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		let byte_size = (self.len() as usize)
-		                .checked_mul(mem::size_of::<T>())
+		                .checked_mul(33)
 		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
 			return Err(DecodeError::BadLengthDescriptor);
 		}
 		(self.len() as u16).write(w)?;
-		// performance with Vec<u8>
 		for e in self.iter() {
 			e.write(w)?;
 		}
@@ -181,25 +197,26 @@ impl<W: Writer, T: Writeable<W>> Writeable<W> for Vec<T> {
 	}
 }
 
-impl<R: Read, T: Readable<R>> Readable<R> for Vec<T> {
+impl<R: Read> Readable<R> for Vec<Signature> {
 	#[inline]
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let byte_size = (len as usize)
-		                .checked_mul(mem::size_of::<T>())
+		                .checked_mul(33)
 		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
 			return Err(DecodeError::BadLengthDescriptor);
 		}
 		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(T::read(r)?); }
+		for _ in 0..len { ret.push(Signature::read(r)?); }
 		Ok(ret)
 	}
 }
 
 impl<W: Writer> Writeable<W> for Script {
 	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
-		self.to_bytes().to_vec().write(w)
+		(self.len() as u16).write(w)?;
+		Ok(w.write_all(self.as_bytes())?)
 	}
 }
 
