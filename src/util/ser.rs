@@ -38,7 +38,7 @@ impl<W: ::std::io::Write> Writer for W {
 /// A trait that various rust-lightning types implement allowing them to be written out to a Writer
 pub trait Writeable<W: Writer> {
 	/// Writes self out to the given Writer
-	fn write(&self, writer: &mut W) -> Result<(), DecodeError>;
+	fn write(&self, writer: &mut W) -> Result<(), ::std::io::Error>;
 }
 
 /// A trait that various rust-lightning types implement allowing them to be read in from a Read
@@ -54,8 +54,8 @@ macro_rules! impl_writeable_primitive {
 	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
 		impl<W: Writer> Writeable<W> for $val_type {
 			#[inline]
-			fn write(&self, writer: &mut W) -> Result<(), DecodeError> {
-				Ok(writer.write_all(&$meth_write(*self))?)
+			fn write(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+				writer.write_all(&$meth_write(*self))
 			}
 		}
 		impl<R: Read> Readable<R> for $val_type {
@@ -75,8 +75,8 @@ impl_writeable_primitive!(u16, be16_to_array, 2, slice_to_be16);
 
 impl<W: Writer> Writeable<W> for u8 {
 	#[inline]
-	fn write(&self, writer: &mut W) -> Result<(), DecodeError> {
-		Ok(writer.write_all(&[*self])?)
+	fn write(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		writer.write_all(&[*self])
 	}
 }
 impl<R: Read> Readable<R> for u8 {
@@ -90,8 +90,8 @@ impl<R: Read> Readable<R> for u8 {
 
 impl<W: Writer> Writeable<W> for bool {
 	#[inline]
-	fn write(&self, writer: &mut W) -> Result<(), DecodeError> {
-		Ok(writer.write_all(&[if *self {1} else {0}])?)
+	fn write(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		writer.write_all(&[if *self {1} else {0}])
 	}
 }
 impl<R: Read> Readable<R> for bool {
@@ -112,9 +112,8 @@ macro_rules! impl_array {
 		impl<W: Writer> Writeable<W> for [u8; $size]
 		{
 			#[inline]
-			fn write(&self, w: &mut W) -> Result<(), DecodeError> {
-				w.write_all(self)?;
-				Ok(())
+			fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+				w.write_all(self)
 			}
 		}
 
@@ -143,7 +142,7 @@ impl<W, K, V> Writeable<W> for HashMap<K, V>
 	      V: Writeable<W>
 {
 	#[inline]
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 	(self.len() as u16).write(w)?;
 		for (key, value) in self.iter() {
 			key.write(w)?;
@@ -172,9 +171,9 @@ impl<R, K, V> Readable<R> for HashMap<K, V>
 // Vectors
 impl<W: Writer> Writeable<W> for Vec<u8> {
 	#[inline]
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		(self.len() as u16).write(w)?;
-		Ok(w.write_all(&self)?)
+		w.write_all(&self)
 	}
 }
 
@@ -190,13 +189,7 @@ impl<R: Read> Readable<R> for Vec<u8> {
 }
 impl<W: Writer> Writeable<W> for Vec<Signature> {
 	#[inline]
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
-		let byte_size = (self.len() as usize)
-		                .checked_mul(33)
-		                .ok_or(DecodeError::BadLengthDescriptor)?;
-		if byte_size > MAX_BUF_SIZE {
-			return Err(DecodeError::BadLengthDescriptor);
-		}
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		(self.len() as u16).write(w)?;
 		for e in self.iter() {
 			e.write(w)?;
@@ -222,9 +215,9 @@ impl<R: Read> Readable<R> for Vec<Signature> {
 }
 
 impl<W: Writer> Writeable<W> for Script {
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		(self.len() as u16).write(w)?;
-		Ok(w.write_all(self.as_bytes())?)
+		w.write_all(self.as_bytes())
 	}
 }
 
@@ -238,7 +231,7 @@ impl<R: Read> Readable<R> for Script {
 }
 
 impl<W: Writer> Writeable<W> for Option<Script> {
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		if let &Some(ref script) = self {
 			script.write(w)?;
 		}
@@ -261,7 +254,7 @@ impl<R: Read> Readable<R> for Option<Script> {
 }
 
 impl<W: Writer> Writeable<W> for PublicKey {
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.serialize().write(w)
 	}
 }
@@ -277,7 +270,7 @@ impl<R: Read> Readable<R> for PublicKey {
 }
 
 impl<W: Writer> Writeable<W> for Sha256dHash {
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.as_bytes().write(w)
 	}
 }
@@ -290,7 +283,7 @@ impl<R: Read> Readable<R> for Sha256dHash {
 }
 
 impl<W: Writer> Writeable<W> for Signature {
-	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.serialize_compact(&Secp256k1::without_caps()).write(w)
 	}
 }
