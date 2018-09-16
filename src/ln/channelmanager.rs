@@ -16,10 +16,10 @@ use ln::channel::{Channel, ChannelKeys};
 use ln::channelmonitor::ManyChannelMonitor;
 use ln::router::{Route,RouteHop};
 use ln::msgs;
-use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable};
+use ln::msgs::{HandleError,ChannelMessageHandler};
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
-use util::ser::Readable;
+use util::ser::{Readable, Writeable};
 use util::chacha20poly1305rfc::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
@@ -2252,11 +2252,12 @@ mod tests {
 	use ln::channelmanager::{ChannelManager,OnionKeys};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
-	use ln::msgs::{MsgEncodable,ChannelMessageHandler,RoutingMessageHandler};
+	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 	use util::test_utils;
 	use util::events::{Event, EventsProvider};
-	use util::logger::Logger;
 	use util::errors::APIError;
+	use util::logger::Logger;
+	use util::ser::Writeable;
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};

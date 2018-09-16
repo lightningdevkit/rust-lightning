@@ -9,6 +9,7 @@ use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
+use util::byte_utils;
 
 use util::byte_utils::{be64_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be64};
 
@@ -35,10 +36,38 @@ impl<W: ::std::io::Write> Writer for W {
 	fn size_hint(&mut self, _size: usize) { }
 }
 
+struct VecWriter(Vec<u8>);
+impl Writer for VecWriter {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0.extend_from_slice(buf);
+		Ok(())
+	}
+	fn size_hint(&mut self, size: usize) {
+		self.0.reserve_exact(size);
+	}
+}
+
 /// A trait that various rust-lightning types implement allowing them to be written out to a Writer
 pub trait Writeable {
 	/// Writes self out to the given Writer
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error>;
+
+	/// Writes self out to a Vec<u8>
+	fn encode(&self) -> Vec<u8> {
+		let mut msg = VecWriter(Vec::new());
+		self.write(&mut msg).unwrap();
+		msg.0
+	}
+
+	/// Writes self out to a Vec<u8>
+	fn encode_with_len(&self) -> Vec<u8> {
+		let mut msg = VecWriter(Vec::new());
+		0u16.write(&mut msg).unwrap();
+		self.write(&mut msg).unwrap();
+		let len = msg.0.len();
+		msg.0[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
+		msg.0
+	}
 }
 
 /// A trait that various rust-lightning types implement allowing them to be read in from a Read

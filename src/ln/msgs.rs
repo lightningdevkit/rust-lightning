@@ -2,7 +2,6 @@ use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 use bitcoin::util::hash::Sha256dHash;
-use bitcoin::network::serialize::serialize;
 use bitcoin::blockdata::script::Script;
 
 use std::error::Error;
@@ -13,19 +12,6 @@ use std::result::Result;
 use util::{byte_utils, internal_traits, events};
 use util::ser::{Readable, Writeable, Writer};
 
-pub trait MsgEncodable {
-	fn encode(&self) -> Vec<u8>;
-	#[inline]
-	fn encoded_len(&self) -> usize { self.encode().len() }
-	#[inline]
-	fn encode_with_len(&self) -> Vec<u8> {
-		let enc = self.encode();
-		let mut res = Vec::with_capacity(enc.len() + 2);
-		res.extend_from_slice(&byte_utils::be16_to_array(enc.len() as u16));
-		res.extend_from_slice(&enc);
-		res
-	}
-}
 #[derive(Debug)]
 pub enum DecodeError {
 	/// Unknown realm byte in an OnionHopData packet
@@ -550,167 +536,6 @@ impl From<::std::io::Error> for DecodeError {
 		} else {
 			DecodeError::Io(e)
 		}
-	}
-}
-
-impl MsgEncodable for GlobalFeatures {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(self.flags.len() + 2);
-		res.extend_from_slice(&byte_utils::be16_to_array(self.flags.len() as u16));
-		res.extend_from_slice(&self.flags[..]);
-		res
-	}
-	fn encoded_len(&self) -> usize { self.flags.len() + 2 }
-}
-
-impl MsgEncodable for ChannelReestablish {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(if self.data_loss_protect.is_some() { 32+2*8+33+32 } else { 32+2*8 });
-
-		res.extend_from_slice(&serialize(&self.channel_id).unwrap()[..]);
-		res.extend_from_slice(&byte_utils::be64_to_array(self.next_local_commitment_number));
-		res.extend_from_slice(&byte_utils::be64_to_array(self.next_remote_commitment_number));
-
-		if let &Some(ref data_loss_protect) = &self.data_loss_protect {
-			res.extend_from_slice(&data_loss_protect.your_last_per_commitment_secret[..]);
-			res.extend_from_slice(&data_loss_protect.my_current_per_commitment_point.serialize());
-		}
-		res
-	}
-}
-
-impl MsgEncodable for UnsignedNodeAnnouncement {
-	fn encode(&self) -> Vec<u8> {
-		let features = self.features.encode();
-		let mut res = Vec::with_capacity(74 + features.len() + self.addresses.len()*7 + self.excess_address_data.len() + self.excess_data.len());
-		res.extend_from_slice(&features[..]);
-		res.extend_from_slice(&byte_utils::be32_to_array(self.timestamp));
-		res.extend_from_slice(&self.node_id.serialize());
-		res.extend_from_slice(&self.rgb);
-		res.extend_from_slice(&self.alias);
-		let mut addr_slice = Vec::with_capacity(self.addresses.len() * 18);
-		let mut addrs_to_encode = self.addresses.clone();
-		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
-		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
-		for addr in addrs_to_encode.iter() {
-			match addr {
-				&NetAddress::IPv4{addr, port} => {
-					addr_slice.push(1);
-					addr_slice.extend_from_slice(&addr);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::IPv6{addr, port} => {
-					addr_slice.push(2);
-					addr_slice.extend_from_slice(&addr);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::OnionV2{addr, port} => {
-					addr_slice.push(3);
-					addr_slice.extend_from_slice(&addr);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::OnionV3{ed25519_pubkey, checksum, version, port} => {
-					addr_slice.push(4);
-					addr_slice.extend_from_slice(&ed25519_pubkey);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(checksum));
-					addr_slice.push(version);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-			}
-		}
-		res.extend_from_slice(&byte_utils::be16_to_array((addr_slice.len() + self.excess_address_data.len()) as u16));
-		res.extend_from_slice(&addr_slice[..]);
-		res.extend_from_slice(&self.excess_address_data[..]);
-		res.extend_from_slice(&self.excess_data[..]);
-		res
-	}
-}
-
-impl MsgEncodable for UnsignedChannelAnnouncement {
-	fn encode(&self) -> Vec<u8> {
-		let features = self.features.encode();
-		let mut res = Vec::with_capacity(172 + features.len() + self.excess_data.len());
-		res.extend_from_slice(&features[..]);
-		res.extend_from_slice(&self.chain_hash[..]);
-		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
-		res.extend_from_slice(&self.node_id_1.serialize());
-		res.extend_from_slice(&self.node_id_2.serialize());
-		res.extend_from_slice(&self.bitcoin_key_1.serialize());
-		res.extend_from_slice(&self.bitcoin_key_2.serialize());
-		res.extend_from_slice(&self.excess_data[..]);
-		res
-	}
-}
-
-impl MsgEncodable for UnsignedChannelUpdate {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(64 + self.excess_data.len());
-		res.extend_from_slice(&self.chain_hash[..]);
-		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
-		res.extend_from_slice(&byte_utils::be32_to_array(self.timestamp));
-		res.extend_from_slice(&byte_utils::be16_to_array(self.flags));
-		res.extend_from_slice(&byte_utils::be16_to_array(self.cltv_expiry_delta));
-		res.extend_from_slice(&byte_utils::be64_to_array(self.htlc_minimum_msat));
-		res.extend_from_slice(&byte_utils::be32_to_array(self.fee_base_msat));
-		res.extend_from_slice(&byte_utils::be32_to_array(self.fee_proportional_millionths));
-		res.extend_from_slice(&self.excess_data[..]);
-		res
-	}
-}
-
-impl MsgEncodable for ChannelUpdate {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(128);
-		res.extend_from_slice(&self.signature.serialize_compact(&Secp256k1::without_caps())[..]);
-		res.extend_from_slice(&self.contents.encode()[..]);
-		res
-	}
-}
-
-impl MsgEncodable for OnionRealm0HopData {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32);
-		res.extend_from_slice(&byte_utils::be64_to_array(self.short_channel_id));
-		res.extend_from_slice(&byte_utils::be64_to_array(self.amt_to_forward));
-		res.extend_from_slice(&byte_utils::be32_to_array(self.outgoing_cltv_value));
-		res.resize(32, 0);
-		res
-	}
-}
-
-impl MsgEncodable for OnionHopData {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(65);
-		res.push(self.realm);
-		res.extend_from_slice(&self.data.encode()[..]);
-		res.extend_from_slice(&self.hmac);
-		res
-	}
-}
-
-impl MsgEncodable for OnionPacket {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(1 + 33 + 20*65 + 32);
-		res.push(self.version);
-		match self.public_key {
-			Ok(pubkey) => res.extend_from_slice(&pubkey.serialize()),
-			Err(_) => res.extend_from_slice(&[0; 33]),
-		}
-		res.extend_from_slice(&self.hop_data);
-		res.extend_from_slice(&self.hmac);
-		res
-	}
-}
-
-impl MsgEncodable for DecodedOnionErrorPacket {
-	fn encode(&self) -> Vec<u8> {
-		let mut res = Vec::with_capacity(32 + 4 + self.failuremsg.len() + self.pad.len());
-		res.extend_from_slice(&self.hmac);
-		res.extend_from_slice(&[((self.failuremsg.len() >> 8) & 0xff) as u8, (self.failuremsg.len() & 0xff) as u8]);
-		res.extend_from_slice(&self.failuremsg);
-		res.extend_from_slice(&[((self.pad.len() >> 8) & 0xff) as u8, (self.pad.len() & 0xff) as u8]);
-		res.extend_from_slice(&self.pad);
-		res
 	}
 }
 
@@ -1339,8 +1164,8 @@ impl_writeable_len_match!(NodeAnnouncement, {
 #[cfg(test)]
 mod tests {
 	use hex;
-	use ln::msgs::MsgEncodable;
 	use ln::msgs;
+	use util::ser::Writeable;
 	use secp256k1::key::{PublicKey,SecretKey};
 	use secp256k1::Secp256k1;
 
