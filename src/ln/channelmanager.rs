@@ -1046,6 +1046,7 @@ impl ChannelManager {
 				update_fulfill_htlcs: Vec::new(),
 				update_fail_htlcs: Vec::new(),
 				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: None,
 				commitment_signed,
 			},
 		});
@@ -1212,6 +1213,7 @@ impl ChannelManager {
 								update_fulfill_htlcs: Vec::new(),
 								update_fail_htlcs: Vec::new(),
 								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
 								commitment_signed: commitment_msg,
 							},
 						}));
@@ -1333,6 +1335,7 @@ impl ChannelManager {
 								update_fulfill_htlcs: Vec::new(),
 								update_fail_htlcs: vec![msg],
 								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
 								commitment_signed: commitment_msg,
 							},
 						});
@@ -1414,6 +1417,7 @@ impl ChannelManager {
 							update_fulfill_htlcs: vec![msg],
 							update_fail_htlcs: Vec::new(),
 							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: None,
 							commitment_signed: commitment_msg,
 						}
 					});
@@ -1930,6 +1934,30 @@ impl ChannelManager {
 			}
 		}
 		res
+	}
+
+	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), HandleError> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&channel_id) {
+			None => return Err(HandleError{err: "Failed to find corresponding channel", action: None}),
+			Some(chan) => {
+				if !chan.is_usable() {
+					return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: None});
+				}
+				if let Some((update_fee, commitment_msg, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw)? {
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::SendUpdateFee {
+						node_id: chan.get_their_node_id(),
+						msg: update_fee,
+						commitment_signed: commitment_msg,
+					});
+				}
+			},
+		}
+		Ok(())
 	}
 }
 
@@ -2682,10 +2710,11 @@ mod tests {
 	impl SendEvent {
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, commitment_signed } } => {
+				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
 					assert!(update_fulfill_htlcs.is_empty());
 					assert!(update_fail_htlcs.is_empty());
 					assert!(update_fail_malformed_htlcs.is_empty());
+					assert!(update_fee.is_none());
 					SendEvent { node_id: node_id, msgs: update_add_htlcs, commitment_msg: commitment_signed }
 				},
 				_ => panic!("Unexpected event type!"),
@@ -2852,11 +2881,12 @@ mod tests {
 			if !skip_last || idx != expected_route.len() - 1 {
 				assert_eq!(events.len(), 1);
 				match events[0] {
-					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 						assert!(update_add_htlcs.is_empty());
 						assert_eq!(update_fulfill_htlcs.len(), 1);
 						assert!(update_fail_htlcs.is_empty());
 						assert!(update_fail_malformed_htlcs.is_empty());
+						assert!(update_fee.is_none());
 						expected_next_node = node_id.clone();
 						next_msgs = Some((update_fulfill_htlcs[0].clone(), commitment_signed.clone()));
 					},
@@ -2963,11 +2993,12 @@ mod tests {
 			if !skip_last || idx != expected_route.len() - 1 {
 				assert_eq!(events.len(), 1);
 				match events[0] {
-					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 						assert!(update_add_htlcs.is_empty());
 						assert!(update_fulfill_htlcs.is_empty());
 						assert_eq!(update_fail_htlcs.len(), 1);
 						assert!(update_fail_malformed_htlcs.is_empty());
+						assert!(update_fee.is_none());
 						expected_next_node = node_id.clone();
 						next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
 					},
@@ -2979,7 +3010,6 @@ mod tests {
 			if !skip_last && idx == expected_route.len() - 1 {
 				assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
 			}
-
 			prev_node = node;
 		}
 
@@ -3029,6 +3059,73 @@ mod tests {
 		}
 
 		nodes
+	}
+	
+	#[test]
+	fn test_update_fee() {
+		let nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		let feerate = get_feerate!(nodes[0]);
+		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg, ref commit) = match events_0[0] {
+			Event::SendUpdateFee { node_id:_, ref msg, ref commitment_signed } => {
+				(msg, commitment_signed.clone())
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg).unwrap();
+
+		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commit).unwrap();
+		{
+			let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		{
+			let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let commitment_signed = commitment_signed.unwrap();
+		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
+		{
+			let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		assert!(resp_option.is_none());
+
+		let (revoke_msg, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed).unwrap();
+		assert!(commitment_signed.is_none());
+		{
+			let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg).unwrap();
+		{
+			let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		assert!(resp_option.is_none());
+
+		assert_eq!(get_feerate!(nodes[0]), feerate + 20);
+		assert_eq!(get_feerate!(nodes[1]), feerate + 20);
+		close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	}
 
 	#[test]
