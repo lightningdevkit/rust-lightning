@@ -16,9 +16,10 @@ use ln::channel::{Channel, ChannelKeys};
 use ln::channelmonitor::ManyChannelMonitor;
 use ln::router::{Route,RouteHop};
 use ln::msgs;
-use ln::msgs::{HandleError,ChannelMessageHandler,MsgEncodable,MsgDecodable};
+use ln::msgs::{HandleError,ChannelMessageHandler};
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
+use util::ser::{Readable, Writeable};
 use util::chacha20poly1305rfc::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
@@ -32,6 +33,7 @@ use crypto::symmetriccipher::SynchronousStreamCipher;
 use std::{ptr, mem};
 use std::collections::HashMap;
 use std::collections::hash_map;
+use std::io::Cursor;
 use std::sync::{Mutex,MutexGuard,Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
@@ -819,7 +821,7 @@ impl ChannelManager {
 		let next_hop_data = {
 			let mut decoded = [0; 65];
 			chacha.process(&msg.onion_routing_packet.hop_data[0..65], &mut decoded);
-			match msgs::OnionHopData::decode(&decoded[..]) {
+			match msgs::OnionHopData::read(&mut Cursor::new(&decoded[..])) {
 				Err(err) => {
 					let error_code = match err {
 						msgs::DecodeError::UnknownRealmByte => 0x4000 | 1,
@@ -1717,7 +1719,7 @@ impl ChannelManager {
 					chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 					packet_decrypted = decryption_tmp;
 
-					if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::decode(&packet_decrypted) {
+					if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 						if err_packet.failuremsg.len() >= 2 {
 							let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
 
@@ -1733,7 +1735,7 @@ impl ChannelManager {
 										if err_packet.failuremsg.len() >= 4 {
 											let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
 											if err_packet.failuremsg.len() >= 4 + update_len {
-												if let Ok(chan_update) = msgs::ChannelUpdate::decode(&err_packet.failuremsg[4..4 + update_len]) {
+												if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&err_packet.failuremsg[4..4 + update_len])) {
 													res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
 														msg: chan_update,
 													});
@@ -2250,11 +2252,12 @@ mod tests {
 	use ln::channelmanager::{ChannelManager,OnionKeys};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
-	use ln::msgs::{MsgEncodable,ChannelMessageHandler,RoutingMessageHandler};
+	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 	use util::test_utils;
 	use util::events::{Event, EventsProvider};
-	use util::logger::Logger;
 	use util::errors::APIError;
+	use util::logger::Logger;
+	use util::ser::Writeable;
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};

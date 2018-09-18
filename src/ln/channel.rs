@@ -14,7 +14,7 @@ use crypto::digest::Digest;
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use ln::msgs;
-use ln::msgs::{ErrorAction, HandleError, MsgEncodable};
+use ln::msgs::{ErrorAction, HandleError};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, PendingForwardHTLCInfo, HTLCFailReason, HTLCFailureMsg};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -22,6 +22,7 @@ use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
 use util::{transaction_utils,rng};
+use util::ser::Writeable;
 use util::sha2::Sha256;
 use util::logger::Logger;
 use util::errors::APIError;
