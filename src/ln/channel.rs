@@ -1300,6 +1300,9 @@ impl Channel {
 		if self.channel_outbound {
 			return Err(HandleError{err: "Received funding_created for an outbound channel?", action: Some(msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: self.channel_id, data: "Received funding_created for an outbound channel?".to_string()}})});
 		}
+		if self.channel_id != msg.temporary_channel_id {
+			return Err(HandleError{err: "temporary channel id in funding_created does not match open_channel message", action: Some(msgs::ErrorAction::SendErrorMessage {msg: msgs::ErrorMessage {channel_id: self.channel_id, data: "temporary channel id in funding_created does not match open_channel message".to_string()}})});
+		}
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
 			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
 			// remember the channel, so its safe to just send an error_message here and drop the
