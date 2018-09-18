@@ -37,3 +37,6 @@ features = ["bitcoinconsensus"]
 
 [dev-dependencies]
 hex = "0.3"
+
+[profile.dev]
+opt-level = 1
