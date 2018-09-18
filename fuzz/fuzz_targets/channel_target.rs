@@ -15,7 +15,7 @@ use lightning::chain::chaininterface::{FeeEstimator, ConfirmationTarget};
 use lightning::chain::transaction::OutPoint;
 use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, Reader};
+use lightning::util::ser::Readable;
 
 mod utils;
 
@@ -121,7 +121,7 @@ pub fn do_test(data: &[u8]) {
 
 	macro_rules! decode_msg {
 		($MsgType: path, $len: expr) => {{
-			let mut reader = Reader::new(::std::io::Cursor::new(get_slice!($len)));
+			let mut reader = ::std::io::Cursor::new(get_slice!($len));
 			match <($MsgType)>::read(&mut reader) {
 				Ok(msg) => msg,
 				Err(e) => match e {

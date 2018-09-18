@@ -1,8 +1,7 @@
 use std::result::Result;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::mem;
 
 use secp256k1::{Secp256k1, Signature};
 use secp256k1::key::PublicKey;
@@ -15,133 +14,114 @@ use util::byte_utils::{be64_to_array, be32_to_array, be16_to_array, slice_to_be1
 
 const MAX_BUF_SIZE: usize = 64 * 1024;
 
-pub struct Writer<W> { writer: W }
-pub struct Reader<R> { reader: R }
-
-pub trait Writeable<W: Write> {
-	fn write(&self, writer: &mut Writer<W>) -> Result<(), DecodeError>;
+/// A trait that is similar to std::io::Write but has one extra function which can be used to size
+/// buffers being written into.
+/// An impl is provided for any type that also impls std::io::Write which simply ignores size
+/// hints.
+pub trait Writer {
+	/// Writes the given buf out. See std::io::Write::write_all for more
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error>;
+	/// Hints that data of the given size is about the be written. This may not always be called
+	/// prior to data being written and may be safely ignored.
+	fn size_hint(&mut self, size: usize);
 }
 
+impl<W: ::std::io::Write> Writer for W {
+	#[inline]
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		<Self as ::std::io::Write>::write_all(self, buf)
+	}
+	#[inline]
+	fn size_hint(&mut self, _size: usize) { }
+}
+
+/// A trait that various rust-lightning types implement allowing them to be written out to a Writer
+pub trait Writeable<W: Writer> {
+	/// Writes self out to the given Writer
+	fn write(&self, writer: &mut W) -> Result<(), DecodeError>;
+}
+
+/// A trait that various rust-lightning types implement allowing them to be read in from a Read
 pub trait Readable<R>
 	where Self: Sized,
 	      R: Read
 {
-	fn read(reader: &mut Reader<R>) -> Result<Self, DecodeError>;
+	/// Reads a Self in from the given Read
+	fn read(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
-impl<W: Write> Writer<W> {
-	pub fn new(writer: W) -> Writer<W> {
-		return Writer { writer }
-	}
-	pub fn into_inner(self) -> W { self.writer }
-	pub fn get_ref(&self) -> &W { &self.writer }
-	fn write_u64(&mut self, v: u64) -> Result<(), DecodeError> {
-		Ok(self.writer.write_all(&be64_to_array(v))?)
-	}
-	fn write_u32(&mut self, v: u32) -> Result<(), DecodeError> {
-		Ok(self.writer.write_all(&be32_to_array(v))?)
-	}
-	fn write_u16(&mut self, v: u16) -> Result<(), DecodeError> {
-		Ok(self.writer.write_all(&be16_to_array(v))?)
-	}
-	fn write_u8(&mut self, v: u8) -> Result<(), DecodeError> {
-		Ok(self.writer.write_all(&[v])?)
-	}
-	fn write_bool(&mut self, v: bool) -> Result<(), DecodeError> {
-		Ok(self.writer.write_all(&[if v {1} else {0}])?)
-	}
-	pub fn write_all(&mut self, v: &[u8]) -> Result<(), DecodeError> {
-		Ok(self.writer.write_all(v)?)
+macro_rules! impl_writeable_primitive {
+	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
+		impl<W: Writer> Writeable<W> for $val_type {
+			#[inline]
+			fn write(&self, writer: &mut W) -> Result<(), DecodeError> {
+				Ok(writer.write_all(&$meth_write(*self))?)
+			}
+		}
+		impl<R: Read> Readable<R> for $val_type {
+			#[inline]
+			fn read(reader: &mut R) -> Result<$val_type, DecodeError> {
+				let mut buf = [0; $len];
+				reader.read_exact(&mut buf)?;
+				Ok($meth_read(&buf))
+			}
+		}
 	}
 }
 
-impl<R: Read> Reader<R> {
-	pub fn new(reader: R) -> Reader<R> {
-		return Reader { reader }
-	}
-	pub fn into_inner(self) -> R { self.reader }
-	pub fn get_ref(&self) -> &R { &self.reader }
+impl_writeable_primitive!(u64, be64_to_array, 8, slice_to_be64);
+impl_writeable_primitive!(u32, be32_to_array, 4, slice_to_be32);
+impl_writeable_primitive!(u16, be16_to_array, 2, slice_to_be16);
 
-	fn read_u64(&mut self) -> Result<u64, DecodeError> {
-		let mut buf = [0; 8];
-		self.reader.read_exact(&mut buf)?;
-		Ok(slice_to_be64(&buf))
+impl<W: Writer> Writeable<W> for u8 {
+	#[inline]
+	fn write(&self, writer: &mut W) -> Result<(), DecodeError> {
+		Ok(writer.write_all(&[*self])?)
 	}
-
-	fn read_u32(&mut self) -> Result<u32, DecodeError> {
-		let mut buf = [0; 4];
-		self.reader.read_exact(&mut buf)?;
-		Ok(slice_to_be32(&buf))
-	}
-
-	fn read_u16(&mut self) -> Result<u16, DecodeError> {
-		let mut buf = [0; 2];
-		self.reader.read_exact(&mut buf)?;
-		Ok(slice_to_be16(&buf))
-	}
-
-	fn read_u8(&mut self) -> Result<u8, DecodeError> {
+}
+impl<R: Read> Readable<R> for u8 {
+	#[inline]
+	fn read(reader: &mut R) -> Result<u8, DecodeError> {
 		let mut buf = [0; 1];
-		self.reader.read_exact(&mut buf)?;
+		reader.read_exact(&mut buf)?;
 		Ok(buf[0])
 	}
-	fn read_bool(&mut self) -> Result<bool, DecodeError> {
+}
+
+impl<W: Writer> Writeable<W> for bool {
+	#[inline]
+	fn write(&self, writer: &mut W) -> Result<(), DecodeError> {
+		Ok(writer.write_all(&[if *self {1} else {0}])?)
+	}
+}
+impl<R: Read> Readable<R> for bool {
+	#[inline]
+	fn read(reader: &mut R) -> Result<bool, DecodeError> {
 		let mut buf = [0; 1];
-		self.reader.read_exact(&mut buf)?;
+		reader.read_exact(&mut buf)?;
 		if buf[0] != 0 && buf[0] != 1 {
 			return Err(DecodeError::InvalidValue);
 		}
 		Ok(buf[0] == 1)
 	}
-	pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), DecodeError> {
-		Ok(self.reader.read_exact(buf)?)
-	}
-	pub fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize, DecodeError> {
-		Ok(self.reader.read_to_end(buf)?)
-	}
 }
-
-macro_rules! impl_writeable_primitive {
-	($val_type:ty, $meth_write:ident, $meth_read:ident) => {
-		impl<W:Write> Writeable<W> for $val_type {
-			#[inline]
-			fn write(&self, writer: &mut Writer<W>) -> Result<(), DecodeError> {
-				writer.$meth_write(*self)
-			}
-		}
-		impl<R:Read> Readable<R> for $val_type {
-			#[inline]
-			fn read(reader: &mut Reader<R>) -> Result<$val_type, DecodeError> {
-				reader.$meth_read()
-			}
-		}
-	}
-}
-
-impl_writeable_primitive!(u64, write_u64, read_u64);
-impl_writeable_primitive!(u32, write_u32, read_u32);
-impl_writeable_primitive!(u16, write_u16, read_u16);
-impl_writeable_primitive!(u8, write_u8, read_u8);
-impl_writeable_primitive!(bool, write_bool, read_bool);
 
 // u8 arrays
 macro_rules! impl_array {
 	( $size:expr ) => (
-		impl<W> Writeable<W> for [u8; $size]
-			where W: Write
+		impl<W: Writer> Writeable<W> for [u8; $size]
 		{
 			#[inline]
-			fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+			fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 				w.write_all(self)?;
 				Ok(())
 			}
 		}
 
-		impl<R> Readable<R> for [u8; $size]
-			where R: Read
+		impl<R: Read> Readable<R> for [u8; $size]
 		{
 			#[inline]
-			fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+			fn read(r: &mut R) -> Result<Self, DecodeError> {
 				let mut buf = [0u8; $size];
 				r.read_exact(&mut buf)?;
 				Ok(buf)
@@ -158,12 +138,12 @@ impl_array!(1300); // for OnionPacket.hop_data
 
 // HashMap
 impl<W, K, V> Writeable<W> for HashMap<K, V>
-	where W: Write,
+	where W: Writer,
 	      K: Writeable<W> + Eq + Hash,
 	      V: Writeable<W>
 {
 	#[inline]
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 	(self.len() as u16).write(w)?;
 		for (key, value) in self.iter() {
 			key.write(w)?;
@@ -179,7 +159,7 @@ impl<R, K, V> Readable<R> for HashMap<K, V>
 	      V: Readable<R>
 {
 	#[inline]
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let mut ret = HashMap::with_capacity(len as usize);
 		for _ in 0..len {
@@ -190,17 +170,34 @@ impl<R, K, V> Readable<R> for HashMap<K, V>
 }
 
 // Vectors
-impl<W: Write, T: Writeable<W>> Writeable<W> for Vec<T> {
+impl<W: Writer> Writeable<W> for Vec<u8> {
 	#[inline]
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+		(self.len() as u16).write(w)?;
+		Ok(w.write_all(&self)?)
+	}
+}
+
+impl<R: Read> Readable<R> for Vec<u8> {
+	#[inline]
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let len: u16 = Readable::read(r)?;
+		let mut ret = Vec::with_capacity(len as usize);
+		ret.resize(len as usize, 0);
+		r.read_exact(&mut ret)?;
+		Ok(ret)
+	}
+}
+impl<W: Writer> Writeable<W> for Vec<Signature> {
+	#[inline]
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		let byte_size = (self.len() as usize)
-		                .checked_mul(mem::size_of::<T>())
+		                .checked_mul(33)
 		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
 			return Err(DecodeError::BadLengthDescriptor);
 		}
 		(self.len() as u16).write(w)?;
-		// performance with Vec<u8>
 		for e in self.iter() {
 			e.write(w)?;
 		}
@@ -208,30 +205,31 @@ impl<W: Write, T: Writeable<W>> Writeable<W> for Vec<T> {
 	}
 }
 
-impl<R: Read, T: Readable<R>> Readable<R> for Vec<T> {
+impl<R: Read> Readable<R> for Vec<Signature> {
 	#[inline]
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let byte_size = (len as usize)
-		                .checked_mul(mem::size_of::<T>())
+		                .checked_mul(33)
 		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
 			return Err(DecodeError::BadLengthDescriptor);
 		}
 		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(T::read(r)?); }
+		for _ in 0..len { ret.push(Signature::read(r)?); }
 		Ok(ret)
 	}
 }
 
-impl<W: Write> Writeable<W> for Script {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
-		self.to_bytes().to_vec().write(w)
+impl<W: Writer> Writeable<W> for Script {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
+		(self.len() as u16).write(w)?;
+		Ok(w.write_all(self.as_bytes())?)
 	}
 }
 
 impl<R: Read> Readable<R> for Script {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let len = <u16 as Readable<R>>::read(r)? as usize;
 		let mut buf = vec![0; len];
 		r.read_exact(&mut buf)?;
@@ -239,8 +237,8 @@ impl<R: Read> Readable<R> for Script {
 	}
 }
 
-impl<W: Write> Writeable<W> for Option<Script> {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for Option<Script> {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		if let &Some(ref script) = self {
 			script.write(w)?;
 		}
@@ -249,7 +247,7 @@ impl<W: Write> Writeable<W> for Option<Script> {
 }
 
 impl<R: Read> Readable<R> for Option<Script> {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		match <u16 as Readable<R>>::read(r) {
 			Ok(len) => {
 				let mut buf = vec![0; len as usize];
@@ -262,14 +260,14 @@ impl<R: Read> Readable<R> for Option<Script> {
 	}
 }
 
-impl<W: Write> Writeable<W> for PublicKey {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for PublicKey {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.serialize().write(w)
 	}
 }
 
 impl<R: Read> Readable<R> for PublicKey {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 33] = Readable::read(r)?;
 		match PublicKey::from_slice(&Secp256k1::without_caps(), &buf) {
 			Ok(key) => Ok(key),
@@ -278,50 +276,31 @@ impl<R: Read> Readable<R> for PublicKey {
 	}
 }
 
-impl<W: Write> Writeable<W> for Sha256dHash {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for Sha256dHash {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.as_bytes().write(w)
 	}
 }
 
 impl<R: Read> Readable<R> for Sha256dHash {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(From::from(&buf[..]))
 	}
 }
 
-impl<W: Write> Writeable<W> for Signature {
-	fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
+impl<W: Writer> Writeable<W> for Signature {
+	fn write(&self, w: &mut W) -> Result<(), DecodeError> {
 		self.serialize_compact(&Secp256k1::without_caps()).write(w)
 	}
 }
 
 impl<R: Read> Readable<R> for Signature {
-	fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 64] = Readable::read(r)?;
 		match Signature::from_compact(&Secp256k1::without_caps(), &buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::BadSignature),
-		}
-	}
-}
-
-macro_rules! impl_writeable {
-	($st:ident, {$($field:ident),*}) => {
-		impl<W: ::std::io::Write> Writeable<W> for $st {
-			fn write(&self, w: &mut Writer<W>) -> Result<(), DecodeError> {
-				$( self.$field.write(w)?; )*
-				Ok(())
-			}
-		}
-
-		impl<R: ::std::io::Read> Readable<R> for $st {
-			fn read(r: &mut Reader<R>) -> Result<Self, DecodeError> {
-				Ok(Self {
-					$($field: Readable::read(r)?),*
-				})
-			}
 		}
 	}
 }

@@ -1,7 +1,7 @@
 use secp256k1::key::{SecretKey,PublicKey};
 
 use ln::msgs;
-use util::ser::{Writer, Reader, Writeable, Readable};
+use util::ser::{Writeable, Writer, Readable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use util::byte_utils;
 use util::events::{EventsProvider,Event};
@@ -112,15 +112,23 @@ pub struct PeerManager<Descriptor: SocketDescriptor> {
 	logger: Arc<Logger>,
 }
 
+struct VecWriter(Vec<u8>);
+impl Writer for VecWriter {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0.extend_from_slice(buf);
+		Ok(())
+	}
+	fn size_hint(&mut self, size: usize) {
+		self.0.reserve_exact(size);
+	}
+}
+
 macro_rules! encode_msg {
 	($msg: expr, $msg_code: expr) => {{
-		let mut w = Writer::new(::std::io::Cursor::new(vec![]));
-		0u16.write(&mut w).unwrap();
-		$msg.write(&mut w).unwrap();
-		let mut msg = w.into_inner().into_inner();
-		let len = msg.len();
-		msg[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
-		msg
+		let mut msg = VecWriter(Vec::new());
+		($msg_code as u16).write(&mut msg).unwrap();
+		$msg.write(&mut msg).unwrap();
+		msg.0
 	}}
 }
 
@@ -437,7 +445,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Need an init message as first message
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}
-										let mut reader = Reader::new(::std::io::Cursor::new(&msg_data[2..]));
+										let mut reader = ::std::io::Cursor::new(&msg_data[2..]);
 										match msg_type {
 											// Connection control:
 											16 => {
