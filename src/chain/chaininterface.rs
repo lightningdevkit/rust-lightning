@@ -70,9 +70,14 @@ pub trait ChainListener: Sync + Send {
 	fn block_disconnected(&self, header: &BlockHeader);
 }
 
+/// An enum that represents the speed at which we want a transaction to confirm used for feerate
+/// estimation.
 pub enum ConfirmationTarget {
+	/// We are happy with this transaction confirming slowly when feerate drops some.
 	Background,
+	/// We'd like this transaction to confirm without major delay, but 12-18 blocks is fine.
 	Normal,
+	/// We'd like this transaction to confirm in the next few blocks.
 	HighPriority,
 }
 
