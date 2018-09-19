@@ -845,7 +845,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						for msg in update_fail_malformed_htlcs {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 135)));
 						}
-						if let Some(msg) = update_fee {
+						if let &Some(ref msg) = update_fee {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 134)));
 						}
 						debug_assert!(update_fee.is_none());
