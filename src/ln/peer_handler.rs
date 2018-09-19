@@ -1,3 +1,10 @@
+//! Top level peer message handling and socket handling logic lives here.
+//! Instead of actually servicing sockets ourselves we require that you implement the
+//! SocketDescriptor interface and use that to receive actions which you should perform on the
+//! socket, and call into PeerManager with bytes read from the socket. The PeerManager will then
+//! call into the provided message handlers (probably a ChannelManager and Router) with messages
+//! they should handle, and encoding/sending response messages.
+
 use secp256k1::key::{SecretKey,PublicKey};
 
 use ln::msgs;
@@ -12,8 +19,13 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,mem,hash,fmt};
 
+/// Provides references to trait impls which handle different types of messages.
 pub struct MessageHandler {
+	/// A message handler which handles messages specific to channels. Usually this is just a
+	/// ChannelManager object.
 	pub chan_handler: Arc<msgs::ChannelMessageHandler>,
+	/// A message handler which handles messages updating our knowledge of the network channel
+	/// graph. Usually this is just a Router object.
 	pub route_handler: Arc<msgs::RoutingMessageHandler>,
 }
 
@@ -51,6 +63,8 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 /// disconnect_event (unless it was provided in response to a new_*_connection event, in which case
 /// no such disconnect_event must be generated and the socket be silently disconencted).
 pub struct PeerHandleError {
+	/// Used to indicate that we probably can't make any future connections to this peer, implying
+	/// we should go ahead and force-close any channels we have with it.
 	no_connection_possible: bool,
 }
 impl fmt::Debug for PeerHandleError {
@@ -103,6 +117,8 @@ impl<Descriptor: SocketDescriptor> PeerHolder<Descriptor> {
 	}
 }
 
+/// A PeerManager manages a set of peers, described by their SocketDescriptor and marshalls socket
+/// events into messages which it passes on to its MessageHandlers.
 pub struct PeerManager<Descriptor: SocketDescriptor> {
 	message_handler: MessageHandler,
 	peers: Mutex<PeerHolder<Descriptor>>,
@@ -138,6 +154,7 @@ const INITIAL_SYNCS_TO_SEND: usize = 5;
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
 /// PeerIds may repeat, but only after disconnect_event() has been called.
 impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
+	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, logger: Arc<Logger>) -> PeerManager<Descriptor> {
 		PeerManager {
 			message_handler: message_handler,

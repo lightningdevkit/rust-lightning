@@ -1,3 +1,11 @@
+//! The top-level channel management and payment tracking stuff lives here.
+//! The ChannelManager is the main chunk of logic implementing the lightning protocol and is
+//! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
+//! upon reconnect to the relevant peer(s).
+//! It does not manage routing logic (see ln::router for that) nor does it manage constructing
+//! on-chain transactions (it only monitors the chain to watch for any force-closes that might
+//! imply it needs to fail HTLCs/payments/channels it manages).
+
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
@@ -258,6 +266,7 @@ struct OnionKeys {
 	mu: [u8; 32],
 }
 
+/// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 	/// thereafter this is the txid of the funding transaction xor the funding transaction output).
@@ -267,7 +276,9 @@ pub struct ChannelDetails {
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	pub short_channel_id: Option<u64>,
+	/// The node_id of our counterparty
 	pub remote_network_id: PublicKey,
+	/// The value, in satoshis, of this channel as appears in the funding output
 	pub channel_value_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
 	pub user_id: u64,

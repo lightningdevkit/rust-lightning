@@ -1,3 +1,5 @@
+//! Error types live here.
+
 use std::fmt;
 
 /// Indicates an error on the client's part (usually some variant of attempting to use too-low or
@@ -5,14 +7,25 @@ use std::fmt;
 pub enum APIError {
 	/// Indicates the API was wholly misused (see err for more). Cases where these can be returned
 	/// are documented, but generally indicates some precondition of a function was violated.
-	APIMisuseError {err: &'static str},
+	APIMisuseError {
+		/// A human-readable error message
+		err: &'static str
+	},
 	/// Due to a high feerate, we were unable to complete the request.
 	/// For example, this may be returned if the feerate implies we cannot open a channel at the
 	/// requested value, but opening a larger channel would succeed.
-	FeeRateTooHigh {err: String, feerate: u64},
+	FeeRateTooHigh {
+		/// A human-readable error message
+		err: String,
+		/// The feerate which was too high.
+		feerate: u64
+	},
 
 	/// Invalid route or parameters (cltv_delta, fee, pubkey) was specified
-	RouteError {err: &'static str},
+	RouteError {
+		/// A human-readable error message
+		err: &'static str
+	},
 }
 
 impl fmt::Debug for APIError {
