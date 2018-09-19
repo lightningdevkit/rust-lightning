@@ -23,11 +23,12 @@ use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1;
 
-use ln::msgs::HandleError;
+use ln::msgs::{DecodeError, HandleError};
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 use chain::transaction::OutPoint;
+use util::ser::Readable;
 use util::sha2::Sha256;
 use util::byte_utils;
 
@@ -685,243 +686,6 @@ impl ChannelMonitor {
 		self.serialize(false)
 	}
 
-	/// Attempts to decode a serialized monitor
-	pub fn deserialize(data: &[u8]) -> Option<Self> {
-		let mut read_pos = 0;
-		macro_rules! read_bytes {
-			($byte_count: expr) => {
-				{
-					if ($byte_count as usize) > data.len() - read_pos {
-						return None;
-					}
-					read_pos += $byte_count as usize;
-					&data[read_pos - $byte_count as usize..read_pos]
-				}
-			}
-		}
-
-		let secp_ctx = Secp256k1::new();
-		macro_rules! unwrap_obj {
-			($key: expr) => {
-				match $key {
-					Ok(res) => res,
-					Err(_) => return None,
-				}
-			}
-		}
-
-		let _ver = read_bytes!(1)[0];
-		let min_ver = read_bytes!(1)[0];
-		if min_ver > SERIALIZATION_VERSION {
-			return None;
-		}
-
-		// Technically this can fail and serialize fail a round-trip, but only for serialization of
-		// barely-init'd ChannelMonitors that we can't do anything with.
-		let outpoint = OutPoint {
-			txid: Sha256dHash::from(read_bytes!(32)),
-			index: byte_utils::slice_to_be16(read_bytes!(2)),
-		};
-		let script_len = byte_utils::slice_to_be64(read_bytes!(8));
-		let funding_txo = Some((outpoint, Script::from(read_bytes!(script_len).to_vec())));
-		let commitment_transaction_number_obscure_factor = byte_utils::slice_to_be48(read_bytes!(6));
-
-		let key_storage = match read_bytes!(1)[0] {
-			0 => {
-				KeyStorage::PrivMode {
-					revocation_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
-					htlc_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
-				}
-			},
-			_ => return None,
-		};
-
-		let delayed_payment_base_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
-		let their_htlc_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
-		let their_delayed_payment_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
-
-		let their_cur_revocation_points = {
-			let first_idx = byte_utils::slice_to_be48(read_bytes!(6));
-			if first_idx == 0 {
-				None
-			} else {
-				let first_point = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
-				let second_point_slice = read_bytes!(33);
-				if second_point_slice[0..32] == [0; 32] && second_point_slice[32] == 0 {
-					Some((first_idx, first_point, None))
-				} else {
-					Some((first_idx, first_point, Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, second_point_slice)))))
-				}
-			}
-		};
-
-		let our_to_self_delay = byte_utils::slice_to_be16(read_bytes!(2));
-		let their_to_self_delay = Some(byte_utils::slice_to_be16(read_bytes!(2)));
-
-		let mut old_secrets = [([0; 32], 1 << 48); 49];
-		for &mut (ref mut secret, ref mut idx) in old_secrets.iter_mut() {
-			secret.copy_from_slice(read_bytes!(32));
-			*idx = byte_utils::slice_to_be64(read_bytes!(8));
-		}
-
-		macro_rules! read_htlc_in_commitment {
-			() => {
-				{
-					let offered = match read_bytes!(1)[0] {
-						0 => false, 1 => true,
-						_ => return None,
-					};
-					let amount_msat = byte_utils::slice_to_be64(read_bytes!(8));
-					let cltv_expiry = byte_utils::slice_to_be32(read_bytes!(4));
-					let mut payment_hash = [0; 32];
-					payment_hash[..].copy_from_slice(read_bytes!(32));
-					let transaction_output_index = byte_utils::slice_to_be32(read_bytes!(4));
-
-					HTLCOutputInCommitment {
-						offered, amount_msat, cltv_expiry, payment_hash, transaction_output_index
-					}
-				}
-			}
-		}
-
-		let remote_claimable_outpoints_len = byte_utils::slice_to_be64(read_bytes!(8));
-		if remote_claimable_outpoints_len > data.len() as u64 / 64 { return None; }
-		let mut remote_claimable_outpoints = HashMap::with_capacity(remote_claimable_outpoints_len as usize);
-		for _ in 0..remote_claimable_outpoints_len {
-			let txid = Sha256dHash::from(read_bytes!(32));
-			let outputs_count = byte_utils::slice_to_be64(read_bytes!(8));
-			if outputs_count > data.len() as u64 / 32 { return None; }
-			let mut outputs = Vec::with_capacity(outputs_count as usize);
-			for _ in 0..outputs_count {
-				outputs.push(read_htlc_in_commitment!());
-			}
-			if let Some(_) = remote_claimable_outpoints.insert(txid, outputs) {
-				return None;
-			}
-		}
-
-		let remote_commitment_txn_on_chain_len = byte_utils::slice_to_be64(read_bytes!(8));
-		if remote_commitment_txn_on_chain_len > data.len() as u64 / 32 { return None; }
-		let mut remote_commitment_txn_on_chain = HashMap::with_capacity(remote_commitment_txn_on_chain_len as usize);
-		for _ in 0..remote_commitment_txn_on_chain_len {
-			let txid = Sha256dHash::from(read_bytes!(32));
-			let commitment_number = byte_utils::slice_to_be48(read_bytes!(6));
-			if let Some(_) = remote_commitment_txn_on_chain.insert(txid, commitment_number) {
-				return None;
-			}
-		}
-
-		let remote_hash_commitment_number_len = byte_utils::slice_to_be64(read_bytes!(8));
-		if remote_hash_commitment_number_len > data.len() as u64 / 32 { return None; }
-		let mut remote_hash_commitment_number = HashMap::with_capacity(remote_hash_commitment_number_len as usize);
-		for _ in 0..remote_hash_commitment_number_len {
-			let mut txid = [0; 32];
-			txid[..].copy_from_slice(read_bytes!(32));
-			let commitment_number = byte_utils::slice_to_be48(read_bytes!(6));
-			if let Some(_) = remote_hash_commitment_number.insert(txid, commitment_number) {
-				return None;
-			}
-		}
-
-		macro_rules! read_local_tx {
-			() => {
-				{
-					let tx_len = byte_utils::slice_to_be64(read_bytes!(8));
-					let tx_ser = read_bytes!(tx_len);
-					let tx: Transaction = unwrap_obj!(serialize::deserialize(tx_ser));
-					if serialize::serialize(&tx).unwrap() != tx_ser {
-						// We check that the tx re-serializes to the same form to ensure there is
-						// no extra data, and as rust-bitcoin doesn't handle the 0-input ambiguity
-						// all that well.
-						return None;
-					}
-
-					let revocation_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
-					let a_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
-					let b_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
-					let delayed_payment_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
-					let feerate_per_kw = byte_utils::slice_to_be64(read_bytes!(8));
-
-					let htlc_outputs_len = byte_utils::slice_to_be64(read_bytes!(8));
-					if htlc_outputs_len > data.len() as u64 / 128 { return None; }
-					let mut htlc_outputs = Vec::with_capacity(htlc_outputs_len as usize);
-					for _ in 0..htlc_outputs_len {
-						htlc_outputs.push((read_htlc_in_commitment!(),
-								unwrap_obj!(Signature::from_compact(&secp_ctx, read_bytes!(64))),
-								unwrap_obj!(Signature::from_compact(&secp_ctx, read_bytes!(64)))));
-					}
-
-					LocalSignedTx {
-						txid: tx.txid(),
-						tx, revocation_key, a_htlc_key, b_htlc_key, delayed_payment_key, feerate_per_kw, htlc_outputs
-					}
-				}
-			}
-		}
-
-		let prev_local_signed_commitment_tx = match read_bytes!(1)[0] {
-			0 => None,
-			1 => {
-				Some(read_local_tx!())
-			},
-			_ => return None,
-		};
-
-		let current_local_signed_commitment_tx = match read_bytes!(1)[0] {
-			0 => None,
-			1 => {
-				Some(read_local_tx!())
-			},
-			_ => return None,
-		};
-
-		let payment_preimages_len = byte_utils::slice_to_be64(read_bytes!(8));
-		if payment_preimages_len > data.len() as u64 / 32 { return None; }
-		let mut payment_preimages = HashMap::with_capacity(payment_preimages_len as usize);
-		let mut sha = Sha256::new();
-		for _ in 0..payment_preimages_len {
-			let mut preimage = [0; 32];
-			preimage[..].copy_from_slice(read_bytes!(32));
-			sha.reset();
-			sha.input(&preimage);
-			let mut hash = [0; 32];
-			sha.result(&mut hash);
-			if let Some(_) = payment_preimages.insert(hash, preimage) {
-				return None;
-			}
-		}
-
-		let destination_script_len = byte_utils::slice_to_be64(read_bytes!(8));
-		let destination_script = Script::from(read_bytes!(destination_script_len).to_vec());
-
-		Some(ChannelMonitor {
-			funding_txo,
-			commitment_transaction_number_obscure_factor,
-
-			key_storage,
-			delayed_payment_base_key,
-			their_htlc_base_key,
-			their_delayed_payment_base_key,
-			their_cur_revocation_points,
-
-			our_to_self_delay,
-			their_to_self_delay,
-
-			old_secrets,
-			remote_claimable_outpoints,
-			remote_commitment_txn_on_chain: Mutex::new(remote_commitment_txn_on_chain),
-			remote_hash_commitment_number,
-
-			prev_local_signed_commitment_tx,
-			current_local_signed_commitment_tx,
-
-			payment_preimages,
-
-			destination_script,
-			secp_ctx,
-		})
-	}
-
 	//TODO: Functions to serialize/deserialize (with different forms depending on which information
 	//we want to leave out (eg funding_txo, etc).
 
@@ -1438,6 +1202,251 @@ impl ChannelMonitor {
 		}
 		false
 	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for ChannelMonitor {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		// TODO: read_to_end and then deserializing from that vector is really dumb, we should
+		// actually use the fancy serialization framework we have instead of hacking around it.
+		let mut datavec = Vec::new();
+		reader.read_to_end(&mut datavec)?;
+		let data = &datavec;
+
+		let mut read_pos = 0;
+		macro_rules! read_bytes {
+			($byte_count: expr) => {
+				{
+					if ($byte_count as usize) > data.len() - read_pos {
+						return Err(DecodeError::ShortRead);
+					}
+					read_pos += $byte_count as usize;
+					&data[read_pos - $byte_count as usize..read_pos]
+				}
+			}
+		}
+
+		let secp_ctx = Secp256k1::new();
+		macro_rules! unwrap_obj {
+			($key: expr) => {
+				match $key {
+					Ok(res) => res,
+					Err(_) => return Err(DecodeError::InvalidValue),
+				}
+			}
+		}
+
+		let _ver = read_bytes!(1)[0];
+		let min_ver = read_bytes!(1)[0];
+		if min_ver > SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+
+		// Technically this can fail and serialize fail a round-trip, but only for serialization of
+		// barely-init'd ChannelMonitors that we can't do anything with.
+		let outpoint = OutPoint {
+			txid: Sha256dHash::from(read_bytes!(32)),
+			index: byte_utils::slice_to_be16(read_bytes!(2)),
+		};
+		let script_len = byte_utils::slice_to_be64(read_bytes!(8));
+		let funding_txo = Some((outpoint, Script::from(read_bytes!(script_len).to_vec())));
+		let commitment_transaction_number_obscure_factor = byte_utils::slice_to_be48(read_bytes!(6));
+
+		let key_storage = match read_bytes!(1)[0] {
+			0 => {
+				KeyStorage::PrivMode {
+					revocation_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
+					htlc_base_key: unwrap_obj!(SecretKey::from_slice(&secp_ctx, read_bytes!(32))),
+				}
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let delayed_payment_base_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+		let their_htlc_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
+		let their_delayed_payment_base_key = Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33))));
+
+		let their_cur_revocation_points = {
+			let first_idx = byte_utils::slice_to_be48(read_bytes!(6));
+			if first_idx == 0 {
+				None
+			} else {
+				let first_point = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+				let second_point_slice = read_bytes!(33);
+				if second_point_slice[0..32] == [0; 32] && second_point_slice[32] == 0 {
+					Some((first_idx, first_point, None))
+				} else {
+					Some((first_idx, first_point, Some(unwrap_obj!(PublicKey::from_slice(&secp_ctx, second_point_slice)))))
+				}
+			}
+		};
+
+		let our_to_self_delay = byte_utils::slice_to_be16(read_bytes!(2));
+		let their_to_self_delay = Some(byte_utils::slice_to_be16(read_bytes!(2)));
+
+		let mut old_secrets = [([0; 32], 1 << 48); 49];
+		for &mut (ref mut secret, ref mut idx) in old_secrets.iter_mut() {
+			secret.copy_from_slice(read_bytes!(32));
+			*idx = byte_utils::slice_to_be64(read_bytes!(8));
+		}
+
+		macro_rules! read_htlc_in_commitment {
+			() => {
+				{
+					let offered = match read_bytes!(1)[0] {
+						0 => false, 1 => true,
+						_ => return Err(DecodeError::InvalidValue),
+					};
+					let amount_msat = byte_utils::slice_to_be64(read_bytes!(8));
+					let cltv_expiry = byte_utils::slice_to_be32(read_bytes!(4));
+					let mut payment_hash = [0; 32];
+					payment_hash[..].copy_from_slice(read_bytes!(32));
+					let transaction_output_index = byte_utils::slice_to_be32(read_bytes!(4));
+
+					HTLCOutputInCommitment {
+						offered, amount_msat, cltv_expiry, payment_hash, transaction_output_index
+					}
+				}
+			}
+		}
+
+		let remote_claimable_outpoints_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if remote_claimable_outpoints_len > data.len() as u64 / 64 { return Err(DecodeError::BadLengthDescriptor); }
+		let mut remote_claimable_outpoints = HashMap::with_capacity(remote_claimable_outpoints_len as usize);
+		for _ in 0..remote_claimable_outpoints_len {
+			let txid = Sha256dHash::from(read_bytes!(32));
+			let outputs_count = byte_utils::slice_to_be64(read_bytes!(8));
+			if outputs_count > data.len() as u64 / 32 { return Err(DecodeError::BadLengthDescriptor); }
+			let mut outputs = Vec::with_capacity(outputs_count as usize);
+			for _ in 0..outputs_count {
+				outputs.push(read_htlc_in_commitment!());
+			}
+			if let Some(_) = remote_claimable_outpoints.insert(txid, outputs) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let remote_commitment_txn_on_chain_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if remote_commitment_txn_on_chain_len > data.len() as u64 / 32 { return Err(DecodeError::BadLengthDescriptor); }
+		let mut remote_commitment_txn_on_chain = HashMap::with_capacity(remote_commitment_txn_on_chain_len as usize);
+		for _ in 0..remote_commitment_txn_on_chain_len {
+			let txid = Sha256dHash::from(read_bytes!(32));
+			let commitment_number = byte_utils::slice_to_be48(read_bytes!(6));
+			if let Some(_) = remote_commitment_txn_on_chain.insert(txid, commitment_number) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let remote_hash_commitment_number_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if remote_hash_commitment_number_len > data.len() as u64 / 32 { return Err(DecodeError::BadLengthDescriptor); }
+		let mut remote_hash_commitment_number = HashMap::with_capacity(remote_hash_commitment_number_len as usize);
+		for _ in 0..remote_hash_commitment_number_len {
+			let mut txid = [0; 32];
+			txid[..].copy_from_slice(read_bytes!(32));
+			let commitment_number = byte_utils::slice_to_be48(read_bytes!(6));
+			if let Some(_) = remote_hash_commitment_number.insert(txid, commitment_number) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		macro_rules! read_local_tx {
+			() => {
+				{
+					let tx_len = byte_utils::slice_to_be64(read_bytes!(8));
+					let tx_ser = read_bytes!(tx_len);
+					let tx: Transaction = unwrap_obj!(serialize::deserialize(tx_ser));
+					if serialize::serialize(&tx).unwrap() != tx_ser {
+						// We check that the tx re-serializes to the same form to ensure there is
+						// no extra data, and as rust-bitcoin doesn't handle the 0-input ambiguity
+						// all that well.
+						return Err(DecodeError::InvalidValue);
+					}
+
+					let revocation_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let a_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let b_htlc_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let delayed_payment_key = unwrap_obj!(PublicKey::from_slice(&secp_ctx, read_bytes!(33)));
+					let feerate_per_kw = byte_utils::slice_to_be64(read_bytes!(8));
+
+					let htlc_outputs_len = byte_utils::slice_to_be64(read_bytes!(8));
+					if htlc_outputs_len > data.len() as u64 / 128 { return Err(DecodeError::BadLengthDescriptor); }
+					let mut htlc_outputs = Vec::with_capacity(htlc_outputs_len as usize);
+					for _ in 0..htlc_outputs_len {
+						htlc_outputs.push((read_htlc_in_commitment!(),
+								unwrap_obj!(Signature::from_compact(&secp_ctx, read_bytes!(64))),
+								unwrap_obj!(Signature::from_compact(&secp_ctx, read_bytes!(64)))));
+					}
+
+					LocalSignedTx {
+						txid: tx.txid(),
+						tx, revocation_key, a_htlc_key, b_htlc_key, delayed_payment_key, feerate_per_kw, htlc_outputs
+					}
+				}
+			}
+		}
+
+		let prev_local_signed_commitment_tx = match read_bytes!(1)[0] {
+			0 => None,
+			1 => {
+				Some(read_local_tx!())
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let current_local_signed_commitment_tx = match read_bytes!(1)[0] {
+			0 => None,
+			1 => {
+				Some(read_local_tx!())
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let payment_preimages_len = byte_utils::slice_to_be64(read_bytes!(8));
+		if payment_preimages_len > data.len() as u64 / 32 { return Err(DecodeError::InvalidValue); }
+		let mut payment_preimages = HashMap::with_capacity(payment_preimages_len as usize);
+		let mut sha = Sha256::new();
+		for _ in 0..payment_preimages_len {
+			let mut preimage = [0; 32];
+			preimage[..].copy_from_slice(read_bytes!(32));
+			sha.reset();
+			sha.input(&preimage);
+			let mut hash = [0; 32];
+			sha.result(&mut hash);
+			if let Some(_) = payment_preimages.insert(hash, preimage) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let destination_script_len = byte_utils::slice_to_be64(read_bytes!(8));
+		let destination_script = Script::from(read_bytes!(destination_script_len).to_vec());
+
+		Ok(ChannelMonitor {
+			funding_txo,
+			commitment_transaction_number_obscure_factor,
+
+			key_storage,
+			delayed_payment_base_key,
+			their_htlc_base_key,
+			their_delayed_payment_base_key,
+			their_cur_revocation_points,
+
+			our_to_self_delay,
+			their_to_self_delay,
+
+			old_secrets,
+			remote_claimable_outpoints,
+			remote_commitment_txn_on_chain: Mutex::new(remote_commitment_txn_on_chain),
+			remote_hash_commitment_number,
+
+			prev_local_signed_commitment_tx,
+			current_local_signed_commitment_tx,
+
+			payment_preimages,
+
+			destination_script,
+			secp_ctx,
+		})
+	}
+
 }
 
 #[cfg(test)]

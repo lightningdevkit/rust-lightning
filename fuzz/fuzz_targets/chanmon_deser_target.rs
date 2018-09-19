@@ -5,12 +5,15 @@ extern crate lightning;
 
 use lightning::ln::channelmonitor;
 use lightning::util::reset_rng_state;
+use lightning::util::ser::Readable;
+
+use std::io::Cursor;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	if let Some(monitor) = channelmonitor::ChannelMonitor::deserialize(data) {
-		assert!(channelmonitor::ChannelMonitor::deserialize(&monitor.serialize_for_disk()[..]).unwrap() == monitor);
+	if let Ok(monitor) = channelmonitor::ChannelMonitor::read(&mut Cursor::new(data)) {
+		assert!(channelmonitor::ChannelMonitor::read(&mut Cursor::new(&monitor.serialize_for_disk()[..])).unwrap() == monitor);
 		monitor.serialize_for_watchtower();
 	}
 }

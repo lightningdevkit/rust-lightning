@@ -6,6 +6,7 @@ use ln::msgs;
 use ln::msgs::{HandleError};
 use util::events;
 use util::logger::{Logger, Level, Record};
+use util::ser::Readable;
 
 use bitcoin::blockdata::transaction::Transaction;
 
@@ -39,7 +40,7 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		assert!(channelmonitor::ChannelMonitor::deserialize(&monitor.serialize_for_disk()[..]).unwrap() == monitor);
+		assert!(channelmonitor::ChannelMonitor::read(&mut ::std::io::Cursor::new(&monitor.serialize_for_disk()[..])).unwrap() == monitor);
 		monitor.serialize_for_watchtower(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		self.simple_monitor.add_update_monitor(funding_txo, monitor)
