@@ -28,7 +28,7 @@ use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 use chain::transaction::OutPoint;
-use util::ser::Readable;
+use util::ser::{Readable, Writer};
 use util::sha2::Sha256;
 use util::byte_utils;
 
@@ -531,81 +531,82 @@ impl ChannelMonitor {
 	}
 
 	/// Serializes into a vec, with various modes for the exposed pub fns
-	fn serialize(&self, for_local_storage: bool) -> Vec<u8> {
-		let mut res = Vec::new();
-		res.push(SERIALIZATION_VERSION);
-		res.push(MIN_SERIALIZATION_VERSION);
+	fn write<W: Writer>(&self, writer: &mut W, for_local_storage: bool) -> Result<(), ::std::io::Error> {
+		//TODO: We still write out all the serialization here manually instead of using the fancy
+		//serialization framework we have, we should migrate things over to it.
+		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
+		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
 
 		match &self.funding_txo {
 			&Some((ref outpoint, ref script)) => {
-				res.extend_from_slice(&outpoint.txid[..]);
-				res.extend_from_slice(&byte_utils::be16_to_array(outpoint.index));
-				res.extend_from_slice(&byte_utils::be64_to_array(script.len() as u64));
-				res.extend_from_slice(&script[..]);
+				writer.write_all(&outpoint.txid[..])?;
+				writer.write_all(&byte_utils::be16_to_array(outpoint.index))?;
+				writer.write_all(&byte_utils::be64_to_array(script.len() as u64))?;
+				writer.write_all(&script[..])?;
 			},
 			&None => {
 				// We haven't even been initialized...not sure why anyone is serializing us, but
 				// not much to give them.
-				return res;
+				return Ok(());
 			},
 		}
 
 		// Set in initial Channel-object creation, so should always be set by now:
-		res.extend_from_slice(&byte_utils::be48_to_array(self.commitment_transaction_number_obscure_factor));
+		writer.write_all(&byte_utils::be48_to_array(self.commitment_transaction_number_obscure_factor))?;
 
 		match self.key_storage {
 			KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key } => {
-				res.push(0);
-				res.extend_from_slice(&revocation_base_key[..]);
-				res.extend_from_slice(&htlc_base_key[..]);
+				writer.write_all(&[0; 1])?;
+				writer.write_all(&revocation_base_key[..])?;
+				writer.write_all(&htlc_base_key[..])?;
 			},
 			KeyStorage::SigsMode { .. } => unimplemented!(),
 		}
 
-		res.extend_from_slice(&self.delayed_payment_base_key.serialize());
-		res.extend_from_slice(&self.their_htlc_base_key.as_ref().unwrap().serialize());
-		res.extend_from_slice(&self.their_delayed_payment_base_key.as_ref().unwrap().serialize());
+		writer.write_all(&self.delayed_payment_base_key.serialize())?;
+		writer.write_all(&self.their_htlc_base_key.as_ref().unwrap().serialize())?;
+		writer.write_all(&self.their_delayed_payment_base_key.as_ref().unwrap().serialize())?;
 
 		match self.their_cur_revocation_points {
 			Some((idx, pubkey, second_option)) => {
-				res.extend_from_slice(&byte_utils::be48_to_array(idx));
-				res.extend_from_slice(&pubkey.serialize());
+				writer.write_all(&byte_utils::be48_to_array(idx))?;
+				writer.write_all(&pubkey.serialize())?;
 				match second_option {
 					Some(second_pubkey) => {
-						res.extend_from_slice(&second_pubkey.serialize());
+						writer.write_all(&second_pubkey.serialize())?;
 					},
 					None => {
-						res.extend_from_slice(&[0; 33]);
+						writer.write_all(&[0; 33])?;
 					},
 				}
 			},
 			None => {
-				res.extend_from_slice(&byte_utils::be48_to_array(0));
+				writer.write_all(&byte_utils::be48_to_array(0))?;
 			},
 		}
 
-		res.extend_from_slice(&byte_utils::be16_to_array(self.our_to_self_delay));
-		res.extend_from_slice(&byte_utils::be16_to_array(self.their_to_self_delay.unwrap()));
+		writer.write_all(&byte_utils::be16_to_array(self.our_to_self_delay))?;
+		writer.write_all(&byte_utils::be16_to_array(self.their_to_self_delay.unwrap()))?;
 
 		for &(ref secret, ref idx) in self.old_secrets.iter() {
-			res.extend_from_slice(secret);
-			res.extend_from_slice(&byte_utils::be64_to_array(*idx));
+			writer.write_all(secret)?;
+			writer.write_all(&byte_utils::be64_to_array(*idx))?;
 		}
 
 		macro_rules! serialize_htlc_in_commitment {
 			($htlc_output: expr) => {
-				res.push($htlc_output.offered as u8);
-				res.extend_from_slice(&byte_utils::be64_to_array($htlc_output.amount_msat));
-				res.extend_from_slice(&byte_utils::be32_to_array($htlc_output.cltv_expiry));
-				res.extend_from_slice(&$htlc_output.payment_hash);
-				res.extend_from_slice(&byte_utils::be32_to_array($htlc_output.transaction_output_index));
+				writer.write_all(&[$htlc_output.offered as u8; 1])?;
+				writer.write_all(&byte_utils::be64_to_array($htlc_output.amount_msat))?;
+				writer.write_all(&byte_utils::be32_to_array($htlc_output.cltv_expiry))?;
+				writer.write_all(&$htlc_output.payment_hash)?;
+				writer.write_all(&byte_utils::be32_to_array($htlc_output.transaction_output_index))?;
 			}
 		}
 
-		res.extend_from_slice(&byte_utils::be64_to_array(self.remote_claimable_outpoints.len() as u64));
+		writer.write_all(&byte_utils::be64_to_array(self.remote_claimable_outpoints.len() as u64))?;
 		for (txid, htlc_outputs) in self.remote_claimable_outpoints.iter() {
-			res.extend_from_slice(&txid[..]);
-			res.extend_from_slice(&byte_utils::be64_to_array(htlc_outputs.len() as u64));
+			writer.write_all(&txid[..])?;
+			writer.write_all(&byte_utils::be64_to_array(htlc_outputs.len() as u64))?;
 			for htlc_output in htlc_outputs.iter() {
 				serialize_htlc_in_commitment!(htlc_output);
 			}
@@ -613,77 +614,77 @@ impl ChannelMonitor {
 
 		{
 			let remote_commitment_txn_on_chain = self.remote_commitment_txn_on_chain.lock().unwrap();
-			res.extend_from_slice(&byte_utils::be64_to_array(remote_commitment_txn_on_chain.len() as u64));
+			writer.write_all(&byte_utils::be64_to_array(remote_commitment_txn_on_chain.len() as u64))?;
 			for (txid, commitment_number) in remote_commitment_txn_on_chain.iter() {
-				res.extend_from_slice(&txid[..]);
-				res.extend_from_slice(&byte_utils::be48_to_array(*commitment_number));
+				writer.write_all(&txid[..])?;
+				writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 			}
 		}
 
 		if for_local_storage {
-			res.extend_from_slice(&byte_utils::be64_to_array(self.remote_hash_commitment_number.len() as u64));
+			writer.write_all(&byte_utils::be64_to_array(self.remote_hash_commitment_number.len() as u64))?;
 			for (payment_hash, commitment_number) in self.remote_hash_commitment_number.iter() {
-				res.extend_from_slice(payment_hash);
-				res.extend_from_slice(&byte_utils::be48_to_array(*commitment_number));
+				writer.write_all(payment_hash)?;
+				writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 			}
 		} else {
-			res.extend_from_slice(&byte_utils::be64_to_array(0));
+			writer.write_all(&byte_utils::be64_to_array(0))?;
 		}
 
 		macro_rules! serialize_local_tx {
 			($local_tx: expr) => {
 				let tx_ser = serialize::serialize(&$local_tx.tx).unwrap();
-				res.extend_from_slice(&byte_utils::be64_to_array(tx_ser.len() as u64));
-				res.extend_from_slice(&tx_ser);
+				writer.write_all(&byte_utils::be64_to_array(tx_ser.len() as u64))?;
+				writer.write_all(&tx_ser)?;
 
-				res.extend_from_slice(&$local_tx.revocation_key.serialize());
-				res.extend_from_slice(&$local_tx.a_htlc_key.serialize());
-				res.extend_from_slice(&$local_tx.b_htlc_key.serialize());
-				res.extend_from_slice(&$local_tx.delayed_payment_key.serialize());
+				writer.write_all(&$local_tx.revocation_key.serialize())?;
+				writer.write_all(&$local_tx.a_htlc_key.serialize())?;
+				writer.write_all(&$local_tx.b_htlc_key.serialize())?;
+				writer.write_all(&$local_tx.delayed_payment_key.serialize())?;
 
-				res.extend_from_slice(&byte_utils::be64_to_array($local_tx.feerate_per_kw));
-				res.extend_from_slice(&byte_utils::be64_to_array($local_tx.htlc_outputs.len() as u64));
+				writer.write_all(&byte_utils::be64_to_array($local_tx.feerate_per_kw))?;
+				writer.write_all(&byte_utils::be64_to_array($local_tx.htlc_outputs.len() as u64))?;
 				for &(ref htlc_output, ref their_sig, ref our_sig) in $local_tx.htlc_outputs.iter() {
 					serialize_htlc_in_commitment!(htlc_output);
-					res.extend_from_slice(&their_sig.serialize_compact(&self.secp_ctx));
-					res.extend_from_slice(&our_sig.serialize_compact(&self.secp_ctx));
+					writer.write_all(&their_sig.serialize_compact(&self.secp_ctx))?;
+					writer.write_all(&our_sig.serialize_compact(&self.secp_ctx))?;
 				}
 			}
 		}
 
 		if let Some(ref prev_local_tx) = self.prev_local_signed_commitment_tx {
-			res.push(1);
+			writer.write_all(&[1; 1])?;
 			serialize_local_tx!(prev_local_tx);
 		} else {
-			res.push(0);
+			writer.write_all(&[0; 1])?;
 		}
 
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			res.push(1);
+			writer.write_all(&[1; 1])?;
 			serialize_local_tx!(cur_local_tx);
 		} else {
-			res.push(0);
+			writer.write_all(&[0; 1])?;
 		}
 
-		res.extend_from_slice(&byte_utils::be64_to_array(self.payment_preimages.len() as u64));
+		writer.write_all(&byte_utils::be64_to_array(self.payment_preimages.len() as u64))?;
 		for payment_preimage in self.payment_preimages.values() {
-			res.extend_from_slice(payment_preimage);
+			writer.write_all(payment_preimage)?;
 		}
 
-		res.extend_from_slice(&byte_utils::be64_to_array(self.destination_script.len() as u64));
-		res.extend_from_slice(&self.destination_script[..]);
+		writer.write_all(&byte_utils::be64_to_array(self.destination_script.len() as u64))?;
+		writer.write_all(&self.destination_script[..])?;
 
-		res
+		Ok(())
 	}
 
-	/// Encodes this monitor into a byte array, suitable for writing to disk.
-	pub fn serialize_for_disk(&self) -> Vec<u8> {
-		self.serialize(true)
+	/// Writes this monitor into the given writer, suitable for writing to disk.
+	pub fn write_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.write(writer, true)
 	}
 
-	/// Encodes this monitor into a byte array, suitable for sending to a remote watchtower
-	pub fn serialize_for_watchtower(&self) -> Vec<u8> {
-		self.serialize(false)
+	/// Encodes this monitor into the given writer, suitable for sending to a remote watchtower
+	pub fn write_for_watchtower<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.write(writer, false)
 	}
 
 	//TODO: Functions to serialize/deserialize (with different forms depending on which information

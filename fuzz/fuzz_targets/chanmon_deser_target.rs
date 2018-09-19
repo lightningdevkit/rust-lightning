@@ -5,16 +5,30 @@ extern crate lightning;
 
 use lightning::ln::channelmonitor;
 use lightning::util::reset_rng_state;
-use lightning::util::ser::Readable;
+use lightning::util::ser::{Readable, Writer};
 
 use std::io::Cursor;
+
+struct VecWriter(Vec<u8>);
+impl Writer for VecWriter {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0.extend_from_slice(buf);
+		Ok(())
+	}
+	fn size_hint(&mut self, size: usize) {
+		self.0.reserve_exact(size);
+	}
+}
 
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
 	if let Ok(monitor) = channelmonitor::ChannelMonitor::read(&mut Cursor::new(data)) {
-		assert!(channelmonitor::ChannelMonitor::read(&mut Cursor::new(&monitor.serialize_for_disk()[..])).unwrap() == monitor);
-		monitor.serialize_for_watchtower();
+		let mut w = VecWriter(Vec::new());
+		monitor.write_for_disk(&mut w).unwrap();
+		assert!(channelmonitor::ChannelMonitor::read(&mut Cursor::new(&w.0)).unwrap() == monitor);
+		w.0.clear();
+		monitor.write_for_watchtower(&mut w).unwrap();
 	}
 }
 
