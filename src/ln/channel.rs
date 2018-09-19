@@ -1355,7 +1355,7 @@ impl Channel {
 				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
-		if self.channel_monitor.funding_txo.unwrap().funding_txo.to_channel_id() != msg.channel_id {
+		if self.channel_monitor.funding_txo.clone().unwrap().0.to_channel_id() != msg.channel_id {
 			return Err(HandleError{err: "Received incorrect channel_id in funding_signed message", action: None});
 		}
 

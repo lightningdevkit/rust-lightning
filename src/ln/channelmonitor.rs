@@ -163,7 +163,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 pub struct ChannelMonitor {
-	funding_txo: Option<(OutPoint, Script)>,
+	pub funding_txo: Option<(OutPoint, Script)>,
 	commitment_transaction_number_obscure_factor: u64,
 
 	key_storage: KeyStorage,
