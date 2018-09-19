@@ -1711,7 +1711,7 @@ impl Channel {
 			//fail it back the route, if its a temporary issue we can ignore it...
 			match err {
 				None => {
-					if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() {
+					if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.holding_cell_update_fee.is_none() {
 						// This should never actually happen and indicates we got some Errs back
 						// from update_fulfill_htlc/update_fail_htlc, but we handle it anyway in
 						// case there is some strange way to hit duplicate HTLC removes.
@@ -1723,7 +1723,17 @@ impl Channel {
 						update_fulfill_htlcs,
 						update_fail_htlcs,
 						update_fail_malformed_htlcs: Vec::new(),
-						update_fee: None,
+						update_fee: {
+							if let Some(feerate) = self.holding_cell_update_fee {
+								self.pending_update_fee = self.holding_cell_update_fee.take();
+								Some(msgs::UpdateFee {
+									channel_id: self.channel_id,
+									feerate_per_kw: feerate as u32,
+								})
+							} else {
+								None
+							}
+						},
 						commitment_signed,
 					}, monitor_update)))
 				},
@@ -1819,18 +1829,10 @@ impl Channel {
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
+		debug_assert!(self.channel_outbound || self.pending_update_fee.is_none());
 		if let Some(feerate) = self.pending_update_fee.take() {
+			debug_assert!(self.channel_outbound);
 			self.feerate_per_kw = feerate;
-		}
-
-		let mut update_fee_msg = None;
-		if let Some(feerate) = self.holding_cell_update_fee {
-			self.pending_update_fee = self.holding_cell_update_fee.take();
-			update_fee_msg = Some(msgs::UpdateFee {
-				channel_id: self.channel_id,
-				feerate_per_kw: feerate as u32,
-			});
-			require_commitment = true;
 		}
 
 		match self.free_holding_cell_htlcs()? {
@@ -1843,7 +1845,6 @@ impl Channel {
 				for fail_msg in update_fail_malformed_htlcs.drain(..) {
 					commitment_update.0.update_fail_malformed_htlcs.push(fail_msg);
 				}
-				commitment_update.0.update_fee = update_fee_msg;
 				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, commitment_update.1))
 			},
 			None => {
@@ -1854,7 +1855,7 @@ impl Channel {
 						update_fulfill_htlcs: Vec::new(),
 						update_fail_htlcs,
 						update_fail_malformed_htlcs,
-						update_fee: update_fee_msg,
+						update_fee: None,
 						commitment_signed
 					}), to_forward_infos, revoked_htlcs, monitor_update))
 				} else {
