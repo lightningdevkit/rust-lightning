@@ -451,14 +451,32 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											16 => {
 												let msg = try_potential_decodeerror!(msgs::Init::read(&mut reader));
 												if msg.global_features.requires_unknown_bits() {
+													log_info!(self, "Peer global features required unknown version bits");
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
 												if msg.local_features.requires_unknown_bits() {
+													log_info!(self, "Peer local features required unknown version bits");
+													return Err(PeerHandleError{ no_connection_possible: true });
+												}
+												if msg.local_features.requires_data_loss_protect() {
+													log_info!(self, "Peer local features required data_loss_protect");
+													return Err(PeerHandleError{ no_connection_possible: true });
+												}
+												if msg.local_features.requires_upfront_shutdown_script() {
+													log_info!(self, "Peer local features required upfront_shutdown_script");
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
 												if peer.their_global_features.is_some() {
 													return Err(PeerHandleError{ no_connection_possible: false });
 												}
+
+												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, unkown local flags: {}, unknown global flags: {}",
+													if msg.local_features.supports_data_loss_protect() { "supported" } else { "not supported"},
+													if msg.local_features.initial_routing_sync() { "requested" } else { "not requested" },
+													if msg.local_features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+													if msg.local_features.supports_unknown_bits() { "present" } else { "none" },
+													if msg.global_features.supports_unknown_bits() { "present" } else { "none" });
+
 												peer.their_global_features = Some(msg.global_features);
 												peer.their_local_features = Some(msg.local_features);
 
