@@ -13,8 +13,12 @@ pub enum Event {
 	/// parameters and then call ChannelManager::funding_transaction_generated.
 	/// Generated in ChannelManager message handling.
 	FundingGenerationReady {
+		/// The random channel_id we picked which you'll need to pass into
+		/// ChannelManager::funding_transaction_generated.
 		temporary_channel_id: [u8; 32],
+		/// The value, in satoshis, that the output should have.
 		channel_value_satoshis: u64,
+		/// The script which should be used in the transaction output.
 		output_script: Script,
 		/// The value passed in to ChannelManager::create_channel
 		user_channel_id: u64,
@@ -23,6 +27,8 @@ pub enum Event {
 	/// channel. Broadcasting such a transaction prior to this event may lead to our counterparty
 	/// trivially stealing all funds in the funding transaction!
 	FundingBroadcastSafe {
+		/// The output, which was passed to ChannelManager::funding_transaction_generated, which is
+		/// now safe to broadcast.
 		funding_txo: OutPoint,
 		/// The value passed in to ChannelManager::create_channel
 		user_channel_id: u64,
@@ -32,70 +38,101 @@ pub enum Event {
 	/// Note that if the preimage is not known, you must call ChannelManager::fail_htlc_backwards
 	/// to free up resources for this HTLC.
 	PaymentReceived {
+		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: [u8; 32],
+		/// The value, in thousandths of a satoshi, that this payment is for.
 		amt: u64,
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
-	/// and we got back the payment preimage for it). payment_preimage serves as a payment receipt,
-	/// if you wish to have such a thing, you must store it somehow!
+	/// and we got back the payment preimage for it).
 	PaymentSent {
+		/// The preimage to the hash given to ChannelManager::send_payment.
+		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
+		/// store it somehow!
 		payment_preimage: [u8; 32],
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
 	PaymentFailed {
+		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: [u8; 32],
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
 	PendingHTLCsForwardable {
+		/// The earliest time at which process_pending_htlc_forwards should be called.
 		time_forwardable: Instant,
 	},
 
 	// Events indicating the network loop should send a message to a peer:
+	// TODO: Move these into a separate struct and make a top-level enum
 	/// Used to indicate that we've initialted a channel open and should send the open_channel
-	/// message provided to the given peer
+	/// message provided to the given peer.
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendOpenChannel {
+		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
+		/// The message which should be sent.
 		msg: msgs::OpenChannel,
 	},
 	/// Used to indicate that a funding_created message should be sent to the peer with the given node_id.
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendFundingCreated {
+		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
+		/// The message which should be sent.
 		msg: msgs::FundingCreated,
 	},
 	/// Used to indicate that a funding_locked message should be sent to the peer with the given node_id.
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendFundingLocked {
+		/// The node_id of the node which should receive these message(s)
 		node_id: PublicKey,
+		/// The funding_locked message which should be sent.
 		msg: msgs::FundingLocked,
+		/// An optional additional announcement_signatures message which should be sent.
 		announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	},
 	/// Used to indicate that a series of HTLC update messages, as well as a commitment_signed
 	/// message should be sent to the peer with the given node_id.
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	UpdateHTLCs {
+		/// The node_id of the node which should receive these message(s)
 		node_id: PublicKey,
+		/// The update messages which should be sent. ALL messages in the struct should be sent!
 		updates: msgs::CommitmentUpdate,
 	},
 	/// Used to indicate that a shutdown message should be sent to the peer with the given node_id.
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendShutdown {
+		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
+		/// The message which should be sent.
 		msg: msgs::Shutdown,
 	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	BroadcastChannelAnnouncement {
+		/// The channel_announcement which should be sent.
 		msg: msgs::ChannelAnnouncement,
+		/// The followup channel_update which should be sent.
 		update_msg: msgs::ChannelUpdate,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	BroadcastChannelUpdate {
+		/// The channel_update which should be sent.
 		msg: msgs::ChannelUpdate,
 	},
 
 	//Error handling
 	/// Broadcast an error downstream to be handled
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	HandleError {
+		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
+		/// The action which should be taken.
 		action: Option<msgs::ErrorAction>
 	}
 }
