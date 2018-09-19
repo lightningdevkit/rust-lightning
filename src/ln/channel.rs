@@ -724,9 +724,9 @@ impl Channel {
 		let mut value_to_self_msat_offset = 0;
 
 		macro_rules! add_htlc_output {
-			($htlc: expr, $outbound: expr, $feerate_per_kw: expr) => {
+			($htlc: expr, $outbound: expr) => {
 				if $outbound == local { // "offered HTLC output"
-					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + ($feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
+					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
 						let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
 						txouts.push((TxOut {
 							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
@@ -734,7 +734,7 @@ impl Channel {
 						}, Some(htlc_in_tx)));
 					}
 				} else {
-					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + ($feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
+					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
 						let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
 						txouts.push((TxOut { // "received HTLC output"
 							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
@@ -756,7 +756,7 @@ impl Channel {
 			};
 
 			if include {
-				add_htlc_output!(htlc, false, feerate_per_kw);
+				add_htlc_output!(htlc, false);
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
 				match htlc.state {
@@ -780,7 +780,7 @@ impl Channel {
 			};
 
 			if include {
-				add_htlc_output!(htlc, true, feerate_per_kw);
+				add_htlc_output!(htlc, true);
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
 				match htlc.state {
