@@ -269,7 +269,7 @@ impl PartialEq for ChannelMonitor {
 }
 
 impl ChannelMonitor {
-	pub fn new(revocation_base_key: &SecretKey, delayed_payment_base_key: &PublicKey, htlc_base_key: &SecretKey, our_to_self_delay: u16, destination_script: Script) -> ChannelMonitor {
+	pub(super) fn new(revocation_base_key: &SecretKey, delayed_payment_base_key: &PublicKey, htlc_base_key: &SecretKey, our_to_self_delay: u16, destination_script: Script) -> ChannelMonitor {
 		ChannelMonitor {
 			funding_txo: None,
 			commitment_transaction_number_obscure_factor: 0,
@@ -903,7 +903,7 @@ impl ChannelMonitor {
 	//we want to leave out (eg funding_txo, etc).
 
 	/// Can only fail if idx is < get_min_seen_secret
-	pub fn get_secret(&self, idx: u64) -> Result<[u8; 32], HandleError> {
+	pub(super) fn get_secret(&self, idx: u64) -> Result<[u8; 32], HandleError> {
 		for i in 0..self.old_secrets.len() {
 			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
 				return Ok(ChannelMonitor::derive_secret(self.old_secrets[i].0, i as u8, idx))
@@ -913,7 +913,7 @@ impl ChannelMonitor {
 		Err(HandleError{err: "idx too low", action: None})
 	}
 
-	pub fn get_min_seen_secret(&self) -> u64 {
+	pub(super) fn get_min_seen_secret(&self) -> u64 {
 		//TODO This can be optimized?
 		let mut min = 1 << 48;
 		for &(_, idx) in self.old_secrets.iter() {
@@ -1403,7 +1403,7 @@ impl ChannelMonitor {
 		watch_outputs
 	}
 
-	pub fn would_broadcast_at_height(&self, height: u32) -> bool {
+	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
 				if htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER {

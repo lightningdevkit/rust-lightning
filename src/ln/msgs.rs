@@ -9,7 +9,7 @@ use std::{cmp, fmt};
 use std::io::Read;
 use std::result::Result;
 
-use util::{byte_utils, internal_traits, events};
+use util::{byte_utils, events};
 use util::ser::{Readable, Writeable, Writer};
 
 #[derive(Debug)]
@@ -44,23 +44,23 @@ pub struct LocalFeatures {
 }
 
 impl LocalFeatures {
-	pub fn new() -> LocalFeatures {
+	pub(crate) fn new() -> LocalFeatures {
 		LocalFeatures {
 			flags: Vec::new(),
 		}
 	}
 
-	pub fn supports_data_loss_protect(&self) -> bool {
+	pub(crate) fn supports_data_loss_protect(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & 3) != 0
 	}
-	pub fn requires_data_loss_protect(&self) -> bool {
+	pub(crate) fn requires_data_loss_protect(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & 1) != 0
 	}
 
-	pub fn initial_routing_sync(&self) -> bool {
+	pub(crate) fn initial_routing_sync(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
 	}
-	pub fn set_initial_routing_sync(&mut self) {
+	pub(crate) fn set_initial_routing_sync(&mut self) {
 		if self.flags.len() == 0 {
 			self.flags.resize(1, 1 << 3);
 		} else {
@@ -68,14 +68,14 @@ impl LocalFeatures {
 		}
 	}
 
-	pub fn supports_upfront_shutdown_script(&self) -> bool {
+	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (3 << 4)) != 0
 	}
-	pub fn requires_upfront_shutdown_script(&self) -> bool {
+	pub(crate) fn requires_upfront_shutdown_script(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 4)) != 0
 	}
 
-	pub fn requires_unknown_bits(&self) -> bool {
+	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		for (idx, &byte) in self.flags.iter().enumerate() {
 			if idx != 0 && (byte & 0x55) != 0 {
 				return true;
@@ -86,7 +86,7 @@ impl LocalFeatures {
 		return false;
 	}
 
-	pub fn supports_unknown_bits(&self) -> bool {
+	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		for (idx, &byte) in self.flags.iter().enumerate() {
 			if idx != 0 && byte != 0 {
 				return true;
@@ -105,13 +105,13 @@ pub struct GlobalFeatures {
 }
 
 impl GlobalFeatures {
-	pub fn new() -> GlobalFeatures {
+	pub(crate) fn new() -> GlobalFeatures {
 		GlobalFeatures {
 			flags: Vec::new(),
 		}
 	}
 
-	pub fn requires_unknown_bits(&self) -> bool {
+	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		for &byte in self.flags.iter() {
 			if (byte & 0x55) != 0 {
 				return true;
@@ -120,7 +120,7 @@ impl GlobalFeatures {
 		return false;
 	}
 
-	pub fn supports_unknown_bits(&self) -> bool {
+	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		for &byte in self.flags.iter() {
 			if byte != 0 {
 				return true;
@@ -131,160 +131,160 @@ impl GlobalFeatures {
 }
 
 pub struct Init {
-	pub global_features: GlobalFeatures,
-	pub local_features: LocalFeatures,
+	pub(crate) global_features: GlobalFeatures,
+	pub(crate) local_features: LocalFeatures,
 }
 
 pub struct ErrorMessage {
-	pub channel_id: [u8; 32],
-	pub data: String,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) data: String,
 }
 
 pub struct Ping {
-	pub ponglen: u16,
-	pub byteslen: u16,
+	pub(crate) ponglen: u16,
+	pub(crate) byteslen: u16,
 }
 
 pub struct Pong {
-	pub byteslen: u16,
+	pub(crate) byteslen: u16,
 }
 
 pub struct OpenChannel {
-	pub chain_hash: Sha256dHash,
-	pub temporary_channel_id: [u8; 32],
-	pub funding_satoshis: u64,
-	pub push_msat: u64,
-	pub dust_limit_satoshis: u64,
-	pub max_htlc_value_in_flight_msat: u64,
-	pub channel_reserve_satoshis: u64,
-	pub htlc_minimum_msat: u64,
-	pub feerate_per_kw: u32,
-	pub to_self_delay: u16,
-	pub max_accepted_htlcs: u16,
-	pub funding_pubkey: PublicKey,
-	pub revocation_basepoint: PublicKey,
-	pub payment_basepoint: PublicKey,
-	pub delayed_payment_basepoint: PublicKey,
-	pub htlc_basepoint: PublicKey,
-	pub first_per_commitment_point: PublicKey,
-	pub channel_flags: u8,
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) temporary_channel_id: [u8; 32],
+	pub(crate) funding_satoshis: u64,
+	pub(crate) push_msat: u64,
+	pub(crate) dust_limit_satoshis: u64,
+	pub(crate) max_htlc_value_in_flight_msat: u64,
+	pub(crate) channel_reserve_satoshis: u64,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) feerate_per_kw: u32,
+	pub(crate) to_self_delay: u16,
+	pub(crate) max_accepted_htlcs: u16,
+	pub(crate) funding_pubkey: PublicKey,
+	pub(crate) revocation_basepoint: PublicKey,
+	pub(crate) payment_basepoint: PublicKey,
+	pub(crate) delayed_payment_basepoint: PublicKey,
+	pub(crate) htlc_basepoint: PublicKey,
+	pub(crate) first_per_commitment_point: PublicKey,
+	pub(crate) channel_flags: u8,
+	pub(crate) shutdown_scriptpubkey: Option<Script>,
 }
 
 pub struct AcceptChannel {
-	pub temporary_channel_id: [u8; 32],
-	pub dust_limit_satoshis: u64,
-	pub max_htlc_value_in_flight_msat: u64,
-	pub channel_reserve_satoshis: u64,
-	pub htlc_minimum_msat: u64,
-	pub minimum_depth: u32,
-	pub to_self_delay: u16,
-	pub max_accepted_htlcs: u16,
-	pub funding_pubkey: PublicKey,
-	pub revocation_basepoint: PublicKey,
-	pub payment_basepoint: PublicKey,
-	pub delayed_payment_basepoint: PublicKey,
-	pub htlc_basepoint: PublicKey,
-	pub first_per_commitment_point: PublicKey,
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub(crate) temporary_channel_id: [u8; 32],
+	pub(crate) dust_limit_satoshis: u64,
+	pub(crate) max_htlc_value_in_flight_msat: u64,
+	pub(crate) channel_reserve_satoshis: u64,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) minimum_depth: u32,
+	pub(crate) to_self_delay: u16,
+	pub(crate) max_accepted_htlcs: u16,
+	pub(crate) funding_pubkey: PublicKey,
+	pub(crate) revocation_basepoint: PublicKey,
+	pub(crate) payment_basepoint: PublicKey,
+	pub(crate) delayed_payment_basepoint: PublicKey,
+	pub(crate) htlc_basepoint: PublicKey,
+	pub(crate) first_per_commitment_point: PublicKey,
+	pub(crate) shutdown_scriptpubkey: Option<Script>,
 }
 
 pub struct FundingCreated {
-	pub temporary_channel_id: [u8; 32],
-	pub funding_txid: Sha256dHash,
-	pub funding_output_index: u16,
-	pub signature: Signature,
+	pub(crate) temporary_channel_id: [u8; 32],
+	pub(crate) funding_txid: Sha256dHash,
+	pub(crate) funding_output_index: u16,
+	pub(crate) signature: Signature,
 }
 
 pub struct FundingSigned {
-	pub channel_id: [u8; 32],
-	pub signature: Signature,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) signature: Signature,
 }
 
 pub struct FundingLocked {
-	pub channel_id: [u8; 32],
-	pub next_per_commitment_point: PublicKey,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) next_per_commitment_point: PublicKey,
 }
 
 pub struct Shutdown {
-	pub channel_id: [u8; 32],
-	pub scriptpubkey: Script,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) scriptpubkey: Script,
 }
 
 pub struct ClosingSigned {
-	pub channel_id: [u8; 32],
-	pub fee_satoshis: u64,
-	pub signature: Signature,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) fee_satoshis: u64,
+	pub(crate) signature: Signature,
 }
 
 #[derive(Clone)]
 pub struct UpdateAddHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub amount_msat: u64,
-	pub payment_hash: [u8; 32],
-	pub cltv_expiry: u32,
-	pub onion_routing_packet: OnionPacket,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) amount_msat: u64,
+	pub(crate) payment_hash: [u8; 32],
+	pub(crate) cltv_expiry: u32,
+	pub(crate) onion_routing_packet: OnionPacket,
 }
 
 #[derive(Clone)]
 pub struct UpdateFulfillHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub payment_preimage: [u8; 32],
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) payment_preimage: [u8; 32],
 }
 
 #[derive(Clone)]
 pub struct UpdateFailHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub reason: OnionErrorPacket,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) reason: OnionErrorPacket,
 }
 
 #[derive(Clone)]
 pub struct UpdateFailMalformedHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub sha256_of_onion: [u8; 32],
-	pub failure_code: u16,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) sha256_of_onion: [u8; 32],
+	pub(crate) failure_code: u16,
 }
 
 #[derive(Clone)]
 pub struct CommitmentSigned {
-	pub channel_id: [u8; 32],
-	pub signature: Signature,
-	pub htlc_signatures: Vec<Signature>,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) signature: Signature,
+	pub(crate) htlc_signatures: Vec<Signature>,
 }
 
 pub struct RevokeAndACK {
-	pub channel_id: [u8; 32],
-	pub per_commitment_secret: [u8; 32],
-	pub next_per_commitment_point: PublicKey,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) per_commitment_secret: [u8; 32],
+	pub(crate) next_per_commitment_point: PublicKey,
 }
 
 pub struct UpdateFee {
-	pub channel_id: [u8; 32],
-	pub feerate_per_kw: u32,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) feerate_per_kw: u32,
 }
 
-pub struct DataLossProtect {
-	pub your_last_per_commitment_secret: [u8; 32],
-	pub my_current_per_commitment_point: PublicKey,
+pub(crate) struct DataLossProtect {
+	pub(crate) your_last_per_commitment_secret: [u8; 32],
+	pub(crate) my_current_per_commitment_point: PublicKey,
 }
 
 pub struct ChannelReestablish {
-	pub channel_id: [u8; 32],
-	pub next_local_commitment_number: u64,
-	pub next_remote_commitment_number: u64,
-	pub data_loss_protect: Option<DataLossProtect>,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) next_local_commitment_number: u64,
+	pub(crate) next_remote_commitment_number: u64,
+	pub(crate) data_loss_protect: Option<DataLossProtect>,
 }
 
 #[derive(Clone)]
 pub struct AnnouncementSignatures {
-	pub channel_id: [u8; 32],
-	pub short_channel_id: u64,
-	pub node_signature: Signature,
-	pub bitcoin_signature: Signature,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) short_channel_id: u64,
+	pub(crate) node_signature: Signature,
+	pub(crate) bitcoin_signature: Signature,
 }
 
 #[derive(Clone)]
@@ -327,51 +327,51 @@ pub struct UnsignedNodeAnnouncement {
 	pub alias: [u8; 32],
 	/// List of addresses on which this node is reachable. Note that you may only have up to one
 	/// address of each type, if you have more, they may be silently discarded or we may panic!
-	pub addresses: Vec<NetAddress>,
-	pub excess_address_data: Vec<u8>,
-	pub excess_data: Vec<u8>,
+	pub(crate) addresses: Vec<NetAddress>,
+	pub(crate) excess_address_data: Vec<u8>,
+	pub(crate) excess_data: Vec<u8>,
 }
 pub struct NodeAnnouncement {
-	pub signature: Signature,
-	pub contents: UnsignedNodeAnnouncement,
+	pub(crate) signature: Signature,
+	pub(crate) contents: UnsignedNodeAnnouncement,
 }
 
 #[derive(PartialEq, Clone)]
 pub struct UnsignedChannelAnnouncement {
-	pub features: GlobalFeatures,
-	pub chain_hash: Sha256dHash,
-	pub short_channel_id: u64,
-	pub node_id_1: PublicKey,
-	pub node_id_2: PublicKey,
-	pub bitcoin_key_1: PublicKey,
-	pub bitcoin_key_2: PublicKey,
-	pub excess_data: Vec<u8>,
+	pub(crate) features: GlobalFeatures,
+	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) short_channel_id: u64,
+	pub        node_id_1: PublicKey,
+	pub        node_id_2: PublicKey,
+	pub(crate) bitcoin_key_1: PublicKey,
+	pub(crate) bitcoin_key_2: PublicKey,
+	pub(crate) excess_data: Vec<u8>,
 }
 #[derive(PartialEq, Clone)]
 pub struct ChannelAnnouncement {
-	pub node_signature_1: Signature,
-	pub node_signature_2: Signature,
-	pub bitcoin_signature_1: Signature,
-	pub bitcoin_signature_2: Signature,
-	pub contents: UnsignedChannelAnnouncement,
+	pub(crate) node_signature_1: Signature,
+	pub(crate) node_signature_2: Signature,
+	pub(crate) bitcoin_signature_1: Signature,
+	pub(crate) bitcoin_signature_2: Signature,
+	pub(crate) contents: UnsignedChannelAnnouncement,
 }
 
 #[derive(PartialEq, Clone)]
-pub struct UnsignedChannelUpdate {
-	pub chain_hash: Sha256dHash,
-	pub short_channel_id: u64,
-	pub timestamp: u32,
-	pub flags: u16,
-	pub cltv_expiry_delta: u16,
-	pub htlc_minimum_msat: u64,
-	pub fee_base_msat: u32,
-	pub fee_proportional_millionths: u32,
-	pub excess_data: Vec<u8>,
+pub(crate) struct UnsignedChannelUpdate {
+	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) short_channel_id: u64,
+	pub(crate) timestamp: u32,
+	pub(crate) flags: u16,
+	pub(crate) cltv_expiry_delta: u16,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) fee_base_msat: u32,
+	pub(crate) fee_proportional_millionths: u32,
+	pub(crate) excess_data: Vec<u8>,
 }
 #[derive(PartialEq, Clone)]
 pub struct ChannelUpdate {
-	pub signature: Signature,
-	pub contents: UnsignedChannelUpdate,
+	pub(crate) signature: Signature,
+	pub(crate) contents: UnsignedChannelUpdate,
 }
 
 /// Used to put an error message in a HandleError
@@ -396,11 +396,11 @@ pub struct HandleError { //TODO: rename me
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
 pub struct CommitmentUpdate {
-	pub update_add_htlcs: Vec<UpdateAddHTLC>,
-	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
-	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
-	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
-	pub commitment_signed: CommitmentSigned,
+	pub(crate) update_add_htlcs: Vec<UpdateAddHTLC>,
+	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
+	pub(crate) update_fail_htlcs: Vec<UpdateFailHTLC>,
+	pub(crate) update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
+	pub(crate) commitment_signed: CommitmentSigned,
 }
 
 pub enum HTLCFailChannelUpdate {
@@ -463,42 +463,52 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 }
 
-pub struct OnionRealm0HopData {
-	pub short_channel_id: u64,
-	pub amt_to_forward: u64,
-	pub outgoing_cltv_value: u32,
+pub(crate) struct OnionRealm0HopData {
+	pub(crate) short_channel_id: u64,
+	pub(crate) amt_to_forward: u64,
+	pub(crate) outgoing_cltv_value: u32,
 	// 12 bytes of 0-padding
 }
 
-pub struct OnionHopData {
-	pub realm: u8,
-	pub data: OnionRealm0HopData,
-	pub hmac: [u8; 32],
+mod fuzzy_internal_msgs {
+	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
+	// them from untrusted input):
+
+	use super::OnionRealm0HopData;
+	pub struct OnionHopData {
+		pub(crate) realm: u8,
+		pub(crate) data: OnionRealm0HopData,
+		pub(crate) hmac: [u8; 32],
+	}
+	unsafe impl ::util::internal_traits::NoDealloc for OnionHopData{}
+
+	pub struct DecodedOnionErrorPacket {
+		pub(crate) hmac: [u8; 32],
+		pub(crate) failuremsg: Vec<u8>,
+		pub(crate) pad: Vec<u8>,
+	}
 }
-unsafe impl internal_traits::NoDealloc for OnionHopData{}
+#[cfg(feature = "fuzztarget")]
+pub use self::fuzzy_internal_msgs::*;
+#[cfg(not(feature = "fuzztarget"))]
+pub(crate) use self::fuzzy_internal_msgs::*;
 
 #[derive(Clone)]
-pub struct OnionPacket {
-	pub version: u8,
+pub(crate) struct OnionPacket {
+	pub(crate) version: u8,
 	/// In order to ensure we always return an error on Onion decode in compliance with BOLT 4, we
 	/// have to deserialize OnionPackets contained in UpdateAddHTLCs even if the ephemeral public
 	/// key (here) is bogus, so we hold a Result instead of a PublicKey as we'd like.
-	pub public_key: Result<PublicKey, secp256k1::Error>,
-	pub hop_data: [u8; 20*65],
-	pub hmac: [u8; 32],
-}
-
-pub struct DecodedOnionErrorPacket {
-	pub hmac: [u8; 32],
-	pub failuremsg: Vec<u8>,
-	pub pad: Vec<u8>,
+	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
+	pub(crate) hop_data: [u8; 20*65],
+	pub(crate) hmac: [u8; 32],
 }
 
 #[derive(Clone)]
-pub struct OnionErrorPacket {
+pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
-	pub data: Vec<u8>,
+	pub(crate) data: Vec<u8>,
 }
 
 impl Error for DecodeError {
