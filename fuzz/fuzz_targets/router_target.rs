@@ -125,15 +125,12 @@ pub fn do_test(data: &[u8]) {
 			match <($MsgType)>::read(&mut reader) {
 				Ok(msg) => msg,
 				Err(e) => match e {
-					msgs::DecodeError::UnknownRealmByte => return,
+					msgs::DecodeError::UnknownVersion => return,
 					msgs::DecodeError::UnknownRequiredFeature => return,
-					msgs::DecodeError::BadPublicKey => return,
-					msgs::DecodeError::BadSignature => return,
-					msgs::DecodeError::BadText => return,
+					msgs::DecodeError::InvalidValue => return,
 					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
-					msgs::DecodeError::InvalidValue => panic!("Should not happen with p2p message decoding"),
 					msgs::DecodeError::Io(e) => panic!(format!("{}", e)),
 				}
 			}

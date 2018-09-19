@@ -30,16 +30,14 @@ use util::ser::{Readable, Writeable, Writer};
 /// An error in decoding a message or struct.
 #[derive(Debug)]
 pub enum DecodeError {
-	/// Unknown realm byte in an OnionHopData packet
-	UnknownRealmByte,
+	/// A version byte specified something we don't know how to handle.
+	/// Includes unknown realm byte in an OnionHopData packet
+	UnknownVersion,
 	/// Unknown feature mandating we fail to parse message
 	UnknownRequiredFeature,
-	/// Failed to decode a public key (ie it's invalid)
-	BadPublicKey,
-	/// Failed to decode a signature (ie it's invalid)
-	BadSignature,
-	/// Value expected to be text wasn't decodable as text
-	BadText,
+	/// Value was invalid, eg a byte which was supposed to be a bool was something other than a 0
+	/// or 1, a public key/private key/signature was invalid, text wasn't UTF-8, etc
+	InvalidValue,
 	/// Buffer too short
 	ShortRead,
 	/// node_announcement included more than one address of a given type!
@@ -49,8 +47,6 @@ pub enum DecodeError {
 	BadLengthDescriptor,
 	/// Error from std::io
 	Io(::std::io::Error),
-	/// 1 or 0 is not found for boolean value
-	InvalidValue,
 }
 
 /// Tracks localfeatures which are only in init messages
@@ -614,16 +610,13 @@ pub(crate) struct OnionErrorPacket {
 impl Error for DecodeError {
 	fn description(&self) -> &str {
 		match *self {
-			DecodeError::UnknownRealmByte => "Unknown realm byte in Onion packet",
+			DecodeError::UnknownVersion => "Unknown realm byte in Onion packet",
 			DecodeError::UnknownRequiredFeature => "Unknown required feature preventing decode",
-			DecodeError::BadPublicKey => "Invalid public key in packet",
-			DecodeError::BadSignature => "Invalid signature in packet",
-			DecodeError::BadText => "Invalid text in packet",
+			DecodeError::InvalidValue => "Nonsense bytes didn't map to the type they were interpreted as",
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
 			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 			DecodeError::Io(ref e) => e.description(),
-			DecodeError::InvalidValue => "0 or 1 is not found for boolean",
 		}
 	}
 }
@@ -919,7 +912,7 @@ impl<R: Read> Readable<R> for OnionHopData {
 			realm: {
 				let r: u8 = Readable::read(r)?;
 				if r != 0 {
-					return Err(DecodeError::UnknownRealmByte);
+					return Err(DecodeError::UnknownVersion);
 				}
 				r
 			},
@@ -1087,7 +1080,7 @@ impl<R: Read> Readable<R> for ErrorMessage {
 				sz = cmp::min(data_len, sz);
 				match String::from_utf8(data[..sz as usize].to_vec()) {
 					Ok(s) => s,
-					Err(_) => return Err(DecodeError::BadText),
+					Err(_) => return Err(DecodeError::InvalidValue),
 				}
 			}
 		})

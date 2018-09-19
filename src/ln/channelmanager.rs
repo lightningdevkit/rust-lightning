@@ -806,7 +806,7 @@ impl ChannelManager {
 			match msgs::OnionHopData::read(&mut Cursor::new(&decoded[..])) {
 				Err(err) => {
 					let error_code = match err {
-						msgs::DecodeError::UnknownRealmByte => 0x4000 | 1,
+						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
 						_ => 0x2000 | 2, // Should never happen
 					};
 					return_err!("Unable to decode our hop data", error_code, &[0;0]);
