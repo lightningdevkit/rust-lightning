@@ -2747,16 +2747,12 @@ impl Channel {
 		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
 			panic!("Cannot create commitment tx while disconnected, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
-		let mut have_updates = false; // TODO initialize with "have we sent a fee update?"
-		if let Some(_) = self.pending_update_fee {
-			have_updates = true;
-		} else {
-			for htlc in self.pending_outbound_htlcs.iter() {
-				if htlc.state == OutboundHTLCState::LocalAnnounced {
-					have_updates = true;
-				}
-				if have_updates { break; }
+		let mut have_updates = self.pending_update_fee.is_some();
+		for htlc in self.pending_outbound_htlcs.iter() {
+			if htlc.state == OutboundHTLCState::LocalAnnounced {
+				have_updates = true;
 			}
+			if have_updates { break; }
 		}
 		if !have_updates {
 			panic!("Cannot create commitment tx until we have some updates to send");
@@ -2794,6 +2790,7 @@ impl Channel {
 	/// when we shouldn't change HTLC/channel state.
 	fn send_commitment_no_state_update(&self) -> Result<(msgs::CommitmentSigned, (Transaction, Vec<HTLCOutputInCommitment>)), HandleError> {
 		let funding_script = self.get_funding_redeemscript();
+
 		let mut feerate_per_kw = self.feerate_per_kw;
 		if let Some(feerate) = self.pending_update_fee {
 			feerate_per_kw = feerate;
