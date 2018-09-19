@@ -286,7 +286,15 @@ pub(super) struct Channel {
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
 
+	// pending_update_fee is filled when sending and receiving update_fee 
+	// For outbound channel, feerate_per_kw is upadated with the value from
+	// pending_update_fee when revoke_and_ack is received
+	// For inbound channel, feerate_per_kw is updated when it receives
+	// commitment_signed when pending_update_fee.is_some().
 	pending_update_fee: Option<u64>,
+	// update_fee() during ChannelState::AwaitingRemoteRevoke is hold in
+	// holdina_cell_update_fee then moved to pending_udpate_fee when revoke_and_ack
+	// is received.
 	holding_cell_update_fee: Option<u64>,
 	next_local_htlc_id: u64,
 	next_remote_htlc_id: u64,
