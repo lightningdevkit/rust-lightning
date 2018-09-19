@@ -130,12 +130,6 @@ pub enum Event {
 		/// The message which should be sent.
 		msg: msgs::Shutdown,
 	},
-	/// Used to indicate that update_fee message should be sent to the peer with the given node_id.
-	SendUpdateFee {
-		node_id: PublicKey,
-		msg: msgs::UpdateFee,
-		commitment_signed: msgs::CommitmentSigned,
-	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
 	///

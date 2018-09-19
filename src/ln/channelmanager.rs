@@ -1944,15 +1944,21 @@ impl ChannelManager {
 				if !chan.is_usable() {
 					return Err(HandleError{err: "Got an announcement_signatures before we were ready for it", action: None});
 				}
-				if let Some((update_fee, commitment_msg, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw)? {
+				if let Some((update_fee, commitment_signed, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw)? {
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						unimplemented!();
 					}
 					let mut pending_events = self.pending_events.lock().unwrap();
-					pending_events.push(events::Event::SendUpdateFee {
+					pending_events.push(events::Event::UpdateHTLCs {
 						node_id: chan.get_their_node_id(),
-						msg: update_fee,
-						commitment_signed: commitment_msg,
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs: Vec::new(),
+							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: Some(update_fee),
+							commitment_signed,
+						},
 					});
 				}
 			},
@@ -3080,15 +3086,15 @@ mod tests {
 
 		let events_0 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_0.len(), 1);
-		let (update_msg, ref commit) = match events_0[0] {
-			Event::SendUpdateFee { node_id:_, ref msg, ref commitment_signed } => {
-				(msg, commitment_signed.clone())
+		let (update_msg, commitment_signed) = match events_0[0] {
+				Event::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+				(update_fee.as_ref(), commitment_signed)
 			},
 			_ => panic!("Unexpected event"),
 		};
-		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg).unwrap();
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
 
-		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commit).unwrap();
+		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
 		{
 			let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);

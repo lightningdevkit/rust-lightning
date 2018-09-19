@@ -845,19 +845,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						for msg in update_fail_malformed_htlcs {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 135)));
 						}
+						if let Some(msg) = update_fee {
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 134)));
+						}
 						debug_assert!(update_fee.is_none());
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed, 132)));
-						Self::do_attempt_write_data(&mut descriptor, peer);
-						continue;
-					},
-					Event::SendUpdateFee { ref node_id, ref msg, ref commitment_signed } => {
-						log_trace!(self, "Handling UpdateFee event in peer_handler for node {} for channel {}",
-								log_pubkey!(node_id),
-								log_bytes!(commitment_signed.channel_id));
-						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
-								//TODO: Do whatever we're gonna do for handling dropped messages
-							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 132)));
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed, 132)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
