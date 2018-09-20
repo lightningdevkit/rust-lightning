@@ -36,10 +36,6 @@ name = "peer_crypt_target"
 path = "fuzz_targets/peer_crypt_target.rs"
 
 [[bin]]
-name = "channel_target"
-path = "fuzz_targets/channel_target.rs"
-
-[[bin]]
 name = "full_stack_target"
 path = "fuzz_targets/full_stack_target.rs"
 

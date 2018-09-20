@@ -80,23 +80,6 @@ mod channel_held_info {
 		Fail(HTLCFailureMsg),
 	}
 
-	#[cfg(feature = "fuzztarget")]
-	impl PendingHTLCStatus {
-		pub fn dummy() -> Self {
-			let secp_ctx = ::secp256k1::Secp256k1::signing_only();
-			PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
-				onion_packet: None,
-				incoming_shared_secret: SharedSecret::new(&secp_ctx,
-						&::secp256k1::key::PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[1; 32]).unwrap()),
-						&SecretKey::from_slice(&secp_ctx, &[1; 32]).unwrap()),
-				payment_hash: [0; 32],
-				short_channel_id: 0,
-				amt_to_forward: 0,
-				outgoing_cltv_value: 0,
-			})
-		}
-	}
-
 	/// Tracks the inbound corresponding to an outbound HTLC
 	#[derive(Clone)]
 	pub struct HTLCPreviousHopData {
@@ -114,7 +97,7 @@ mod channel_held_info {
 			session_priv: SecretKey,
 		},
 	}
-	#[cfg(any(test, feature = "fuzztarget"))]
+	#[cfg(test)]
 	impl HTLCSource {
 		pub fn dummy() -> Self {
 			HTLCSource::OutboundRoute {
@@ -125,7 +108,7 @@ mod channel_held_info {
 	}
 
 	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-	pub enum HTLCFailReason {
+	pub(crate) enum HTLCFailReason {
 		ErrorPacket {
 			err: msgs::OnionErrorPacket,
 		},
@@ -134,20 +117,8 @@ mod channel_held_info {
 			data: Vec<u8>,
 		}
 	}
-
-	#[cfg(feature = "fuzztarget")]
-	impl HTLCFailReason {
-		pub fn dummy() -> Self {
-			HTLCFailReason::Reason {
-				failure_code: 0, data: Vec::new(),
-			}
-		}
-	}
 }
-#[cfg(feature = "fuzztarget")]
-pub use self::channel_held_info::*;
-#[cfg(not(feature = "fuzztarget"))]
-pub(crate) use self::channel_held_info::*;
+pub(super) use self::channel_held_info::*;
 
 struct MsgHandleErrInternal {
 	err: msgs::HandleError,

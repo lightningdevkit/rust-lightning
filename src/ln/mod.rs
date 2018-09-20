@@ -9,9 +9,5 @@ pub mod peer_channel_encryptor;
 #[cfg(not(feature = "fuzztarget"))]
 pub(crate) mod peer_channel_encryptor;
 
-#[cfg(feature = "fuzztarget")]
-pub mod channel;
-#[cfg(not(feature = "fuzztarget"))]
-pub(crate) mod channel;
-
+mod channel;
 mod chan_utils;
