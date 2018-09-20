@@ -1742,23 +1742,22 @@ impl Channel {
 						// case there is some strange way to hit duplicate HTLC removes.
 						return Ok(None);
 					}
+					let update_fee = if let Some(feerate) = self.holding_cell_update_fee {
+							self.pending_update_fee = self.holding_cell_update_fee.take();
+							Some(msgs::UpdateFee {
+								channel_id: self.channel_id,
+								feerate_per_kw: feerate as u32,
+							})
+						} else {
+							None
+						};
 					let (commitment_signed, monitor_update) = self.send_commitment_no_status_check()?;
 					Ok(Some((msgs::CommitmentUpdate {
 						update_add_htlcs,
 						update_fulfill_htlcs,
 						update_fail_htlcs,
 						update_fail_malformed_htlcs: Vec::new(),
-						update_fee: {
-							if let Some(feerate) = self.holding_cell_update_fee {
-								self.pending_update_fee = self.holding_cell_update_fee.take();
-								Some(msgs::UpdateFee {
-									channel_id: self.channel_id,
-									feerate_per_kw: feerate as u32,
-								})
-							} else {
-								None
-							}
-						},
+						update_fee: update_fee,
 						commitment_signed,
 					}, monitor_update)))
 				},
