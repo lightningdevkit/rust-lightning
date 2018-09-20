@@ -1893,31 +1893,34 @@ impl Channel {
 
 	}
 
-	pub fn send_update_fee(&mut self, feerate_per_kw: u64) -> Result<Option<msgs::UpdateFee>, HandleError> {
+	/// Adds a pending update to this channel. See the doc for send_htlc for
+	/// further details on the optionness of the return value.
+	/// You MUST call send_commitment prior to any other calls on this Channel
+	fn send_update_fee(&mut self, feerate_per_kw: u64) -> Option<msgs::UpdateFee> {
 		if !self.channel_outbound {
-			return Err(HandleError{err: "Cannot send fee from inbound channel", action: None});
+			panic!("Cannot send fee from inbound channel");
 		}
 
-		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Cannot update fee until channel is fully established and we haven't started shutting down", action: None});
+		if !self.is_usable() {
+			panic!("Cannot update fee until channel is fully established and we haven't started shutting down");
 		}
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
 			self.holding_cell_update_fee = Some(feerate_per_kw);
-			return Ok(None);
+			return None;
 		}
 
 		debug_assert!(self.pending_update_fee.is_none());
 		self.pending_update_fee = Some(feerate_per_kw);
 
-		Ok(Some(msgs::UpdateFee {
+		Some(msgs::UpdateFee {
 			channel_id: self.channel_id,
 			feerate_per_kw: feerate_per_kw as u32,
-		}))
+		})
 	}
 
 	pub fn send_update_fee_and_commit(&mut self, feerate_per_kw: u64) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitor)>, HandleError> {
-		match self.send_update_fee(feerate_per_kw)? {
+		match self.send_update_fee(feerate_per_kw) {
 			Some(update_fee) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check()?;
 				Ok(Some((update_fee, commitment_signed, monitor_update)))
@@ -2346,6 +2349,10 @@ impl Channel {
 
 	pub fn should_announce(&self) -> bool {
 		self.announce_publicly
+	}
+
+	pub fn is_outbound(&self) -> bool {
+		self.channel_outbound
 	}
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
