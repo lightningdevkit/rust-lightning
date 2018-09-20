@@ -1,3 +1,5 @@
+//! Contains simple structs describing parts of transactions on the chain.
+
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 
@@ -27,6 +29,7 @@ impl OutPoint {
 		res
 	}
 
+	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin
 	pub fn into_bitcoin_outpoint(self) -> BitcoinOutPoint {
 		BitcoinOutPoint {
 			txid: self.txid,

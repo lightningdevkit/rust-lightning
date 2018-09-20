@@ -1,3 +1,7 @@
+//! Traits and utility impls which allow other parts of rust-lightning to interact with the
+//! blockchain - receiving notifications of new blocks and block disconnections and allowing
+//! rust-lightning to request that you monitor the chain for certain outpoints/transactions.
+
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
@@ -38,6 +42,8 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// Indicates that a listener needs to see all transactions.
 	fn watch_all_txn(&self);
 
+	/// Register the given listener to receive events. Only a weak pointer is provided and the
+	/// registration should be freed once that pointer expires.
 	fn register_listener(&self, listener: Weak<ChainListener>);
 	//TODO: unregister
 
@@ -70,9 +76,14 @@ pub trait ChainListener: Sync + Send {
 	fn block_disconnected(&self, header: &BlockHeader);
 }
 
+/// An enum that represents the speed at which we want a transaction to confirm used for feerate
+/// estimation.
 pub enum ConfirmationTarget {
+	/// We are happy with this transaction confirming slowly when feerate drops some.
 	Background,
+	/// We'd like this transaction to confirm without major delay, but 12-18 blocks is fine.
 	Normal,
+	/// We'd like this transaction to confirm in the next few blocks.
 	HighPriority,
 }
 
@@ -224,6 +235,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 }
 
 impl ChainWatchInterfaceUtil {
+	/// Creates a new ChainWatchInterfaceUtil for the given network
 	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
 			network: network,

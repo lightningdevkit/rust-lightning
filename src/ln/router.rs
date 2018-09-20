@@ -1,3 +1,7 @@
+//! The top-level routing/network map tracking logic lives here.
+//! You probably want to create a Router and use that as your RoutingMessageHandler and then
+//! interrogate it to get routes for your own payments.
+
 use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1,Message};
 use secp256k1;
@@ -22,6 +26,7 @@ use std;
 /// A hop in a route
 #[derive(Clone)]
 pub struct RouteHop {
+	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
 	/// The channel that should be used from the previous hop to reach this node.
 	pub short_channel_id: u64,
@@ -160,11 +165,18 @@ impl NetworkMap {
 
 /// A channel descriptor which provides a last-hop route to get_route
 pub struct RouteHint {
+	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
+	/// The short_channel_id of this channel
 	pub short_channel_id: u64,
+	/// The static msat-denominated fee which must be paid to use this channel
 	pub fee_base_msat: u32,
+	/// The dynamic proportional fee which must be paid to use this channel, denominated in
+	/// millionths of the value being forwarded to the next hop.
 	pub fee_proportional_millionths: u32,
+	/// The difference in CLTV values between this node and the next node.
 	pub cltv_expiry_delta: u16,
+	/// The minimum value, in msat, which must be relayed to the next hop.
 	pub htlc_minimum_msat: u64,
 }
 
@@ -444,6 +456,7 @@ struct DummyDirectionalChannelInfo {
 }
 
 impl Router {
+	/// Creates a new router with the given node_id to be used as the source for get_route()
 	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
 		let mut nodes = HashMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {

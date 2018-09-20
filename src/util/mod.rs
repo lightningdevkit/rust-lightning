@@ -1,3 +1,5 @@
+//! Some utility modules live here. See individual sub-modules for more info.
+
 pub mod events;
 pub mod errors;
 pub mod ser;

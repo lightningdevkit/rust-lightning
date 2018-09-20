@@ -1,3 +1,18 @@
+//! Wire messages, traits representing wire message handlers, and a few error types live here.
+//! For a normal node you probably don't need to use anything here, however, if you wish to split a
+//! node into an internet-facing route/message socket handling daemon and a separate daemon (or
+//! server entirely) which handles only channel-related messages you may wish to implement
+//! ChannelMessageHandler yourself and use it to re-serialize messages and pass them across
+//! daemons/servers.
+//! Note that if you go with such an architecture (instead of passing raw socket events to a
+//! non-internet-facing system) you trust the frontend internet-facing system to not lie about the
+//! source node_id of the mssage, however this does allow you to significantly reduce bandwidth
+//! between the systems as routing messages can represent a significant chunk of bandwidth usage
+//! (especially for non-channel-publicly-announcing nodes). As an alternate design which avoids
+//! this issue, if you have sufficient bidirectional bandwidth between your systems, you may send
+//! raw socket events into your non-internet-facing system and then send routing events back to
+//! track the network on the less-secure system.
+
 use secp256k1::key::PublicKey;
 use secp256k1::{Secp256k1, Signature};
 use secp256k1;
@@ -9,9 +24,10 @@ use std::{cmp, fmt};
 use std::io::Read;
 use std::result::Result;
 
-use util::{byte_utils, internal_traits, events};
+use util::{byte_utils, events};
 use util::ser::{Readable, Writeable, Writer};
 
+/// An error in decoding a message or struct.
 #[derive(Debug)]
 pub enum DecodeError {
 	/// Unknown realm byte in an OnionHopData packet
@@ -44,23 +60,23 @@ pub struct LocalFeatures {
 }
 
 impl LocalFeatures {
-	pub fn new() -> LocalFeatures {
+	pub(crate) fn new() -> LocalFeatures {
 		LocalFeatures {
 			flags: Vec::new(),
 		}
 	}
 
-	pub fn supports_data_loss_protect(&self) -> bool {
+	pub(crate) fn supports_data_loss_protect(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & 3) != 0
 	}
-	pub fn requires_data_loss_protect(&self) -> bool {
+	pub(crate) fn requires_data_loss_protect(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & 1) != 0
 	}
 
-	pub fn initial_routing_sync(&self) -> bool {
+	pub(crate) fn initial_routing_sync(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
 	}
-	pub fn set_initial_routing_sync(&mut self) {
+	pub(crate) fn set_initial_routing_sync(&mut self) {
 		if self.flags.len() == 0 {
 			self.flags.resize(1, 1 << 3);
 		} else {
@@ -68,14 +84,14 @@ impl LocalFeatures {
 		}
 	}
 
-	pub fn supports_upfront_shutdown_script(&self) -> bool {
+	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (3 << 4)) != 0
 	}
-	pub fn requires_upfront_shutdown_script(&self) -> bool {
+	pub(crate) fn requires_upfront_shutdown_script(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 4)) != 0
 	}
 
-	pub fn requires_unknown_bits(&self) -> bool {
+	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		for (idx, &byte) in self.flags.iter().enumerate() {
 			if idx != 0 && (byte & 0x55) != 0 {
 				return true;
@@ -86,7 +102,7 @@ impl LocalFeatures {
 		return false;
 	}
 
-	pub fn supports_unknown_bits(&self) -> bool {
+	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		for (idx, &byte) in self.flags.iter().enumerate() {
 			if idx != 0 && byte != 0 {
 				return true;
@@ -105,13 +121,13 @@ pub struct GlobalFeatures {
 }
 
 impl GlobalFeatures {
-	pub fn new() -> GlobalFeatures {
+	pub(crate) fn new() -> GlobalFeatures {
 		GlobalFeatures {
 			flags: Vec::new(),
 		}
 	}
 
-	pub fn requires_unknown_bits(&self) -> bool {
+	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		for &byte in self.flags.iter() {
 			if (byte & 0x55) != 0 {
 				return true;
@@ -120,7 +136,7 @@ impl GlobalFeatures {
 		return false;
 	}
 
-	pub fn supports_unknown_bits(&self) -> bool {
+	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		for &byte in self.flags.iter() {
 			if byte != 0 {
 				return true;
@@ -130,181 +146,218 @@ impl GlobalFeatures {
 	}
 }
 
+/// An init message to be sent or received from a peer
 pub struct Init {
-	pub global_features: GlobalFeatures,
-	pub local_features: LocalFeatures,
+	pub(crate) global_features: GlobalFeatures,
+	pub(crate) local_features: LocalFeatures,
 }
 
+/// An error message to be sent or received from a peer
 pub struct ErrorMessage {
-	pub channel_id: [u8; 32],
-	pub data: String,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) data: String,
 }
 
+/// A ping message to be sent or received from a peer
 pub struct Ping {
-	pub ponglen: u16,
-	pub byteslen: u16,
+	pub(crate) ponglen: u16,
+	pub(crate) byteslen: u16,
 }
 
+/// A pong message to be sent or received from a peer
 pub struct Pong {
-	pub byteslen: u16,
+	pub(crate) byteslen: u16,
 }
 
+/// An open_channel message to be sent or received from a peer
 pub struct OpenChannel {
-	pub chain_hash: Sha256dHash,
-	pub temporary_channel_id: [u8; 32],
-	pub funding_satoshis: u64,
-	pub push_msat: u64,
-	pub dust_limit_satoshis: u64,
-	pub max_htlc_value_in_flight_msat: u64,
-	pub channel_reserve_satoshis: u64,
-	pub htlc_minimum_msat: u64,
-	pub feerate_per_kw: u32,
-	pub to_self_delay: u16,
-	pub max_accepted_htlcs: u16,
-	pub funding_pubkey: PublicKey,
-	pub revocation_basepoint: PublicKey,
-	pub payment_basepoint: PublicKey,
-	pub delayed_payment_basepoint: PublicKey,
-	pub htlc_basepoint: PublicKey,
-	pub first_per_commitment_point: PublicKey,
-	pub channel_flags: u8,
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) temporary_channel_id: [u8; 32],
+	pub(crate) funding_satoshis: u64,
+	pub(crate) push_msat: u64,
+	pub(crate) dust_limit_satoshis: u64,
+	pub(crate) max_htlc_value_in_flight_msat: u64,
+	pub(crate) channel_reserve_satoshis: u64,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) feerate_per_kw: u32,
+	pub(crate) to_self_delay: u16,
+	pub(crate) max_accepted_htlcs: u16,
+	pub(crate) funding_pubkey: PublicKey,
+	pub(crate) revocation_basepoint: PublicKey,
+	pub(crate) payment_basepoint: PublicKey,
+	pub(crate) delayed_payment_basepoint: PublicKey,
+	pub(crate) htlc_basepoint: PublicKey,
+	pub(crate) first_per_commitment_point: PublicKey,
+	pub(crate) channel_flags: u8,
+	pub(crate) shutdown_scriptpubkey: Option<Script>,
 }
 
+/// An accept_channel message to be sent or received from a peer
 pub struct AcceptChannel {
-	pub temporary_channel_id: [u8; 32],
-	pub dust_limit_satoshis: u64,
-	pub max_htlc_value_in_flight_msat: u64,
-	pub channel_reserve_satoshis: u64,
-	pub htlc_minimum_msat: u64,
-	pub minimum_depth: u32,
-	pub to_self_delay: u16,
-	pub max_accepted_htlcs: u16,
-	pub funding_pubkey: PublicKey,
-	pub revocation_basepoint: PublicKey,
-	pub payment_basepoint: PublicKey,
-	pub delayed_payment_basepoint: PublicKey,
-	pub htlc_basepoint: PublicKey,
-	pub first_per_commitment_point: PublicKey,
-	pub shutdown_scriptpubkey: Option<Script>,
+	pub(crate) temporary_channel_id: [u8; 32],
+	pub(crate) dust_limit_satoshis: u64,
+	pub(crate) max_htlc_value_in_flight_msat: u64,
+	pub(crate) channel_reserve_satoshis: u64,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) minimum_depth: u32,
+	pub(crate) to_self_delay: u16,
+	pub(crate) max_accepted_htlcs: u16,
+	pub(crate) funding_pubkey: PublicKey,
+	pub(crate) revocation_basepoint: PublicKey,
+	pub(crate) payment_basepoint: PublicKey,
+	pub(crate) delayed_payment_basepoint: PublicKey,
+	pub(crate) htlc_basepoint: PublicKey,
+	pub(crate) first_per_commitment_point: PublicKey,
+	pub(crate) shutdown_scriptpubkey: Option<Script>,
 }
 
+/// A funding_created message to be sent or received from a peer
 pub struct FundingCreated {
-	pub temporary_channel_id: [u8; 32],
-	pub funding_txid: Sha256dHash,
-	pub funding_output_index: u16,
-	pub signature: Signature,
+	pub(crate) temporary_channel_id: [u8; 32],
+	pub(crate) funding_txid: Sha256dHash,
+	pub(crate) funding_output_index: u16,
+	pub(crate) signature: Signature,
 }
 
+/// A funding_signed message to be sent or received from a peer
 pub struct FundingSigned {
-	pub channel_id: [u8; 32],
-	pub signature: Signature,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) signature: Signature,
 }
 
+/// A funding_locked message to be sent or received from a peer
 pub struct FundingLocked {
-	pub channel_id: [u8; 32],
-	pub next_per_commitment_point: PublicKey,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) next_per_commitment_point: PublicKey,
 }
 
+/// A shutdown message to be sent or received from a peer
 pub struct Shutdown {
-	pub channel_id: [u8; 32],
-	pub scriptpubkey: Script,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) scriptpubkey: Script,
 }
 
+/// A closing_signed message to be sent or received from a peer
 pub struct ClosingSigned {
-	pub channel_id: [u8; 32],
-	pub fee_satoshis: u64,
-	pub signature: Signature,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) fee_satoshis: u64,
+	pub(crate) signature: Signature,
 }
 
+/// An update_add_htlc message to be sent or received from a peer
 #[derive(Clone)]
 pub struct UpdateAddHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub amount_msat: u64,
-	pub payment_hash: [u8; 32],
-	pub cltv_expiry: u32,
-	pub onion_routing_packet: OnionPacket,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) amount_msat: u64,
+	pub(crate) payment_hash: [u8; 32],
+	pub(crate) cltv_expiry: u32,
+	pub(crate) onion_routing_packet: OnionPacket,
 }
 
+/// An update_fulfill_htlc message to be sent or received from a peer
 #[derive(Clone)]
 pub struct UpdateFulfillHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub payment_preimage: [u8; 32],
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) payment_preimage: [u8; 32],
 }
 
+/// An update_fail_htlc message to be sent or received from a peer
 #[derive(Clone)]
 pub struct UpdateFailHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub reason: OnionErrorPacket,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) reason: OnionErrorPacket,
 }
 
+/// An update_fail_malformed_htlc message to be sent or received from a peer
 #[derive(Clone)]
 pub struct UpdateFailMalformedHTLC {
-	pub channel_id: [u8; 32],
-	pub htlc_id: u64,
-	pub sha256_of_onion: [u8; 32],
-	pub failure_code: u16,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) htlc_id: u64,
+	pub(crate) sha256_of_onion: [u8; 32],
+	pub(crate) failure_code: u16,
 }
 
+/// A commitment_signed message to be sent or received from a peer
 #[derive(Clone)]
 pub struct CommitmentSigned {
-	pub channel_id: [u8; 32],
-	pub signature: Signature,
-	pub htlc_signatures: Vec<Signature>,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) signature: Signature,
+	pub(crate) htlc_signatures: Vec<Signature>,
 }
 
+/// A revoke_and_ack message to be sent or received from a peer
 pub struct RevokeAndACK {
-	pub channel_id: [u8; 32],
-	pub per_commitment_secret: [u8; 32],
-	pub next_per_commitment_point: PublicKey,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) per_commitment_secret: [u8; 32],
+	pub(crate) next_per_commitment_point: PublicKey,
 }
 
+/// An update_fee message to be sent or received from a peer
 pub struct UpdateFee {
-	pub channel_id: [u8; 32],
-	pub feerate_per_kw: u32,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) feerate_per_kw: u32,
 }
 
-pub struct DataLossProtect {
-	pub your_last_per_commitment_secret: [u8; 32],
-	pub my_current_per_commitment_point: PublicKey,
+pub(crate) struct DataLossProtect {
+	pub(crate) your_last_per_commitment_secret: [u8; 32],
+	pub(crate) my_current_per_commitment_point: PublicKey,
 }
 
+/// A channel_reestablish message to be sent or received from a peer
 pub struct ChannelReestablish {
-	pub channel_id: [u8; 32],
-	pub next_local_commitment_number: u64,
-	pub next_remote_commitment_number: u64,
-	pub data_loss_protect: Option<DataLossProtect>,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) next_local_commitment_number: u64,
+	pub(crate) next_remote_commitment_number: u64,
+	pub(crate) data_loss_protect: Option<DataLossProtect>,
 }
 
+/// An announcement_signatures message to be sent or received from a peer
 #[derive(Clone)]
 pub struct AnnouncementSignatures {
-	pub channel_id: [u8; 32],
-	pub short_channel_id: u64,
-	pub node_signature: Signature,
-	pub bitcoin_signature: Signature,
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) short_channel_id: u64,
+	pub(crate) node_signature: Signature,
+	pub(crate) bitcoin_signature: Signature,
 }
 
+/// An address which can be used to connect to a remote peer
 #[derive(Clone)]
 pub enum NetAddress {
+	/// An IPv4 address/port on which the peer is listenting.
 	IPv4 {
+		/// The 4-byte IPv4 address
 		addr: [u8; 4],
+		/// The port on which the node is listenting
 		port: u16,
 	},
+	/// An IPv6 address/port on which the peer is listenting.
 	IPv6 {
+		/// The 16-byte IPv6 address
 		addr: [u8; 16],
+		/// The port on which the node is listenting
 		port: u16,
 	},
+	/// An old-style Tor onion address/port on which the peer is listening.
 	OnionV2 {
+		/// The bytes (usually encoded in base32 with ".onion" appended)
 		addr: [u8; 10],
+		/// The port on which the node is listenting
 		port: u16,
 	},
+	/// A new-style Tor onion address/port on which the peer is listening.
+	/// To create the human-readable "hostname", concatenate ed25519_pubkey, checksum, and version,
+	/// wrap as base32 and append ".onion".
 	OnionV3 {
+		/// The ed25519 long-term public key of the peer
 		ed25519_pubkey: [u8; 32],
+		/// The checksum of the pubkey and version, as included in the onion address
 		checksum: u16,
+		/// The version byte, as defined by the Tor Onion v3 spec.
 		version: u8,
+		/// The port on which the node is listenting
 		port: u16,
 	},
 }
@@ -319,125 +372,163 @@ impl NetAddress {
 	}
 }
 
+// Only exposed as broadcast of node_announcement should be filtered by node_id
+/// The unsigned part of a node_announcement
 pub struct UnsignedNodeAnnouncement {
-	pub features: GlobalFeatures,
-	pub timestamp: u32,
-	pub node_id: PublicKey,
-	pub rgb: [u8; 3],
-	pub alias: [u8; 32],
+	pub(crate) features: GlobalFeatures,
+	pub(crate) timestamp: u32,
+	/// The node_id this announcement originated from (don't rebroadcast the node_announcement back
+	/// to this node).
+	pub        node_id: PublicKey,
+	pub(crate) rgb: [u8; 3],
+	pub(crate) alias: [u8; 32],
 	/// List of addresses on which this node is reachable. Note that you may only have up to one
 	/// address of each type, if you have more, they may be silently discarded or we may panic!
-	pub addresses: Vec<NetAddress>,
-	pub excess_address_data: Vec<u8>,
-	pub excess_data: Vec<u8>,
+	pub(crate) addresses: Vec<NetAddress>,
+	pub(crate) excess_address_data: Vec<u8>,
+	pub(crate) excess_data: Vec<u8>,
 }
+/// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
-	pub signature: Signature,
-	pub contents: UnsignedNodeAnnouncement,
+	pub(crate) signature: Signature,
+	pub(crate) contents: UnsignedNodeAnnouncement,
 }
 
+// Only exposed as broadcast of channel_announcement should be filtered by node_id
+/// The unsigned part of a channel_announcement
 #[derive(PartialEq, Clone)]
 pub struct UnsignedChannelAnnouncement {
-	pub features: GlobalFeatures,
-	pub chain_hash: Sha256dHash,
-	pub short_channel_id: u64,
-	pub node_id_1: PublicKey,
-	pub node_id_2: PublicKey,
-	pub bitcoin_key_1: PublicKey,
-	pub bitcoin_key_2: PublicKey,
-	pub excess_data: Vec<u8>,
+	pub(crate) features: GlobalFeatures,
+	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) short_channel_id: u64,
+	/// One of the two node_ids which are endpoints of this channel
+	pub        node_id_1: PublicKey,
+	/// The other of the two node_ids which are endpoints of this channel
+	pub        node_id_2: PublicKey,
+	pub(crate) bitcoin_key_1: PublicKey,
+	pub(crate) bitcoin_key_2: PublicKey,
+	pub(crate) excess_data: Vec<u8>,
 }
+/// A channel_announcement message to be sent or received from a peer
 #[derive(PartialEq, Clone)]
 pub struct ChannelAnnouncement {
-	pub node_signature_1: Signature,
-	pub node_signature_2: Signature,
-	pub bitcoin_signature_1: Signature,
-	pub bitcoin_signature_2: Signature,
-	pub contents: UnsignedChannelAnnouncement,
+	pub(crate) node_signature_1: Signature,
+	pub(crate) node_signature_2: Signature,
+	pub(crate) bitcoin_signature_1: Signature,
+	pub(crate) bitcoin_signature_2: Signature,
+	pub(crate) contents: UnsignedChannelAnnouncement,
 }
 
 #[derive(PartialEq, Clone)]
-pub struct UnsignedChannelUpdate {
-	pub chain_hash: Sha256dHash,
-	pub short_channel_id: u64,
-	pub timestamp: u32,
-	pub flags: u16,
-	pub cltv_expiry_delta: u16,
-	pub htlc_minimum_msat: u64,
-	pub fee_base_msat: u32,
-	pub fee_proportional_millionths: u32,
-	pub excess_data: Vec<u8>,
+pub(crate) struct UnsignedChannelUpdate {
+	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) short_channel_id: u64,
+	pub(crate) timestamp: u32,
+	pub(crate) flags: u16,
+	pub(crate) cltv_expiry_delta: u16,
+	pub(crate) htlc_minimum_msat: u64,
+	pub(crate) fee_base_msat: u32,
+	pub(crate) fee_proportional_millionths: u32,
+	pub(crate) excess_data: Vec<u8>,
 }
+/// A channel_update message to be sent or received from a peer
 #[derive(PartialEq, Clone)]
 pub struct ChannelUpdate {
-	pub signature: Signature,
-	pub contents: UnsignedChannelUpdate,
+	pub(crate) signature: Signature,
+	pub(crate) contents: UnsignedChannelUpdate,
 }
 
 /// Used to put an error message in a HandleError
 pub enum ErrorAction {
 	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer {
+		/// An error message which we should make an effort to send before we disconnect.
 		msg: Option<ErrorMessage>
 	},
 	/// The peer did something harmless that we weren't able to process, just log and ignore
 	IgnoreError,
 	/// The peer did something incorrect. Tell them.
 	SendErrorMessage {
+		/// The message to send.
 		msg: ErrorMessage
 	},
 }
 
+/// An Err type for failure to process messages.
 pub struct HandleError { //TODO: rename me
+	/// A human-readable message describing the error
 	pub err: &'static str,
+	/// The action which should be taken against the offending peer.
 	pub action: Option<ErrorAction>, //TODO: Make this required
 }
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
 pub struct CommitmentUpdate {
-	pub update_add_htlcs: Vec<UpdateAddHTLC>,
-	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
-	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
-	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
-	pub commitment_signed: CommitmentSigned,
+	pub(crate) update_add_htlcs: Vec<UpdateAddHTLC>,
+	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
+	pub(crate) update_fail_htlcs: Vec<UpdateFailHTLC>,
+	pub(crate) update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
+	pub(crate) commitment_signed: CommitmentSigned,
 }
 
+/// The information we received from a peer along the route of a payment we originated. This is
+/// returned by ChannelMessageHandler::handle_update_fail_htlc to be passed into
+/// RoutingMessageHandler::handle_htlc_fail_channel_update to update our network map.
 pub enum HTLCFailChannelUpdate {
+	/// We received an error which included a full ChannelUpdate message.
 	ChannelUpdateMessage {
+		/// The unwrapped message we received
 		msg: ChannelUpdate,
 	},
+	/// We received an error which indicated only that a channel has been closed
 	ChannelClosed {
+		/// The short_channel_id which has now closed.
 		short_channel_id: u64,
 	},
 }
 
 /// A trait to describe an object which can receive channel messages. Messages MAY be called in
-/// paralell when they originate from different their_node_ids, however they MUST NOT be called in
-/// paralell when the two calls have the same their_node_id.
+/// parallel when they originate from different their_node_ids, however they MUST NOT be called in
+/// parallel when the two calls have the same their_node_id.
 pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	//Channel init:
+	/// Handle an incoming open_channel message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<AcceptChannel, HandleError>;
+	/// Handle an incoming accept_channel message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
+	/// Handle an incoming funding_created message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<FundingSigned, HandleError>;
+	/// Handle an incoming funding_signed message from the given peer.
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) -> Result<(), HandleError>;
+	/// Handle an incoming funding_locked message from the given peer.
 	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<Option<AnnouncementSignatures>, HandleError>;
 
 	// Channl close:
+	/// Handle an incoming shutdown message from the given peer.
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(Option<Shutdown>, Option<ClosingSigned>), HandleError>;
+	/// Handle an incoming closing_signed message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<Option<ClosingSigned>, HandleError>;
 
 	// HTLC handling:
+	/// Handle an incoming update_add_htlc message from the given peer.
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC) -> Result<(), HandleError>;
+	/// Handle an incoming update_fulfill_htlc message from the given peer.
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
+	/// Handle an incoming update_fail_htlc message from the given peer.
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<Option<HTLCFailChannelUpdate>, HandleError>;
+	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
+	/// Handle an incoming commitment_signed message from the given peer.
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
+	/// Handle an incoming revoke_and_ack message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
 
+	/// Handle an incoming update_fee message from the given peer.
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
 
 	// Channel-to-announce:
+	/// Handle an incoming announcement_signatures message from the given peer.
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), HandleError>;
 
 	// Connection loss/reestablish:
@@ -447,58 +538,77 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	/// and any outstanding channels should be failed.
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
+	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
 	fn peer_connected(&self, their_node_id: &PublicKey) -> Vec<ChannelReestablish>;
+	/// Handle an incoming channel_reestablish message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(Option<FundingLocked>, Option<RevokeAndACK>, Option<CommitmentUpdate>), HandleError>;
 
 	// Error:
+	/// Handle an incoming error message from the given peer.
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
 }
 
+/// A trait to describe an object which can receive routing messages.
 pub trait RoutingMessageHandler : Send + Sync {
+	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
+	/// false or returning an Err otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, HandleError>;
 	/// Handle a channel_announcement message, returning true if it should be forwarded on, false
 	/// or returning an Err otherwise.
 	fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, HandleError>;
+	/// Handle an incoming channel_update message, returning true if it should be forwarded on,
+	/// false or returning an Err otherwise.
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, HandleError>;
+	/// Handle some updates to the route graph that we learned due to an outbound failed payment.
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 }
 
-pub struct OnionRealm0HopData {
-	pub short_channel_id: u64,
-	pub amt_to_forward: u64,
-	pub outgoing_cltv_value: u32,
+pub(crate) struct OnionRealm0HopData {
+	pub(crate) short_channel_id: u64,
+	pub(crate) amt_to_forward: u64,
+	pub(crate) outgoing_cltv_value: u32,
 	// 12 bytes of 0-padding
 }
 
-pub struct OnionHopData {
-	pub realm: u8,
-	pub data: OnionRealm0HopData,
-	pub hmac: [u8; 32],
+mod fuzzy_internal_msgs {
+	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
+	// them from untrusted input):
+
+	use super::OnionRealm0HopData;
+	pub struct OnionHopData {
+		pub(crate) realm: u8,
+		pub(crate) data: OnionRealm0HopData,
+		pub(crate) hmac: [u8; 32],
+	}
+	unsafe impl ::util::internal_traits::NoDealloc for OnionHopData{}
+
+	pub struct DecodedOnionErrorPacket {
+		pub(crate) hmac: [u8; 32],
+		pub(crate) failuremsg: Vec<u8>,
+		pub(crate) pad: Vec<u8>,
+	}
 }
-unsafe impl internal_traits::NoDealloc for OnionHopData{}
+#[cfg(feature = "fuzztarget")]
+pub use self::fuzzy_internal_msgs::*;
+#[cfg(not(feature = "fuzztarget"))]
+pub(crate) use self::fuzzy_internal_msgs::*;
 
 #[derive(Clone)]
-pub struct OnionPacket {
-	pub version: u8,
+pub(crate) struct OnionPacket {
+	pub(crate) version: u8,
 	/// In order to ensure we always return an error on Onion decode in compliance with BOLT 4, we
 	/// have to deserialize OnionPackets contained in UpdateAddHTLCs even if the ephemeral public
 	/// key (here) is bogus, so we hold a Result instead of a PublicKey as we'd like.
-	pub public_key: Result<PublicKey, secp256k1::Error>,
-	pub hop_data: [u8; 20*65],
-	pub hmac: [u8; 32],
-}
-
-pub struct DecodedOnionErrorPacket {
-	pub hmac: [u8; 32],
-	pub failuremsg: Vec<u8>,
-	pub pad: Vec<u8>,
+	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
+	pub(crate) hop_data: [u8; 20*65],
+	pub(crate) hmac: [u8; 32],
 }
 
 #[derive(Clone)]
-pub struct OnionErrorPacket {
+pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...
-	pub data: Vec<u8>,
+	pub(crate) data: Vec<u8>,
 }
 
 impl Error for DecodeError {

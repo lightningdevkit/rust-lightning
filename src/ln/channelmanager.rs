@@ -1,3 +1,11 @@
+//! The top-level channel management and payment tracking stuff lives here.
+//! The ChannelManager is the main chunk of logic implementing the lightning protocol and is
+//! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
+//! upon reconnect to the relevant peer(s).
+//! It does not manage routing logic (see ln::router for that) nor does it manage constructing
+//! on-chain transactions (it only monitors the chain to watch for any force-closes that might
+//! imply it needs to fail HTLCs/payments/channels it manages).
+
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
@@ -80,23 +88,6 @@ mod channel_held_info {
 		Fail(HTLCFailureMsg),
 	}
 
-	#[cfg(feature = "fuzztarget")]
-	impl PendingHTLCStatus {
-		pub fn dummy() -> Self {
-			let secp_ctx = ::secp256k1::Secp256k1::signing_only();
-			PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
-				onion_packet: None,
-				incoming_shared_secret: SharedSecret::new(&secp_ctx,
-						&::secp256k1::key::PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[1; 32]).unwrap()),
-						&SecretKey::from_slice(&secp_ctx, &[1; 32]).unwrap()),
-				payment_hash: [0; 32],
-				short_channel_id: 0,
-				amt_to_forward: 0,
-				outgoing_cltv_value: 0,
-			})
-		}
-	}
-
 	/// Tracks the inbound corresponding to an outbound HTLC
 	#[derive(Clone)]
 	pub struct HTLCPreviousHopData {
@@ -114,7 +105,7 @@ mod channel_held_info {
 			session_priv: SecretKey,
 		},
 	}
-	#[cfg(any(test, feature = "fuzztarget"))]
+	#[cfg(test)]
 	impl HTLCSource {
 		pub fn dummy() -> Self {
 			HTLCSource::OutboundRoute {
@@ -125,7 +116,7 @@ mod channel_held_info {
 	}
 
 	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-	pub enum HTLCFailReason {
+	pub(crate) enum HTLCFailReason {
 		ErrorPacket {
 			err: msgs::OnionErrorPacket,
 		},
@@ -134,20 +125,8 @@ mod channel_held_info {
 			data: Vec<u8>,
 		}
 	}
-
-	#[cfg(feature = "fuzztarget")]
-	impl HTLCFailReason {
-		pub fn dummy() -> Self {
-			HTLCFailReason::Reason {
-				failure_code: 0, data: Vec::new(),
-			}
-		}
-	}
 }
-#[cfg(feature = "fuzztarget")]
-pub use self::channel_held_info::*;
-#[cfg(not(feature = "fuzztarget"))]
-pub(crate) use self::channel_held_info::*;
+pub(super) use self::channel_held_info::*;
 
 struct MsgHandleErrInternal {
 	err: msgs::HandleError,
@@ -287,6 +266,7 @@ struct OnionKeys {
 	mu: [u8; 32],
 }
 
+/// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 	/// thereafter this is the txid of the funding transaction xor the funding transaction output).
@@ -296,7 +276,9 @@ pub struct ChannelDetails {
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	pub short_channel_id: Option<u64>,
+	/// The node_id of our counterparty
 	pub remote_network_id: PublicKey,
+	/// The value, in satoshis, of this channel as appears in the funding output
 	pub channel_value_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
 	pub user_id: u64,

@@ -263,7 +263,7 @@ const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
 // inbound channel.
-pub struct Channel {
+pub(super) struct Channel {
 	user_id: u64,
 
 	channel_id: [u8; 32],
