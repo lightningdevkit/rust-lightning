@@ -1,4 +1,5 @@
 //! Top level peer message handling and socket handling logic lives here.
+//!
 //! Instead of actually servicing sockets ourselves we require that you implement the
 //! SocketDescriptor interface and use that to receive actions which you should perform on the
 //! socket, and call into PeerManager with bytes read from the socket. The PeerManager will then
@@ -32,7 +33,9 @@ pub struct MessageHandler {
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
 /// to a remote host. You will need to be able to generate multiple of these which meet Eq and
 /// implement Hash to meet the PeerManager API.
+///
 /// For efficiency, Clone should be relatively cheap for this type.
+///
 /// You probably want to just extend an int and put a file descriptor in a struct and implement
 /// send_data. Note that if you are using a higher-level net library that may close() itself, be
 /// careful to ensure you don't have races whereby you might register a new connection with an fd
@@ -42,9 +45,11 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// Returns the amount of data which was sent, possibly 0 if the socket has since disconnected.
 	/// Note that in the disconnected case, a disconnect_event must still fire and further write
 	/// attempts may occur until that time.
+	///
 	/// If the returned size is smaller than data.len() - write_offset, a write_available event must
 	/// trigger the next time more data can be written. Additionally, until the a send_data event
 	/// completes fully, no further read_events should trigger on the same peer!
+	///
 	/// If a read_event on this descriptor had previously returned true (indicating that read
 	/// events should be paused to prevent DoS in the send buffer), resume_read may be set
 	/// indicating that read events on this descriptor should resume. A resume_read of false does
@@ -167,6 +172,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/// Get the list of node ids for peers which have completed the initial handshake.
+	///
 	/// For outbound connections, this will be the same as the their_node_id parameter passed in to
 	/// new_outbound_connection, however entries will only appear once the initial handshake has
 	/// completed and we are sure the remote peer has the private key for the given node_id.
@@ -183,7 +189,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	/// Indicates a new outbound connection has been established to a node with the given node_id.
 	/// Note that if an Err is returned here you MUST NOT call disconnect_event for the new
 	/// descriptor but must disconnect the connection immediately.
+	///
 	/// Returns some bytes to send to the remote node.
+	///
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
@@ -213,10 +221,12 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/// Indicates a new inbound connection has been established.
+	///
 	/// May refuse the connection by returning an Err, but will never write bytes to the remote end
 	/// (outbound connector always speaks first). Note that if an Err is returned here you MUST NOT
 	/// call disconnect_event for the new descriptor but must disconnect the connection
 	/// immediately.
+	///
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
@@ -266,12 +276,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/// Indicates that there is room to write data to the given socket descriptor.
+	///
 	/// May return an Err to indicate that the connection should be closed.
+	///
 	/// Will most likely call send_data on the descriptor passed in (or the descriptor handed into
-	/// new_*_connection) before returning. Thus, be very careful with reentrancy issues! The
+	/// new_*\_connection) before returning. Thus, be very careful with reentrancy issues! The
 	/// invariants around calling write_event in case a write did not fully complete must still
 	/// hold - be ready to call write_event again if a write call generated here isn't sufficient!
-	/// Panics if the descriptor was not previously registered in a new_*_connection event.
+	/// Panics if the descriptor was not previously registered in a new_\*_connection event.
 	pub fn write_event(&self, descriptor: &mut Descriptor) -> Result<(), PeerHandleError> {
 		let mut peers = self.peers.lock().unwrap();
 		match peers.peers.get_mut(descriptor) {
@@ -285,16 +297,20 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/// Indicates that data was read from the given socket descriptor.
+	///
 	/// May return an Err to indicate that the connection should be closed.
+	///
 	/// Will very likely call send_data on the descriptor passed in (or a descriptor handed into
 	/// new_*_connection) before returning. Thus, be very careful with reentrancy issues! The
 	/// invariants around calling write_event in case a write did not fully complete must still
 	/// hold. Note that this function will often call send_data on many peers before returning, not
 	/// just this peer!
+	///
 	/// If Ok(true) is returned, further read_events should not be triggered until a write_event on
 	/// this file descriptor has resume_read set (preventing DoS issues in the send buffer). Note
 	/// that this must be true even if a send_data call with resume_read=true was made during the
 	/// course of this function!
+	///
 	/// Panics if the descriptor was not previously registered in a new_*_connection event.
 	pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) -> Result<bool, PeerHandleError> {
 		match self.do_read_event(peer_descriptor, data) {
@@ -935,8 +951,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/// Indicates that the given socket descriptor's connection is now closed.
+	///
 	/// This must be called even if a PeerHandleError was given for a read_event or write_event,
-	/// but must NOT be called if a PeerHandleError was provided out of a new_*_connection event!
+	/// but must NOT be called if a PeerHandleError was provided out of a new_\*\_connection event!
+	///
 	/// Panics if the descriptor was not previously registered in a successful new_*_connection event.
 	pub fn disconnect_event(&self, descriptor: &Descriptor) {
 		self.disconnect_event_internal(descriptor, false);

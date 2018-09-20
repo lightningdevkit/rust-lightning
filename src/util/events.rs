@@ -1,5 +1,6 @@
 //! Events are returned from various bits in the library which indicate some action must be taken
 //! by the client.
+//!
 //! Because we don't have a built-in runtime, its up to the client to call events at a time in the
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
@@ -82,6 +83,7 @@ pub enum Event {
 	// TODO: Move these into a separate struct and make a top-level enum
 	/// Used to indicate that we've initialted a channel open and should send the open_channel
 	/// message provided to the given peer.
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendOpenChannel {
 		/// The node_id of the node which should receive this message
@@ -90,6 +92,7 @@ pub enum Event {
 		msg: msgs::OpenChannel,
 	},
 	/// Used to indicate that a funding_created message should be sent to the peer with the given node_id.
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendFundingCreated {
 		/// The node_id of the node which should receive this message
@@ -98,6 +101,7 @@ pub enum Event {
 		msg: msgs::FundingCreated,
 	},
 	/// Used to indicate that a funding_locked message should be sent to the peer with the given node_id.
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendFundingLocked {
 		/// The node_id of the node which should receive these message(s)
@@ -109,6 +113,7 @@ pub enum Event {
 	},
 	/// Used to indicate that a series of HTLC update messages, as well as a commitment_signed
 	/// message should be sent to the peer with the given node_id.
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	UpdateHTLCs {
 		/// The node_id of the node which should receive these message(s)
@@ -117,6 +122,7 @@ pub enum Event {
 		updates: msgs::CommitmentUpdate,
 	},
 	/// Used to indicate that a shutdown message should be sent to the peer with the given node_id.
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	SendShutdown {
 		/// The node_id of the node which should receive this message
@@ -126,6 +132,7 @@ pub enum Event {
 	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	BroadcastChannelAnnouncement {
 		/// The channel_announcement which should be sent.
@@ -134,6 +141,7 @@ pub enum Event {
 		update_msg: msgs::ChannelUpdate,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	BroadcastChannelUpdate {
 		/// The channel_update which should be sent.
@@ -142,6 +150,7 @@ pub enum Event {
 
 	//Error handling
 	/// Broadcast an error downstream to be handled
+	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
 	HandleError {
 		/// The node_id of the node which should receive this message
