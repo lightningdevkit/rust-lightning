@@ -295,7 +295,7 @@ impl<R: Read> Readable<R> for PublicKey {
 		let buf: [u8; 33] = Readable::read(r)?;
 		match PublicKey::from_slice(&Secp256k1::without_caps(), &buf) {
 			Ok(key) => Ok(key),
-			Err(_) => return Err(DecodeError::BadPublicKey),
+			Err(_) => return Err(DecodeError::InvalidValue),
 		}
 	}
 }
@@ -324,7 +324,7 @@ impl<R: Read> Readable<R> for Signature {
 		let buf: [u8; 64] = Readable::read(r)?;
 		match Signature::from_compact(&Secp256k1::without_caps(), &buf) {
 			Ok(sig) => Ok(sig),
-			Err(_) => return Err(DecodeError::BadSignature),
+			Err(_) => return Err(DecodeError::InvalidValue),
 		}
 	}
 }

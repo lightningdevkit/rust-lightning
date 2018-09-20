@@ -6,6 +6,7 @@ use ln::msgs;
 use ln::msgs::{HandleError};
 use util::events;
 use util::logger::{Logger, Level, Record};
+use util::ser::{Readable, Writer};
 
 use bitcoin::blockdata::transaction::Transaction;
 
@@ -13,6 +14,17 @@ use secp256k1::PublicKey;
 
 use std::sync::{Arc,Mutex};
 use std::{mem};
+
+struct VecWriter(Vec<u8>);
+impl Writer for VecWriter {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0.extend_from_slice(buf);
+		Ok(())
+	}
+	fn size_hint(&mut self, size: usize) {
+		self.0.reserve_exact(size);
+	}
+}
 
 pub struct TestFeeEstimator {
 	pub sat_per_kw: u64,
@@ -39,8 +51,11 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		assert!(channelmonitor::ChannelMonitor::deserialize(&monitor.serialize_for_disk()[..]).unwrap() == monitor);
-		monitor.serialize_for_watchtower(); // This at least shouldn't crash...
+		let mut w = VecWriter(Vec::new());
+		monitor.write_for_disk(&mut w).unwrap();
+		assert!(channelmonitor::ChannelMonitor::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == monitor);
+		w.0.clear();
+		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		self.simple_monitor.add_update_monitor(funding_txo, monitor)
 	}

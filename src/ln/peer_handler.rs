@@ -374,14 +374,12 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										Ok(x) => x,
 										Err(e) => {
 											match e {
-												msgs::DecodeError::UnknownRealmByte => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::UnknownVersion => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::UnknownRequiredFeature => {
 													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to udpate!");
 													continue;
 												},
-												msgs::DecodeError::BadPublicKey => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::BadSignature => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::BadText => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::InvalidValue => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::ShortRead => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::ExtraAddressesPerType => {
 													log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
@@ -389,7 +387,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												},
 												msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::Io(_) => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::InvalidValue => panic!("should not happen with message decoding"),
 											}
 										}
 									};
