@@ -1590,16 +1590,15 @@ impl Channel {
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let mut need_our_commitment = false;
-		if !self.channel_outbound {
-			if let Some(fee_update) = self.pending_update_fee.take() {
-				self.feerate_per_kw = fee_update;
-				need_our_commitment = true;
-			}
-		}
-
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let mut local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw);
+
+		let feerate_per_kw = if !self.channel_outbound && self.pending_update_fee.is_some() {
+			self.pending_update_fee.unwrap()
+		} else {
+			self.feerate_per_kw
+		};
+
+		let mut local_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, feerate_per_kw);
 		let local_commitment_txid = local_commitment_tx.0.txid();
 		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid commitment tx signature from peer", self.channel_id());
@@ -1632,6 +1631,17 @@ impl Channel {
 		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
+		let mut need_our_commitment = false;
+		if !self.channel_outbound {
+			if let Some(fee_update) = self.pending_update_fee {
+				self.feerate_per_kw = fee_update;
+				if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) == 0 {
+					need_our_commitment = true;
+					self.pending_update_fee = None;
+				}
+			}
+		}
+
 		self.channel_monitor.provide_latest_local_commitment_tx_info(local_commitment_tx.0, local_keys, self.feerate_per_kw, htlcs_and_sigs);
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
@@ -1844,10 +1854,13 @@ impl Channel {
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
-		debug_assert!(self.channel_outbound || self.pending_update_fee.is_none());
 		if let Some(feerate) = self.pending_update_fee.take() {
-			debug_assert!(self.channel_outbound);
-			self.feerate_per_kw = feerate;
+			if self.channel_outbound {
+				self.feerate_per_kw = feerate;
+			} else {
+				assert_eq!(feerate, self.feerate_per_kw);
+				require_commitment = true;
+			}
 		}
 
 		match self.free_holding_cell_htlcs()? {
