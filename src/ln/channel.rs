@@ -2012,7 +2012,12 @@ impl Channel {
 		if self.channel_outbound && msg.scriptpubkey.len() > 34 {
 			return Err(HandleError{err: "Got shutdown_scriptpubkey of absurd length from remote peer", action: None});
 		}
-		//TODO: Check shutdown_scriptpubkey form as BOLT says we must? WHYYY
+
+		//Check shutdown_scriptpubkey form as BOLT says we must
+		if !(msg.scriptpubkey.is_p2pkh()) && !(msg.scriptpubkey.is_p2sh())
+			&& !(msg.scriptpubkey.is_v0_p2wpkh()) && !(msg.scriptpubkey.is_v0_p2wsh()){
+			return Err(HandleError{err: "Got an invalid scriptpubkey from remote peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+		}
 
 		if self.their_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.their_shutdown_scriptpubkey.as_ref() {
@@ -2098,7 +2103,7 @@ impl Channel {
 		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
 			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", action: None});
 		}
-		if msg.fee_satoshis > 21000000 * 10000000 {
+		if msg.fee_satoshis > 21000000 * 10000000 { //this is required to stop potential overflow in build_closing_transaction
 			return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee", action: None});
 		}
 
