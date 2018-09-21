@@ -856,7 +856,7 @@ impl ChannelMonitor {
 						};
 						let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 						sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
-						txn_to_broadcast.push(single_htlc_tx); // TODO: This is not yet tested in ChannelManager!
+						txn_to_broadcast.push(single_htlc_tx);
 					}
 				}
 			}
