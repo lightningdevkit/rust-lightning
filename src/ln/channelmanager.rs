@@ -1,7 +1,9 @@
 //! The top-level channel management and payment tracking stuff lives here.
+//!
 //! The ChannelManager is the main chunk of logic implementing the lightning protocol and is
 //! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
 //! upon reconnect to the relevant peer(s).
+//!
 //! It does not manage routing logic (see ln::router for that) nor does it manage constructing
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
@@ -223,6 +225,7 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
+///
 /// Implements ChannelMessageHandler, handling the multi-channel parts and passing things through
 /// to individual Channels.
 pub struct ChannelManager {
@@ -285,10 +288,14 @@ pub struct ChannelDetails {
 }
 
 impl ChannelManager {
-	/// Constructs a new ChannelManager to hold several channels and route between them. This is
-	/// the main "logic hub" for all channel-related actions, and implements ChannelMessageHandler.
+	/// Constructs a new ChannelManager to hold several channels and route between them.
+	///
+	/// This is the main "logic hub" for all channel-related actions, and implements
+	/// ChannelMessageHandler.
+	///
 	/// fee_proportional_millionths is an optional fee to charge any payments routed through us.
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
+	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
@@ -324,12 +331,15 @@ impl ChannelManager {
 	}
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
+	///
 	/// user_id will be provided back as user_channel_id in FundingGenerationReady and
 	/// FundingBroadcastSafe events to allow tracking of which events correspond with which
 	/// create_channel call. Note that user_channel_id defaults to 0 for inbound channels, so you
 	/// may wish to avoid using 0 for user_id here.
+	///
 	/// If successful, will generate a SendOpenChannel event, so you should probably poll
 	/// PeerManager::process_events afterwards.
+	///
 	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat being greater than channel_value_satoshis * 1k
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
 		let chan_keys = if cfg!(feature = "fuzztarget") {
@@ -407,6 +417,7 @@ impl ChannelManager {
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
 	/// will be accepted on the given channel, and after additional timeout/the closing of all
 	/// pending HTLCs, the channel will be closed on chain.
+	///
 	/// May generate a SendShutdown event on success, which should be relayed.
 	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), HandleError> {
 		let (mut res, node_id, chan_option) = {
@@ -947,16 +958,19 @@ impl ChannelManager {
 	}
 
 	/// Sends a payment along a given route.
+	///
 	/// Value parameters are provided via the last hop in route, see documentation for RouteHop
 	/// fields for more info.
+	///
 	/// Note that if the payment_hash already exists elsewhere (eg you're sending a duplicative
 	/// payment), we don't do anything to stop you! We always try to ensure that if the provided
 	/// next hop knows the preimage to payment_hash they can claim an additional amount as
 	/// specified in the last hop in the route! Thus, you should probably do your own
 	/// payment_preimage tracking (which you should already be doing as they represent "proof of
 	/// payment") and prevent double-sends yourself.
-	/// See-also docs on Channel::send_htlc_and_commit.
+	///
 	/// May generate a SendHTLCs event on success, which should be relayed.
+	///
 	/// Raises APIError::RoutError when invalid route or forward parameter
 	/// (cltv_delta, fee, node public key) is specified
 	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), APIError> {
@@ -1033,7 +1047,9 @@ impl ChannelManager {
 	}
 
 	/// Call this upon creation of a funding transaction for the given channel.
+	///
 	/// Panics if a funding transaction has already been provided for this channel.
+	///
 	/// May panic if the funding_txo is duplicative with some other channel (note that this should
 	/// be trivially prevented by using unique funding transaction keys per-channel).
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
@@ -1107,6 +1123,7 @@ impl ChannelManager {
 	}
 
 	/// Processes HTLCs which are pending waiting on random forward delay.
+	///
 	/// Should only really ever be called in response to an PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
@@ -1323,6 +1340,7 @@ impl ChannelManager {
 	/// Provides a payment preimage in response to a PaymentReceived event, returning true and
 	/// generating message events for the net layer to claim the payment, if possible. Thus, you
 	/// should probably kick the net layer to go send messages if this returns true!
+	///
 	/// May panic if called except in response to a PaymentReceived event.
 	pub fn claim_funds(&self, payment_preimage: [u8; 32]) -> bool {
 		let mut sha = Sha256::new();

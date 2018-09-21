@@ -1,6 +1,8 @@
 //! Traits and utility impls which allow other parts of rust-lightning to interact with the
-//! blockchain - receiving notifications of new blocks and block disconnections and allowing
-//! rust-lightning to request that you monitor the chain for certain outpoints/transactions.
+//! blockchain.
+//!
+//! Includes traits for monitoring and receiving notifications of new blocks and block
+//! disconnections, transactio broadcasting, and feerate information requests.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
@@ -28,6 +30,7 @@ pub enum ChainError {
 
 /// An interface to request notification of certain scripts as they appear the
 /// chain.
+///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to ChainListener events, P2P events, or timer
 /// events).
@@ -66,8 +69,10 @@ pub trait ChainListener: Sync + Send {
 	/// Note that if a new transaction/outpoint is watched during a block_connected call, the block
 	/// *must* be re-scanned with the new transaction/outpoints and block_connected should be
 	/// called again with the same header and (at least) the new transactions.
+	///
 	/// Note that if non-new transaction/outpoints may be registered during a call, a second call
 	/// *must not* happen.
+	///
 	/// This also means those counting confirmations using block_connected callbacks should watch
 	/// for duplicate headers and not count them towards confirmations!
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
@@ -89,15 +94,19 @@ pub enum ConfirmationTarget {
 
 /// A trait which should be implemented to provide feerate information on a number of time
 /// horizons.
+///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to ChainListener events, P2P events, or timer
 /// events).
 pub trait FeeEstimator: Sync + Send {
-	/// Gets estimated satoshis of fee required per 1000 Weight-Units. This translates to:
-	///  * satoshis-per-byte * 250
-	///  * ceil(satoshis-per-kbyte / 4)
+	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
+	///
 	/// Must be no smaller than 253 (ie 1 satoshi-per-byte rounded up to ensure later round-downs
 	/// don't put us below 1 satoshi-per-byte).
+	///
+	/// This translates to:
+	///  * satoshis-per-byte * 250
+	///  * ceil(satoshis-per-kbyte / 4)
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u64;
 }
 
@@ -189,6 +198,7 @@ impl ChainWatchedUtil {
 }
 
 /// Utility to capture some common parts of ChainWatchInterface implementors.
+///
 /// Keeping a local copy of this in a ChainWatchInterface implementor is likely useful.
 pub struct ChainWatchInterfaceUtil {
 	network: Network,
@@ -247,6 +257,7 @@ impl ChainWatchInterfaceUtil {
 	}
 
 	/// Notify listeners that a block was connected given a full, unfiltered block.
+	///
 	/// Handles re-scanning the block and calling block_connected again if listeners register new
 	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
 	pub fn block_connected_with_filtering(&self, block: &Block, height: u32) {
@@ -280,6 +291,7 @@ impl ChainWatchInterfaceUtil {
 
 	/// Notify listeners that a block was connected, given pre-filtered list of transactions in the
 	/// block which matched the filter (probably using does_match_tx).
+	///
 	/// Returns true if notified listeners registered additional watch data (implying that the
 	/// block must be re-scanned and this function called again prior to further block_connected
 	/// calls, see ChainListener::block_connected for more info).

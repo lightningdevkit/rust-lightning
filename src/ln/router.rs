@@ -1,4 +1,5 @@
 //! The top-level routing/network map tracking logic lives here.
+//!
 //! You probably want to create a Router and use that as your RoutingMessageHandler and then
 //! interrogate it to get routes for your own payments.
 
@@ -523,13 +524,18 @@ impl Router {
 	}
 
 	/// Gets a route from us to the given target node.
+	///
 	/// Extra routing hops between known nodes and the target will be used if they are included in
 	/// last_hops.
+	///
 	/// If some channels aren't announced, it may be useful to fill in a first_hops with the
 	/// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
 	/// (this Router's) view of our local channels will be ignored, and only those in first_hops
-	/// will be used. Panics if first_hops contains channels without short_channel_ids
+	/// will be used.
+	///
+	/// Panics if first_hops contains channels without short_channel_ids
 	/// (ChannelManager::list_usable_channels will never include such channels).
+	///
 	/// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 	/// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 	/// *is* checked as they may change based on the receiving node.

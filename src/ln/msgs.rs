@@ -1,9 +1,11 @@
 //! Wire messages, traits representing wire message handlers, and a few error types live here.
+//!
 //! For a normal node you probably don't need to use anything here, however, if you wish to split a
 //! node into an internet-facing route/message socket handling daemon and a separate daemon (or
 //! server entirely) which handles only channel-related messages you may wish to implement
 //! ChannelMessageHandler yourself and use it to re-serialize messages and pass them across
 //! daemons/servers.
+//!
 //! Note that if you go with such an architecture (instead of passing raw socket events to a
 //! non-internet-facing system) you trust the frontend internet-facing system to not lie about the
 //! source node_id of the mssage, however this does allow you to significantly reduce bandwidth
@@ -484,9 +486,10 @@ pub enum HTLCFailChannelUpdate {
 	},
 }
 
-/// A trait to describe an object which can receive channel messages. Messages MAY be called in
-/// parallel when they originate from different their_node_ids, however they MUST NOT be called in
-/// parallel when the two calls have the same their_node_id.
+/// A trait to describe an object which can receive channel messages.
+///
+/// Messages MAY be called in parallel when they originate from different their_node_ids, however
+/// they MUST NOT be called in parallel when the two calls have the same their_node_id.
 pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
