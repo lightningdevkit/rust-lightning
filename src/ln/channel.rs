@@ -330,6 +330,7 @@ pub(super) struct Channel {
 	our_dust_limit_satoshis: u64,
 	their_max_htlc_value_in_flight_msat: u64,
 	//get_our_max_htlc_value_in_flight_msat(): u64,
+	/// minimum channel reserve for **self** to maintain - set by them.
 	their_channel_reserve_satoshis: u64,
 	//get_our_channel_reserve_satoshis(): u64,
 	their_htlc_minimum_msat: u64,
@@ -402,6 +403,8 @@ impl Channel {
 		channel_value_satoshis * 1000 / 10 //TODO
 	}
 
+	/// Returns a minimum channel reserve value **they** need to maintain
+	///
 	/// Guaranteed to return a value no larger than channel_value_satoshis
 	fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
 		let (q, _) = channel_value_satoshis.overflowing_div(100);
@@ -2742,7 +2745,8 @@ impl Channel {
 			}
 		}
 
-		// Check self.their_channel_reserve_satoshis (i.e our channel reserve):
+		// Check self.their_channel_reserve_satoshis (the amount we must keep as
+		// reserve for them to have something to claim if we misbehave)
 		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + holding_cell_outbound_amount_msat + htlc_outbound_value_msat {
 			return Err(HandleError{err: "Cannot send value that would put us over our reserve value", action: None});
 		}
