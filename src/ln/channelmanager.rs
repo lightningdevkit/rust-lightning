@@ -3041,6 +3041,231 @@ mod tests {
 	}
 
 	#[test]
+	fn test_update_fee_vanilla() {
+		let nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		let feerate = get_feerate!(nodes[0]);
+		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg, commitment_signed) = match events_0[0] {
+				Event::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+				(update_fee.as_ref(), commitment_signed)
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
+
+		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
+		let commitment_signed = commitment_signed.unwrap();
+		check_added_monitors!(nodes[0], 1);
+		check_added_monitors!(nodes[1], 1);
+
+		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
+		assert!(resp_option.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let (revoke_msg, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed).unwrap();
+		assert!(commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg).unwrap();
+		assert!(resp_option.is_none());
+		check_added_monitors!(nodes[1], 1);
+	}
+
+	#[test]
+	fn test_update_fee_with_fundee_update_add_htlc() {
+		let mut nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		// balancing
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+
+		let feerate = get_feerate!(nodes[0]);
+		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg, commitment_signed) = match events_0[0] {
+				Event::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+				(update_fee.as_ref(), commitment_signed)
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
+		let commitment_signed = commitment_signed.unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 800000, TEST_FINAL_CLTV).unwrap();
+
+		let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[1]);
+
+		// nothing happens since node[1] is in AwaitingRemoteRevoke
+		nodes[1].node.send_payment(route, our_payment_hash).unwrap();
+		{
+			let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 0);
+			added_monitors.clear();
+		}
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 0);
+		// node[1] has nothing to do
+
+		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
+		assert!(resp_option.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let (revoke_msg, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed).unwrap();
+		assert!(commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg).unwrap();
+		// AwaitingRemoteRevoke ends here
+
+		let commitment_update = resp_option.unwrap();
+		assert_eq!(commitment_update.update_add_htlcs.len(), 1);
+		assert_eq!(commitment_update.update_fulfill_htlcs.len(), 0);
+		assert_eq!(commitment_update.update_fail_htlcs.len(), 0);
+		assert_eq!(commitment_update.update_fail_malformed_htlcs.len(), 0);
+		assert_eq!(commitment_update.update_fee.is_none(), true);
+
+		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &commitment_update.update_add_htlcs[0]).unwrap();
+		let (revoke, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_update.commitment_signed).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		check_added_monitors!(nodes[1], 1);
+		let commitment_signed = commitment_signed.unwrap();
+		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		assert!(resp_option.is_none());
+
+		let (revoke, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		assert!(commitment_signed.is_none());
+		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		assert!(resp_option.is_none());
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		nodes[0].node.channel_state.lock().unwrap().next_forward = Instant::now();
+		nodes[0].node.process_pending_htlc_forwards();
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentReceived { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+
+		claim_payment(&nodes[1], &vec!(&nodes[0])[..], our_payment_preimage);
+
+		send_payment(&nodes[1], &vec!(&nodes[0])[..], 800000);
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 800000);
+		close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
+	}
+
+	#[test]
+	fn test_update_fee() {
+		let nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		let feerate = get_feerate!(nodes[0]);
+		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg, commitment_signed) = match events_0[0] {
+				Event::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+				(update_fee.as_ref(), commitment_signed)
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
+
+		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
+		let commitment_signed_0 = commitment_signed.unwrap();
+		check_added_monitors!(nodes[0], 1);
+		check_added_monitors!(nodes[1], 1);
+
+		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
+		assert!(resp_option.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		nodes[0].node.update_fee(channel_id, feerate+30).unwrap();
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg, commitment_signed) = match events_0[0] {
+				Event::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed } } => {
+				(update_fee.as_ref(), commitment_signed)
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
+
+		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
+		assert!(commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+		check_added_monitors!(nodes[1], 1);
+		let (revoke_msg_0, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed_0).unwrap();
+		assert!(commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
+		assert!(resp_option.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg_0).unwrap();
+		let commitment_signed = resp_option.unwrap().commitment_signed;
+		check_added_monitors!(nodes[1], 1);
+
+		let (revoke_msg, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed).unwrap();
+		assert!(commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg).unwrap();
+		assert!(resp_option.is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		assert_eq!(get_feerate!(nodes[0]), feerate + 30);
+		assert_eq!(get_feerate!(nodes[1]), feerate + 30);
+		close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
+	}
+
+	#[test]
 	fn fake_network_test() {
 		// Simple test which builds a network of ChannelManagers, connects them to each other, and
 		// tests that payments get routed and transactions broadcast in semi-reasonable ways.
