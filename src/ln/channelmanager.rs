@@ -2741,16 +2741,22 @@ mod tests {
 		}
 	}
 
+	macro_rules! get_payment_preimage_hash {
+		($node: expr) => {
+			{
+				let payment_preimage = [*$node.network_payment_count.borrow(); 32];
+				*$node.network_payment_count.borrow_mut() += 1;
+				let mut payment_hash = [0; 32];
+				let mut sha = Sha256::new();
+				sha.input(&payment_preimage[..]);
+				sha.result(&mut payment_hash);
+				(payment_preimage, payment_hash)
+			}
+		}
+	}
+
 	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
-		let our_payment_preimage = [*origin_node.network_payment_count.borrow(); 32];
-		*origin_node.network_payment_count.borrow_mut() += 1;
-		let our_payment_hash = {
-			let mut sha = Sha256::new();
-			sha.input(&our_payment_preimage[..]);
-			let mut ret = [0; 32];
-			sha.result(&mut ret);
-			ret
-		};
+		let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
 
 		let mut payment_event = {
 			origin_node.node.send_payment(route, our_payment_hash).unwrap();
@@ -2908,15 +2914,7 @@ mod tests {
 			assert_eq!(hop.pubkey, node.node.get_our_node_id());
 		}
 
-		let our_payment_preimage = [*origin_node.network_payment_count.borrow(); 32];
-		*origin_node.network_payment_count.borrow_mut() += 1;
-		let our_payment_hash = {
-			let mut sha = Sha256::new();
-			sha.input(&our_payment_preimage[..]);
-			let mut ret = [0; 32];
-			sha.result(&mut ret);
-			ret
-		};
+		let (_, our_payment_hash) = get_payment_preimage_hash!(origin_node);
 
 		let err = origin_node.node.send_payment(route, our_payment_hash).err().unwrap();
 		match err {
@@ -3503,15 +3501,7 @@ mod tests {
 
 		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, 42).unwrap();
 
-		let our_payment_preimage = [*nodes[0].network_payment_count.borrow(); 32];
-		*nodes[0].network_payment_count.borrow_mut() += 1;
-		let our_payment_hash = {
-			let mut sha = Sha256::new();
-			sha.input(&our_payment_preimage[..]);
-			let mut ret = [0; 32];
-			sha.result(&mut ret);
-			ret
-		};
+		let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
 		let mut payment_event = {
 			nodes[0].node.send_payment(route, our_payment_hash).unwrap();
