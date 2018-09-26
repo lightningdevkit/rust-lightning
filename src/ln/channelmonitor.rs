@@ -1011,7 +1011,9 @@ impl ChannelMonitor {
 
 	/// Attempst to claim a remote HTLC-Success/HTLC-Timeout s outputs using the revocation key
 	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64) -> Option<Transaction> {
-		let htlc_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
+		if tx.input.len() != 1 || tx.output.len() != 1 {
+			return None;
+		}
 
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
@@ -1039,6 +1041,7 @@ impl ChannelMonitor {
 		};
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.their_to_self_delay.unwrap(), &delayed_key);
 		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
+		let htlc_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 
 		let mut inputs = Vec::new();
 		let mut amount = 0;
