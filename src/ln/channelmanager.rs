@@ -365,9 +365,15 @@ impl ChannelManager {
 		let channel = Channel::new_outbound(&*self.fee_estimator, chan_keys, their_network_key, channel_value_satoshis, push_msat, self.announce_channels_publicly, user_id, Arc::clone(&self.logger))?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator);
 		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.insert(channel.channel_id(), channel) {
-			Some(_) => panic!("RNG is bad???"),
-			None => {}
+		match channel_state.by_id.entry(channel.channel_id()) {
+			hash_map::Entry::Occupied(_) => {
+				if cfg!(feature = "fuzztarget") {
+					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG" });
+				} else {
+					panic!("RNG is bad???");
+				}
+			},
+			hash_map::Entry::Vacant(entry) => { entry.insert(channel); }
 		}
 
 		let mut events = self.pending_events.lock().unwrap();
