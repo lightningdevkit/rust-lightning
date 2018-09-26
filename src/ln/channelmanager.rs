@@ -2693,36 +2693,28 @@ mod tests {
 		}
 	}
 
+	macro_rules! check_added_monitors {
+		($node: expr, $count: expr) => {
+			{
+				let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
+				assert_eq!(added_monitors.len(), $count);
+				added_monitors.clear();
+			}
+		}
+	}
+
 	macro_rules! commitment_signed_dance {
 		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
 			{
-				{
-					let added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
-					assert!(added_monitors.is_empty());
-				}
+				check_added_monitors!($node_a, 0);
 				let (as_revoke_and_ack, as_commitment_signed) = $node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed).unwrap();
-				{
-					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
-					assert_eq!(added_monitors.len(), 1);
-					added_monitors.clear();
-				}
-				{
-					let added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
-					assert!(added_monitors.is_empty());
-				}
+				check_added_monitors!($node_a, 1);
+				check_added_monitors!($node_b, 0);
 				assert!($node_b.node.handle_revoke_and_ack(&$node_a.node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
-				{
-					let mut added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
-					assert_eq!(added_monitors.len(), 1);
-					added_monitors.clear();
-				}
+				check_added_monitors!($node_b, 1);
 				let (bs_revoke_and_ack, bs_none) = $node_b.node.handle_commitment_signed(&$node_a.node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
 				assert!(bs_none.is_none());
-				{
-					let mut added_monitors = $node_b.chan_monitor.added_monitors.lock().unwrap();
-					assert_eq!(added_monitors.len(), 1);
-					added_monitors.clear();
-				}
+				check_added_monitors!($node_b, 1);
 				if $fail_backwards {
 					assert!($node_a.node.get_and_clear_pending_events().is_empty());
 				}
@@ -2760,11 +2752,7 @@ mod tests {
 
 		let mut payment_event = {
 			origin_node.node.send_payment(route, our_payment_hash).unwrap();
-			{
-				let mut added_monitors = origin_node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				added_monitors.clear();
-			}
+			check_added_monitors!(origin_node, 1);
 
 			let mut events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
@@ -2776,11 +2764,7 @@ mod tests {
 			assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
 
 			node.node.handle_update_add_htlc(&prev_node.node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
-			{
-				let added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 0);
-			}
-
+			check_added_monitors!(node, 0);
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 
 			let events_1 = node.node.get_and_clear_pending_events();
@@ -2804,11 +2788,7 @@ mod tests {
 					_ => panic!("Unexpected event"),
 				}
 			} else {
-				{
-					let mut added_monitors = node.chan_monitor.added_monitors.lock().unwrap();
-					assert_eq!(added_monitors.len(), 1);
-					added_monitors.clear();
-				}
+				check_added_monitors!(node, 1);
 				payment_event = SendEvent::from_event(events_2.remove(0));
 				assert_eq!(payment_event.msgs.len(), 1);
 			}
@@ -2821,25 +2801,17 @@ mod tests {
 
 	fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_preimage: [u8; 32]) {
 		assert!(expected_route.last().unwrap().node.claim_funds(our_payment_preimage));
-		{
-			let mut added_monitors = expected_route.last().unwrap().chan_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
-		}
+		check_added_monitors!(expected_route.last().unwrap(), 1);
 
 		let mut next_msgs: Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)> = None;
 		macro_rules! update_fulfill_dance {
 			($node: expr, $prev_node: expr, $last_node: expr) => {
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						if $last_node {
-							assert_eq!(added_monitors.len(), 0);
-						} else {
-							assert_eq!(added_monitors.len(), 1);
-						}
-						added_monitors.clear();
+					if $last_node {
+						check_added_monitors!($node, 0);
+					} else {
+						check_added_monitors!($node, 1);
 					}
 					commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, false);
 				}
@@ -2930,11 +2902,7 @@ mod tests {
 
 	fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: [u8; 32]) {
 		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
-		{
-			let mut added_monitors = expected_route.last().unwrap().chan_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
-		}
+		check_added_monitors!(expected_route.last().unwrap(), 1);
 
 		let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
 		macro_rules! update_fail_dance {
@@ -3341,11 +3309,7 @@ mod tests {
 			($node: expr, $prev_node: expr, $preimage: expr) => {
 				{
 					assert!($node.node.claim_funds($preimage));
-					{
-						let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-						assert_eq!(added_monitors.len(), 1);
-						added_monitors.clear();
-					}
+					check_added_monitors!($node, 1);
 
 					let events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
@@ -3505,11 +3469,7 @@ mod tests {
 
 		let mut payment_event = {
 			nodes[0].node.send_payment(route, our_payment_hash).unwrap();
-			{
-				let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				added_monitors.clear();
-			}
+			check_added_monitors!(nodes[0], 1);
 
 			let mut events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
@@ -3534,20 +3494,10 @@ mod tests {
 		payment_event = SendEvent::from_event(events_2.remove(0));
 		assert_eq!(payment_event.msgs.len(), 1);
 
-		{
-			let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
-		}
-
+		check_added_monitors!(nodes[1], 1);
 		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
 		nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
-
-		{
-			let mut added_monitors = nodes[2].chan_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
-		}
+		check_added_monitors!(nodes[2], 1);
 
 		// nodes[2] now has the latest commitment transaction, but hasn't revoked its previous
 		// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
@@ -3647,28 +3597,20 @@ mod tests {
 		for msg in reestablish_1 {
 			resp_1.push(node_b.node.handle_channel_reestablish(&node_a.node.get_our_node_id(), &msg).unwrap());
 		}
-		{
-			let mut added_monitors = node_b.chan_monitor.added_monitors.lock().unwrap();
-			if pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 {
-				assert_eq!(added_monitors.len(), 1);
-			} else {
-				assert!(added_monitors.is_empty());
-			}
-			added_monitors.clear();
+		if pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 {
+			check_added_monitors!(node_b, 1);
+		} else {
+			check_added_monitors!(node_b, 0);
 		}
 
 		let mut resp_2 = Vec::new();
 		for msg in reestablish_2 {
 			resp_2.push(node_a.node.handle_channel_reestablish(&node_b.node.get_our_node_id(), &msg).unwrap());
 		}
-		{
-			let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
-			if pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 {
-				assert_eq!(added_monitors.len(), 1);
-			} else {
-				assert!(added_monitors.is_empty());
-			}
-			added_monitors.clear();
+		if pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 {
+			check_added_monitors!(node_a, 1);
+		} else {
+			check_added_monitors!(node_a, 0);
 		}
 
 		// We dont yet support both needing updates, as that would require a different commitment dance:
