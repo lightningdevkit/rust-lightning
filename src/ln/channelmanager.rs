@@ -1046,6 +1046,7 @@ impl ChannelManager {
 				update_fulfill_htlcs: Vec::new(),
 				update_fail_htlcs: Vec::new(),
 				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: None,
 				commitment_signed,
 			},
 		});
@@ -1212,6 +1213,7 @@ impl ChannelManager {
 								update_fulfill_htlcs: Vec::new(),
 								update_fail_htlcs: Vec::new(),
 								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
 								commitment_signed: commitment_msg,
 							},
 						}));
@@ -1333,6 +1335,7 @@ impl ChannelManager {
 								update_fulfill_htlcs: Vec::new(),
 								update_fail_htlcs: vec![msg],
 								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
 								commitment_signed: commitment_msg,
 							},
 						});
@@ -1414,6 +1417,7 @@ impl ChannelManager {
 							update_fulfill_htlcs: vec![msg],
 							update_fail_htlcs: Vec::new(),
 							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: None,
 							commitment_signed: commitment_msg,
 						}
 					});
@@ -2682,10 +2686,11 @@ mod tests {
 	impl SendEvent {
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, commitment_signed } } => {
+				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
 					assert!(update_fulfill_htlcs.is_empty());
 					assert!(update_fail_htlcs.is_empty());
 					assert!(update_fail_malformed_htlcs.is_empty());
+					assert!(update_fee.is_none());
 					SendEvent { node_id: node_id, msgs: update_add_htlcs, commitment_msg: commitment_signed }
 				},
 				_ => panic!("Unexpected event type!"),
@@ -2830,11 +2835,12 @@ mod tests {
 			if !skip_last || idx != expected_route.len() - 1 {
 				assert_eq!(events.len(), 1);
 				match events[0] {
-					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 						assert!(update_add_htlcs.is_empty());
 						assert_eq!(update_fulfill_htlcs.len(), 1);
 						assert!(update_fail_htlcs.is_empty());
 						assert!(update_fail_malformed_htlcs.is_empty());
+						assert!(update_fee.is_none());
 						expected_next_node = node_id.clone();
 						next_msgs = Some((update_fulfill_htlcs[0].clone(), commitment_signed.clone()));
 					},
@@ -2929,11 +2935,12 @@ mod tests {
 			if !skip_last || idx != expected_route.len() - 1 {
 				assert_eq!(events.len(), 1);
 				match events[0] {
-					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 						assert!(update_add_htlcs.is_empty());
 						assert!(update_fulfill_htlcs.is_empty());
 						assert_eq!(update_fail_htlcs.len(), 1);
 						assert!(update_fail_malformed_htlcs.is_empty());
+						assert!(update_fee.is_none());
 						expected_next_node = node_id.clone();
 						next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
 					},
