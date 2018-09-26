@@ -1935,6 +1935,42 @@ impl ChannelManager {
 		}
 		res
 	}
+
+	/// Begin Update fee process. Allowed only on an outbound channel.
+	/// If successful, will generate a UpdateHTLCs event, so you should probably poll
+	/// PeerManager::process_events afterwards.
+	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		match channel_state.by_id.get_mut(&channel_id) {
+			None => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
+			Some(chan) => {
+				if !chan.is_usable() {
+					return Err(APIError::APIMisuseError{err: "Channel is not in usuable state"});
+				}
+				if !chan.is_outbound() {
+					return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
+				}
+				if let Some((update_fee, commitment_signed, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw).map_err(|e| APIError::APIMisuseError{err: e.err})? {
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::UpdateHTLCs {
+						node_id: chan.get_their_node_id(),
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs: Vec::new(),
+							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: Some(update_fee),
+							commitment_signed,
+						},
+					});
+				}
+			},
+		}
+		Ok(())
+	}
 }
 
 impl events::EventsProvider for ChannelManager {
