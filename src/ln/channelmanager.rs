@@ -3043,6 +3043,117 @@ mod tests {
 	}
 
 	#[test]
+	fn test_async_inbound_update_fee() {
+		let mut nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		// balancing
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+
+		// A                                        B
+		// update_fee                            ->
+		// send (1) commitment_signed            -.
+		//                                       <- update_add_htlc/commitment_signed
+		// send (2) RAA (awaiting remote revoke) -.
+		// (1) commitment_signed is delivered    ->
+		//                                       .- send (3) RAA (awaiting remote revoke)
+		// (2) RAA is delivered                  ->
+		//                                       .- send (4) commitment_signed
+		//                                       <- (3) RAA is delivered
+		// send (5) commitment_signed            -.
+		//                                       <- (4) commitment_signed is delivered
+		// send (6) RAA                          -.
+		// (5) commitment_signed is delivered    ->
+		//                                       <- RAA
+		// (6) RAA is delivered                  ->
+
+		// First nodes[0] generates an update_fee
+		nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0]) + 20).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg, commitment_signed) = match events_0[0] { // (1)
+			Event::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+				(update_fee.as_ref(), commitment_signed)
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
+
+		// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
+		let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		nodes[1].node.send_payment(nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 40000, TEST_FINAL_CLTV).unwrap(), our_payment_hash).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		let payment_event = {
+			let mut events_1 = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events_1.len(), 1);
+			SendEvent::from_event(events_1.remove(0))
+		};
+		assert_eq!(payment_event.node_id, nodes[0].node.get_our_node_id());
+		assert_eq!(payment_event.msgs.len(), 1);
+
+		// ...now when the messages get delivered everyone should be happy
+		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		let (as_revoke_msg, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap(); // (2)
+		assert!(as_commitment_signed.is_none()); // nodes[0] is awaiting nodes[1] revoke_and_ack
+		check_added_monitors!(nodes[0], 1);
+
+		// deliver(1), generate (3):
+		let (bs_revoke_msg, bs_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
+		assert!(bs_commitment_signed.is_none()); // nodes[1] is awaiting nodes[0] revoke_and_ack
+		check_added_monitors!(nodes[1], 1);
+
+		let bs_update = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_msg).unwrap(); // deliver (2)
+		assert!(bs_update.as_ref().unwrap().update_add_htlcs.is_empty()); // (4)
+		assert!(bs_update.as_ref().unwrap().update_fulfill_htlcs.is_empty()); // (4)
+		assert!(bs_update.as_ref().unwrap().update_fail_htlcs.is_empty()); // (4)
+		assert!(bs_update.as_ref().unwrap().update_fail_malformed_htlcs.is_empty()); // (4)
+		assert!(bs_update.as_ref().unwrap().update_fee.is_none()); // (4)
+		check_added_monitors!(nodes[1], 1);
+
+		let as_update = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_msg).unwrap(); // deliver (3)
+		assert!(as_update.as_ref().unwrap().update_add_htlcs.is_empty()); // (5)
+		assert!(as_update.as_ref().unwrap().update_fulfill_htlcs.is_empty()); // (5)
+		assert!(as_update.as_ref().unwrap().update_fail_htlcs.is_empty()); // (5)
+		assert!(as_update.as_ref().unwrap().update_fail_malformed_htlcs.is_empty()); // (5)
+		assert!(as_update.as_ref().unwrap().update_fee.is_none()); // (5)
+		check_added_monitors!(nodes[0], 1);
+
+		let (as_second_revoke, as_second_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_update.unwrap().commitment_signed).unwrap(); // deliver (4)
+		assert!(as_second_commitment_signed.is_none()); // only (6)
+		check_added_monitors!(nodes[0], 1);
+
+		let (bs_second_revoke, bs_second_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_update.unwrap().commitment_signed).unwrap(); // deliver (5)
+		assert!(bs_second_commitment_signed.is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke).unwrap().is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let events_2 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		match events_2[0] {
+			Event::PendingHTLCsForwardable {..} => {}, // If we actually processed we'd receive the payment
+			_ => panic!("Unexpected event"),
+		}
+
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_revoke).unwrap().is_none()); // deliver (6)
+		check_added_monitors!(nodes[1], 1);
+	}
+
+	#[test]
 	fn test_update_fee_vanilla() {
 		let nodes = create_network(2);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
