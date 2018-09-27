@@ -26,6 +26,14 @@ pub enum APIError {
 		/// A human-readable error message
 		err: &'static str
 	},
+
+
+	/// We were unable to complete the request since channel is disconnected or
+	/// shutdown in progress initiated by remote
+	ChannelUnavailable {
+		/// A human-readable error message
+		err: &'static str
+	}
 }
 
 impl fmt::Debug for APIError {
@@ -34,6 +42,7 @@ impl fmt::Debug for APIError {
 			APIError::APIMisuseError {ref err} => f.write_str(err),
 			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
 			APIError::RouteError {ref err} => f.write_str(err),
+			APIError::ChannelUnavailable {ref err} => f.write_str(err),
 		}
 	}
 }

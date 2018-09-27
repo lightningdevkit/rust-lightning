@@ -2886,11 +2886,16 @@ impl Channel {
 			}
 		}
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0 {
-			return Err(APIError::APIMisuseError{err: "Shutdown already in progress"});
+			if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
+				return Err(APIError::APIMisuseError{err: "Shutdown already in progress"});
+			}
+			else if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
+				return Err(APIError::ChannelUnavailable{err: "Shutdown already in progress by remote"});
+			}
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(APIError::APIMisuseError{err: "Cannot begin shutdown while peer is disconnected, maybe force-close instead?"});
+			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected, maybe force-close instead?"});
 		}
 
 		let our_closing_script = self.get_closing_scriptpubkey();

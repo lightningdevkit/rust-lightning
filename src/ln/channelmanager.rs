@@ -481,7 +481,7 @@ impl ChannelManager {
 						(res, chan_entry.get().get_their_node_id(), Some(chan_entry.remove_entry().1))
 					} else { (res, chan_entry.get().get_their_node_id(), None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: "No such channel"})
+				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel"})
 			}
 		};
 		for htlc_source in res.1.drain(..) {
