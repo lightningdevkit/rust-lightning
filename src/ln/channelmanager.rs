@@ -3154,6 +3154,65 @@ mod tests {
 	}
 
 	#[test]
+	fn test_update_fee_unordered_raa() {
+		// Just the intro to the previous test followed by an out-of-order RAA (which caused a
+		// crash in an earlier version of the update_fee patch)
+		let mut nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		// balancing
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+
+		// First nodes[0] generates an update_fee
+		nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0]) + 20).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let update_msg = match events_0[0] { // (1)
+			Event::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
+				update_fee.as_ref()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
+
+		// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
+		let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		nodes[1].node.send_payment(nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 40000, TEST_FINAL_CLTV).unwrap(), our_payment_hash).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		let payment_event = {
+			let mut events_1 = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events_1.len(), 1);
+			SendEvent::from_event(events_1.remove(0))
+		};
+		assert_eq!(payment_event.node_id, nodes[0].node.get_our_node_id());
+		assert_eq!(payment_event.msgs.len(), 1);
+
+		// ...now when the messages get delivered everyone should be happy
+		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		let (as_revoke_msg, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap(); // (2)
+		assert!(as_commitment_signed.is_none()); // nodes[0] is awaiting nodes[1] revoke_and_ack
+		check_added_monitors!(nodes[0], 1);
+
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_msg).unwrap().is_none()); // deliver (2)
+		check_added_monitors!(nodes[1], 1);
+
+		// We can't continue, sadly, because our (1) now has a bogus signature
+	}
+
+	#[test]
 	fn test_update_fee_vanilla() {
 		let nodes = create_network(2);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
