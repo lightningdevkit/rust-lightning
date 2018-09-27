@@ -2462,9 +2462,11 @@ mod tests {
 	}
 	impl Drop for Node {
 		fn drop(&mut self) {
-			// Check that we processed all pending events
-			assert_eq!(self.node.get_and_clear_pending_events().len(), 0);
-			assert_eq!(self.chan_monitor.added_monitors.lock().unwrap().len(), 0);
+			if !::std::thread::panicking() {
+				// Check that we processed all pending events
+				assert_eq!(self.node.get_and_clear_pending_events().len(), 0);
+				assert_eq!(self.chan_monitor.added_monitors.lock().unwrap().len(), 0);
+			}
 		}
 	}
 
