@@ -3213,6 +3213,109 @@ mod tests {
 	}
 
 	#[test]
+	fn test_multi_flight_update_fee() {
+		let nodes = create_network(2);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let channel_id = chan.2;
+
+		macro_rules! get_feerate {
+			($node: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&channel_id).unwrap();
+				chan.get_feerate()
+			}}
+		}
+
+		// A                                        B
+		// update_fee/commitment_signed          ->
+		//                                       .- send (1) RAA and (2) commitment_signed
+		// update_fee (never committed)          ->
+		// (3) update_fee                        ->
+		// We have to manually generate the above update_fee, it is allowed by the protocol but we
+		// don't track which updates correspond to which revoke_and_ack responses so we're in
+		// AwaitingRAA mode and will not generate the update_fee yet.
+		//                                       <- (1) RAA delivered
+		// (3) is generated and send (4) CS      -.
+		// Note that A cannot generate (4) prior to (1) being delivered as it otherwise doesn't
+		// know the per_commitment_point to use for it.
+		//                                       <- (2) commitment_signed delivered
+		// revoke_and_ack                        ->
+		//                                          B should send no response here
+		// (4) commitment_signed delivered       ->
+		//                                       <- RAA/commitment_signed delivered
+		// revoke_and_ack                        ->
+
+		// First nodes[0] generates an update_fee
+		let initial_feerate = get_feerate!(nodes[0]);
+		nodes[0].node.update_fee(channel_id, initial_feerate + 20).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let events_0 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_0.len(), 1);
+		let (update_msg_1, commitment_signed_1) = match events_0[0] { // (1)
+			Event::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+				(update_fee.as_ref().unwrap(), commitment_signed)
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		// Deliver first update_fee/commitment_signed pair, generating (1) and (2):
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg_1).unwrap();
+		let (bs_revoke_msg, bs_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed_1).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		// nodes[0] is awaiting a revoke from nodes[1] before it will create a new commitment
+		// transaction:
+		nodes[0].node.update_fee(channel_id, initial_feerate + 40).unwrap();
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+		// Create the (3) update_fee message that nodes[0] will generate before it does...
+		let mut update_msg_2 = msgs::UpdateFee {
+			channel_id: update_msg_1.channel_id.clone(),
+			feerate_per_kw: (initial_feerate + 30) as u32,
+		};
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_msg_2).unwrap();
+
+		update_msg_2.feerate_per_kw = (initial_feerate + 40) as u32;
+		// Deliver (3)
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_msg_2).unwrap();
+
+		// Deliver (1), generating (3) and (4)
+		let as_second_update = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_msg).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		assert!(as_second_update.as_ref().unwrap().update_add_htlcs.is_empty());
+		assert!(as_second_update.as_ref().unwrap().update_fulfill_htlcs.is_empty());
+		assert!(as_second_update.as_ref().unwrap().update_fail_htlcs.is_empty());
+		assert!(as_second_update.as_ref().unwrap().update_fail_malformed_htlcs.is_empty());
+		// Check that the update_fee newly generated matches what we delivered:
+		assert_eq!(as_second_update.as_ref().unwrap().update_fee.as_ref().unwrap().channel_id, update_msg_2.channel_id);
+		assert_eq!(as_second_update.as_ref().unwrap().update_fee.as_ref().unwrap().feerate_per_kw, update_msg_2.feerate_per_kw);
+
+		// Deliver (2) commitment_signed
+		let (as_revoke_msg, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), bs_commitment_signed.as_ref().unwrap()).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		assert!(as_commitment_signed.is_none());
+
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_msg).unwrap().is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		// Delever (4)
+		let (bs_second_revoke, bs_second_commitment) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_second_update.unwrap().commitment_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke).unwrap().is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let (as_second_revoke, as_second_commitment) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_commitment.unwrap()).unwrap();
+		assert!(as_second_commitment.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_revoke).unwrap().is_none());
+		check_added_monitors!(nodes[1], 1);
+	}
+
+	#[test]
 	fn test_update_fee_vanilla() {
 		let nodes = create_network(2);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
