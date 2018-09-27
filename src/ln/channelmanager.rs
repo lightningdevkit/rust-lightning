@@ -3376,6 +3376,21 @@ mod tests {
 			}}
 		}
 
+		// A                                        B
+		// (1) update_fee/commitment_signed      ->
+		//                                       <- (2) revoke_and_ack
+		//                                       .- send (3) commitment_signed
+		// (4) update_fee/commitment_signed      ->
+		//                                       .- send (5) revoke_and_ack (no CS as we're awaiting a revoke)
+		//                                       <- (3) commitment_signed delivered
+		// send (6) revoke_and_ack               -.
+		//                                       <- (5) deliver revoke_and_ack
+		// (6) deliver revoke_and_ack            ->
+		//                                       .- send (7) commitment_signed in response to (4)
+		//                                       <- (7) deliver commitment_signed
+		// revoke_and_ack                        ->
+
+		// Create and deliver (1)...
 		let feerate = get_feerate!(nodes[0]);
 		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
 
@@ -3389,15 +3404,18 @@ mod tests {
 		};
 		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
 
+		// Generate (2) and (3):
 		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
 		let commitment_signed_0 = commitment_signed.unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_added_monitors!(nodes[1], 1);
 
+		// Deliver (2):
 		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
 		assert!(resp_option.is_none());
 		check_added_monitors!(nodes[0], 1);
 
+		// Create and deliver (4)...
 		nodes[0].node.update_fee(channel_id, feerate+30).unwrap();
 		let events_0 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_0.len(), 1);
@@ -3410,21 +3428,27 @@ mod tests {
 		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap()).unwrap();
 
 		let (revoke_msg, commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed).unwrap();
+		// ... creating (5)
 		assert!(commitment_signed.is_none());
 		check_added_monitors!(nodes[0], 1);
 		check_added_monitors!(nodes[1], 1);
+
+		// Handle (3), creating (6):
 		let (revoke_msg_0, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed_0).unwrap();
 		assert!(commitment_signed.is_none());
 		check_added_monitors!(nodes[0], 1);
 
+		// Deliver (5):
 		let resp_option = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg).unwrap();
 		assert!(resp_option.is_none());
 		check_added_monitors!(nodes[0], 1);
 
+		// Deliver (6), creating (7):
 		let resp_option = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg_0).unwrap();
 		let commitment_signed = resp_option.unwrap().commitment_signed;
 		check_added_monitors!(nodes[1], 1);
 
+		// Deliver (7)
 		let (revoke_msg, commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed).unwrap();
 		assert!(commitment_signed.is_none());
 		check_added_monitors!(nodes[0], 1);
