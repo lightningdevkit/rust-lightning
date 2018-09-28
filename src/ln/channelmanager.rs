@@ -1939,6 +1939,8 @@ impl ChannelManager {
 	/// Begin Update fee process. Allowed only on an outbound channel.
 	/// If successful, will generate a UpdateHTLCs event, so you should probably poll
 	/// PeerManager::process_events afterwards.
+	/// Note: This API is likely to change!
+	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.get_mut(&channel_id) {
