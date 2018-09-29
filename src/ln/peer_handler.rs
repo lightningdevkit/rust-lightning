@@ -648,7 +648,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 															encode_and_send_msg!(resp, 131);
 														}
 														if let Some(resp) = resps.update_fee {
-															encode_and_send_msg!(resp, 131);
+															encode_and_send_msg!(resp, 134);
 														}
 														encode_and_send_msg!(resps.commitment_signed, 132);
 													},
@@ -678,6 +678,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 														}
 														for resp in resps.update_fail_htlcs {
 															encode_and_send_msg!(resp, 131);
+														}
+														if let Some(resp) = resps.update_fee {
+															encode_and_send_msg!(resp, 134);
 														}
 														encode_and_send_msg!(resps.commitment_signed, 132);
 													},
@@ -848,7 +851,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						if let &Some(ref msg) = update_fee {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 134)));
 						}
-						debug_assert!(update_fee.is_none());
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed, 132)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;

@@ -760,7 +760,6 @@ impl Channel {
 			}
 		}
 
-
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			let include = match htlc.state {
 				InboundHTLCState::RemoteAnnounced => !generated_by_local,
@@ -1613,7 +1612,7 @@ impl Channel {
 
 		let mut htlcs_and_sigs = Vec::with_capacity(local_commitment_tx.1.len());
 		for (idx, ref htlc) in local_commitment_tx.1.iter().enumerate() {
-			let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys, self.feerate_per_kw);
+			let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys, feerate_per_kw);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer", self.channel_id());
@@ -1635,6 +1634,9 @@ impl Channel {
 		if !self.channel_outbound {
 			if let Some(fee_update) = self.pending_update_fee {
 				self.feerate_per_kw = fee_update;
+				// We later use the presence of pending_update_fee to indicate we should generate a
+				// commitment_signed upon receipt of revoke_and_ack, so we can only set it to None
+				// if we're not awaiting a revoke (ie will send a commitment_signed now).
 				if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) == 0 {
 					need_our_commitment = true;
 					self.pending_update_fee = None;
@@ -1657,7 +1659,6 @@ impl Channel {
 			}
 		}
 
-
 		self.cur_local_commitment_transaction_number -= 1;
 		self.last_local_commitment_txn = new_local_commitment_txn;
 
@@ -1679,7 +1680,7 @@ impl Channel {
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
 	/// fulfilling or failing the last pending HTLC)
 	fn free_holding_cell_htlcs(&mut self) -> Result<Option<(msgs::CommitmentUpdate, ChannelMonitor)>, HandleError> {
-		if self.holding_cell_htlc_updates.len() != 0 {
+		if self.holding_cell_htlc_updates.len() != 0 || self.holding_cell_update_fee.is_some() {
 			let mut htlc_updates = Vec::new();
 			mem::swap(&mut htlc_updates, &mut self.holding_cell_htlc_updates);
 			let mut update_add_htlcs = Vec::with_capacity(htlc_updates.len());
@@ -1853,12 +1854,16 @@ impl Channel {
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
-		if let Some(feerate) = self.pending_update_fee.take() {
-			if self.channel_outbound {
+		if self.channel_outbound {
+			if let Some(feerate) = self.pending_update_fee.take() {
 				self.feerate_per_kw = feerate;
-			} else {
-				assert_eq!(feerate, self.feerate_per_kw);
-				require_commitment = true;
+			}
+		} else {
+			if let Some(feerate) = self.pending_update_fee {
+				if feerate == self.feerate_per_kw {
+					require_commitment = true;
+					self.pending_update_fee = None;
+				}
 			}
 		}
 
@@ -2828,7 +2833,9 @@ impl Channel {
 
 		let mut feerate_per_kw = self.feerate_per_kw;
 		if let Some(feerate) = self.pending_update_fee {
-			feerate_per_kw = feerate;
+			if self.channel_outbound {
+				feerate_per_kw = feerate;
+			}
 		}
 
 		let remote_keys = self.build_remote_transaction_keys()?;
