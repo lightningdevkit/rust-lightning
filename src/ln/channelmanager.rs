@@ -3562,6 +3562,79 @@ mod tests {
 	}
 
 	#[test]
+	fn claim_htlc_outputs_single_tx() {
+		// Node revoked old state, htlcs have timed out, claim each of them in separated justice tx
+		let nodes = create_network(2);
+
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		// Rebalance the network to generate htlc in the two directions
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+		// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx, but this
+		// time as two different claim transactions as we're gonna to timeout htlc with given a high current height
+		let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+		let _payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
+
+		// Get the will-be-revoked local txn from node[0]
+		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+
+		//Revoke the old state
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
+
+		{
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+
+			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
+
+			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
+			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			assert_eq!(node_txn.len(), 12); // ChannelManager : 2, ChannelMontitor: 8 (1 standard revoked output, 2 revocation htlc tx, 1 local commitment tx + 1 htlc timeout tx) * 2 (block-rescan)
+
+			assert_eq!(node_txn[0], node_txn[7]);
+			assert_eq!(node_txn[1], node_txn[8]);
+			assert_eq!(node_txn[2], node_txn[9]);
+			assert_eq!(node_txn[3], node_txn[10]);
+			assert_eq!(node_txn[4], node_txn[11]);
+			assert_eq!(node_txn[3], node_txn[5]); //local commitment tx + htlc timeout tx broadcated by ChannelManger
+			assert_eq!(node_txn[4], node_txn[6]);
+
+			assert_eq!(node_txn[0].input.len(), 1);
+			assert_eq!(node_txn[1].input.len(), 1);
+			assert_eq!(node_txn[2].input.len(), 1);
+
+			let mut revoked_tx_map = HashMap::new();
+			revoked_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
+			node_txn[0].verify(&revoked_tx_map).unwrap();
+			node_txn[1].verify(&revoked_tx_map).unwrap();
+			node_txn[2].verify(&revoked_tx_map).unwrap();
+
+			let mut witness_lens = BTreeSet::new();
+			witness_lens.insert(node_txn[0].input[0].witness.last().unwrap().len());
+			witness_lens.insert(node_txn[1].input[0].witness.last().unwrap().len());
+			witness_lens.insert(node_txn[2].input[0].witness.last().unwrap().len());
+			assert_eq!(witness_lens.len(), 3);
+			assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
+			assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), 133); // revoked offered HTLC
+			assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), 138); // revoked received HTLC
+
+			let mut funding_tx_map = HashMap::new();
+			funding_tx_map.insert(chan_1.3.txid(), chan_1.3.clone());
+			node_txn[3].verify(&funding_tx_map).unwrap();
+			assert_eq!(node_txn[3].input.len(), 1);
+
+			assert_eq!(node_txn[4].input.len(), 1);
+			let witness_script = node_txn[4].input[0].witness.last().unwrap();
+			assert_eq!(witness_script.len(), 133); //Spending an offered htlc output
+			assert_eq!(node_txn[4].input[0].previous_output.txid, node_txn[3].txid());
+			assert_ne!(node_txn[4].input[0].previous_output.txid, node_txn[0].input[0].previous_output.txid);
+			assert_ne!(node_txn[4].input[0].previous_output.txid, node_txn[1].input[0].previous_output.txid);
+		}
+		get_announce_close_broadcast_events(&nodes, 0, 1);
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+		assert_eq!(nodes[1].node.list_channels().len(), 0);
+	}
+
+	#[test]
 	fn test_htlc_ignore_latest_remote_commitment() {
 		// Test that HTLC transactions spending the latest remote commitment transaction are simply
 		// ignored if we cannot claim them. This originally tickled an invalid unwrap().
