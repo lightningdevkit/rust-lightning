@@ -3422,6 +3422,13 @@ mod tests {
 		let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 		// Get the will-be-revoked local txn from nodes[0]
 		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.iter().next().unwrap().1.last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn.len(), 2); // First commitment tx, then HTLC tx
+		assert_eq!(revoked_local_txn[0].input.len(), 1);
+		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_5.3.txid());
+		assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to 0 are present
+		assert_eq!(revoked_local_txn[1].input.len(), 1);
+		assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
+		assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), 133); // HTLC-Timeout
 		// Revoke the old state
 		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
 
@@ -3432,7 +3439,7 @@ mod tests {
 				let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 				assert_eq!(node_txn.len(), 3);
 				assert_eq!(node_txn.pop().unwrap(), node_txn[0]); // An outpoint registration will result in a 2nd block_connected
-				assert_eq!(node_txn[0].input.len(), 1);
+				assert_eq!(node_txn[0].input.len(), 2); // We should claim the revoked output and the HTLC output
 
 				let mut funding_tx_map = HashMap::new();
 				funding_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
@@ -3453,6 +3460,40 @@ mod tests {
 	}
 
 	#[test]
+	fn revoked_output_claim() {
+		// Simple test to ensure a node will claim a revoked output when a stale remote commitment
+		// transaction is broadcast by its counterparty
+		let nodes = create_network(2);
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
+		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn.len(), 1);
+		// Only output is the full channel value back to nodes[0]:
+		assert_eq!(revoked_local_txn[0].output.len(), 1);
+		// Send a payment through, updating everyone's latest commitment txn
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 5000000);
+
+		// Inform nodes[1] that nodes[0] broadcast a stale tx
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 3); // nodes[1] will broadcast justice tx twice, and its own local state once
+
+		assert_eq!(node_txn[0], node_txn[2]);
+
+		let mut revoked_tx_map = HashMap::new();
+		revoked_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
+		node_txn[0].verify(&revoked_tx_map).unwrap();
+
+		revoked_tx_map.clear();
+		revoked_tx_map.insert(chan_1.3.txid(), chan_1.3.clone());
+		node_txn[1].verify(&revoked_tx_map).unwrap();
+
+		// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		get_announce_close_broadcast_events(&nodes, 0, 1);
+	}
+
 	fn test_htlc_ignore_latest_remote_commitment() {
 		// Test that HTLC transactions spending the latest remote commitment transaction are simply
 		// ignored if we cannot claim them. This originally tickled an invalid unwrap().
