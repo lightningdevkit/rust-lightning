@@ -467,6 +467,7 @@ pub struct CommitmentUpdate {
 	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
 	pub(crate) update_fail_htlcs: Vec<UpdateFailHTLC>,
 	pub(crate) update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
+	pub(crate) update_fee: Option<UpdateFee>,
 	pub(crate) commitment_signed: CommitmentSigned,
 }
 
