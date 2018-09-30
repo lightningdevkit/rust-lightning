@@ -1737,7 +1737,8 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.update_fulfill_htlc(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?.clone()
+				chan.update_fulfill_htlc(&msg)
+					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?.clone()
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		};
@@ -1753,7 +1754,8 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+				chan.update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() })
+					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}?;
@@ -1825,7 +1827,11 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				if (msg.failure_code & 0x8000) != 0 {
+					return Err(MsgHandleErrInternal::send_err_msg_close_chan("Got update_fail_malformed_htlc with BADONION set", msg.channel_id));
+				}
+				chan.update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() })
+					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 				Ok(())
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))

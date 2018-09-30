@@ -1508,38 +1508,38 @@ impl Channel {
 
 	/// Removes an outbound HTLC which has been commitment_signed by the remote end
 	#[inline]
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<&HTLCSource, HandleError> {
+	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<&HTLCSource, ChannelError> {
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				match check_preimage {
 					None => {},
 					Some(payment_hash) =>
 						if payment_hash != htlc.payment_hash {
-							return Err(HandleError{err: "Remote tried to fulfill HTLC with an incorrect preimage", action: None});
+							return Err(ChannelError::Close("Remote tried to fulfill HTLC with an incorrect preimage"));
 						}
 				};
 				match htlc.state {
 					OutboundHTLCState::LocalAnnounced =>
-						return Err(HandleError{err: "Remote tried to fulfill HTLC before it had been committed", action: None}),
+						return Err(ChannelError::Close("Remote tried to fulfill HTLC before it had been committed")),
 					OutboundHTLCState::Committed => {
 						htlc.state = OutboundHTLCState::RemoteRemoved;
 						htlc.fail_reason = fail_reason;
 					},
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove | OutboundHTLCState::AwaitingRemovedRemoteRevoke | OutboundHTLCState::RemoteRemoved =>
-						return Err(HandleError{err: "Remote tried to fulfill HTLC that they'd already fulfilled", action: None}),
+						return Err(ChannelError::Close("Remote tried to fulfill HTLC that they'd already fulfilled")),
 				}
 				return Ok(&htlc.source);
 			}
 		}
-		Err(HandleError{err: "Remote tried to fulfill/fail an HTLC we couldn't find", action: None})
+		Err(ChannelError::Close("Remote tried to fulfill/fail an HTLC we couldn't find"))
 	}
 
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<&HTLCSource, HandleError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<&HTLCSource, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
+			return Err(ChannelError::Close("Got fulfill HTLC message when channel was not in an operational state"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent update_fulfill_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent update_fulfill_htlc when we needed a channel_reestablish"));
 		}
 
 		let mut sha = Sha256::new();
@@ -1550,23 +1550,23 @@ impl Channel {
 		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None)
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<&HTLCSource, HandleError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<&HTLCSource, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
+			return Err(ChannelError::Close("Got fail HTLC message when channel was not in an operational state"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent update_fail_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fail_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent update_fail_htlc when we needed a channel_reestablish"));
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
 
-	pub fn update_fail_malformed_htlc<'a>(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<&HTLCSource, HandleError> {
+	pub fn update_fail_malformed_htlc<'a>(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<&HTLCSource, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(HandleError{err: "Got add HTLC message when channel was not in an operational state", action: None});
+			return Err(ChannelError::Close("Got fail malformed HTLC message when channel was not in an operational state"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent update_fail_malformed_htlc when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fail_malformed_htlc when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish"));
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
