@@ -1973,7 +1973,8 @@ impl ChannelManager {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor) = chan.channel_reestablish(msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor) = chan.channel_reestablish(msg)
+						.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 					(Ok((funding_locked, revoke_and_ack, commitment_update)), channel_monitor)
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))

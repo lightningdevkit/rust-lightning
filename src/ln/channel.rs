@@ -2014,14 +2014,17 @@ impl Channel {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>), HandleError> {
+	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
-			return Err(HandleError{err: "Peer sent a loose channel_reestablish not after reconnect", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent a loose channel_reestablish not after reconnect".to_string(), channel_id: msg.channel_id}})});
+			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
+			// almost certainly indicates we are going to end up out-of-sync in some way, so we
+			// just close here instead of trying to recover.
+			return Err(ChannelError::Close("Peer sent a loose channel_reestablish not after reconnect"));
 		}
 
 		if msg.next_local_commitment_number == 0 || msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
 				msg.next_remote_commitment_number == 0 || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER {
-			return Err(HandleError{err: "Peer send garbage channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer send garbage channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer send garbage channel_reestablish"));
 		}
 
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
@@ -2041,7 +2044,7 @@ impl Channel {
 				next_per_commitment_point,
 			});
 		} else {
-			return Err(HandleError{err: "Peer attempted to reestablish channel with a very old local commitment transaction", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer attempted to reestablish channel with a very old remote commitment transaction".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old local commitment transaction"));
 		}
 
 		if msg.next_local_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number {
@@ -2065,11 +2068,12 @@ impl Channel {
 				match self.free_holding_cell_htlcs() {
 					Err(e) => {
 						if let &Some(msgs::ErrorAction::DisconnectPeer{msg: Some(_)}) = &e.action {
+							return Err(ChannelError::Close(e.err));
 						} else if let &Some(msgs::ErrorAction::SendErrorMessage{msg: _}) = &e.action {
+							return Err(ChannelError::Close(e.err));
 						} else {
 							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
 						}
-						return Err(e);
 					},
 					Ok(Some((commitment_update, channel_monitor))) => return Ok((None, required_revoke, Some(commitment_update), Some(channel_monitor))),
 					Ok(None) => return Ok((None, required_revoke, None, None)),
@@ -2088,7 +2092,7 @@ impl Channel {
 						commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 					}), None));
 		} else {
-			return Err(HandleError{err: "Peer attempted to reestablish channel with a very old remote commitment transaction", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer attempted to reestablish channel with a very old remote commitment transaction".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
 		}
 	}
 
