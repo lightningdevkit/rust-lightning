@@ -1222,48 +1222,43 @@ impl Channel {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
-		macro_rules! return_error_message {
-			( $msg: expr ) => {
-				return Err(HandleError{err: $msg, action: Some(msgs::ErrorAction::SendErrorMessage{ msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: $msg.to_string() }})});
-			}
-		}
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
-			return_error_message!("Got an accept_channel message from an inbound peer");
+			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer"));
 		}
 		if self.channel_state != ChannelState::OurInitSent as u32 {
-			return_error_message!("Got an accept_channel message at a strange time");
+			return Err(ChannelError::Close("Got an accept_channel message at a strange time"));
 		}
 		if msg.dust_limit_satoshis > 21000000 * 100000000 {
-			return_error_message!("Peer never wants payout outputs?");
+			return Err(ChannelError::Close("Peer never wants payout outputs?"));
 		}
 		if msg.channel_reserve_satoshis > self.channel_value_satoshis {
-			return_error_message!("Bogus channel_reserve_satoshis");
+			return Err(ChannelError::Close("Bogus channel_reserve_satoshis"));
 		}
 		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
-			return_error_message!("Bogus channel_reserve and dust_limit");
+			return Err(ChannelError::Close("Bogus channel_reserve and dust_limit"));
 		}
 		if msg.channel_reserve_satoshis < self.our_dust_limit_satoshis {
-			return_error_message!("Peer never wants payout outputs?");
+			return Err(ChannelError::Close("Peer never wants payout outputs?"));
 		}
 		if msg.dust_limit_satoshis > Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis) {
-			return_error_message!("Dust limit is bigger than our channel reverse");
+			return Err(ChannelError::Close("Dust limit is bigger than our channel reverse"));
 		}
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return_error_message!("Minimum htlc value is full channel value");
+			return Err(ChannelError::Close("Minimum htlc value is full channel value"));
 		}
 		if msg.minimum_depth > Channel::derive_maximum_minimum_depth(self.channel_value_satoshis*1000,  self.value_to_self_msat) {
-			return_error_message!("minimum_depth too large");
+			return Err(ChannelError::Close("minimum_depth too large"));
 		}
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return_error_message!("They wanted our payments to be delayed by a needlessly long period");
+			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return_error_message!("0 max_accpted_htlcs makes for a useless channel");
+			return Err(ChannelError::Close("0 max_accpted_htlcs makes for a useless channel"));
 		}
 		if msg.max_accepted_htlcs > 483 {
-			return_error_message!("max_accpted_htlcs > 483");
+			return Err(ChannelError::Close("max_accpted_htlcs > 483"));
 		}
 
 		// TODO: Optional additional constraints mentioned in the spec
