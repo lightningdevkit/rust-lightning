@@ -759,7 +759,7 @@ impl ChannelMonitor {
 					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &htlc_base_key)))
 				},
 			};
-			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.delayed_payment_base_key));
+			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key.unwrap()));
 			let a_htlc_key = match self.their_htlc_base_key {
 				None => return (txn_to_broadcast, (commitment_txid, watch_outputs)),
 				Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &their_htlc_base_key)),
@@ -856,7 +856,7 @@ impl ChannelMonitor {
 						};
 						let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 						sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
-						txn_to_broadcast.push(single_htlc_tx); // TODO: This is not yet tested in ChannelManager!
+						txn_to_broadcast.push(single_htlc_tx);
 					}
 				}
 			}
