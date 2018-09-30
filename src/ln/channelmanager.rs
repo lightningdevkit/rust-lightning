@@ -2606,6 +2606,17 @@ mod tests {
 		(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 	}
 
+	macro_rules! check_spends {
+		($tx: expr, $spends_tx: expr) => {
+			{
+				let mut funding_tx_map = HashMap::new();
+				let spends_tx = $spends_tx;
+				funding_tx_map.insert(spends_tx.txid(), spends_tx);
+				$tx.verify(&funding_tx_map).unwrap();
+			}
+		}
+	}
+
 	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
 		let (node_a, broadcaster_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster) } else { (&outbound_node.node, &outbound_node.tx_broadcaster) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
@@ -2649,9 +2660,7 @@ mod tests {
 			tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
 		}
 		assert_eq!(tx_a, tx_b);
-		let mut funding_tx_map = HashMap::new();
-		funding_tx_map.insert(funding_tx.txid(), funding_tx);
-		tx_a.verify(&funding_tx_map).unwrap();
+		check_spends!(tx_a, funding_tx);
 
 		let events_2 = node_a.get_and_clear_pending_events();
 		assert_eq!(events_2.len(), 1);
@@ -3189,9 +3198,7 @@ mod tests {
 		let mut res = Vec::with_capacity(2);
 		node_txn.retain(|tx| {
 			if tx.input.len() == 1 && tx.input[0].previous_output.txid == chan.3.txid() {
-				let mut funding_tx_map = HashMap::new();
-				funding_tx_map.insert(chan.3.txid(), chan.3.clone());
-				tx.verify(&funding_tx_map).unwrap();
+				check_spends!(tx, chan.3.clone());
 				if commitment_tx.is_none() {
 					res.push(tx.clone());
 				}
@@ -3207,9 +3214,7 @@ mod tests {
 		if has_htlc_tx != HTLCType::NONE {
 			node_txn.retain(|tx| {
 				if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].txid() {
-					let mut funding_tx_map = HashMap::new();
-					funding_tx_map.insert(res[0].txid(), res[0].clone());
-					tx.verify(&funding_tx_map).unwrap();
+					check_spends!(tx, res[0].clone());
 					if has_htlc_tx == HTLCType::TIMEOUT {
 						assert!(tx.lock_time != 0);
 					} else {
@@ -3233,9 +3238,7 @@ mod tests {
 		assert_eq!(node_txn.len(), 1);
 		node_txn.retain(|tx| {
 			if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.txid() {
-				let mut funding_tx_map = HashMap::new();
-				funding_tx_map.insert(revoked_tx.txid(), revoked_tx.clone());
-				tx.verify(&funding_tx_map).unwrap();
+				check_spends!(tx, revoked_tx.clone());
 				false
 			} else { true }
 		});
@@ -3251,10 +3254,7 @@ mod tests {
 
 		for tx in prev_txn {
 			if node_txn[0].input[0].previous_output.txid == tx.txid() {
-				let mut funding_tx_map = HashMap::new();
-				funding_tx_map.insert(tx.txid(), tx.clone());
-				node_txn[0].verify(&funding_tx_map).unwrap();
-
+				check_spends!(node_txn[0], tx.clone());
 				assert!(node_txn[0].input[0].witness[2].len() > 106); // must spend an htlc output
 				assert_eq!(tx.input.len(), 1); // must spend a commitment tx
 
@@ -3441,9 +3441,7 @@ mod tests {
 				assert_eq!(node_txn.pop().unwrap(), node_txn[0]); // An outpoint registration will result in a 2nd block_connected
 				assert_eq!(node_txn[0].input.len(), 2); // We should claim the revoked output and the HTLC output
 
-				let mut funding_tx_map = HashMap::new();
-				funding_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
-				node_txn[0].verify(&funding_tx_map).unwrap();
+				check_spends!(node_txn[0], revoked_local_txn[0].clone());
 				node_txn.swap_remove(0);
 			}
 			test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
@@ -3481,13 +3479,8 @@ mod tests {
 
 		assert_eq!(node_txn[0], node_txn[2]);
 
-		let mut revoked_tx_map = HashMap::new();
-		revoked_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
-		node_txn[0].verify(&revoked_tx_map).unwrap();
-
-		revoked_tx_map.clear();
-		revoked_tx_map.insert(chan_1.3.txid(), chan_1.3.clone());
-		node_txn[1].verify(&revoked_tx_map).unwrap();
+		check_spends!(node_txn[0], revoked_local_txn[0].clone());
+		check_spends!(node_txn[1], chan_1.3.clone());
 
 		// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
 		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
@@ -3516,6 +3509,7 @@ mod tests {
 		assert_eq!(revoked_local_txn[1].input.len(), 1);
 		assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
 		assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), 133); // HTLC-Timeout
+		check_spends!(revoked_local_txn[1], revoked_local_txn[0].clone());
 
 		//Revoke the old state
 		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
@@ -3529,11 +3523,9 @@ mod tests {
 			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 4);
 
-			let mut revoked_tx_map = HashMap::new();
-			revoked_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
-
 			assert_eq!(node_txn[0].input.len(), 3); // Claim the revoked output + both revoked HTLC outputs
-			node_txn[0].verify(&revoked_tx_map).unwrap();
+			check_spends!(node_txn[0], revoked_local_txn[0].clone());
+
 			assert_eq!(node_txn[0], node_txn[3]); // justice tx is duplicated due to block re-scanning
 
 			let mut witness_lens = BTreeSet::new();
@@ -3617,10 +3609,8 @@ mod tests {
 			assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), 133); // revoked offered HTLC
 			assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), 138); // revoked received HTLC
 
-			let mut funding_tx_map = HashMap::new();
-			funding_tx_map.insert(chan_1.3.txid(), chan_1.3.clone());
-			node_txn[3].verify(&funding_tx_map).unwrap();
 			assert_eq!(node_txn[3].input.len(), 1);
+			check_spends!(node_txn[3], chan_1.3.clone());
 
 			assert_eq!(node_txn[4].input.len(), 1);
 			let witness_script = node_txn[4].input[0].witness.last().unwrap();
@@ -3790,9 +3780,8 @@ mod tests {
 		assert_eq!(node_txn[0].input[0].previous_output.txid, tx.txid());
 		assert_eq!(node_txn[0].lock_time, 0); // Must be an HTLC-Success
 		assert_eq!(node_txn[0].input[0].witness.len(), 5); // Must be an HTLC-Success
-		let mut funding_tx_map = HashMap::new();
-		funding_tx_map.insert(tx.txid(), tx);
-		node_txn[0].verify(&funding_tx_map).unwrap();
+
+		check_spends!(node_txn[0], tx);
 	}
 
 	#[test]
