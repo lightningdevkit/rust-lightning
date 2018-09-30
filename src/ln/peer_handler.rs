@@ -647,6 +647,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 														for resp in resps.update_fail_htlcs {
 															encode_and_send_msg!(resp, 131);
 														}
+														if let Some(resp) = resps.update_fee {
+															encode_and_send_msg!(resp, 134);
+														}
 														encode_and_send_msg!(resps.commitment_signed, 132);
 													},
 													None => {},
@@ -675,6 +678,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 														}
 														for resp in resps.update_fail_htlcs {
 															encode_and_send_msg!(resp, 131);
+														}
+														if let Some(resp) = resps.update_fee {
+															encode_and_send_msg!(resp, 134);
 														}
 														encode_and_send_msg!(resps.commitment_signed, 132);
 													},
@@ -820,7 +826,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
-					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed } } => {
+					Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 						log_trace!(self, "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
 								update_add_htlcs.len(),
@@ -841,6 +847,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						}
 						for msg in update_fail_malformed_htlcs {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 135)));
+						}
+						if let &Some(ref msg) = update_fee {
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 134)));
 						}
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed, 132)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
