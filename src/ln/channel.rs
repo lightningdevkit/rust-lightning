@@ -374,6 +374,14 @@ const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence:
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = (1 << 24);
 
+/// Used to return a simple Error back to ChannelManager. Will get converted to a
+/// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
+/// channel_id in ChannelManager.
+pub(super) enum ChannelError {
+	Ignore(&'static str),
+	Close(&'static str),
+}
+
 macro_rules! secp_call {
 	( $res: expr, $err: expr, $chan_id: expr ) => {
 		match $res {
@@ -506,68 +514,58 @@ impl Channel {
 		})
 	}
 
-	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), HandleError> {
+	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), ChannelError> {
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
-			return Err(HandleError{err: "Peer's feerate much too low", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(ChannelError::Close("Peer's feerate much too low"));
 		}
 		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * 2 {
-			return Err(HandleError{err: "Peer's feerate much too high", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(ChannelError::Close("Peer's feerate much too high"));
 		}
 		Ok(())
 	}
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	/// Generally prefers to take the DisconnectPeer action on failure, as a notice to the sender
-	/// that we're rejecting the new channel.
-	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, HandleError> {
-		macro_rules! return_error_message {
-			( $msg: expr ) => {
-				return Err(HandleError{err: $msg, action: Some(msgs::ErrorAction::SendErrorMessage{ msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: $msg.to_string() }})});
-			}
-		}
-
+	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, ChannelError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
-			return_error_message!("funding value > 2^24");
+			return Err(ChannelError::Close("funding value > 2^24"));
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return_error_message!("Bogus channel_reserve_satoshis");
+			return Err(ChannelError::Close("Bogus channel_reserve_satoshis"));
 		}
 		if msg.push_msat > (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return_error_message!("push_msat larger than funding value");
+			return Err(ChannelError::Close("push_msat larger than funding value"));
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
-			return_error_message!("Peer never wants payout outputs?");
+			return Err(ChannelError::Close("Peer never wants payout outputs?"));
 		}
 		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
-			return_error_message!("Bogus; channel reserve is less than dust limit");
+			return Err(ChannelError::Close("Bogus; channel reserve is less than dust limit"));
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return_error_message!("Miminum htlc value is full channel value");
+			return Err(ChannelError::Close("Miminum htlc value is full channel value"));
 		}
-		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw).map_err(|e|
-			HandleError{err: e.err, action: Some(msgs::ErrorAction::SendErrorMessage{ msg: msgs::ErrorMessage { channel_id: msg.temporary_channel_id, data: e.err.to_string() }})}
-		)?;
+		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
-			return_error_message!("They wanted our payments to be delayed by a needlessly long period");
+			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return_error_message!("0 max_accpted_htlcs makes for a useless channel");
+			return Err(ChannelError::Close("0 max_accpted_htlcs makes for a useless channel"));
 		}
 		if msg.max_accepted_htlcs > 483 {
-			return_error_message!("max_accpted_htlcs > 483");
+			return Err(ChannelError::Close("max_accpted_htlcs > 483"));
 		}
 
 		// Convert things into internal flags and prep our state:
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if require_announce && !their_announce {
-			return_error_message!("Peer tried to open unannounced channel, but we require public ones");
+			return Err(ChannelError::Close("Peer tried to open unannounced channel, but we require public ones"));
 		}
 		if !allow_announce && their_announce {
-			return_error_message!("Peer tried to open announced channel, but we require private ones");
+			return Err(ChannelError::Close("Peer tried to open announced channel, but we require private ones"));
 		}
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
@@ -575,26 +573,26 @@ impl Channel {
 		let our_dust_limit_satoshis = Channel::derive_our_dust_limit_satoshis(background_feerate);
 		let our_channel_reserve_satoshis = Channel::get_our_channel_reserve_satoshis(msg.funding_satoshis);
 		if our_channel_reserve_satoshis < our_dust_limit_satoshis {
-			return_error_message!("Suitalbe channel reserve not found. aborting");
+			return Err(ChannelError::Close("Suitalbe channel reserve not found. aborting"));
 		}
 		if msg.channel_reserve_satoshis < our_dust_limit_satoshis {
-			return_error_message!("channel_reserve_satoshis too small");
+			return Err(ChannelError::Close("channel_reserve_satoshis too small"));
 		}
 		if our_channel_reserve_satoshis < msg.dust_limit_satoshis {
-			return_error_message!("Dust limit too high for our channel reserve");
+			return Err(ChannelError::Close("Dust limit too high for our channel reserve"));
 		}
 
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment
 		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
 		if funders_amount_msat < background_feerate * COMMITMENT_TX_BASE_WEIGHT {
-			return_error_message!("Insufficient funding amount for initial commitment");
+			return Err(ChannelError::Close("Insufficient funding amount for initial commitment"));
 		}
 
 		let to_local_msat = msg.push_msat;
 		let to_remote_msat = funders_amount_msat - background_feerate * COMMITMENT_TX_BASE_WEIGHT;
 		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= our_channel_reserve_satoshis * 1000 {
-			return_error_message!("Insufficient funding amount for initial commitment");
+			return Err(ChannelError::Close("Insufficient funding amount for initial commitment"));
 		}
 
 		let secp_ctx = Secp256k1::new();
@@ -2005,12 +2003,12 @@ impl Channel {
 		outbound_drops
 	}
 
-	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
+	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), ChannelError> {
 		if self.channel_outbound {
-			return Err(HandleError{err: "Non-funding remote tried to update channel fee", action: None});
+			return Err(ChannelError::Close("Non-funding remote tried to update channel fee"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent update_fee when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent update_fee when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish"));
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 

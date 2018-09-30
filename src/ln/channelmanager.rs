@@ -22,7 +22,7 @@ use secp256k1;
 
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
-use ln::channel::{Channel, ChannelKeys};
+use ln::channel::{Channel, ChannelError, ChannelKeys};
 use ln::channelmonitor::ManyChannelMonitor;
 use ln::router::{Route,RouteHop};
 use ln::msgs;
@@ -172,6 +172,48 @@ impl MsgHandleErrInternal {
 	#[inline]
 	fn from_no_close(err: msgs::HandleError) -> Self {
 		Self { err, needs_channel_force_close: false }
+	}
+	#[inline]
+	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
+		Self {
+			err: match err {
+				ChannelError::Ignore(msg) => HandleError {
+					err: msg,
+					action: Some(msgs::ErrorAction::IgnoreError),
+				},
+				ChannelError::Close(msg) => HandleError {
+					err: msg,
+					action: Some(msgs::ErrorAction::SendErrorMessage {
+						msg: msgs::ErrorMessage {
+							channel_id,
+							data: msg.to_string()
+						},
+					}),
+				},
+			},
+			needs_channel_force_close: false,
+		}
+	}
+	#[inline]
+	fn from_chan_maybe_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
+		Self {
+			err: match err {
+				ChannelError::Ignore(msg) => HandleError {
+					err: msg,
+					action: Some(msgs::ErrorAction::IgnoreError),
+				},
+				ChannelError::Close(msg) => HandleError {
+					err: msg,
+					action: Some(msgs::ErrorAction::SendErrorMessage {
+						msg: msgs::ErrorMessage {
+							channel_id,
+							data: msg.to_string()
+						},
+					}),
+				},
+			},
+			needs_channel_force_close: true,
+		}
 	}
 }
 
@@ -1467,7 +1509,8 @@ impl ChannelManager {
 			}
 		};
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger)).map_err(|e| MsgHandleErrInternal::from_no_close(e))?;
+		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))
+			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let accept_msg = channel.get_accept_channel();
 		channel_state.by_id.insert(channel.channel_id(), channel);
 		Ok(accept_msg)
@@ -1868,7 +1911,7 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.update_fee(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+				chan.update_fee(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}
