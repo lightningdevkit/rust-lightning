@@ -1616,7 +1616,8 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				chan.funding_locked(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				chan.funding_locked(&msg)
+					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 				return Ok(self.get_announcement_sigs(chan));
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))

@@ -1387,9 +1387,9 @@ impl Channel {
 		Ok(self.channel_monitor.clone())
 	}
 
-	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
+	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent funding_locked when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent funding_locked when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent funding_locked when we needed a channel_reestablish"));
 		}
 		let non_shutdown_state = self.channel_state & (!BOTH_SIDES_SHUTDOWN_MASK);
 		if non_shutdown_state == ChannelState::FundingSent as u32 {
@@ -1402,12 +1402,12 @@ impl Channel {
 				self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
 				self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
 			if self.their_cur_commitment_point != Some(msg.next_per_commitment_point) {
-				return Err(HandleError{err: "Peer sent a reconnect funding_locked with a different point", action: None});
+				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point"));
 			}
 			// They probably disconnected/reconnected and re-sent the funding_locked, which is required
 			return Ok(());
 		} else {
-			return Err(HandleError{err: "Peer sent a funding_locked at a strange time", action: None});
+			return Err(ChannelError::Close("Peer sent a funding_locked at a strange time"));
 		}
 
 		self.their_prev_commitment_point = self.their_cur_commitment_point;
