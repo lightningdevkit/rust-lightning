@@ -1939,7 +1939,7 @@ impl ChannelManager {
 
 					let our_node_id = self.get_our_node_id();
 					let (announcement, our_bitcoin_sig) = chan.get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone())
-						.map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+						.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 
 					let were_node_one = announcement.node_id_1 == our_node_id;
 					let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();

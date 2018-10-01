@@ -2648,15 +2648,15 @@ impl Channel {
 	/// closing).
 	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
 	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
-	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), HandleError> {
+	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
 		if !self.announce_publicly {
-			return Err(HandleError{err: "Channel is not available for public announcements", action: Some(msgs::ErrorAction::IgnoreError)});
+			return Err(ChannelError::Ignore("Channel is not available for public announcements"));
 		}
 		if self.channel_state & (ChannelState::ChannelFunded as u32) == 0 {
-			return Err(HandleError{err: "Cannot get a ChannelAnnouncement until the channel funding has been locked", action: Some(msgs::ErrorAction::IgnoreError)});
+			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement until the channel funding has been locked"));
 		}
 		if (self.channel_state & (ChannelState::LocalShutdownSent as u32 | ChannelState::ShutdownComplete as u32)) != 0 {
-			return Err(HandleError{err: "Cannot get a ChannelAnnouncement once the channel is closing", action: Some(msgs::ErrorAction::IgnoreError)});
+			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement once the channel is closing"));
 		}
 
 		let were_node_one = our_node_id.serialize()[..] < self.their_node_id.serialize()[..];
