@@ -44,6 +44,17 @@ pub struct ChannelKeys {
 	pub commitment_seed: [u8; 32],
 }
 
+#[cfg(test)]
+pub struct ChannelValueStat {
+	pub value_to_self_msat: u64,
+	pub channel_value_msat: u64,
+	pub channel_reserve_msat: u64,
+	pub pending_outbound_htlcs_amount_msat: u64,
+	pub pending_inbound_htlcs_amount_msat: u64,
+	pub holding_cell_outbound_amount_msat: u64,
+	pub their_max_htlc_value_in_flight_msat: u64, // outgoing
+}
+
 impl ChannelKeys {
 	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
 		let mut prk = [0; 32];
@@ -2350,6 +2361,30 @@ impl Channel {
 	#[cfg(test)]
 	pub fn get_local_keys(&self) -> &ChannelKeys {
 		&self.local_keys
+	}
+
+	#[cfg(test)]
+	pub fn get_value_stat(&self) -> ChannelValueStat {
+		ChannelValueStat {
+			value_to_self_msat: self.value_to_self_msat,
+			channel_value_msat: self.channel_value_satoshis * 1000,
+			channel_reserve_msat: self.their_channel_reserve_satoshis * 1000,
+			pending_outbound_htlcs_amount_msat: self.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
+			pending_inbound_htlcs_amount_msat: self.pending_inbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
+			holding_cell_outbound_amount_msat: {
+				let mut res = 0;
+				for h in self.holding_cell_htlc_updates.iter() {
+					match &h {
+						&HTLCUpdateAwaitingACK::AddHTLC{amount_msat, .. } => {
+							res += amount_msat;
+						}
+						_ => {}
+					}
+				}
+				res
+			},
+			their_max_htlc_value_in_flight_msat: self.their_max_htlc_value_in_flight_msat,
+		}
 	}
 
 	/// Allowed in any state (including after shutdown)
