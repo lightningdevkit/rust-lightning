@@ -2374,7 +2374,7 @@ impl Channel {
 			holding_cell_outbound_amount_msat: {
 				let mut res = 0;
 				for h in self.holding_cell_htlc_updates.iter() {
-					match &h {
+					match h {
 						&HTLCUpdateAwaitingACK::AddHTLC{amount_msat, .. } => {
 							res += amount_msat;
 						}

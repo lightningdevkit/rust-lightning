@@ -3888,6 +3888,235 @@ mod tests {
 	}
 
 	#[test]
+	fn channel_reserve_test() {
+		use util::rng;
+		use std::sync::atomic::Ordering;
+		use ln::msgs::HandleError;
+
+		macro_rules! get_channel_value_stat {
+			($node: expr, $channel_id: expr) => {{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&$channel_id).unwrap();
+				chan.get_value_stat()
+			}}
+		}
+
+		let mut nodes = create_network(3);
+		let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001);
+		let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1900, 1001);
+
+		let mut stat01 = get_channel_value_stat!(nodes[0], chan_1.2);
+		let mut stat11 = get_channel_value_stat!(nodes[1], chan_1.2);
+
+		let mut stat12 = get_channel_value_stat!(nodes[1], chan_2.2);
+		let mut stat22 = get_channel_value_stat!(nodes[2], chan_2.2);
+
+		macro_rules! get_route_and_payment_hash {
+			($recv_value: expr) => {{
+				let route = nodes[0].router.get_route(&nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV).unwrap();
+				let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+				(route, payment_hash, payment_preimage)
+			}}
+		};
+
+		macro_rules! expect_pending_htlcs_forwardable {
+			($node: expr) => {{
+				let events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PendingHTLCsForwardable { .. } => { },
+					_ => panic!("Unexpected event"),
+				};
+				$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+				$node.node.process_pending_htlc_forwards();
+			}}
+		};
+
+		macro_rules! expect_forward {
+			($node: expr) => {{
+				let mut events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				check_added_monitors!($node, 1);
+				let payment_event = SendEvent::from_event(events.remove(0));
+				payment_event
+			}}
+		}
+
+		macro_rules! expect_payment_received {
+			($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
+				let events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PaymentReceived { ref payment_hash, amt } => {
+						assert_eq!($expected_payment_hash, *payment_hash);
+						assert_eq!($expected_recv_value, amt);
+					},
+					_ => panic!("Unexpected event"),
+				}
+			}
+		};
+
+		let feemsat = 239; // somehow we know?
+		let total_fee_msat = (nodes.len() - 2) as u64 * 239;
+
+		let recv_value_0 = stat01.their_max_htlc_value_in_flight_msat - total_fee_msat;
+
+		// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
+		{
+			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0 + 1);
+			assert!(route.hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
+			let err = nodes[0].node.send_payment(route, our_payment_hash).err().unwrap();
+			match err {
+				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight"),
+				_ => panic!("Unknown error variants"),
+			}
+		}
+
+		let mut htlc_id = 0;
+		// channel reserve is bigger than their_max_htlc_value_in_flight_msat so loop to deplete
+		// nodes[0]'s wealth
+		loop {
+			let amt_msat = recv_value_0 + total_fee_msat;
+			if stat01.value_to_self_msat - amt_msat < stat01.channel_reserve_msat {
+				break;
+			}
+			send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_0);
+			htlc_id += 1;
+
+			let (stat01_, stat11_, stat12_, stat22_) = (
+				get_channel_value_stat!(nodes[0], chan_1.2),
+				get_channel_value_stat!(nodes[1], chan_1.2),
+				get_channel_value_stat!(nodes[1], chan_2.2),
+				get_channel_value_stat!(nodes[2], chan_2.2),
+			);
+
+			assert_eq!(stat01_.value_to_self_msat, stat01.value_to_self_msat - amt_msat);
+			assert_eq!(stat11_.value_to_self_msat, stat11.value_to_self_msat + amt_msat);
+			assert_eq!(stat12_.value_to_self_msat, stat12.value_to_self_msat - (amt_msat - feemsat));
+			assert_eq!(stat22_.value_to_self_msat, stat22.value_to_self_msat + (amt_msat - feemsat));
+			stat01 = stat01_; stat11 = stat11_; stat12 = stat12_; stat22 = stat22_;
+		}
+
+		{
+			let recv_value = stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat;
+			// attempt to get channel_reserve violation
+			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
+			let err = nodes[0].node.send_payment(route.clone(), our_payment_hash).err().unwrap();
+			match err {
+				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+				_ => panic!("Unknown error variants"),
+			}
+		}
+
+		// adding pending output
+		let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat)/2;
+		let amt_msat_1 = recv_value_1 + total_fee_msat;
+
+		let (route_1, our_payment_hash_1, our_payment_preimage_1) = get_route_and_payment_hash!(recv_value_1);
+		let payment_event = {
+			nodes[0].node.send_payment(route_1, our_payment_hash_1).unwrap();
+			check_added_monitors!(nodes[0], 1);
+
+			let mut events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
+		};
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+
+		let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat;
+		{
+			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
+			match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
+				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+				_ => panic!("Unknown error variants"),
+			}
+		}
+
+		{
+			// test channel_reserve test on nodes[1] side
+			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
+
+			// Need to manually create update_add_htlc message to go around the channel reserve check in send_htlc()
+			let secp_ctx = Secp256k1::new();
+			let session_priv = SecretKey::from_slice(&secp_ctx, &{
+				let mut session_key = [0; 32];
+				rng::fill_bytes(&mut session_key);
+				session_key
+			}).expect("RNG is bad!");
+
+			let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+			let onion_keys = ChannelManager::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
+			let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height).unwrap();
+			let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
+			let msg = msgs::UpdateAddHTLC {
+				channel_id: chan_1.2,
+				htlc_id,
+				amount_msat: htlc_msat,
+				payment_hash: our_payment_hash,
+				cltv_expiry: htlc_cltv,
+				onion_routing_packet: onion_packet,
+			};
+
+			let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg).err().unwrap();
+			match err {
+				HandleError{err, .. } => assert_eq!(err, "Remote HTLC add would put them over their reserve value"),
+			}
+		}
+
+		// now see if it goes through on both sides
+		let (route_2, our_payment_hash_2, our_payment_preimage_2) = get_route_and_payment_hash!(recv_value_2);
+		// but this will stuck the in the holding cell b/c nodes[0] is in
+		// AwaitingRemoteRevoke state
+		nodes[0].node.send_payment(route_2, our_payment_hash_2).unwrap();
+		check_added_monitors!(nodes[0], 0);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 0);
+
+		check_added_monitors!(nodes[1], 0);
+		let (as_revoke_and_ack, as_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		check_added_monitors!(nodes[0], 0);
+		let commitment_update_2 = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_revoke_and_ack).unwrap().unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let (bs_revoke_and_ack, bs_none) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
+		assert!(bs_none.is_none());
+		check_added_monitors!(nodes[0], 1);
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_revoke_and_ack).unwrap().is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let payment_event_1 = expect_forward!(nodes[1]);
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[2], nodes[1], &payment_event_1.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[2]);
+		expect_payment_received!(nodes[2], our_payment_hash_1, recv_value_1);
+
+		// second payment
+		assert_eq!(commitment_update_2.update_add_htlcs.len(), 1);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &commitment_update_2.update_add_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], &commitment_update_2.commitment_signed, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let payment_event_2 = expect_forward!(nodes[1]);
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_2.msgs[0]).unwrap();
+
+		commitment_signed_dance!(nodes[2], nodes[1], &payment_event_2.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[2]);
+
+		expect_payment_received!(nodes[2], our_payment_hash_2, recv_value_2);
+
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_1);
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_2);
+
+		let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_2 + total_fee_msat);
+		let stat = get_channel_value_stat!(nodes[0], chan_1.2);
+		assert_eq!(stat.value_to_self_msat, expected_value_to_self);
+		assert_eq!(stat.value_to_self_msat, stat.channel_reserve_msat);
+	}
+
+	#[test]
 	fn channel_monitor_network_test() {
 		// Simple test which builds a network of ChannelManagers, connects them to each other, and
 		// tests that ChannelMonitor is able to recover from various states.
