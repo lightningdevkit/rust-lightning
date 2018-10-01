@@ -319,6 +319,13 @@ pub(super) struct Channel {
 	channel_update_count: u32,
 	feerate_per_kw: u64,
 
+	#[cfg(debug_assertions)]
+	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
+	max_commitment_tx_output_local: ::std::sync::Mutex<(u64, u64)>,
+	#[cfg(debug_assertions)]
+	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
+	max_commitment_tx_output_remote: ::std::sync::Mutex<(u64, u64)>,
+
 	#[cfg(test)]
 	// Used in ChannelManager's tests to send a revoked transaction
 	pub last_local_commitment_txn: Vec<Transaction>,
@@ -491,6 +498,11 @@ impl Channel {
 			next_remote_htlc_id: 0,
 			channel_update_count: 1,
 
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+
 			last_local_commitment_txn: Vec::new(),
 
 			last_sent_closing_fee: None,
@@ -640,6 +652,11 @@ impl Channel {
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
 			channel_update_count: 1,
+
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
 
 			last_local_commitment_txn: Vec::new(),
 
@@ -826,9 +843,32 @@ impl Channel {
 		}
 
 
+		let value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) as i64 - value_to_self_msat_offset;
+
+		#[cfg(debug_assertions)]
+		{
+			// Make sure that the to_self/to_remote is always either past the appropriate
+			// channel_reserve *or* it is making progress towards it.
+			// TODO: This should happen after fee calculation, but we don't handle that correctly
+			// yet!
+			let mut max_commitment_tx_output = if generated_by_local {
+				self.max_commitment_tx_output_local.lock().unwrap()
+			} else {
+				self.max_commitment_tx_output_remote.lock().unwrap()
+			};
+			debug_assert!(max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.their_channel_reserve_satoshis as i64);
+			max_commitment_tx_output.0 = cmp::max(max_commitment_tx_output.0, value_to_self_msat as u64);
+			debug_assert!(max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
+			max_commitment_tx_output.1 = cmp::max(max_commitment_tx_output.1, value_to_remote_msat as u64);
+		}
+
 		let total_fee: u64 = feerate_per_kw * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-		let value_to_self: i64 = ((self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset) / 1000 - if self.channel_outbound { total_fee as i64 } else { 0 };
-		let value_to_remote: i64 = (((self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) as i64 - value_to_self_msat_offset) / 1000) - if self.channel_outbound { 0 } else { total_fee as i64 };
+		let (value_to_self, value_to_remote) = if self.channel_outbound {
+			(value_to_self_msat / 1000 - total_fee as i64, value_to_remote_msat / 1000)
+		} else {
+			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - total_fee as i64)
+		};
 
 		let value_to_a = if local { value_to_self } else { value_to_remote };
 		let value_to_b = if local { value_to_remote } else { value_to_self };
