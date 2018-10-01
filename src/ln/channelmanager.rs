@@ -2565,7 +2565,11 @@ mod tests {
 	}
 
 	fn create_chan_between_nodes(node_a: &Node, node_b: &Node) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
-		node_a.node.create_channel(node_b.node.get_our_node_id(), 100000, 10001, 42).unwrap();
+		create_chan_between_nodes_with_value(node_a, node_b, 100000, 10001)
+	}
+
+	fn create_chan_between_nodes_with_value(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+		node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
 
 		let events_1 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_1.len(), 1);
@@ -2587,7 +2591,7 @@ mod tests {
 		assert_eq!(events_2.len(), 1);
 		match events_2[0] {
 			Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
-				assert_eq!(*channel_value_satoshis, 100000);
+				assert_eq!(*channel_value_satoshis, channel_value);
 				assert_eq!(user_channel_id, 42);
 
 				tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
@@ -2691,7 +2695,11 @@ mod tests {
 	}
 
 	fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
-		let chan_announcement = create_chan_between_nodes(&nodes[a], &nodes[b]);
+		create_announced_chan_between_nodes_with_value(nodes, a, b, 100000, 10001)
+	}
+
+	fn create_announced_chan_between_nodes_with_value(nodes: &Vec<Node>, a: usize, b: usize, channel_value: u64, push_msat: u64) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+		let chan_announcement = create_chan_between_nodes_with_value(&nodes[a], &nodes[b], channel_value, push_msat);
 		for node in nodes {
 			assert!(node.router.handle_channel_announcement(&chan_announcement.0).unwrap());
 			node.router.handle_channel_update(&chan_announcement.1).unwrap();
