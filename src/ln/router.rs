@@ -13,15 +13,15 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
-use ln::msgs::{DecodeError,ErrorAction,HandleError,RoutingMessageHandler,NetAddress,GlobalFeatures};
+use ln::msgs::{DecodeError,ErrorAction,HandleError,RoutingMessageHandler,NetAddress,GlobalFeatures, InitSyncTracker};
 use ln::msgs;
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
 use std::cmp;
 use std::sync::{RwLock,Arc};
-use std::collections::{HashMap,BinaryHeap};
-use std::collections::hash_map::Entry;
+use std::collections::{HashMap,BinaryHeap, BTreeMap};
+use std::collections::btree_map::Entry as BtreeEntry;
 use std;
 
 /// A hop in a route
@@ -86,6 +86,7 @@ struct DirectionalChannelInfo {
 	htlc_minimum_msat: u64,
 	fee_base_msat: u32,
 	fee_proportional_millionths: u32,
+	last_update_message : Option<msgs::ChannelUpdate>,
 }
 
 impl std::fmt::Display for DirectionalChannelInfo {
@@ -99,6 +100,9 @@ struct ChannelInfo {
 	features: GlobalFeatures,
 	one_to_two: DirectionalChannelInfo,
 	two_to_one: DirectionalChannelInfo,
+	//this is cached here so we can send out it later if required by route_init_sync
+	//keep an eye on this to see if the extra memory is a problem
+	announcement_message : Option<msgs::ChannelAnnouncement>,
 }
 
 impl std::fmt::Display for ChannelInfo {
@@ -108,6 +112,7 @@ impl std::fmt::Display for ChannelInfo {
 	}
 }
 
+#[derive(PartialEq)]
 struct NodeInfo {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: Vec<(u64, Sha256dHash)>,
@@ -122,6 +127,9 @@ struct NodeInfo {
 	rgb: [u8; 3],
 	alias: [u8; 32],
 	addresses: Vec<NetAddress>,
+	//this is cached here so we can send out it later if required by route_init_sync
+	//keep an eye on this to see if the extra memory is a problem
+	announcement_message : Option<msgs::NodeAnnouncement>,
 }
 
 impl std::fmt::Display for NodeInfo {
@@ -133,19 +141,19 @@ impl std::fmt::Display for NodeInfo {
 
 struct NetworkMap {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	channels: HashMap<(u64, Sha256dHash), ChannelInfo>,
+	channels: BTreeMap<(u64, Sha256dHash), ChannelInfo>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	channels: HashMap<u64, ChannelInfo>,
+	channels: BTreeMap<u64, ChannelInfo>,
 
 	our_node_id: PublicKey,
-	nodes: HashMap<PublicKey, NodeInfo>,
+	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
 struct MutNetworkMap<'a> {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	channels: &'a mut HashMap<(u64, Sha256dHash), ChannelInfo>,
+	channels: &'a mut BTreeMap<(u64, Sha256dHash), ChannelInfo>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	channels: &'a mut HashMap<u64, ChannelInfo>,
-	nodes: &'a mut HashMap<PublicKey, NodeInfo>,
+	channels: &'a mut BTreeMap<u64, ChannelInfo>,
+	nodes: &'a mut BTreeMap<PublicKey, NodeInfo>,
 }
 impl NetworkMap {
 	fn borrow_parts(&mut self) -> MutNetworkMap {
@@ -252,6 +260,13 @@ impl RoutingMessageHandler for Router {
 				node.rgb = msg.contents.rgb;
 				node.alias = msg.contents.alias;
 				node.addresses = msg.contents.addresses.clone();
+				node.announcement_message = if msg.contents.excess_data.is_empty(){
+					Some(msg.clone())
+				}
+				else{
+					None
+				};
+
 				Ok(msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty() && !msg.contents.features.supports_unknown_bits())
 			}
 		}
@@ -310,6 +325,7 @@ impl RoutingMessageHandler for Router {
 					htlc_minimum_msat: u64::max_value(),
 					fee_base_msat: u32::max_value(),
 					fee_proportional_millionths: u32::max_value(),
+					last_update_message : None,
 				},
 				two_to_one: DirectionalChannelInfo {
 					src_node_id: msg.contents.node_id_2.clone(),
@@ -319,11 +335,18 @@ impl RoutingMessageHandler for Router {
 					htlc_minimum_msat: u64::max_value(),
 					fee_base_msat: u32::max_value(),
 					fee_proportional_millionths: u32::max_value(),
+					last_update_message : None,
+				},
+				announcement_message : if msg.contents.excess_data.is_empty(){
+					Some(msg.clone())
 				}
+				else{
+					None
+				},
 			};
 
 		match network.channels.entry(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
-			Entry::Occupied(mut entry) => {
+			BtreeEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though its unclear
 				//exactly how...
@@ -342,7 +365,7 @@ impl RoutingMessageHandler for Router {
 					return Err(HandleError{err: "Already have knowledge of channel", action: Some(ErrorAction::IgnoreError)})
 				}
 			},
-			Entry::Vacant(entry) => {
+			BtreeEntry::Vacant(entry) => {
 				entry.insert(chan_info);
 			}
 		};
@@ -350,10 +373,10 @@ impl RoutingMessageHandler for Router {
 		macro_rules! add_channel_to_node {
 			( $node_id: expr ) => {
 				match network.nodes.entry($node_id) {
-					Entry::Occupied(node_entry) => {
+					BtreeEntry::Occupied(node_entry) => {
 						node_entry.into_mut().channels.push(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash));
 					},
-					Entry::Vacant(node_entry) => {
+					BtreeEntry::Vacant(node_entry) => {
 						node_entry.insert(NodeInfo {
 							channels: vec!(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)),
 							lowest_inbound_channel_fee_base_msat: u32::max_value(),
@@ -363,6 +386,7 @@ impl RoutingMessageHandler for Router {
 							rgb: [0; 3],
 							alias: [0; 32],
 							addresses: Vec::new(),
+							announcement_message: None,
 						});
 					}
 				}
@@ -424,9 +448,14 @@ impl RoutingMessageHandler for Router {
 						$target.htlc_minimum_msat = msg.contents.htlc_minimum_msat;
 						$target.fee_base_msat = msg.contents.fee_base_msat;
 						$target.fee_proportional_millionths = msg.contents.fee_proportional_millionths;
+						$target.last_update_message = if msg.contents.excess_data.is_empty(){
+							Some(msg.clone())
+						}
+						else{
+						None
+						};
 					}
 				}
-
 				let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
 				if msg.contents.flags & 1 == 1 {
 					dest_node_id = channel.one_to_two.src_node_id.clone();
@@ -471,6 +500,53 @@ impl RoutingMessageHandler for Router {
 
 		Ok(msg.contents.excess_data.is_empty())
 	}
+
+
+	fn get_next_channel_announcements(&self, starting_point: &mut InitSyncTracker, batch_amount: u8)->(Vec<(msgs::ChannelAnnouncement, msgs::ChannelUpdate,msgs::ChannelUpdate)>){
+		let mut result = Vec::new();
+		let network = self.network_map.read().unwrap();
+		let mut starting_for_next = if let InitSyncTracker::ChannelCounter(i) = *starting_point {i} else {0 as u64};
+		let mut iter = network.channels.range((starting_for_next)..);
+		for _x in 0..batch_amount{
+			if let Some(ref value) = iter.next(){
+				if value.1.announcement_message.is_some() && value.1.one_to_two.last_update_message.is_some() && value.1.two_to_one.last_update_message.is_some(){
+					let channel_announcement = value.1.announcement_message.clone().unwrap();
+					let channel_update1 = value.1.one_to_two.last_update_message.clone().unwrap();
+					let channel_update2 = value.1.two_to_one.last_update_message.clone().unwrap();
+					result.push((channel_announcement,channel_update1, channel_update2));
+				}
+				starting_for_next = *(value.0) ;//adjusting start value so we can pass the last used back
+			}
+		}
+		*starting_point = if result.len() == 0{
+			InitSyncTracker::Sync(false) //sync done so disable sync required
+		} else {
+			InitSyncTracker::ChannelCounter(starting_for_next)
+		};
+		(result)
+	}
+
+	fn get_next_node_announcements(&self, starting_point: &mut InitSyncTracker, batch_amount: u8)->(Vec<msgs::NodeAnnouncement>){
+		let mut result = Vec::new();
+		let network = self.network_map.read().unwrap();
+		let mut iter = if let InitSyncTracker::NodeCounter(i) = *starting_point {network.nodes.range((i)..)} else {
+			let first_item = network.nodes.iter().next();
+			if let None = first_item  {*starting_point = InitSyncTracker::Sync(false); return result} //for some reason we know of no nodes
+			network.nodes.range(*(first_item.unwrap().0)..)};
+		for _x in 0..batch_amount{
+			if let Some(ref value) = iter.next(){
+				if value.1.announcement_message.is_some(){
+					let node_announcement = value.1.announcement_message.clone().unwrap();
+					result.push(node_announcement);
+				}
+				*starting_point = InitSyncTracker::NodeCounter(*(value.0)) ;//adjusting start value so we can pass the last used back
+			}
+		}
+		if result.len() == 0{
+			*starting_point = InitSyncTracker::ChannelCounter(0) //node syncing done, move on towards channels
+		};
+		result
+	}
 }
 
 #[derive(Eq, PartialEq)]
@@ -504,7 +580,7 @@ struct DummyDirectionalChannelInfo {
 impl Router {
 	/// Creates a new router with the given node_id to be used as the source for get_route()
 	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
-		let mut nodes = HashMap::new();
+		let mut nodes = BTreeMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
 			channels: Vec::new(),
 			lowest_inbound_channel_fee_base_msat: u32::max_value(),
@@ -514,11 +590,12 @@ impl Router {
 			rgb: [0; 3],
 			alias: [0; 32],
 			addresses: Vec::new(),
+			announcement_message: None,
 		});
 		Router {
 			secp_ctx: Secp256k1::verification_only(),
 			network_map: RwLock::new(NetworkMap {
-				channels: HashMap::new(),
+				channels: BTreeMap::new(),
 				our_node_id: our_pubkey,
 				nodes: nodes,
 			}),
@@ -549,10 +626,10 @@ impl Router {
 		unimplemented!();
 	}
 
-	fn remove_channel_in_nodes(nodes: &mut HashMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+	fn remove_channel_in_nodes(nodes: &mut BTreeMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
-				if let Entry::Occupied(mut entry) = nodes.entry($node_id) {
+				if let BtreeEntry::Occupied(mut entry) = nodes.entry($node_id) {
 					entry.get_mut().channels.retain(|chan_id| {
 						short_channel_id != *NetworkMap::get_short_id(chan_id)
 					});
@@ -877,6 +954,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(1, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -888,6 +966,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: u32::max_value(), // This value should be ignored
 					fee_proportional_millionths: u32::max_value(), // This value should be ignored
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node1.clone(),
 					last_update: 0,
@@ -896,7 +975,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.nodes.insert(node2.clone(), NodeInfo {
 				channels: vec!(NetworkMap::get_key(2, zero_hash.clone()), NetworkMap::get_key(4, zero_hash.clone())),
@@ -907,6 +988,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(2, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -918,6 +1000,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: u32::max_value(), // This value should be ignored
 					fee_proportional_millionths: u32::max_value(), // This value should be ignored
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node2.clone(),
 					last_update: 0,
@@ -926,7 +1009,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.nodes.insert(node8.clone(), NodeInfo {
 				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
@@ -937,6 +1022,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -948,6 +1034,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: u32::max_value(), // This value should be ignored
 					fee_proportional_millionths: u32::max_value(), // This value should be ignored
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node8.clone(),
 					last_update: 0,
@@ -956,7 +1043,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.nodes.insert(node3.clone(), NodeInfo {
 				channels: vec!(
@@ -973,6 +1062,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(3, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -984,6 +1074,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -992,7 +1083,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 100,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(4, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -1004,6 +1097,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 1000000,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1012,7 +1106,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -1024,6 +1120,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 2000000,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1032,7 +1129,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.nodes.insert(node4.clone(), NodeInfo {
 				channels: vec!(NetworkMap::get_key(5, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
@@ -1043,6 +1142,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(5, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -1054,6 +1154,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 100,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node4.clone(),
 					last_update: 0,
@@ -1062,7 +1163,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.nodes.insert(node5.clone(), NodeInfo {
 				channels: vec!(NetworkMap::get_key(6, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
@@ -1073,6 +1176,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(6, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -1084,6 +1188,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node5.clone(),
 					last_update: 0,
@@ -1092,7 +1197,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(11, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -1104,6 +1211,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node4.clone(),
 					last_update: 0,
@@ -1112,7 +1220,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 			network.nodes.insert(node6.clone(), NodeInfo {
 				channels: vec!(NetworkMap::get_key(7, zero_hash.clone())),
@@ -1123,6 +1233,7 @@ mod tests {
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
+				announcement_message : None,
 			});
 			network.channels.insert(NetworkMap::get_key(7, zero_hash.clone()), ChannelInfo {
 				features: GlobalFeatures::new(),
@@ -1134,6 +1245,7 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 1000000,
+					last_update_message: None,
 				}, two_to_one: DirectionalChannelInfo {
 					src_node_id: node6.clone(),
 					last_update: 0,
@@ -1142,7 +1254,9 @@ mod tests {
 					htlc_minimum_msat: 0,
 					fee_base_msat: 0,
 					fee_proportional_millionths: 0,
+					last_update_message: None,
 				},
+				announcement_message : None,
 			});
 		}
 

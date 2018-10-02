@@ -334,7 +334,7 @@ pub struct AnnouncementSignatures {
 }
 
 /// An address which can be used to connect to a remote peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum NetAddress {
 	/// An IPv4 address/port on which the peer is listenting.
 	IPv4 {
@@ -381,7 +381,7 @@ impl NetAddress {
 		}
 	}
 }
-
+#[derive(Clone, PartialEq)]
 // Only exposed as broadcast of node_announcement should be filtered by node_id
 /// The unsigned part of a node_announcement
 pub struct UnsignedNodeAnnouncement {
@@ -398,6 +398,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
+#[derive(Clone, PartialEq)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
 	pub(crate) signature: Signature,
@@ -574,6 +575,18 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	/// Handle an incoming error message from the given peer.
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
 }
+#[derive(PartialEq)]
+///Enum used to keep track of syncing information/state of peer and if a sync is required
+pub enum InitSyncTracker{
+	///This indicates if a sync is required or not, false is no sync required, true is sync required but not started
+	Sync(bool),
+	///This is the last synced node's public key
+	///During this state it is syncing nodes
+	NodeCounter(PublicKey),
+	///This is the last synced channel _id
+	///During this state it is syncing nodes
+	ChannelCounter(u64),
+}
 
 /// A trait to describe an object which can receive routing messages.
 pub trait RoutingMessageHandler : Send + Sync {
@@ -588,6 +601,12 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, HandleError>;
 	/// Handle some updates to the route graph that we learned due to an outbound failed payment.
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
+	///Gets a subset of the channel announcements and updates required to dump our routing table to a remote node, starting at the short_channel_id indicated by starting_point.channelcounter and including batch_amount entries
+	/// This function will start iterating at 0 if the starting_point is < 0.
+	fn get_next_channel_announcements(&self, starting_point: &mut InitSyncTracker, batch_amount: u8)->(Vec<(ChannelAnnouncement, ChannelUpdate,ChannelUpdate)>);
+	///Gets a subset of the node announcements required to dump our routing table to a remote node, starting at the PublicKey indicated by starting_point.nodecounter and including batch_amount entries
+	/// This function will start iterating at 0 if the starting_point is < 0.
+	fn get_next_node_announcements(&self, starting_point: &mut InitSyncTracker, batch_amount: u8)->(Vec<NodeAnnouncement>);
 }
 
 pub(crate) struct OnionRealm0HopData {
