@@ -708,7 +708,7 @@ impl Router {
 			// $directional_info.
 			( $chan_id: expr, $dest_node_id: expr, $directional_info: expr, $starting_fee_msat: expr ) => {
 				//TODO: Explore simply adding fee to hit htlc_minimum_msat
-				if $starting_fee_msat as u64 + final_value_msat > $directional_info.htlc_minimum_msat {
+				if $starting_fee_msat as u64 + final_value_msat >= $directional_info.htlc_minimum_msat {
 					let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fee_proportional_millionths as u64);
 					if let Some(new_fee) = proportional_fee_millions.and_then(|part| {
 							($directional_info.fee_base_msat as u64).checked_add(part / 1000000) })
