@@ -6724,7 +6724,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 		let channel = chan_lock.by_id.get(&chan.2).unwrap();
 		htlc_minimum_msat = channel.get_our_htlc_minimum_msat();
 	}
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], htlc_minimum_msat+1, TEST_FINAL_CLTV).unwrap();
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], htlc_minimum_msat, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
