@@ -157,7 +157,6 @@ impl TestRoutingMessageHandler {
 		TestRoutingMessageHandler {}
 	}
 }
-
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
 		Err(HandleError { err: "", action: None })
@@ -169,6 +168,12 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
+	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, msgs::ChannelUpdate,msgs::ChannelUpdate)> {
+		Vec::new()
+	}
+	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
+		Vec::new()
+	}
 }
 
 pub struct TestLogger {

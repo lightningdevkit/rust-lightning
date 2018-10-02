@@ -382,6 +382,7 @@ impl NetAddress {
 	}
 }
 
+#[derive(Clone)]
 // Only exposed as broadcast of node_announcement should be filtered by node_id
 /// The unsigned part of a node_announcement
 pub struct UnsignedNodeAnnouncement {
@@ -398,6 +399,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
+#[derive(Clone)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
 	pub(crate) signature: Signature,
@@ -588,6 +590,14 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, HandleError>;
 	/// Handle some updates to the route graph that we learned due to an outbound failed payment.
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
+	/// Gets a subset of the channel announcements and updates required to dump our routing table
+	/// to a remote node, starting at the short_channel_id indicated by starting_point and
+	/// including batch_amount entries.
+	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, ChannelUpdate, ChannelUpdate)>;
+	/// Gets a subset of the node announcements required to dump our routing table to a remote node,
+	/// starting at the node *after* the provided publickey and including batch_amount entries.
+	/// If None is provided for starting_point, we start at the first node.
+	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
 }
 
 pub(crate) struct OnionRealm0HopData {
