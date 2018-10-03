@@ -1469,17 +1469,9 @@ impl Channel {
 		Ok(())
 	}
 
-	/// Returns (inbound_htlc_count, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat)
-	/// If its for a remote update check, we need to be more lax about checking against messages we
-	/// sent but they may not have received/processed before they sent this message. Further, for
-	/// our own sends, we're more conservative and even consider things they've removed against
-	/// totals, though there is little reason to outside of further avoiding any race condition
-	/// issues.
-	fn get_pending_htlc_stats(&self, for_remote_update_check: bool) -> (u32, u32, u64, u64) {
-		//TODO: Can probably split this into inbound/outbound
+	/// Returns (inbound_htlc_count, htlc_inbound_value_msat)
+	fn get_inbound_pending_htlc_stats(&self) -> (u32, u64) {
 		let mut inbound_htlc_count: u32 = 0;
-		let mut outbound_htlc_count: u32 = 0;
-		let mut htlc_outbound_value_msat = 0;
 		let mut htlc_inbound_value_msat = 0;
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			match htlc.state {
@@ -1492,6 +1484,18 @@ impl Channel {
 			inbound_htlc_count += 1;
 			htlc_inbound_value_msat += htlc.amount_msat;
 		}
+		(inbound_htlc_count, htlc_inbound_value_msat)
+	}
+
+	/// Returns (outbound_htlc_count, htlc_outbound_value_msat)
+	/// If its for a remote update check, we need to be more lax about checking against messages we
+	/// sent but they may not have received/processed before they sent this message. Further, for
+	/// our own sends, we're more conservative and even consider things they've removed against
+	/// totals, though there is little reason to outside of further avoiding any race condition
+	/// issues.
+	fn get_outbound_pending_htlc_stats(&self, for_remote_update_check: bool) -> (u32, u64) {
+		let mut outbound_htlc_count: u32 = 0;
+		let mut htlc_outbound_value_msat = 0;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			match htlc.state {
 				OutboundHTLCState::LocalAnnounced => { if for_remote_update_check { continue; } },
@@ -1504,7 +1508,7 @@ impl Channel {
 			htlc_outbound_value_msat += htlc.amount_msat;
 		}
 
-		(inbound_htlc_count, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat)
+		(outbound_htlc_count, htlc_outbound_value_msat)
 	}
 
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), HandleError> {
@@ -1521,7 +1525,7 @@ impl Channel {
 			return Err(HandleError{err: "Remote side tried to send less than our minimum HTLC value", action: None});
 		}
 
-		let (inbound_htlc_count, _, _, htlc_inbound_value_msat) = self.get_pending_htlc_stats(true);
+		let (inbound_htlc_count, htlc_inbound_value_msat) = self.get_inbound_pending_htlc_stats();
 		if inbound_htlc_count + 1 > OUR_MAX_HTLCS as u32 {
 			return Err(HandleError{err: "Remote tried to push more than our max accepted HTLCs", action: None});
 		}
@@ -2800,7 +2804,7 @@ impl Channel {
 			return Err(HandleError{err: "Cannot send an HTLC while disconnected", action: Some(ErrorAction::IgnoreError)});
 		}
 
-		let (_, outbound_htlc_count, htlc_outbound_value_msat, _) = self.get_pending_htlc_stats(false);
+		let (outbound_htlc_count, htlc_outbound_value_msat) = self.get_outbound_pending_htlc_stats(false);
 		if outbound_htlc_count + 1 > self.their_max_accepted_htlcs as u32 {
 			return Err(HandleError{err: "Cannot push more than their max accepted HTLCs", action: None});
 		}
