@@ -1520,7 +1520,8 @@ impl ChannelManager {
 						rejected_by_dest: !payment_retryable,
 					});
 				} else {
-					panic!("should have onion error packet here");
+					//TODO: Pass this back (see GH #243)
+					//panic!("should have onion error packet here");
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
@@ -2661,6 +2662,9 @@ impl ChainListener for ChannelManager {
 				if let Some(preimage) = htlc_update.payment_preimage {
 					if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap());}
 					self.claim_funds_internal(channel_state.take().unwrap(), htlc_update.source, preimage);
+				} else {
+					if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap());}
+					self.fail_htlc_backwards_internal(channel_state.take().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 				}
 			}
 		}
@@ -6162,6 +6166,117 @@ mod tests {
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	#[test]
+	fn test_htlc_on_chain_timeout() {
+		// Test that in case of an unilateral close onchain, we detect the state of output thanks to
+		// ChainWatchInterface and timeout the HTLC  bacward accordingly. So here we test that ChannelManager is
+		// broadcasting the right event to other nodes in payment path.
+		// A ------------------> B ----------------------> C (timeout)
+		//    A's commitment tx 		C's commitment tx
+		//    	      \                                  \
+		//    	   B's HTLC timeout tx		     B's timeout tx
+
+		let nodes = create_network(3);
+
+		// Create some intial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		// Rebalance the network a bit by relaying one payment thorugh all the channels...
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
+
+		let (_payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+
+		// Brodacast legit commitment tx from C on B's chain
+		let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
+		nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+		{
+			let mut added_monitors = nodes[2].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(!update_fail_htlcs.is_empty());
+				assert!(update_fulfill_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+		let events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let mut funding_tx_map = HashMap::new();
+		funding_tx_map.insert(chan_2.3.txid(), chan_2.3.clone());
+		commitment_tx[0].verify(&funding_tx_map).unwrap();
+
+		// Broadcast timeout transaction by B on received output fron C's commitment tx on B's chain
+		// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+		assert_eq!(node_txn.len(), 8); // ChannelManager : 2 (commitment tx, HTLC-Timeout), ChannelMonitor : 6 (commitment tx, HTLC-Timeout, timeout tx) * 2 (block-rescan)
+		assert_eq!(node_txn[2].input[0].previous_output.txid, node_txn[1].txid());
+		assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), 133);
+
+		let mut commitment_tx_map = HashMap::new();
+		commitment_tx_map.insert(commitment_tx[0].txid(), commitment_tx[0].clone());
+		node_txn[0].verify(&commitment_tx_map).unwrap();
+
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()]}, 1);
+		{
+			let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(!update_fail_htlcs.is_empty());
+				assert!(update_fulfill_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		// Broadcast legit commitment tx from A on B's chain
+		// Broadcast HTLC Timeout tx by B on offered output from A commitment tx on A's chain
+		let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+
+		// Verify that A's ChannelManager is able to detect that HTLC is timeout by a HTLC Timeout tx and react backward in consequence
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: node_txn }, 1);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}
