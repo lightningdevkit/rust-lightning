@@ -4013,7 +4013,7 @@ mod tests {
 		let amt_msat_1 = recv_value_1 + total_fee_msat;
 
 		let (route_1, our_payment_hash_1, our_payment_preimage_1) = get_route_and_payment_hash!(recv_value_1);
-		let payment_event = {
+		let payment_event_1 = {
 			nodes[0].node.send_payment(route_1, our_payment_hash_1).unwrap();
 			check_added_monitors!(nodes[0], 1);
 
@@ -4021,8 +4021,9 @@ mod tests {
 			assert_eq!(events.len(), 1);
 			SendEvent::from_event(events.remove(0))
 		};
-		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event_1.msgs[0]).unwrap();
 
+		// channel reserve test with htlc pending output > 0
 		let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat;
 		{
 			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
@@ -4063,19 +4064,42 @@ mod tests {
 			}
 		}
 
-		// now see if it goes through on both sides
-		let (route_2, our_payment_hash_2, our_payment_preimage_2) = get_route_and_payment_hash!(recv_value_2);
-		// but this will stuck the in the holding cell b/c nodes[0] is in
-		// AwaitingRemoteRevoke state
-		nodes[0].node.send_payment(route_2, our_payment_hash_2).unwrap();
+		// split the rest to test holding cell
+		let recv_value_21 = recv_value_2/2;
+		let recv_value_22 = recv_value_2 - recv_value_21 - total_fee_msat;
+		{
+			let stat = get_channel_value_stat!(nodes[0], chan_1.2);
+			assert_eq!(stat.value_to_self_msat - (stat.pending_outbound_htlcs_amount_msat + recv_value_21 + recv_value_22 + total_fee_msat + total_fee_msat), stat.channel_reserve_msat);
+		}
+
+		// now see if they go through on both sides
+		let (route_21, our_payment_hash_21, our_payment_preimage_21) = get_route_and_payment_hash!(recv_value_21);
+		// but this will stuck in the holding cell
+		nodes[0].node.send_payment(route_21, our_payment_hash_21).unwrap();
 		check_added_monitors!(nodes[0], 0);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 0);
 
-		check_added_monitors!(nodes[1], 0);
-		let (as_revoke_and_ack, as_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
-		check_added_monitors!(nodes[1], 1);
+		// test with outbound holding cell amount > 0
+		{
+			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
+			match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
+				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+				_ => panic!("Unknown error variants"),
+			}
+		}
+
+		let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(recv_value_22);
+		// this will also stuck in the holding cell
+		nodes[0].node.send_payment(route_22, our_payment_hash_22).unwrap();
 		check_added_monitors!(nodes[0], 0);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 0);
+
+		// flush the pending htlc
+		let (as_revoke_and_ack, as_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event_1.commitment_msg).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
 		let commitment_update_2 = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_revoke_and_ack).unwrap().unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let (bs_revoke_and_ack, bs_none) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
@@ -4086,34 +4110,56 @@ mod tests {
 
 		expect_pending_htlcs_forwardable!(nodes[1]);
 
-		let payment_event_1 = expect_forward!(nodes[1]);
-		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1.msgs[0]).unwrap();
-		commitment_signed_dance!(nodes[2], nodes[1], &payment_event_1.commitment_msg, false);
+		let ref payment_event_11 = expect_forward!(nodes[1]);
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_11.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[2], nodes[1], payment_event_11.commitment_msg, false);
 
 		expect_pending_htlcs_forwardable!(nodes[2]);
 		expect_payment_received!(nodes[2], our_payment_hash_1, recv_value_1);
 
-		// second payment
-		assert_eq!(commitment_update_2.update_add_htlcs.len(), 1);
+		// flush the htlcs in the holding cell
+		assert_eq!(commitment_update_2.update_add_htlcs.len(), 2);
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &commitment_update_2.update_add_htlcs[0]).unwrap();
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &commitment_update_2.update_add_htlcs[1]).unwrap();
 		commitment_signed_dance!(nodes[1], nodes[0], &commitment_update_2.commitment_signed, false);
 		expect_pending_htlcs_forwardable!(nodes[1]);
 
-		let payment_event_2 = expect_forward!(nodes[1]);
-		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_2.msgs[0]).unwrap();
+		let ref payment_event_3 = expect_forward!(nodes[1]);
+		assert_eq!(payment_event_3.msgs.len(), 2);
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_3.msgs[0]).unwrap();
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_3.msgs[1]).unwrap();
 
-		commitment_signed_dance!(nodes[2], nodes[1], &payment_event_2.commitment_msg, false);
+		commitment_signed_dance!(nodes[2], nodes[1], &payment_event_3.commitment_msg, false);
 		expect_pending_htlcs_forwardable!(nodes[2]);
 
-		expect_payment_received!(nodes[2], our_payment_hash_2, recv_value_2);
+		let events = nodes[2].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+		match events[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(our_payment_hash_21, *payment_hash);
+				assert_eq!(recv_value_21, amt);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(our_payment_hash_22, *payment_hash);
+				assert_eq!(recv_value_22, amt);
+			},
+			_ => panic!("Unexpected event"),
+		}
 
 		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_1);
-		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_2);
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_21);
+		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_22);
 
-		let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_2 + total_fee_msat);
-		let stat = get_channel_value_stat!(nodes[0], chan_1.2);
-		assert_eq!(stat.value_to_self_msat, expected_value_to_self);
-		assert_eq!(stat.value_to_self_msat, stat.channel_reserve_msat);
+		let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_21 + total_fee_msat) - (recv_value_22 + total_fee_msat);
+		let stat0 = get_channel_value_stat!(nodes[0], chan_1.2);
+		assert_eq!(stat0.value_to_self_msat, expected_value_to_self);
+		assert_eq!(stat0.value_to_self_msat, stat0.channel_reserve_msat);
+
+		let stat2 = get_channel_value_stat!(nodes[2], chan_2.2);
+		assert_eq!(stat2.value_to_self_msat, stat22.value_to_self_msat + recv_value_1 + recv_value_21 + recv_value_22);
 	}
 
 	#[test]
