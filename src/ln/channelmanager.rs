@@ -467,7 +467,7 @@ impl ChannelManager {
 	/// pending HTLCs, the channel will be closed on chain.
 	///
 	/// May generate a SendShutdown event on success, which should be relayed.
-	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), HandleError> {
+	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
 		let (mut res, node_id, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -481,7 +481,7 @@ impl ChannelManager {
 						(res, chan_entry.get().get_their_node_id(), Some(chan_entry.remove_entry().1))
 					} else { (res, chan_entry.get().get_their_node_id(), None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(HandleError{err: "No such channel", action: None})
+				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel"})
 			}
 		};
 		for htlc_source in res.1.drain(..) {

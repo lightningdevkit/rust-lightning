@@ -2879,18 +2879,23 @@ impl Channel {
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, [u8; 32])>), HandleError> {
+	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, [u8; 32])>), APIError> {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if htlc.state == OutboundHTLCState::LocalAnnounced {
-				return Err(HandleError{err: "Cannot begin shutdown with pending HTLCs, call send_commitment first", action: None});
+				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first"});
 			}
 		}
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0 {
-			return Err(HandleError{err: "Shutdown already in progress", action: None});
+			if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
+				return Err(APIError::APIMisuseError{err: "Shutdown already in progress"});
+			}
+			else if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
+				return Err(APIError::ChannelUnavailable{err: "Shutdown already in progress by remote"});
+			}
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Cannot begin shutdown while peer is disconnected, maybe force-close instead?", action: None});
+			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected, maybe force-close instead?"});
 		}
 
 		let our_closing_script = self.get_closing_scriptpubkey();
