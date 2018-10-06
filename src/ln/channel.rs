@@ -44,6 +44,17 @@ pub struct ChannelKeys {
 	pub commitment_seed: [u8; 32],
 }
 
+#[cfg(test)]
+pub struct ChannelValueStat {
+	pub value_to_self_msat: u64,
+	pub channel_value_msat: u64,
+	pub channel_reserve_msat: u64,
+	pub pending_outbound_htlcs_amount_msat: u64,
+	pub pending_inbound_htlcs_amount_msat: u64,
+	pub holding_cell_outbound_amount_msat: u64,
+	pub their_max_htlc_value_in_flight_msat: u64, // outgoing
+}
+
 impl ChannelKeys {
 	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
 		let mut prk = [0; 32];
@@ -308,6 +319,13 @@ pub(super) struct Channel {
 	channel_update_count: u32,
 	feerate_per_kw: u64,
 
+	#[cfg(debug_assertions)]
+	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
+	max_commitment_tx_output_local: ::std::sync::Mutex<(u64, u64)>,
+	#[cfg(debug_assertions)]
+	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
+	max_commitment_tx_output_remote: ::std::sync::Mutex<(u64, u64)>,
+
 	#[cfg(test)]
 	// Used in ChannelManager's tests to send a revoked transaction
 	pub last_local_commitment_txn: Vec<Transaction>,
@@ -330,6 +348,7 @@ pub(super) struct Channel {
 	our_dust_limit_satoshis: u64,
 	their_max_htlc_value_in_flight_msat: u64,
 	//get_our_max_htlc_value_in_flight_msat(): u64,
+	/// minimum channel reserve for **self** to maintain - set by them.
 	their_channel_reserve_satoshis: u64,
 	//get_our_channel_reserve_satoshis(): u64,
 	their_htlc_minimum_msat: u64,
@@ -402,6 +421,8 @@ impl Channel {
 		channel_value_satoshis * 1000 / 10 //TODO
 	}
 
+	/// Returns a minimum channel reserve value **they** need to maintain
+	///
 	/// Guaranteed to return a value no larger than channel_value_satoshis
 	fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
 		let (q, _) = channel_value_satoshis.overflowing_div(100);
@@ -476,6 +497,11 @@ impl Channel {
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
 			channel_update_count: 1,
+
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 
 			last_local_commitment_txn: Vec::new(),
 
@@ -626,6 +652,11 @@ impl Channel {
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
 			channel_update_count: 1,
+
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
 
 			last_local_commitment_txn: Vec::new(),
 
@@ -812,9 +843,32 @@ impl Channel {
 		}
 
 
+		let value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) as i64 - value_to_self_msat_offset;
+
+		#[cfg(debug_assertions)]
+		{
+			// Make sure that the to_self/to_remote is always either past the appropriate
+			// channel_reserve *or* it is making progress towards it.
+			// TODO: This should happen after fee calculation, but we don't handle that correctly
+			// yet!
+			let mut max_commitment_tx_output = if generated_by_local {
+				self.max_commitment_tx_output_local.lock().unwrap()
+			} else {
+				self.max_commitment_tx_output_remote.lock().unwrap()
+			};
+			debug_assert!(max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.their_channel_reserve_satoshis as i64);
+			max_commitment_tx_output.0 = cmp::max(max_commitment_tx_output.0, value_to_self_msat as u64);
+			debug_assert!(max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
+			max_commitment_tx_output.1 = cmp::max(max_commitment_tx_output.1, value_to_remote_msat as u64);
+		}
+
 		let total_fee: u64 = feerate_per_kw * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-		let value_to_self: i64 = ((self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset) / 1000 - if self.channel_outbound { total_fee as i64 } else { 0 };
-		let value_to_remote: i64 = (((self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) as i64 - value_to_self_msat_offset) / 1000) - if self.channel_outbound { 0 } else { total_fee as i64 };
+		let (value_to_self, value_to_remote) = if self.channel_outbound {
+			(value_to_self_msat / 1000 - total_fee as i64, value_to_remote_msat / 1000)
+		} else {
+			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - total_fee as i64)
+		};
 
 		let value_to_a = if local { value_to_self } else { value_to_remote };
 		let value_to_b = if local { value_to_remote } else { value_to_self };
@@ -1415,42 +1469,23 @@ impl Channel {
 		Ok(())
 	}
 
-	/// Returns (inbound_htlc_count, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat)
-	/// If its for a remote update check, we need to be more lax about checking against messages we
-	/// sent but they may not have received/processed before they sent this message. Further, for
-	/// our own sends, we're more conservative and even consider things they've removed against
-	/// totals, though there is little reason to outside of further avoiding any race condition
-	/// issues.
-	fn get_pending_htlc_stats(&self, for_remote_update_check: bool) -> (u32, u32, u64, u64) {
-		//TODO: Can probably split this into inbound/outbound
-		let mut inbound_htlc_count: u32 = 0;
-		let mut outbound_htlc_count: u32 = 0;
-		let mut htlc_outbound_value_msat = 0;
+	/// Returns (inbound_htlc_count, htlc_inbound_value_msat)
+	fn get_inbound_pending_htlc_stats(&self) -> (u32, u64) {
 		let mut htlc_inbound_value_msat = 0;
 		for ref htlc in self.pending_inbound_htlcs.iter() {
-			match htlc.state {
-				InboundHTLCState::RemoteAnnounced => {},
-				InboundHTLCState::AwaitingRemoteRevokeToAnnounce => {},
-				InboundHTLCState::AwaitingAnnouncedRemoteRevoke => {},
-				InboundHTLCState::Committed => {},
-				InboundHTLCState::LocalRemoved => {},
-			}
-			inbound_htlc_count += 1;
 			htlc_inbound_value_msat += htlc.amount_msat;
 		}
+		(self.pending_inbound_htlcs.len() as u32, htlc_inbound_value_msat)
+	}
+
+	/// Returns (outbound_htlc_count, htlc_outbound_value_msat)
+	fn get_outbound_pending_htlc_stats(&self) -> (u32, u64) {
+		let mut htlc_outbound_value_msat = 0;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
-			match htlc.state {
-				OutboundHTLCState::LocalAnnounced => { if for_remote_update_check { continue; } },
-				OutboundHTLCState::Committed => {},
-				OutboundHTLCState::RemoteRemoved => { if for_remote_update_check { continue; } },
-				OutboundHTLCState::AwaitingRemoteRevokeToRemove => { if for_remote_update_check { continue; } },
-				OutboundHTLCState::AwaitingRemovedRemoteRevoke => { if for_remote_update_check { continue; } },
-			}
-			outbound_htlc_count += 1;
 			htlc_outbound_value_msat += htlc.amount_msat;
 		}
 
-		(inbound_htlc_count, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat)
+		(self.pending_outbound_htlcs.len() as u32, htlc_outbound_value_msat)
 	}
 
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), HandleError> {
@@ -1467,7 +1502,7 @@ impl Channel {
 			return Err(HandleError{err: "Remote side tried to send less than our minimum HTLC value", action: None});
 		}
 
-		let (inbound_htlc_count, _, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(true);
+		let (inbound_htlc_count, htlc_inbound_value_msat) = self.get_inbound_pending_htlc_stats();
 		if inbound_htlc_count + 1 > OUR_MAX_HTLCS as u32 {
 			return Err(HandleError{err: "Remote tried to push more than our max accepted HTLCs", action: None});
 		}
@@ -1479,7 +1514,7 @@ impl Channel {
 		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
 		// something if we punish them for broadcasting an old state).
-		if htlc_inbound_value_msat + htlc_outbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
+		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
 			return Err(HandleError{err: "Remote HTLC add would put them over their reserve value", action: None});
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
@@ -2349,6 +2384,30 @@ impl Channel {
 		&self.local_keys
 	}
 
+	#[cfg(test)]
+	pub fn get_value_stat(&self) -> ChannelValueStat {
+		ChannelValueStat {
+			value_to_self_msat: self.value_to_self_msat,
+			channel_value_msat: self.channel_value_satoshis * 1000,
+			channel_reserve_msat: self.their_channel_reserve_satoshis * 1000,
+			pending_outbound_htlcs_amount_msat: self.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
+			pending_inbound_htlcs_amount_msat: self.pending_inbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
+			holding_cell_outbound_amount_msat: {
+				let mut res = 0;
+				for h in self.holding_cell_htlc_updates.iter() {
+					match h {
+						&HTLCUpdateAwaitingACK::AddHTLC{amount_msat, .. } => {
+							res += amount_msat;
+						}
+						_ => {}
+					}
+				}
+				res
+			},
+			their_max_htlc_value_in_flight_msat: self.their_max_htlc_value_in_flight_msat,
+		}
+	}
+
 	/// Allowed in any state (including after shutdown)
 	pub fn get_channel_update_count(&self) -> u32 {
 		self.channel_update_count
@@ -2722,7 +2781,7 @@ impl Channel {
 			return Err(HandleError{err: "Cannot send an HTLC while disconnected", action: Some(ErrorAction::IgnoreError)});
 		}
 
-		let (_, outbound_htlc_count, htlc_outbound_value_msat, htlc_inbound_value_msat) = self.get_pending_htlc_stats(false);
+		let (outbound_htlc_count, htlc_outbound_value_msat) = self.get_outbound_pending_htlc_stats();
 		if outbound_htlc_count + 1 > self.their_max_accepted_htlcs as u32 {
 			return Err(HandleError{err: "Cannot push more than their max accepted HTLCs", action: None});
 		}
@@ -2731,8 +2790,20 @@ impl Channel {
 		if htlc_outbound_value_msat + amount_msat > self.their_max_htlc_value_in_flight_msat {
 			return Err(HandleError{err: "Cannot send value that would put us over our max HTLC value in flight", action: None});
 		}
-		// Check their_channel_reserve_satoshis:
-		if htlc_inbound_value_msat + htlc_outbound_value_msat + amount_msat + (self.channel_value_satoshis * 1000 - self.value_to_self_msat) > (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 {
+
+		let mut holding_cell_outbound_amount_msat = 0;
+		for holding_htlc in self.holding_cell_htlc_updates.iter() {
+			match holding_htlc {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } => {
+					holding_cell_outbound_amount_msat += *amount_msat;
+				}
+				_ => {}
+			}
+		}
+
+		// Check self.their_channel_reserve_satoshis (the amount we must keep as
+		// reserve for them to have something to claim if we misbehave)
+		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + holding_cell_outbound_amount_msat + htlc_outbound_value_msat {
 			return Err(HandleError{err: "Cannot send value that would put us over our reserve value", action: None});
 		}
 
