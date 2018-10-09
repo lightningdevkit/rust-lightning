@@ -237,6 +237,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 		monitors.insert(key, monitor);
 		Ok(())
 	}
+
 }
 
 impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
@@ -1783,6 +1784,7 @@ impl ChannelMonitor {
 		}
 		htlc_updated
 	}
+
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
