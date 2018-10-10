@@ -364,6 +364,12 @@ const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence:
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = (1 << 24);
 
+#[cfg(test)]
+pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 138; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
+#[cfg(not(test))]
+pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 139;
+pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
+
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
 /// channel_id in ChannelManager.
