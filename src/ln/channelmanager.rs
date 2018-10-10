@@ -3355,6 +3355,7 @@ mod tests {
 	use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
 	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
+	use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -5887,7 +5888,7 @@ mod tests {
 		assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to 0 are present
 		assert_eq!(revoked_local_txn[1].input.len(), 1);
 		assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
-		assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), 133); // HTLC-Timeout
+		assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC-Timeout
 		// Revoke the old state
 		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
 
@@ -6006,7 +6007,7 @@ mod tests {
 		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
 		assert_eq!(revoked_local_txn[1].input.len(), 1);
 		assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
-		assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), 133); // HTLC-Timeout
+		assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC-Timeout
 		check_spends!(revoked_local_txn[1], revoked_local_txn[0].clone());
 
 		//Revoke the old state
@@ -6040,8 +6041,8 @@ mod tests {
 			witness_lens.insert(node_txn[0].input[2].witness.last().unwrap().len());
 			assert_eq!(witness_lens.len(), 3);
 			assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
-			assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), 133); // revoked offered HTLC
-			assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), 138); // revoked received HTLC
+			assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT); // revoked offered HTLC
+			assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // revoked received HTLC
 
 			// Next nodes[1] broadcasts its current local tx state:
 			assert_eq!(node_txn[1].input.len(), 1);
@@ -6049,7 +6050,7 @@ mod tests {
 
 			assert_eq!(node_txn[2].input.len(), 1);
 			let witness_script = node_txn[2].clone().input[0].witness.pop().unwrap();
-			assert_eq!(witness_script.len(), 133); //Spending an offered htlc output
+			assert_eq!(witness_script.len(), OFFERED_HTLC_SCRIPT_WEIGHT); //Spending an offered htlc output
 			assert_eq!(node_txn[2].input[0].previous_output.txid, node_txn[1].txid());
 			assert_ne!(node_txn[2].input[0].previous_output.txid, node_txn[0].input[0].previous_output.txid);
 			assert_ne!(node_txn[2].input[0].previous_output.txid, node_txn[0].input[1].previous_output.txid);
@@ -6120,15 +6121,15 @@ mod tests {
 			witness_lens.insert(node_txn[2].input[0].witness.last().unwrap().len());
 			assert_eq!(witness_lens.len(), 3);
 			assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
-			assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), 133); // revoked offered HTLC
-			assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), 138); // revoked received HTLC
+			assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT); // revoked offered HTLC
+			assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // revoked received HTLC
 
 			assert_eq!(node_txn[3].input.len(), 1);
 			check_spends!(node_txn[3], chan_1.3.clone());
 
 			assert_eq!(node_txn[4].input.len(), 1);
 			let witness_script = node_txn[4].input[0].witness.last().unwrap();
-			assert_eq!(witness_script.len(), 133); //Spending an offered htlc output
+			assert_eq!(witness_script.len(), OFFERED_HTLC_SCRIPT_WEIGHT); //Spending an offered htlc output
 			assert_eq!(node_txn[4].input[0].previous_output.txid, node_txn[3].txid());
 			assert_ne!(node_txn[4].input[0].previous_output.txid, node_txn[0].input[0].previous_output.txid);
 			assert_ne!(node_txn[4].input[0].previous_output.txid, node_txn[1].input[0].previous_output.txid);
@@ -8408,7 +8409,7 @@ mod tests {
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap(); // ChannelManager : 1 (local commitment tx), ChannelMonitor: 2 (1 preimage tx) * 2 (block-rescan)
 		check_spends!(node_txn[0], commitment_tx[0].clone());
 		assert_eq!(node_txn[0], node_txn[2]);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 133);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(node_txn[1], chan_1.3.clone());
 
 		let spend_txn = check_spendable_outputs!(nodes[1], 1); // , 0, 0, 1, 1);
@@ -8476,7 +8477,7 @@ mod tests {
 		assert_eq!(revoked_htlc_txn.len(), 3);
 		assert_eq!(revoked_htlc_txn[0], revoked_htlc_txn[2]);
 		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
-		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), 133);
+		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0].clone());
 		check_spends!(revoked_htlc_txn[1], chan_1.3.clone());
 
@@ -8528,7 +8529,7 @@ mod tests {
 		assert_eq!(revoked_htlc_txn.len(), 3);
 		assert_eq!(revoked_htlc_txn[0], revoked_htlc_txn[2]);
 		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
-		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), 138);
+		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0].clone());
 
 		// A will generate justice tx from B's revoked commitment/HTLC tx
@@ -8582,7 +8583,7 @@ mod tests {
 		}
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 138);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(node_txn[0], local_txn[0].clone());
 
 		// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
@@ -8614,7 +8615,7 @@ mod tests {
 		}
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 133);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(node_txn[0], local_txn[0].clone());
 
 		// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor

@@ -30,6 +30,7 @@ use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use ln::channelmanager::HTLCSource;
+use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
@@ -1812,10 +1813,10 @@ impl ChannelMonitor {
 			// to broadcast solving backward
 			if let Some((source, payment_hash)) = payment_data {
 				let mut payment_preimage = [0; 32];
-				if input.witness.len() == 5 && input.witness[4].len() == 138 {
+				if input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
 					payment_preimage.copy_from_slice(&tx.input[0].witness[3]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
-				} else if input.witness.len() == 3 && input.witness[2].len() == 133 {
+				} else if input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT {
 					payment_preimage.copy_from_slice(&tx.input[0].witness[1]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else {
