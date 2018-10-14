@@ -349,11 +349,16 @@ impl RoutingMessageHandler for Router {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
 				let _ = self.handle_channel_update(msg);
 			},
-			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id } => {
+			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id, is_permanent:_ } => {
 				let mut network = self.network_map.write().unwrap();
 				if let Some(chan) = network.channels.remove(short_channel_id) {
 					Self::remove_channel_in_nodes(&mut network.nodes, &chan, *short_channel_id);
 				}
+			},
+			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent:_ } => {
+				//let mut network = self.network_map.write().unwrap();
+				//TODO: check _blamed_upstream_node
+				self.mark_node_bad(node_id, false);
 			},
 		}
 	}
