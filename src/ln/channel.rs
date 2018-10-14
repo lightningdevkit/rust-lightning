@@ -1960,9 +1960,11 @@ impl Channel {
 		if !self.channel_outbound {
 			panic!("Cannot send fee from inbound channel");
 		}
-
 		if !self.is_usable() {
 			panic!("Cannot update fee until channel is fully established and we haven't started shutting down");
+		}
+		if !self.is_live() {
+			panic!("Cannot update fee while peer is disconnected (ChannelManager should have caught this)");
 		}
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {

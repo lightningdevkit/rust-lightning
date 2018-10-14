@@ -1000,7 +1000,7 @@ impl ChannelManager {
 		};
 
 		let msg_hash = Sha256dHash::from_data(&unsigned.encode()[..]);
-		let sig = self.secp_ctx.sign(&Message::from_slice(&msg_hash[..]).unwrap(), &self.our_network_key); //TODO Can we unwrap here?
+		let sig = self.secp_ctx.sign(&Message::from_slice(&msg_hash[..]).unwrap(), &self.our_network_key);
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -1105,7 +1105,6 @@ impl ChannelManager {
 	/// May panic if the funding_txo is duplicative with some other channel (note that this should
 	/// be trivially prevented by using unique funding transaction keys per-channel).
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
-
 		macro_rules! add_pending_event {
 			($event: expr) => {
 				{
@@ -2001,7 +2000,7 @@ impl ChannelManager {
 		match channel_state.by_id.get_mut(&channel_id) {
 			None => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
 			Some(chan) => {
-				if !chan.is_usable() {
+				if !chan.is_live() {
 					return Err(APIError::APIMisuseError{err: "Channel is not in usuable state"});
 				}
 				if !chan.is_outbound() {
