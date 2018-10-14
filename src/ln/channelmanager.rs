@@ -1825,7 +1825,8 @@ impl ChannelManager {
 										// No such next-hop. We know this came from the
 										// current node as the HMAC validated.
 										res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-											short_channel_id: route_hop.short_channel_id
+											short_channel_id: route_hop.short_channel_id,
+											is_permanent: true,
 										});
 									},
 									_ => {}, //TODO: Enumerate all of these!
@@ -5145,7 +5146,7 @@ mod tests {
 		let as_chan = a_channel_lock.by_id.get(&chan_announcement.3).unwrap();
 		let bs_chan = b_channel_lock.by_id.get(&chan_announcement.3).unwrap();
 
-		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap() } );
+		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
 		let as_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &as_chan.get_local_keys().funding_key);
 		let bs_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &bs_chan.get_local_keys().funding_key);
@@ -5192,7 +5193,7 @@ mod tests {
 		let unsigned_msg = dummy_unsigned_msg!();
 		sign_msg!(unsigned_msg);
 		assert_eq!(nodes[0].router.handle_channel_announcement(&chan_announcement).unwrap(), true);
-		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap() } );
+		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
 		// Configured with Network::Testnet
 		let mut unsigned_msg = dummy_unsigned_msg!();

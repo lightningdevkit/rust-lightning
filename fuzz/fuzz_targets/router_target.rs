@@ -187,7 +187,7 @@ pub fn do_test(data: &[u8]) {
 					},
 					1 => {
 						let short_channel_id = slice_to_be64(get_slice!(8));
-						router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {short_channel_id});
+						router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {short_channel_id, is_permanent: false});
 					},
 					_ => return,
 				}
