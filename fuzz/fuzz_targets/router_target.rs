@@ -223,6 +223,7 @@ pub fn do_test(data: &[u8]) {
 							fee_proportional_millionths: slice_to_be32(get_slice!(4)),
 							cltv_expiry_delta: slice_to_be16(get_slice!(2)),
 							htlc_minimum_msat: slice_to_be64(get_slice!(8)),
+							last_update: 0,
 						});
 					}
 					&last_hops_vec[..]

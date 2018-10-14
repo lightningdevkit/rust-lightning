@@ -2418,23 +2418,23 @@ mod tests {
 			hops: vec!(
 					RouteHop {
 						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, channel_update_timestamp: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, channel_update_timestamp: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, channel_update_timestamp: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, channel_update_timestamp: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, channel_update_timestamp: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 			),
 		};
@@ -3723,19 +3723,22 @@ mod tests {
 			pubkey: nodes[2].node.get_our_node_id(),
 			short_channel_id: chan_2.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32,
+			channel_update_timestamp: 0,
 		});
 		hops.push(RouteHop {
 			pubkey: nodes[3].node.get_our_node_id(),
 			short_channel_id: chan_3.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32,
+			channel_update_timestamp: 0,
 		});
 		hops.push(RouteHop {
 			pubkey: nodes[1].node.get_our_node_id(),
 			short_channel_id: chan_4.0.contents.short_channel_id,
 			fee_msat: 1000000,
 			cltv_expiry_delta: TEST_FINAL_CLTV,
+			channel_update_timestamp: 0,
 		});
 		hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 		hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
@@ -3746,19 +3749,22 @@ mod tests {
 			pubkey: nodes[3].node.get_our_node_id(),
 			short_channel_id: chan_4.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32,
+			channel_update_timestamp: 0,
 		});
 		hops.push(RouteHop {
 			pubkey: nodes[2].node.get_our_node_id(),
 			short_channel_id: chan_3.0.contents.short_channel_id,
 			fee_msat: 0,
-			cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32
+			cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32,
+			channel_update_timestamp: 0,
 		});
 		hops.push(RouteHop {
 			pubkey: nodes[1].node.get_our_node_id(),
 			short_channel_id: chan_2.0.contents.short_channel_id,
 			fee_msat: 1000000,
 			cltv_expiry_delta: TEST_FINAL_CLTV,
+			channel_update_timestamp: 0,
 		});
 		hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 		hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;

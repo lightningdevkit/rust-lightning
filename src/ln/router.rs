@@ -36,6 +36,9 @@ pub struct RouteHop {
 	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
 	/// expected at the destination, in excess of the current block height.
 	pub cltv_expiry_delta: u32,
+	/// channel update timestamp of the outbound channel of each hop when this route is
+	/// calculated
+	pub channel_update_timestamp: u32,
 }
 
 /// A route from us through the network to a destination
@@ -168,6 +171,8 @@ impl NetworkMap {
 pub struct RouteHint {
 	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
+	/// last update
+	pub last_update: u32,
 	/// The short_channel_id of this channel
 	pub short_channel_id: u64,
 	/// The static msat-denominated fee which must be paid to use this channel
@@ -455,6 +460,7 @@ impl cmp::PartialOrd for RouteGraphNode {
 
 struct DummyDirectionalChannelInfo {
 	src_node_id: PublicKey,
+	last_update: u32,
 	cltv_expiry_delta: u32,
 	htlc_minimum_msat: u64,
 	fee_base_msat: u32,
@@ -565,6 +571,7 @@ impl Router {
 
 		let dummy_directional_info = DummyDirectionalChannelInfo { // used for first_hops routes
 			src_node_id: network.our_node_id.clone(),
+			last_update: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			fee_base_msat: 0,
@@ -585,6 +592,7 @@ impl Router {
 							short_channel_id,
 							fee_msat: final_value_msat,
 							cltv_expiry_delta: final_cltv,
+							channel_update_timestamp: 0, //TODO: related to local channel_update_handling?
 						}],
 					});
 				}
@@ -618,6 +626,7 @@ impl Router {
 									short_channel_id: 0,
 									fee_msat: 0,
 									cltv_expiry_delta: 0,
+									channel_update_timestamp: $directional_info.last_update,
 							})
 						});
 						if $directional_info.src_node_id != network.our_node_id {
@@ -644,6 +653,7 @@ impl Router {
 								short_channel_id: $chan_id.clone(),
 								fee_msat: new_fee, // This field is ignored on the last-hop anyway
 								cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
+								channel_update_timestamp: $directional_info.last_update,
 							}
 						}
 					}
@@ -1166,6 +1176,7 @@ mod tests {
 		let mut last_hops = vec!(RouteHint {
 				src_node_id: node4.clone(),
 				short_channel_id: 8,
+				last_update: 0,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				cltv_expiry_delta: (8 << 8) | 1,
@@ -1173,6 +1184,7 @@ mod tests {
 			}, RouteHint {
 				src_node_id: node5.clone(),
 				short_channel_id: 9,
+				last_update: 0,
 				fee_base_msat: 1001,
 				fee_proportional_millionths: 0,
 				cltv_expiry_delta: (9 << 8) | 1,
@@ -1180,6 +1192,7 @@ mod tests {
 			}, RouteHint {
 				src_node_id: node6.clone(),
 				short_channel_id: 10,
+				last_update: 0,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				cltv_expiry_delta: (10 << 8) | 1,
