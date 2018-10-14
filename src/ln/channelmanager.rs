@@ -449,7 +449,10 @@ impl ChannelManager {
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut res = Vec::with_capacity(channel_state.by_id.len());
 		for (channel_id, channel) in channel_state.by_id.iter() {
-			if channel.is_usable() {
+			// Note we use is_live here instead of usable which leads to somewhat confused
+			// internal/external nomenclature, but that's ok cause that's probably what the user
+			// really wanted anyway.
+			if channel.is_live() {
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
 					short_channel_id: channel.get_short_channel_id(),
