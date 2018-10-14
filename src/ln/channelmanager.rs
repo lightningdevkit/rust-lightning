@@ -291,6 +291,8 @@ pub struct ChannelManager {
 }
 
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
+const CLTV_FAR_FAR_AWAY: u16 = 6 * 24 * 7; //TODO?
+const FINAL_NODE_TIMEOUT: u16 = 3; //TODO?
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
@@ -881,11 +883,14 @@ impl ChannelManager {
 
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
-				if next_hop_data.data.amt_to_forward != msg.amount_msat {
-					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
+				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + FINAL_NODE_TIMEOUT as u64 { // final_expiry_too_soon
+					return_err!("The CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
+				}
+				if next_hop_data.data.amt_to_forward != msg.amount_msat {
+					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
 
 				// Note that we could obviously respond immediately with an update_fulfill_htlc
@@ -948,29 +953,46 @@ impl ChannelManager {
 			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				let forwarding_id = match id_option {
-					None => {
+					None => { // unknown_next_peer
 						return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
 					},
 					Some(id) => id.clone(),
 				};
-				if let Some((err, code, chan_update)) = {
+				if let Some((err, code, chan_update)) = loop {
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
-					if !chan.is_live() {
-						Some(("Forwarding channel is not in a ready state.", 0x1000 | 7, self.get_channel_update(chan).unwrap()))
-					} else {
-						let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
-						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward {
-							Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()))
-						} else {
-							if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 {
-								Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()))
-							} else {
-								None
-							}
-						}
+
+					if !chan.is_live() { // temporary_channel_failure
+						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, self.get_channel_update(chan).unwrap()));
 					}
-				} {
-					return_err!(err, code, &chan_update.encode_with_len()[..]);
+					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
+						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, self.get_channel_update(chan).unwrap()));
+					}
+					let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
+					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
+						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()));
+					}
+					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()));
+					}
+					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+					if msg.cltv_expiry <= cur_height + 3 as u32 { // expiry_too_soon
+						break Some(("CLTV expiry is too close", 0x1000 | 14, self.get_channel_update(chan).unwrap()));
+					}
+					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
+						break Some(("CLTV expiry is too far in the future", 0x1000 | 21, self.get_channel_update(chan).unwrap()));
+					}
+					break None;
+				}
+				{
+					let mut res = Vec::with_capacity(8 + 128);
+					if code == 0x1000 | 11 || code == 0x1000 | 12 {
+						res.extend_from_slice(&byte_utils::be64_to_array(*amt_to_forward));
+					}
+					else if code == 0x1000 | 13 {
+						res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+					}
+					res.extend_from_slice(&chan_update.encode_with_len()[..]);
+					return_err!(err, code, &res[..]);
 				}
 			}
 		}
@@ -4216,6 +4238,9 @@ mod tests {
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 		assert_eq!(nodes[1].node.list_channels().len(), 1);
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[4].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![] }, 1);
 
 		// One pending HTLC is discarded by the force-close:
 		let payment_preimage_1 = route_payment(&nodes[1], &vec!(&nodes[2], &nodes[3])[..], 3000000).0;
