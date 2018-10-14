@@ -296,6 +296,7 @@ pub struct ChannelManager {
 /// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
 /// CLTV_CLAIM_BUFFER point (we static assert that its at least 3 blocks more).
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
+const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + 2*HTLC_FAIL_TIMEOUT_BLOCKS, ie that
 // if the next-hop peer fails the HTLC within HTLC_FAIL_TIMEOUT_BLOCKS then we'll still have
@@ -896,13 +897,17 @@ impl ChannelManager {
 			}
 		};
 
-		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
-
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
-				if next_hop_data.data.amt_to_forward != msg.amount_msat {
+				// final_expiry_too_soon
+				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS) as u64 {
+					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
+				}
+				// final_incorrect_htlc_amount
+				if next_hop_data.data.amt_to_forward > msg.amount_msat {
 					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
+				// final_incorrect_cltv_expiry
 				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
@@ -967,29 +972,49 @@ impl ChannelManager {
 			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				let forwarding_id = match id_option {
-					None => {
+					None => { // unknown_next_peer
 						return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
 					},
 					Some(id) => id.clone(),
 				};
-				if let Some((err, code, chan_update)) = {
+				if let Some((err, code, chan_update)) = loop {
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
-					if !chan.is_live() {
-						Some(("Forwarding channel is not in a ready state.", 0x1000 | 7, self.get_channel_update(chan).unwrap()))
-					} else {
-						let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
-						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward {
-							Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()))
-						} else {
-							if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 {
-								Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()))
-							} else {
-								None
-							}
-						}
+
+					if !chan.is_live() { // channel_disabled
+						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
 					}
-				} {
-					return_err!(err, code, &chan_update.encode_with_len()[..]);
+					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
+						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
+					}
+					let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
+					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
+						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
+					}
+					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
+					}
+					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+					// We want to have at least HTLC_FAIL_TIMEOUT_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
+					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS as u32 { // expiry_too_soon
+						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
+					}
+					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
+						break Some(("CLTV expiry is too far in the future", 21, None));
+					}
+					break None;
+				}
+				{
+					let mut res = Vec::with_capacity(8 + 128);
+					if code == 0x1000 | 11 || code == 0x1000 | 12 {
+						res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
+					}
+					else if code == 0x1000 | 13 {
+						res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+					}
+					if let Some(chan_update) = chan_update {
+						res.extend_from_slice(&chan_update.encode_with_len()[..]);
+					}
+					return_err!(err, code, &res[..]);
 				}
 			}
 		}
@@ -1328,6 +1353,8 @@ impl ChannelManager {
 
 	/// Indicates that the preimage for payment_hash is unknown after a PaymentReceived event.
 	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32]) -> bool {
+		// TODO: Add ability to return 0x4000|16 (incorrect_payment_amount) if the amount we
+		// received is < expected or > 2*expected
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
