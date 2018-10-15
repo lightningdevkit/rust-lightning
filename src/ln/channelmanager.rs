@@ -2569,6 +2569,12 @@ mod tests {
 	}
 
 	fn create_chan_between_nodes_with_value(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+		let (funding_locked, channel_id, tx) = create_chan_between_nodes_with_value_a(node_a, node_b, channel_value, push_msat);
+		let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(node_a, node_b, &funding_locked);
+		(announcement, as_update, bs_update, channel_id, tx)
+	}
+
+	fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
 
 		let events_1 = node_a.node.get_and_clear_pending_events();
@@ -2641,47 +2647,53 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		confirm_transaction(&node_a.chain_monitor, &tx, chan_id);
-		let events_5 = node_a.node.get_and_clear_pending_events();
+		confirm_transaction(&node_b.chain_monitor, &tx, chan_id);
+		let events_5 = node_b.node.get_and_clear_pending_events();
 		assert_eq!(events_5.len(), 1);
 		match events_5[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
-				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				assert_eq!(*node_id, node_a.node.get_our_node_id());
 				assert!(announcement_sigs.is_none());
-				node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), msg).unwrap()
+				node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), msg).unwrap()
 			},
 			_ => panic!("Unexpected event"),
 		};
 
 		let channel_id;
 
-		confirm_transaction(&node_b.chain_monitor, &tx, chan_id);
-		let events_6 = node_b.node.get_and_clear_pending_events();
+		confirm_transaction(&node_a.chain_monitor, &tx, chan_id);
+		let events_6 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_6.len(), 1);
-		let as_announcement_sigs = match events_6[0] {
+		(match events_6[0] {
 			Event::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
-				assert_eq!(*node_id, node_a.node.get_our_node_id());
 				channel_id = msg.channel_id.clone();
-				let as_announcement_sigs = node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), msg).unwrap().unwrap();
-				node_a.node.handle_announcement_signatures(&node_b.node.get_our_node_id(), &(*announcement_sigs).clone().unwrap()).unwrap();
-				as_announcement_sigs
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				(msg.clone(), announcement_sigs.clone().unwrap())
 			},
 			_ => panic!("Unexpected event"),
+		}, channel_id, tx)
+	}
+
+	fn create_chan_between_nodes_with_value_b(node_a: &Node, node_b: &Node, as_funding_msgs: &(msgs::FundingLocked, msgs::AnnouncementSignatures)) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
+		let bs_announcement_sigs = {
+			let bs_announcement_sigs = node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), &as_funding_msgs.0).unwrap().unwrap();
+			node_b.node.handle_announcement_signatures(&node_a.node.get_our_node_id(), &as_funding_msgs.1).unwrap();
+			bs_announcement_sigs
 		};
 
-		let events_7 = node_a.node.get_and_clear_pending_events();
+		let events_7 = node_b.node.get_and_clear_pending_events();
 		assert_eq!(events_7.len(), 1);
-		let (announcement, as_update) = match events_7[0] {
+		let (announcement, bs_update) = match events_7[0] {
 			Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 				(msg, update_msg)
 			},
 			_ => panic!("Unexpected event"),
 		};
 
-		node_b.node.handle_announcement_signatures(&node_a.node.get_our_node_id(), &as_announcement_sigs).unwrap();
-		let events_8 = node_b.node.get_and_clear_pending_events();
+		node_a.node.handle_announcement_signatures(&node_b.node.get_our_node_id(), &bs_announcement_sigs).unwrap();
+		let events_8 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_8.len(), 1);
-		let bs_update = match events_8[0] {
+		let as_update = match events_8[0] {
 			Event::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 				assert!(*announcement == *msg);
 				update_msg
@@ -2691,7 +2703,7 @@ mod tests {
 
 		*node_a.network_chan_count.borrow_mut() += 1;
 
-		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone(), channel_id, tx)
+		((*announcement).clone(), (*as_update).clone(), (*bs_update).clone())
 	}
 
 	fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {

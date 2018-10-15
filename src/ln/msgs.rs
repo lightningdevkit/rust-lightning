@@ -224,6 +224,7 @@ pub struct FundingSigned {
 }
 
 /// A funding_locked message to be sent or received from a peer
+#[derive(Clone)]
 pub struct FundingLocked {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) next_per_commitment_point: PublicKey,
