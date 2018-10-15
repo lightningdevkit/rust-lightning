@@ -20,16 +20,15 @@ pub enum APIError {
 		/// The feerate which was too high.
 		feerate: u64
 	},
-
-	/// Invalid route or parameters (cltv_delta, fee, pubkey) was specified
+	/// A malformed Route was provided (eg overflowed value, node id mismatch, overly-looped route,
+	/// too-many-hops, etc).
 	RouteError {
 		/// A human-readable error message
 		err: &'static str
 	},
-
-
-	/// We were unable to complete the request since channel is disconnected or
-	/// shutdown in progress initiated by remote
+	/// We were unable to complete the request as the Channel required to do so is unable to
+	/// complete the request (or was not found). This can take many forms, including disconnected
+	/// peer, channel at capacity, channel shutting down, etc.
 	ChannelUnavailable {
 		/// A human-readable error message
 		err: &'static str

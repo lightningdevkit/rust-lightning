@@ -1053,7 +1053,7 @@ impl ChannelManager {
 			let channel_state = channel_state_lock.borrow_parts();
 
 			let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
-				None => return Err(APIError::RouteError{err: "No channel available with first hop!"}),
+				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
 				Some(id) => id.clone(),
 			};
 
@@ -1063,12 +1063,12 @@ impl ChannelManager {
 					return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
 				}
 				if !chan.is_live() {
-					return Err(APIError::RouteError{err: "Peer for first hop currently disconnected!"});
+					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected!"});
 				}
 				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 					route: route.clone(),
 					session_priv: session_priv.clone(),
-				}, onion_packet).map_err(|he| APIError::RouteError{err: he.err})?
+				}, onion_packet).map_err(|he| APIError::ChannelUnavailable{err: he.err})?
 			};
 
 			let first_hop_node_id = route.hops.first().unwrap().pubkey;
@@ -2000,11 +2000,11 @@ impl ChannelManager {
 		match channel_state.by_id.get_mut(&channel_id) {
 			None => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
 			Some(chan) => {
-				if !chan.is_live() {
-					return Err(APIError::APIMisuseError{err: "Channel is not in usuable state"});
-				}
 				if !chan.is_outbound() {
 					return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
+				}
+				if !chan.is_live() {
+					return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
 				}
 				if let Some((update_fee, commitment_signed, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw).map_err(|e| APIError::APIMisuseError{err: e.err})? {
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
@@ -3027,7 +3027,7 @@ mod tests {
 
 		let err = origin_node.node.send_payment(route, our_payment_hash).err().unwrap();
 		match err {
-			APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight"),
 			_ => panic!("Unknown error variants"),
 		};
 	}
@@ -3991,7 +3991,7 @@ mod tests {
 			assert!(route.hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 			let err = nodes[0].node.send_payment(route, our_payment_hash).err().unwrap();
 			match err {
-				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight"),
+				APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight"),
 				_ => panic!("Unknown error variants"),
 			}
 		}
@@ -4027,7 +4027,7 @@ mod tests {
 			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
 			let err = nodes[0].node.send_payment(route.clone(), our_payment_hash).err().unwrap();
 			match err {
-				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+				APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
 				_ => panic!("Unknown error variants"),
 			}
 		}
@@ -4052,7 +4052,7 @@ mod tests {
 		{
 			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 			match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
-				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+				APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
 				_ => panic!("Unknown error variants"),
 			}
 		}
@@ -4108,7 +4108,7 @@ mod tests {
 		{
 			let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
 			match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
-				APIError::RouteError{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+				APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
 				_ => panic!("Unknown error variants"),
 			}
 		}
