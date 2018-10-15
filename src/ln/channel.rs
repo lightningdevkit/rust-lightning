@@ -141,7 +141,6 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
-#[derive(PartialEq)]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -153,7 +152,9 @@ enum OutboundHTLCState {
 	///    allowed to remove it, the "can only be removed once committed on both sides" requirement
 	///    doesn't matter to us and its up to them to enforce it, worst-case they jump ahead but
 	///    we'll never get out of sync).
-	LocalAnnounced,
+	/// Note that we Box the OnionPacket as its rather large and we don't want to blow up
+	/// OutboundHTLCOutput's size just for a temporary bit
+	LocalAnnounced(Box<msgs::OnionPacket>),
 	Committed,
 	/// Remote removed this (outbound) HTLC. We're waiting on their commitment_signed to finalize
 	/// the change (though they'll need to revoke before we fail the payment).
@@ -818,7 +819,7 @@ impl Channel {
 
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			let include = match htlc.state {
-				OutboundHTLCState::LocalAnnounced => generated_by_local,
+				OutboundHTLCState::LocalAnnounced(_) => generated_by_local,
 				OutboundHTLCState::Committed => true,
 				OutboundHTLCState::RemoteRemoved => generated_by_local,
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove => generated_by_local,
@@ -1556,7 +1557,7 @@ impl Channel {
 						}
 				};
 				match htlc.state {
-					OutboundHTLCState::LocalAnnounced =>
+					OutboundHTLCState::LocalAnnounced(_) =>
 						return Err(ChannelError::Close("Remote tried to fulfill HTLC before it had been committed")),
 					OutboundHTLCState::Committed => {
 						htlc.state = OutboundHTLCState::RemoteRemoved;
@@ -1686,7 +1687,7 @@ impl Channel {
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if htlc.state == OutboundHTLCState::RemoteRemoved {
+			if let OutboundHTLCState::RemoteRemoved = htlc.state {
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove;
 				need_our_commitment = true;
 			}
@@ -1846,7 +1847,7 @@ impl Channel {
 			} else { true }
 		});
 		self.pending_outbound_htlcs.retain(|htlc| {
-			if htlc.state == OutboundHTLCState::AwaitingRemovedRemoteRevoke {
+			if let OutboundHTLCState::AwaitingRemovedRemoteRevoke = htlc.state {
 				if let Some(reason) = htlc.fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
 					revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 				} else {
@@ -1893,9 +1894,9 @@ impl Channel {
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if htlc.state == OutboundHTLCState::LocalAnnounced {
+			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				htlc.state = OutboundHTLCState::Committed;
-			} else if htlc.state == OutboundHTLCState::AwaitingRemoteRevokeToRemove {
+			} else if let OutboundHTLCState::AwaitingRemoteRevokeToRemove = htlc.state {
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke;
 				require_commitment = true;
 			}
@@ -2030,7 +2031,7 @@ impl Channel {
 		});
 
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if htlc.state == OutboundHTLCState::RemoteRemoved {
+			if let OutboundHTLCState::RemoteRemoved = htlc.state {
 				// They sent us an update to remove this but haven't yet sent the corresponding
 				// commitment_signed, we need to move it back to Committed and they can re-send
 				// the update upon reconnection.
@@ -2225,7 +2226,7 @@ impl Channel {
 			}
 		});
 		for htlc in self.pending_outbound_htlcs.iter() {
-			if htlc.state == OutboundHTLCState::LocalAnnounced {
+			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Ok((None, None, dropped_outbound_htlcs));
 			}
 		}
@@ -2847,7 +2848,7 @@ impl Channel {
 			amount_msat: amount_msat,
 			payment_hash: payment_hash.clone(),
 			cltv_expiry: cltv_expiry,
-			state: OutboundHTLCState::LocalAnnounced,
+			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
 			fail_reason: None,
 		});
@@ -2881,7 +2882,7 @@ impl Channel {
 		}
 		let mut have_updates = self.pending_update_fee.is_some();
 		for htlc in self.pending_outbound_htlcs.iter() {
-			if htlc.state == OutboundHTLCState::LocalAnnounced {
+			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				have_updates = true;
 			}
 			if have_updates { break; }
@@ -2905,7 +2906,7 @@ impl Channel {
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if htlc.state == OutboundHTLCState::AwaitingRemoteRevokeToRemove {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove = htlc.state {
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke;
 			}
 		}
@@ -2974,7 +2975,7 @@ impl Channel {
 	/// holding cell HTLCs for payment failure.
 	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, [u8; 32])>), APIError> {
 		for htlc in self.pending_outbound_htlcs.iter() {
-			if htlc.state == OutboundHTLCState::LocalAnnounced {
+			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first"});
 			}
 		}
