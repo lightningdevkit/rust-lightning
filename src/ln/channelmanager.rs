@@ -23,7 +23,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError, ChannelKeys};
-use ln::channelmonitor::ManyChannelMonitor;
+use ln::channelmonitor::{ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{HandleError,ChannelMessageHandler};
@@ -290,7 +290,26 @@ pub struct ChannelManager {
 	logger: Arc<Logger>,
 }
 
+/// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
+/// HTLC's CLTV. This should always be a few blocks greater than channelmonitor::CLTV_CLAIM_BUFFER,
+/// ie the node we forwarded the payment on to should always have enough room to reliably time out
+/// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
+/// CLTV_CLAIM_BUFFER point (we static assert that its at least 3 blocks more).
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
+
+// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + 2*HTLC_FAIL_TIMEOUT_BLOCKS, ie that
+// if the next-hop peer fails the HTLC within HTLC_FAIL_TIMEOUT_BLOCKS then we'll still have
+// HTLC_FAIL_TIMEOUT_BLOCKS left to fail it backwards ourselves before hitting the
+// CLTV_CLAIM_BUFFER point and failing the channel on-chain to time out the HTLC.
+#[deny(const_err)]
+#[allow(dead_code)]
+const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIMEOUT_BLOCKS - CLTV_CLAIM_BUFFER;
+
+// Check for ability of an attacker to make us fail on-chain by delaying inbound claim. See
+// ChannelMontior::would_broadcast_at_height for a description of why this is needed.
+#[deny(const_err)]
+#[allow(dead_code)]
+const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - HTLC_FAIL_TIMEOUT_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
@@ -2352,6 +2371,7 @@ mod tests {
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
+	use ln::channelmonitor::{CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -2384,6 +2404,7 @@ mod tests {
 	use std::default::Default;
 	use std::rc::Rc;
 	use std::sync::{Arc, Mutex};
+	use std::sync::atomic::Ordering;
 	use std::time::Instant;
 	use std::mem;
 
@@ -4269,13 +4290,22 @@ mod tests {
 		assert_eq!(nodes[2].node.list_channels().len(), 0);
 		assert_eq!(nodes[3].node.list_channels().len(), 1);
 
+		{ // Cheat and reset nodes[4]'s height to 1
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			nodes[4].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![] }, 1);
+		}
+
+		assert_eq!(nodes[3].node.latest_block_height.load(Ordering::Acquire), 1);
+		assert_eq!(nodes[4].node.latest_block_height.load(Ordering::Acquire), 1);
 		// One pending HTLC to time out:
 		let payment_preimage_2 = route_payment(&nodes[3], &vec!(&nodes[4])[..], 3000000).0;
+		// CLTV expires at TEST_FINAL_CLTV + 1 (current height) + 1 (added in send_payment for
+		// buffer space).
 
 		{
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[3].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 3 {
+			nodes[3].chain_monitor.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
+			for i in 3..TEST_FINAL_CLTV + 2 + HTLC_FAIL_TIMEOUT_BLOCKS + 1 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[3].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
@@ -4286,8 +4316,8 @@ mod tests {
 			claim_funds!(nodes[4], nodes[3], payment_preimage_2);
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[4].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 3 {
+			nodes[4].chain_monitor.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
+			for i in 3..TEST_FINAL_CLTV + 2 - CLTV_CLAIM_BUFFER + 1 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[4].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
