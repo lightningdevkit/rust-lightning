@@ -4674,7 +4674,9 @@ mod tests {
 		assert_eq!(channel_state.short_to_id.len(), 0);
 	}
 
-	fn reconnect_nodes(node_a: &Node, node_b: &Node, pre_all_htlcs: bool, pending_htlc_claims: (usize, usize), pending_htlc_fails: (usize, usize)) {
+	/// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
+	/// for claims/fails they are separated out.
+	fn reconnect_nodes(node_a: &Node, node_b: &Node, pre_all_htlcs: bool, pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool)) {
 		let reestablish_1 = node_a.node.peer_connected(&node_b.node.get_our_node_id());
 		let reestablish_2 = node_b.node.peer_connected(&node_a.node.get_our_node_id());
 
@@ -4682,7 +4684,7 @@ mod tests {
 		for msg in reestablish_1 {
 			resp_1.push(node_b.node.handle_channel_reestablish(&node_a.node.get_our_node_id(), &msg).unwrap());
 		}
-		if pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 {
+		if pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
 			check_added_monitors!(node_b, 1);
 		} else {
 			check_added_monitors!(node_b, 0);
@@ -4692,29 +4694,43 @@ mod tests {
 		for msg in reestablish_2 {
 			resp_2.push(node_a.node.handle_channel_reestablish(&node_b.node.get_our_node_id(), &msg).unwrap());
 		}
-		if pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 {
+		if pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
 			check_added_monitors!(node_a, 1);
 		} else {
 			check_added_monitors!(node_a, 0);
 		}
 
 		// We dont yet support both needing updates, as that would require a different commitment dance:
-		assert!((pending_htlc_claims.0 == 0 && pending_htlc_fails.0 == 0) || (pending_htlc_claims.1 == 0 && pending_htlc_fails.1 == 0));
+		assert!((pending_htlc_adds.0 == 0 && pending_htlc_claims.0 == 0 && pending_cell_htlc_claims.0 == 0 && pending_cell_htlc_fails.0 == 0) ||
+		        (pending_htlc_adds.1 == 0 && pending_htlc_claims.1 == 0 && pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0));
 
 		for chan_msgs in resp_1.drain(..) {
 			if pre_all_htlcs {
-				let _announcement_sigs_opt = node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &chan_msgs.0.unwrap()).unwrap();
+				let a = node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &chan_msgs.0.unwrap());
+				let _announcement_sigs_opt = a.unwrap();
 				//TODO: Test announcement_sigs re-sending when we've implemented it
 			} else {
 				assert!(chan_msgs.0.is_none());
 			}
-			assert!(chan_msgs.1.is_none());
-			if pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 {
+			if pending_raa.0 {
+				assert!(node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &chan_msgs.1.unwrap()).unwrap().is_none());
+				check_added_monitors!(node_a, 1);
+			} else {
+				assert!(chan_msgs.1.is_none());
+			}
+			if pending_htlc_adds.0 != 0 || pending_htlc_claims.0 != 0 || pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
 				let commitment_update = chan_msgs.2.unwrap();
-				assert!(commitment_update.update_add_htlcs.is_empty()); // We can't relay while disconnected
-				assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0);
-				assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.0);
+				if pending_htlc_adds.0 != -1 { // We use -1 to denote a response commitment_signed
+					assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0 as usize);
+				} else {
+					assert!(commitment_update.update_add_htlcs.is_empty());
+				}
+				assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0 + pending_cell_htlc_claims.0);
+				assert_eq!(commitment_update.update_fail_htlcs.len(), pending_cell_htlc_fails.0);
 				assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
+				for update_add in commitment_update.update_add_htlcs {
+					node_a.node.handle_update_add_htlc(&node_b.node.get_our_node_id(), &update_add).unwrap();
+				}
 				for update_fulfill in commitment_update.update_fulfill_htlcs {
 					node_a.node.handle_update_fulfill_htlc(&node_b.node.get_our_node_id(), &update_fulfill).unwrap();
 				}
@@ -4722,7 +4738,15 @@ mod tests {
 					node_a.node.handle_update_fail_htlc(&node_b.node.get_our_node_id(), &update_fail).unwrap();
 				}
 
-				commitment_signed_dance!(node_a, node_b, commitment_update.commitment_signed, false);
+				if pending_htlc_adds.0 != -1 { // We use -1 to denote a response commitment_signed
+					commitment_signed_dance!(node_a, node_b, commitment_update.commitment_signed, false);
+				} else {
+					let (as_revoke_and_ack, as_commitment_signed) = node_a.node.handle_commitment_signed(&node_b.node.get_our_node_id(), &commitment_update.commitment_signed).unwrap();
+					check_added_monitors!(node_a, 1);
+					assert!(as_commitment_signed.is_none());
+					assert!(node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+					check_added_monitors!(node_b, 1);
+				}
 			} else {
 				assert!(chan_msgs.2.is_none());
 			}
@@ -4735,13 +4759,23 @@ mod tests {
 			} else {
 				assert!(chan_msgs.0.is_none());
 			}
-			assert!(chan_msgs.1.is_none());
-			if pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 {
+			if pending_raa.1 {
+				assert!(node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &chan_msgs.1.unwrap()).unwrap().is_none());
+				check_added_monitors!(node_b, 1);
+			} else {
+				assert!(chan_msgs.1.is_none());
+			}
+			if pending_htlc_adds.1 != 0 || pending_htlc_claims.1 != 0 || pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
 				let commitment_update = chan_msgs.2.unwrap();
-				assert!(commitment_update.update_add_htlcs.is_empty()); // We can't relay while disconnected
-				assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0);
-				assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.0);
+				if pending_htlc_adds.1 != -1 { // We use -1 to denote a response commitment_signed
+					assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1 as usize);
+				}
+				assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0 + pending_cell_htlc_claims.0);
+				assert_eq!(commitment_update.update_fail_htlcs.len(), pending_cell_htlc_fails.0);
 				assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
+				for update_add in commitment_update.update_add_htlcs {
+					node_b.node.handle_update_add_htlc(&node_a.node.get_our_node_id(), &update_add).unwrap();
+				}
 				for update_fulfill in commitment_update.update_fulfill_htlcs {
 					node_b.node.handle_update_fulfill_htlc(&node_a.node.get_our_node_id(), &update_fulfill).unwrap();
 				}
@@ -4749,7 +4783,15 @@ mod tests {
 					node_b.node.handle_update_fail_htlc(&node_a.node.get_our_node_id(), &update_fail).unwrap();
 				}
 
-				commitment_signed_dance!(node_b, node_a, commitment_update.commitment_signed, false);
+				if pending_htlc_adds.1 != -1 { // We use -1 to denote a response commitment_signed
+					commitment_signed_dance!(node_b, node_a, commitment_update.commitment_signed, false);
+				} else {
+					let (bs_revoke_and_ack, bs_commitment_signed) = node_b.node.handle_commitment_signed(&node_a.node.get_our_node_id(), &commitment_update.commitment_signed).unwrap();
+					check_added_monitors!(node_b, 1);
+					assert!(bs_commitment_signed.is_none());
+					assert!(node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &bs_revoke_and_ack).unwrap().is_none());
+					check_added_monitors!(node_a, 1);
+				}
 			} else {
 				assert!(chan_msgs.2.is_none());
 			}
@@ -4765,7 +4807,7 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0));
+		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 		let payment_hash_2 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
@@ -4774,7 +4816,7 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0));
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 		let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
@@ -4787,7 +4829,7 @@ mod tests {
 		claim_payment_along_route(&nodes[0], &vec!(&nodes[1], &nodes[2]), true, payment_preimage_3);
 		fail_payment_along_route(&nodes[0], &[&nodes[1], &nodes[2]], true, payment_hash_5);
 
-		reconnect_nodes(&nodes[0], &nodes[1], false, (1, 0), (1, 0));
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
 		{
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 2);
@@ -4807,6 +4849,193 @@ mod tests {
 
 		claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_preimage_4);
 		fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_hash_6);
+	}
+
+	fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
+		// Test that we can reconnect when in-flight HTLC updates get dropped
+		let mut nodes = create_network(2);
+		if messages_delivered == 0 {
+			create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001);
+			// nodes[1] doesn't receive the funding_locked message (it'll be re-sent on reconnect)
+		} else {
+			create_announced_chan_between_nodes(&nodes, 0, 1);
+		}
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels()), &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+
+		let payment_event = {
+			nodes[0].node.send_payment(route.clone(), payment_hash_1).unwrap();
+			check_added_monitors!(nodes[0], 1);
+
+			let mut events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
+		};
+		assert_eq!(nodes[1].node.get_our_node_id(), payment_event.node_id);
+
+		if messages_delivered < 2 {
+			// Drop the payment_event messages, and let them get re-generated in reconnect_nodes!
+		} else {
+			nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+			let (bs_revoke_and_ack, bs_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+			check_added_monitors!(nodes[1], 1);
+
+			if messages_delivered >= 3 {
+				assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap().is_none());
+				check_added_monitors!(nodes[0], 1);
+
+				if messages_delivered >= 4 {
+					let (as_revoke_and_ack, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_commitment_signed.unwrap()).unwrap();
+					assert!(as_commitment_signed.is_none());
+					check_added_monitors!(nodes[0], 1);
+
+					if messages_delivered >= 5 {
+						assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+						check_added_monitors!(nodes[1], 1);
+					}
+				}
+			}
+		}
+
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		if messages_delivered < 2 {
+			// Even if the funding_locked messages get exchanged, as long as nothing further was
+			// received on either side, both sides will need to resend them.
+			reconnect_nodes(&nodes[0], &nodes[1], true, (0, 1), (0, 0), (0, 0), (0, 0), (false, false));
+		} else if messages_delivered == 2 {
+			// nodes[0] still wants its RAA + commitment_signed
+			reconnect_nodes(&nodes[0], &nodes[1], false, (-1, 0), (0, 0), (0, 0), (0, 0), (true, false));
+		} else if messages_delivered == 3 {
+			// nodes[0] still wants its commitment_signed
+			reconnect_nodes(&nodes[0], &nodes[1], false, (-1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		} else if messages_delivered == 4 {
+			// nodes[1] still wants its final RAA
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
+		} else if messages_delivered == 5 {
+			// Everything was delivered...
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		}
+
+		let events_1 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+
+		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
+		nodes[1].node.process_pending_htlc_forwards();
+
+		let events_2 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		match events_2[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(payment_hash_1, *payment_hash);
+				assert_eq!(amt, 1000000);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		nodes[1].node.claim_funds(payment_preimage_1);
+		check_added_monitors!(nodes[1], 1);
+
+		let events_3 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_3.len(), 1);
+		let (update_fulfill_htlc, commitment_signed) = match events_3[0] {
+			Event::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fail_htlcs.is_empty());
+				assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+				(updates.update_fulfill_htlcs[0].clone(), updates.commitment_signed.clone())
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		if messages_delivered >= 1 {
+			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_htlc).unwrap();
+
+			let events_4 = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events_4.len(), 1);
+			match events_4[0] {
+				Event::PaymentSent { ref payment_preimage } => {
+					assert_eq!(payment_preimage_1, *payment_preimage);
+				},
+				_ => panic!("Unexpected event"),
+			}
+
+			if messages_delivered >= 2 {
+				let (as_revoke_and_ack, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed).unwrap();
+				check_added_monitors!(nodes[0], 1);
+
+				if messages_delivered >= 3 {
+					assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+					check_added_monitors!(nodes[1], 1);
+
+					if messages_delivered >= 4 {
+						let (bs_revoke_and_ack, bs_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
+						assert!(bs_commitment_signed.is_none());
+						check_added_monitors!(nodes[1], 1);
+
+						if messages_delivered >= 5 {
+							assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap().is_none());
+							check_added_monitors!(nodes[0], 1);
+						}
+					}
+				}
+			}
+		}
+
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		if messages_delivered < 2 {
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
+			//TODO: Deduplicate PaymentSent events, then enable this if:
+			//if messages_delivered < 1 {
+				let events_4 = nodes[0].node.get_and_clear_pending_events();
+				assert_eq!(events_4.len(), 1);
+				match events_4[0] {
+					Event::PaymentSent { ref payment_preimage } => {
+						assert_eq!(payment_preimage_1, *payment_preimage);
+					},
+					_ => panic!("Unexpected event"),
+				}
+			//}
+		} else if messages_delivered == 2 {
+			// nodes[0] still wants its RAA + commitment_signed
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, -1), (0, 0), (0, 0), (0, 0), (false, true));
+		} else if messages_delivered == 3 {
+			// nodes[0] still wants its commitment_signed
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, -1), (0, 0), (0, 0), (0, 0), (false, false));
+		} else if messages_delivered == 4 {
+			// nodes[1] still wants its final RAA
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
+		} else if messages_delivered == 5 {
+			// Everything was delivered...
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		}
+
+		// Channel should still work fine...
+		let payment_preimage_2 = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+	}
+
+	#[test]
+	fn test_drop_messages_peer_disconnect_a() {
+		do_test_drop_messages_peer_disconnect(0);
+		do_test_drop_messages_peer_disconnect(1);
+		do_test_drop_messages_peer_disconnect(2);
+	}
+
+	#[test]
+	fn test_drop_messages_peer_disconnect_b() {
+		do_test_drop_messages_peer_disconnect(3);
+		do_test_drop_messages_peer_disconnect(4);
+		do_test_drop_messages_peer_disconnect(5);
 	}
 
 	#[test]
