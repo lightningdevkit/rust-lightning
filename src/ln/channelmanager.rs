@@ -2574,7 +2574,7 @@ mod tests {
 		(announcement, as_update, bs_update, channel_id, tx)
 	}
 
-	fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
+	fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> Transaction {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
 
 		let events_1 = node_a.node.get_and_clear_pending_events();
@@ -2647,7 +2647,11 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
-		confirm_transaction(&node_b.chain_monitor, &tx, chan_id);
+		tx
+	}
+
+	fn create_chan_between_nodes_with_value_confirm(node_a: &Node, node_b: &Node, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
+		confirm_transaction(&node_b.chain_monitor, &tx, tx.version);
 		let events_5 = node_b.node.get_and_clear_pending_events();
 		assert_eq!(events_5.len(), 1);
 		match events_5[0] {
@@ -2661,7 +2665,7 @@ mod tests {
 
 		let channel_id;
 
-		confirm_transaction(&node_a.chain_monitor, &tx, chan_id);
+		confirm_transaction(&node_a.chain_monitor, &tx, tx.version);
 		let events_6 = node_a.node.get_and_clear_pending_events();
 		assert_eq!(events_6.len(), 1);
 		(match events_6[0] {
@@ -2671,7 +2675,13 @@ mod tests {
 				(msg.clone(), announcement_sigs.clone().unwrap())
 			},
 			_ => panic!("Unexpected event"),
-		}, channel_id, tx)
+		}, channel_id)
+	}
+
+	fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
+		let tx = create_chan_between_nodes_with_value_init(node_a, node_b, channel_value, push_msat);
+		let (msgs, chan_id) = create_chan_between_nodes_with_value_confirm(node_a, node_b, &tx);
+		(msgs, chan_id, tx)
 	}
 
 	fn create_chan_between_nodes_with_value_b(node_a: &Node, node_b: &Node, as_funding_msgs: &(msgs::FundingLocked, msgs::AnnouncementSignatures)) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
@@ -5036,6 +5046,47 @@ mod tests {
 		do_test_drop_messages_peer_disconnect(3);
 		do_test_drop_messages_peer_disconnect(4);
 		do_test_drop_messages_peer_disconnect(5);
+	}
+
+	#[test]
+	fn test_funding_peer_disconnect() {
+		// Test that we can lock in our funding tx while disconnected
+		let nodes = create_network(2);
+		let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001);
+
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		confirm_transaction(&nodes[0].chain_monitor, &tx, tx.version);
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::SendFundingLocked { ref node_id, msg: _, ref announcement_sigs } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				assert!(announcement_sigs.is_none());
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		confirm_transaction(&nodes[1].chain_monitor, &tx, tx.version);
+		let events_2 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		match events_2[0] {
+			Event::SendFundingLocked { ref node_id, msg: _, ref announcement_sigs } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				assert!(announcement_sigs.is_none());
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+		// TODO: We shouldn't need to manually pass list_usable_chanels here once we support
+		// rebroadcasting announcement_signatures upon reconnect.
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels()), &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage, _) = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000);
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 	}
 
 	#[test]
