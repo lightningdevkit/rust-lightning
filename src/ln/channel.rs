@@ -2079,40 +2079,49 @@ impl Channel {
 
 		if msg.next_local_commitment_number == 0 || msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
 				msg.next_remote_commitment_number == 0 || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER {
-			return Err(ChannelError::Close("Peer send garbage channel_reestablish"));
+			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish"));
 		}
 
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
 
-		let mut required_revoke = None;
-		if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
+		let required_revoke = if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our FundingLocked we'll do that in the next if block.
+			None
 		} else if msg.next_remote_commitment_number == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_local_commitment_transaction_number {
 			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
 			let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed, self.cur_local_commitment_transaction_number + 2);
-			required_revoke = Some(msgs::RevokeAndACK {
+			Some(msgs::RevokeAndACK {
 				channel_id: self.channel_id,
 				per_commitment_secret,
 				next_per_commitment_point,
-			});
+			})
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old local commitment transaction"));
-		}
+		};
 
-		if msg.next_local_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number {
-			if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
-				log_debug!(self, "Reconnected channel {} with no lost commitment txn", log_bytes!(self.channel_id()));
-				if msg.next_local_commitment_number == 1 && msg.next_remote_commitment_number == 1 {
-					let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-					let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-					return Ok((Some(msgs::FundingLocked {
-						channel_id: self.channel_id(),
-						next_per_commitment_point: next_per_commitment_point,
-					}), None, None, None));
-				}
+		// We increment cur_remote_commitment_transaction_number only upon receipt of
+		// revoke_and_ack, not on sending commitment_signed, so we add one if have
+		// AwaitingRemoteRevoke set, which indicates we sent a commitment_signed but haven't gotten
+		// the corresponding revoke_and_ack back yet.
+		let our_next_remote_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number + if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
+
+		let resend_funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number == 1 {
+			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+			Some(msgs::FundingLocked {
+				channel_id: self.channel_id(),
+				next_per_commitment_point: next_per_commitment_point,
+			})
+		} else { None };
+
+		if msg.next_local_commitment_number == our_next_remote_commitment_number {
+			if required_revoke.is_some() {
+				log_debug!(self, "Reconnected channel {} with only lost outbound RAA", log_bytes!(self.channel_id()));
+			} else {
+				log_debug!(self, "Reconnected channel {} with no loss", log_bytes!(self.channel_id()));
 			}
 
 			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
@@ -2130,20 +2139,69 @@ impl Channel {
 							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
 						}
 					},
-					Ok(Some((commitment_update, channel_monitor))) => return Ok((None, required_revoke, Some(commitment_update), Some(channel_monitor))),
-					Ok(None) => return Ok((None, required_revoke, None, None)),
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor))),
+					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None)),
 				}
 			} else {
-				return Ok((None, required_revoke, None, None));
+				return Ok((resend_funding_locked, required_revoke, None, None));
 			}
-		} else if msg.next_local_commitment_number == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_remote_commitment_transaction_number {
-			return Ok((None, required_revoke,
+		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
+			if required_revoke.is_some() {
+				log_debug!(self, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", log_bytes!(self.channel_id()));
+			} else {
+				log_debug!(self, "Reconnected channel {} with only lost remote commitment tx", log_bytes!(self.channel_id()));
+			}
+			let mut update_add_htlcs = Vec::new();
+			let mut update_fulfill_htlcs = Vec::new();
+			let mut update_fail_htlcs = Vec::new();
+			let mut update_fail_malformed_htlcs = Vec::new();
+
+			for htlc in self.pending_outbound_htlcs.iter() {
+				if let &OutboundHTLCState::LocalAnnounced(ref onion_packet) = &htlc.state {
+					update_add_htlcs.push(msgs::UpdateAddHTLC {
+						channel_id: self.channel_id(),
+						htlc_id: htlc.htlc_id,
+						amount_msat: htlc.amount_msat,
+						payment_hash: htlc.payment_hash,
+						cltv_expiry: htlc.cltv_expiry,
+						onion_routing_packet: (**onion_packet).clone(),
+					});
+				}
+			}
+
+			for htlc in self.pending_inbound_htlcs.iter() {
+				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+					match reason {
+						&InboundHTLCRemovalReason::FailRelay(ref err_packet) => {
+							update_fail_htlcs.push(msgs::UpdateFailHTLC {
+								channel_id: self.channel_id(),
+								htlc_id: htlc.htlc_id,
+								reason: err_packet.clone()
+							});
+						},
+						&InboundHTLCRemovalReason::FailMalformed((ref sha256_of_onion, ref failure_code)) => {
+							update_fail_malformed_htlcs.push(msgs::UpdateFailMalformedHTLC {
+								channel_id: self.channel_id(),
+								htlc_id: htlc.htlc_id,
+								sha256_of_onion: sha256_of_onion.clone(),
+								failure_code: failure_code.clone(),
+							});
+						},
+						&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
+							update_fulfill_htlcs.push(msgs::UpdateFulfillHTLC {
+								channel_id: self.channel_id(),
+								htlc_id: htlc.htlc_id,
+								payment_preimage: payment_preimage.clone(),
+							});
+						},
+					}
+				}
+			}
+
+			return Ok((resend_funding_locked, required_revoke,
 					Some(msgs::CommitmentUpdate {
-						update_add_htlcs: Vec::new(),
-						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs: Vec::new(),
-						update_fail_malformed_htlcs: Vec::new(),
-						update_fee: None,
+						update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
+						update_fee: None, //TODO: We need to support re-generating any update_fees in the last commitment_signed!
 						commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 					}), None));
 		} else {
