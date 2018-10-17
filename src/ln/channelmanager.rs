@@ -909,11 +909,9 @@ impl ChannelManager {
 			}
 		};
 
-		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
-
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
-				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + FINAL_NODE_TIMEOUT as u64 { // final_expiry_too_soon
+				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS) as u64 { // final_expiry_too_soon
 					return_err!("The CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
@@ -1005,7 +1003,8 @@ impl ChannelManager {
 						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()));
 					}
 					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-					if msg.cltv_expiry <= cur_height + 3 as u32 { // expiry_too_soon
+					// We want to have at least HTLC_FAIL_TIMEOUT_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
+					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS as u32 { // expiry_too_soon
 						break Some(("CLTV expiry is too close", 0x1000 | 14, self.get_channel_update(chan).unwrap()));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
