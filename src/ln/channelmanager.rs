@@ -26,7 +26,7 @@ use ln::channel::{Channel, ChannelError, ChannelKeys};
 use ln::channelmonitor::{ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
-use ln::msgs::{HandleError,ChannelMessageHandler};
+use ln::msgs::{ChannelMessageHandler, HandleError, RAACommitmentOrder};
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::ser::{Readable, Writeable};
@@ -2168,7 +2168,7 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>), MsgHandleErrInternal> {
+	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder), MsgHandleErrInternal> {
 		let (res, chan_monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
@@ -2176,9 +2176,9 @@ impl ChannelManager {
 					if chan.get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor) = chan.channel_reestablish(msg)
+					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order) = chan.channel_reestablish(msg)
 						.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
-					(Ok((funding_locked, revoke_and_ack, commitment_update)), channel_monitor)
+					(Ok((funding_locked, revoke_and_ack, commitment_update, order)), channel_monitor)
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
@@ -2448,7 +2448,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>), HandleError> {
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder), HandleError> {
 		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), their_node_id)
 	}
 
@@ -4938,6 +4938,7 @@ mod tests {
 				assert!(chan_msgs.0.is_none());
 			}
 			if pending_raa.0 {
+				assert!(chan_msgs.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
 				assert!(node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &chan_msgs.1.unwrap()).unwrap().is_none());
 				check_added_monitors!(node_a, 1);
 			} else {
@@ -4985,6 +4986,7 @@ mod tests {
 				assert!(chan_msgs.0.is_none());
 			}
 			if pending_raa.1 {
+				assert!(chan_msgs.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
 				assert!(node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &chan_msgs.1.unwrap()).unwrap().is_none());
 				check_added_monitors!(node_b, 1);
 			} else {

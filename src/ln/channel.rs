@@ -14,7 +14,7 @@ use crypto::digest::Digest;
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use ln::msgs;
-use ln::msgs::{ErrorAction, HandleError};
+use ln::msgs::{ErrorAction, HandleError, RAACommitmentOrder};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, PendingForwardHTLCInfo, HTLCFailReason, HTLCFailureMsg};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -2072,7 +2072,7 @@ impl Channel {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>), ChannelError> {
+	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>, RAACommitmentOrder), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -2120,6 +2120,8 @@ impl Channel {
 			})
 		} else { None };
 
+		let order = RAACommitmentOrder::RevokeAndACKFirst;
+
 		if msg.next_local_commitment_number == our_next_remote_commitment_number {
 			if required_revoke.is_some() {
 				log_debug!(self, "Reconnected channel {} with only lost outbound RAA", log_bytes!(self.channel_id()));
@@ -2142,11 +2144,11 @@ impl Channel {
 							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
 						}
 					},
-					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor))),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None)),
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order)),
+					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order)),
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None));
+				return Ok((resend_funding_locked, required_revoke, None, None, order));
 			}
 		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -2206,7 +2208,7 @@ impl Channel {
 						update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
 						update_fee: None, //TODO: We need to support re-generating any update_fees in the last commitment_signed!
 						commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
-					}), None));
+					}), None, order));
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
 		}

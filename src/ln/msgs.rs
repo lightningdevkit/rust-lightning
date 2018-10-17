@@ -500,6 +500,18 @@ pub enum HTLCFailChannelUpdate {
 	}
 }
 
+/// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
+/// be sent in the order they appear in the return value, however sometimes the order needs to be
+/// variable at runtime (eg handle_channel_reestablish needs to re-send messages in the order they
+/// were originally sent). In those cases, this enum is also returned.
+#[derive(Clone, PartialEq)]
+pub enum RAACommitmentOrder {
+	/// Send the CommitmentUpdate messages first
+	CommitmentFirst,
+	/// Send the RevokeAndACK message first
+	RevokeAndACKFirst,
+}
+
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different their_node_ids, however
@@ -554,7 +566,7 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
 	fn peer_connected(&self, their_node_id: &PublicKey) -> Vec<ChannelReestablish>;
 	/// Handle an incoming channel_reestablish message from the given peer.
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(Option<FundingLocked>, Option<RevokeAndACK>, Option<CommitmentUpdate>), HandleError>;
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(Option<FundingLocked>, Option<RevokeAndACK>, Option<CommitmentUpdate>, RAACommitmentOrder), HandleError>;
 
 	// Error:
 	/// Handle an incoming error message from the given peer.
