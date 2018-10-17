@@ -269,6 +269,7 @@ enum ChannelState {
 	ShutdownComplete = 2048,
 }
 const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32);
+const MULTI_STATE_FLAGS: u32 = (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32);
 
 const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -2560,7 +2561,7 @@ impl Channel {
 	/// apply - no calls may be made except those explicitly stated to be allowed post-shutdown.
 	/// Only returns an ErrorAction of DisconnectPeer, if Err.
 	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Result<Option<msgs::FundingLocked>, HandleError> {
-		let non_shutdown_state = self.channel_state & (!BOTH_SIDES_SHUTDOWN_MASK);
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if self.funding_tx_confirmations > 0 {
 			if header.bitcoin_hash() != self.last_block_connected {
 				self.last_block_connected = header.bitcoin_hash();
@@ -2570,10 +2571,10 @@ impl Channel {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
 						true
 					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & BOTH_SIDES_SHUTDOWN_MASK);
+						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 						self.channel_update_count += 1;
 						true
-					} else if self.channel_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 						// We got a reorg but not enough to trigger a force close, just update
 						// funding_tx_confirmed_in and return.
 						false
