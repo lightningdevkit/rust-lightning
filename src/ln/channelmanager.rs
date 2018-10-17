@@ -4937,6 +4937,10 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
 		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
 		nodes[1].node.process_pending_htlc_forwards();
 
@@ -5031,6 +5035,10 @@ mod tests {
 			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		}
 
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
 		// Channel should still work fine...
 		let payment_preimage_2 = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
 		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
@@ -5081,6 +5089,9 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
+		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		// TODO: We shouldn't need to manually pass list_usable_chanels here once we support
