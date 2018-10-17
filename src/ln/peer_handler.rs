@@ -866,6 +866,17 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						Self::do_attempt_write_data(&mut descriptor, peer);
 						continue;
 					},
+					Event::SendRevokeAndACK { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Do whatever we're gonna do for handling dropped messages
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 133)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+						continue;
+					},
 					Event::SendShutdown { ref node_id, ref msg } => {
 						log_trace!(self, "Handling Shutdown event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),

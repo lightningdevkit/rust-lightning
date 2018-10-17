@@ -129,6 +129,15 @@ pub enum Event {
 		/// The update messages which should be sent. ALL messages in the struct should be sent!
 		updates: msgs::CommitmentUpdate,
 	},
+	/// Used to indicate that a revoke_and_ack message should be sent to the peer with the given node_id.
+	///
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
+	SendRevokeAndACK {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::RevokeAndACK,
+	},
 	/// Used to indicate that a shutdown message should be sent to the peer with the given node_id.
 	///
 	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
