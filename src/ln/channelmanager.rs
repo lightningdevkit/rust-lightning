@@ -2061,8 +2061,41 @@ impl ChannelManager {
 		Ok((revoke_and_ack, commitment_signed))
 	}
 
+	#[inline]
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingForwardHTLCInfo, u64)>)]) {
+		for &mut (prev_short_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
+			let mut forward_event = None;
+			if !pending_forwards.is_empty() {
+				let mut channel_state = self.channel_state.lock().unwrap();
+				if channel_state.forward_htlcs.is_empty() {
+					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+					channel_state.next_forward = forward_event.unwrap();
+				}
+				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
+					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
+						hash_map::Entry::Occupied(mut entry) => {
+							entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info });
+						},
+						hash_map::Entry::Vacant(entry) => {
+							entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info }));
+						}
+					}
+				}
+			}
+			match forward_event {
+				Some(time) => {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::PendingHTLCsForwardable {
+						time_forwardable: time
+					});
+				}
+				None => {},
+			}
+		}
+	}
+
 	fn internal_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, MsgHandleErrInternal> {
-		let ((res, mut pending_forwards, mut pending_failures), short_channel_id) = {
+		let ((res, pending_forwards, mut pending_failures), short_channel_id) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -2082,34 +2115,7 @@ impl ChannelManager {
 		for failure in pending_failures.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 		}
-
-		let mut forward_event = None;
-		if !pending_forwards.is_empty() {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			if channel_state.forward_htlcs.is_empty() {
-				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
-				channel_state.next_forward = forward_event.unwrap();
-			}
-			for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id: short_channel_id, prev_htlc_id, forward_info });
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id: short_channel_id, prev_htlc_id, forward_info }));
-					}
-				}
-			}
-		}
-		match forward_event {
-			Some(time) => {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PendingHTLCsForwardable {
-					time_forwardable: time
-				});
-			}
-			None => {},
-		}
+		self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
 
 		Ok(res)
 	}
