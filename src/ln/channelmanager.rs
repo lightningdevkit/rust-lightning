@@ -322,7 +322,6 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIM
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - HTLC_FAIL_TIMEOUT_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
 const CLTV_FAR_FAR_AWAY: u16 = 6 * 24 * 7; //TODO?
-const FINAL_NODE_TIMEOUT: u16 = 3; //TODO?
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
