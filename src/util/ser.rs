@@ -82,6 +82,16 @@ pub trait Readable<R>
 	fn read(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
+/// A trait that various higher-level rust-lightning types implement allowing them to be read in
+/// from a Read given some additional set of arguments which is required to deserialize.
+pub trait ReadableArgs<R, P>
+	where Self: Sized,
+	      R: Read
+{
+	/// Reads a Self in from the given Read
+	fn read(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+}
+
 macro_rules! impl_writeable_primitive {
 	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
 		impl Writeable for $val_type {
