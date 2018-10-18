@@ -2678,7 +2678,7 @@ mod tests {
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
-	use ln::channelmonitor::{CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -3143,15 +3143,17 @@ mod tests {
 		commitment_msg: msgs::CommitmentSigned,
 	}
 	impl SendEvent {
+		fn from_commitment_update(node_id: PublicKey, updates: msgs::CommitmentUpdate) -> SendEvent {
+			assert!(updates.update_fulfill_htlcs.is_empty());
+			assert!(updates.update_fail_htlcs.is_empty());
+			assert!(updates.update_fail_malformed_htlcs.is_empty());
+			assert!(updates.update_fee.is_none());
+			SendEvent { node_id: node_id, msgs: updates.update_add_htlcs, commitment_msg: updates.commitment_signed }
+		}
+
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
-					assert!(update_fulfill_htlcs.is_empty());
-					assert!(update_fail_htlcs.is_empty());
-					assert!(update_fail_malformed_htlcs.is_empty());
-					assert!(update_fee.is_none());
-					SendEvent { node_id: node_id, msgs: update_add_htlcs, commitment_msg: commitment_signed }
-				},
+				Event::UpdateHTLCs { node_id, updates } => SendEvent::from_commitment_update(node_id, updates),
 				_ => panic!("Unexpected event type!"),
 			}
 		}
@@ -4240,6 +4242,19 @@ mod tests {
 		}
 	}
 
+	macro_rules! expect_pending_htlcs_forwardable {
+		($node: expr) => {{
+			let events = $node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PendingHTLCsForwardable { .. } => { },
+				_ => panic!("Unexpected event"),
+			};
+			$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+			$node.node.process_pending_htlc_forwards();
+		}}
+	}
+
 	#[test]
 	fn channel_reserve_test() {
 		use util::rng;
@@ -4269,19 +4284,6 @@ mod tests {
 				let route = nodes[0].router.get_route(&nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV).unwrap();
 				let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
 				(route, payment_hash, payment_preimage)
-			}}
-		};
-
-		macro_rules! expect_pending_htlcs_forwardable {
-			($node: expr) => {{
-				let events = $node.node.get_and_clear_pending_events();
-				assert_eq!(events.len(), 1);
-				match events[0] {
-					Event::PendingHTLCsForwardable { .. } => { },
-					_ => panic!("Unexpected event"),
-				};
-				$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
-				$node.node.process_pending_htlc_forwards();
 			}}
 		};
 
@@ -5576,6 +5578,447 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 
 		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+	}
+
+	#[test]
+	fn test_simple_monitor_permanent_update_fail() {
+		// Test that we handle a simple permanent monitor update failure
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (_, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		};
+
+		// TODO: Once we hit the chain with the failure transaction we should check that we get a
+		// PaymentFailed event
+
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+	}
+
+	fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
+		// Test that we can recover from a simple temporary monitor update failure optionally with
+		// a disconnect in between
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_1) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert!(events_1.is_empty());
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		if disconnect {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+			reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		}
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut events_2 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let payment_event = SendEvent::from_event(events_2.pop().unwrap());
+		assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let events_3 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_3.len(), 1);
+		match events_3[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(payment_hash_1, *payment_hash);
+				assert_eq!(amt, 1000000);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+
+		// Now set it to failed again...
+		let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_2) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_4 = nodes[0].node.get_and_clear_pending_events();
+		assert!(events_4.is_empty());
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		if disconnect {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		}
+
+		// ...and make sure we can force-close a TemporaryFailure channel with a PermanentFailure
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		let events_5 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_5.len(), 1);
+		match events_5[0] {
+			Event::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+
+		// TODO: Once we hit the chain with the failure transaction we should check that we get a
+		// PaymentFailed event
+
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+	}
+
+	#[test]
+	fn test_simple_monitor_temporary_update_fail() {
+		do_test_simple_monitor_temporary_update_fail(false);
+		do_test_simple_monitor_temporary_update_fail(true);
+	}
+
+	fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
+		let disconnect_flags = 8 | 16;
+
+		// Test that we can recover from a temporary monitor update failure with some in-flight
+		// HTLCs going on at the same time potentially with some disconnection thrown in.
+		// * First we route a payment, then get a temporary monitor update failure when trying to
+		//   route a second payment. We then claim the first payment.
+		// * If disconnect_count is set, we will disconnect at this point (which is likely as
+		//   TemporaryFailure likely indicates net disconnect which resulted in failing to update
+		//   the ChannelMonitor on a watchtower).
+		// * If !(disconnect_count & 16) we deliver a update_fulfill_htlc/CS for the first payment
+		//   immediately, otherwise we wait sconnect and deliver them via the reconnect
+		//   channel_reestablish processing (ie disconnect_count & 16 makes no sense if
+		//   disconnect_count & !disconnect_flags is 0).
+		// * We then update the channel monitor, reconnecting if disconnect_count is set and walk
+		//   through message sending, potentially disconnect/reconnecting multiple times based on
+		//   disconnect_count, to get the update_fulfill_htlc through.
+		// * We then walk through more message exchanges to get the original update_add_htlc
+		//   through, swapping message ordering based on disconnect_count & 8 and optionally
+		//   disconnect/reconnecting based on disconnect_count.
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+		// Now try to send a second payment which will fail to send
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_2) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert!(events_1.is_empty());
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		// Claim the previous payment, which will result in a update_fulfill_htlc/CS from nodes[1]
+		// but nodes[0] won't respond since it is frozen.
+		assert!(nodes[1].node.claim_funds(payment_preimage_1));
+		check_added_monitors!(nodes[1], 1);
+		let events_2 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let (bs_initial_fulfill, bs_initial_commitment_signed) = match events_2[0] {
+			Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				assert!(update_add_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert!(update_fail_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert!(update_fee.is_none());
+
+				if (disconnect_count & 16) == 0 {
+					nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]).unwrap();
+					let events_3 = nodes[0].node.get_and_clear_pending_events();
+					assert_eq!(events_3.len(), 1);
+					match events_3[0] {
+						Event::PaymentSent { ref payment_preimage } => {
+							assert_eq!(*payment_preimage, payment_preimage_1);
+						},
+						_ => panic!("Unexpected event"),
+					}
+
+					if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::IgnoreError) }) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed) {
+						assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
+					} else { panic!(); }
+				}
+
+				(update_fulfill_htlcs[0].clone(), commitment_signed.clone())
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		if disconnect_count & !disconnect_flags > 0 {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		}
+
+		// Now fix monitor updating...
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		macro_rules! disconnect_reconnect_peers { () => { {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+			let reestablish_1 = nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+			assert_eq!(reestablish_1.len(), 1);
+			let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+			assert_eq!(reestablish_2.len(), 1);
+
+			let as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+			let bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+
+			assert!(as_resp.0.is_none());
+			assert!(bs_resp.0.is_none());
+
+			(reestablish_1, reestablish_2, as_resp, bs_resp)
+		} } }
+
+		let (payment_event, initial_revoke_and_ack) = if disconnect_count & !disconnect_flags > 0 {
+			let events_4 = nodes[0].node.get_and_clear_pending_events();
+			assert!(events_4.is_empty());
+
+			let reestablish_1 = nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+			assert_eq!(reestablish_1.len(), 1);
+			let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+			assert_eq!(reestablish_2.len(), 1);
+
+			let mut as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+			check_added_monitors!(nodes[0], 0);
+			let mut bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+			check_added_monitors!(nodes[1], 0);
+
+			assert!(as_resp.0.is_none());
+			assert!(bs_resp.0.is_none());
+
+			assert!(bs_resp.1.is_none());
+			if (disconnect_count & 16) == 0 {
+				assert!(bs_resp.2.is_none());
+
+				assert!(as_resp.1.is_some());
+				assert!(as_resp.2.is_some());
+				assert!(as_resp.3 == msgs::RAACommitmentOrder::CommitmentFirst);
+			} else {
+				assert!(bs_resp.2.as_ref().unwrap().update_add_htlcs.is_empty());
+				assert!(bs_resp.2.as_ref().unwrap().update_fail_htlcs.is_empty());
+				assert!(bs_resp.2.as_ref().unwrap().update_fail_malformed_htlcs.is_empty());
+				assert!(bs_resp.2.as_ref().unwrap().update_fee.is_none());
+				assert!(bs_resp.2.as_ref().unwrap().update_fulfill_htlcs == vec![bs_initial_fulfill]);
+				assert!(bs_resp.2.as_ref().unwrap().commitment_signed == bs_initial_commitment_signed);
+
+				assert!(as_resp.1.is_none());
+
+				nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_resp.2.as_ref().unwrap().update_fulfill_htlcs[0]).unwrap();
+				let events_3 = nodes[0].node.get_and_clear_pending_events();
+				assert_eq!(events_3.len(), 1);
+				match events_3[0] {
+					Event::PaymentSent { ref payment_preimage } => {
+						assert_eq!(*payment_preimage, payment_preimage_1);
+					},
+					_ => panic!("Unexpected event"),
+				}
+
+				let (as_resp_raa, as_resp_cu) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_resp.2.as_ref().unwrap().commitment_signed).unwrap();
+				assert!(as_resp_cu.is_none());
+				check_added_monitors!(nodes[0], 1);
+
+				as_resp.1 = Some(as_resp_raa);
+				bs_resp.2 = None;
+			}
+
+			if disconnect_count & !disconnect_flags > 1 {
+				let (second_reestablish_1, second_reestablish_2, second_as_resp, second_bs_resp) = disconnect_reconnect_peers!();
+
+				if (disconnect_count & 16) == 0 {
+					assert!(reestablish_1 == second_reestablish_1);
+					assert!(reestablish_2 == second_reestablish_2);
+				}
+				assert!(as_resp == second_as_resp);
+				assert!(bs_resp == second_bs_resp);
+			}
+
+			(SendEvent::from_commitment_update(nodes[1].node.get_our_node_id(), as_resp.2.unwrap()), as_resp.1.unwrap())
+		} else {
+			let mut events_4 = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events_4.len(), 2);
+			(SendEvent::from_event(events_4.remove(0)), match events_4[0] {
+				Event::SendRevokeAndACK { ref node_id, ref msg } => {
+					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+					msg.clone()
+				},
+				_ => panic!("Unexpected event"),
+			})
+		};
+
+		assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		let (bs_revoke_and_ack, bs_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+		assert!(bs_commitment_signed.is_none()); // nodes[1] is awaiting an RAA from nodes[0] still
+		check_added_monitors!(nodes[1], 1);
+
+		if disconnect_count & !disconnect_flags > 2 {
+			let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+			assert!(as_resp.1.unwrap() == initial_revoke_and_ack);
+			assert!(bs_resp.1.unwrap() == bs_revoke_and_ack);
+
+			assert!(as_resp.2.is_none());
+			assert!(bs_resp.2.is_none());
+		}
+
+		let as_commitment_update;
+		let bs_second_commitment_update;
+
+		macro_rules! handle_bs_raa { () => {
+			as_commitment_update = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap().unwrap();
+			assert!(as_commitment_update.update_add_htlcs.is_empty());
+			assert!(as_commitment_update.update_fulfill_htlcs.is_empty());
+			assert!(as_commitment_update.update_fail_htlcs.is_empty());
+			assert!(as_commitment_update.update_fail_malformed_htlcs.is_empty());
+			assert!(as_commitment_update.update_fee.is_none());
+			check_added_monitors!(nodes[0], 1);
+		} }
+
+		macro_rules! handle_initial_raa { () => {
+			bs_second_commitment_update = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &initial_revoke_and_ack).unwrap().unwrap();
+			assert!(bs_second_commitment_update.update_add_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fulfill_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fail_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fail_malformed_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fee.is_none());
+			check_added_monitors!(nodes[1], 1);
+		} }
+
+		if (disconnect_count & 8) == 0 {
+			handle_bs_raa!();
+
+			if disconnect_count & !disconnect_flags > 3 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.unwrap() == initial_revoke_and_ack);
+				assert!(bs_resp.1.is_none());
+
+				assert!(as_resp.2.unwrap() == as_commitment_update);
+				assert!(bs_resp.2.is_none());
+
+				assert!(as_resp.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+			}
+
+			handle_initial_raa!();
+
+			if disconnect_count & !disconnect_flags > 4 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.is_none());
+				assert!(bs_resp.1.is_none());
+
+				assert!(as_resp.2.unwrap() == as_commitment_update);
+				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			}
+		} else {
+			handle_initial_raa!();
+
+			if disconnect_count & !disconnect_flags > 3 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.is_none());
+				assert!(bs_resp.1.unwrap() == bs_revoke_and_ack);
+
+				assert!(as_resp.2.is_none());
+				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+
+				assert!(bs_resp.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+			}
+
+			handle_bs_raa!();
+
+			if disconnect_count & !disconnect_flags > 4 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.is_none());
+				assert!(bs_resp.1.is_none());
+
+				assert!(as_resp.2.unwrap() == as_commitment_update);
+				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			}
+		}
+
+		let (as_revoke_and_ack, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_commitment_update.commitment_signed).unwrap();
+		assert!(as_commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let (bs_second_revoke_and_ack, bs_third_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_update.commitment_signed).unwrap();
+		assert!(bs_third_commitment_signed.is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke_and_ack).unwrap().is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let events_5 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_5.len(), 1);
+		match events_5[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(payment_hash_2, *payment_hash);
+				assert_eq!(amt, 1000000);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+	}
+
+	#[test]
+	fn test_monitor_temporary_update_fail_a() {
+		do_test_monitor_temporary_update_fail(0);
+		do_test_monitor_temporary_update_fail(1);
+		do_test_monitor_temporary_update_fail(2);
+		do_test_monitor_temporary_update_fail(3);
+		do_test_monitor_temporary_update_fail(4);
+		do_test_monitor_temporary_update_fail(5);
+	}
+
+	#[test]
+	fn test_monitor_temporary_update_fail_b() {
+		do_test_monitor_temporary_update_fail(2 | 8);
+		do_test_monitor_temporary_update_fail(3 | 8);
+		do_test_monitor_temporary_update_fail(4 | 8);
+		do_test_monitor_temporary_update_fail(5 | 8);
+	}
+
+	#[test]
+	fn test_monitor_temporary_update_fail_c() {
+		do_test_monitor_temporary_update_fail(1 | 16);
+		do_test_monitor_temporary_update_fail(2 | 16);
+		do_test_monitor_temporary_update_fail(3 | 16);
+		do_test_monitor_temporary_update_fail(2 | 8 | 16);
+		do_test_monitor_temporary_update_fail(3 | 8 | 16);
 	}
 
 	#[test]

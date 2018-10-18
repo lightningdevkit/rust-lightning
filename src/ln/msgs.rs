@@ -224,7 +224,7 @@ pub struct FundingSigned {
 }
 
 /// A funding_locked message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct FundingLocked {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) next_per_commitment_point: PublicKey,
@@ -244,7 +244,7 @@ pub struct ClosingSigned {
 }
 
 /// An update_add_htlc message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct UpdateAddHTLC {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) htlc_id: u64,
@@ -255,7 +255,7 @@ pub struct UpdateAddHTLC {
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct UpdateFulfillHTLC {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) htlc_id: u64,
@@ -263,7 +263,7 @@ pub struct UpdateFulfillHTLC {
 }
 
 /// An update_fail_htlc message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct UpdateFailHTLC {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) htlc_id: u64,
@@ -271,7 +271,7 @@ pub struct UpdateFailHTLC {
 }
 
 /// An update_fail_malformed_htlc message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct UpdateFailMalformedHTLC {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) htlc_id: u64,
@@ -280,7 +280,7 @@ pub struct UpdateFailMalformedHTLC {
 }
 
 /// A commitment_signed message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct CommitmentSigned {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) signature: Signature,
@@ -288,6 +288,7 @@ pub struct CommitmentSigned {
 }
 
 /// A revoke_and_ack message to be sent or received from a peer
+#[derive(Clone, PartialEq)]
 pub struct RevokeAndACK {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) per_commitment_secret: [u8; 32],
@@ -295,17 +296,20 @@ pub struct RevokeAndACK {
 }
 
 /// An update_fee message to be sent or received from a peer
+#[derive(PartialEq)]
 pub struct UpdateFee {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) feerate_per_kw: u32,
 }
 
+#[derive(PartialEq)]
 pub(crate) struct DataLossProtect {
 	pub(crate) your_last_per_commitment_secret: [u8; 32],
 	pub(crate) my_current_per_commitment_point: PublicKey,
 }
 
 /// A channel_reestablish message to be sent or received from a peer
+#[derive(PartialEq)]
 pub struct ChannelReestablish {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) next_local_commitment_number: u64,
@@ -463,6 +467,7 @@ pub struct HandleError { //TODO: rename me
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
+#[derive(PartialEq)]
 pub struct CommitmentUpdate {
 	pub(crate) update_add_htlcs: Vec<UpdateAddHTLC>,
 	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
@@ -629,7 +634,18 @@ pub(crate) struct OnionPacket {
 	pub(crate) hmac: [u8; 32],
 }
 
-#[derive(Clone)]
+impl PartialEq for OnionPacket {
+	fn eq(&self, other: &OnionPacket) -> bool {
+		for (i, j) in self.hop_data.iter().zip(other.hop_data.iter()) {
+			if i != j { return false; }
+		}
+		self.version == other.version &&
+			self.public_key == other.public_key &&
+			self.hmac == other.hmac
+	}
+}
+
+#[derive(Clone, PartialEq)]
 pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...

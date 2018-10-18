@@ -39,6 +39,7 @@ use std::sync::{Arc,Mutex};
 use std::{hash,cmp};
 
 /// An error enum representing a failure to persist a channel monitor update.
+#[derive(Clone)]
 pub enum ChannelMonitorUpdateErr {
 	/// Used to indicate a temporary failure (eg connection to a watchtower failed, but is expected
 	/// to succeed at some point in the future).
