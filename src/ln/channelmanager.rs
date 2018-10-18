@@ -65,13 +65,12 @@ mod channel_held_info {
 	use ln::msgs;
 	use ln::router::Route;
 	use secp256k1::key::SecretKey;
-	use secp256k1::ecdh::SharedSecret;
 
 	/// Stores the info we will need to send when we want to forward an HTLC onwards
 	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 	pub struct PendingForwardHTLCInfo {
 		pub(super) onion_packet: Option<msgs::OnionPacket>,
-		pub(super) incoming_shared_secret: SharedSecret,
+		pub(super) incoming_shared_secret: [u8; 32],
 		pub(super) payment_hash: [u8; 32],
 		pub(super) short_channel_id: u64,
 		pub(super) amt_to_forward: u64,
@@ -96,7 +95,7 @@ mod channel_held_info {
 	pub struct HTLCPreviousHopData {
 		pub(super) short_channel_id: u64,
 		pub(super) htlc_id: u64,
-		pub(super) incoming_packet_shared_secret: SharedSecret,
+		pub(super) incoming_packet_shared_secret: [u8; 32],
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -625,7 +624,8 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn gen_rho_mu_from_shared_secret(shared_secret: &SharedSecret) -> ([u8; 32], [u8; 32]) {
+	fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
+		assert_eq!(shared_secret.len(), 32);
 		({
 			let mut hmac = Hmac::new(Sha256::new(), &[0x72, 0x68, 0x6f]); // rho
 			hmac.input(&shared_secret[..]);
@@ -643,7 +643,8 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn gen_um_from_shared_secret(shared_secret: &SharedSecret) -> [u8; 32] {
+	fn gen_um_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+		assert_eq!(shared_secret.len(), 32);
 		let mut hmac = Hmac::new(Sha256::new(), &[0x75, 0x6d]); // um
 		hmac.input(&shared_secret[..]);
 		let mut res = [0; 32];
@@ -652,7 +653,8 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn gen_ammag_from_shared_secret(shared_secret: &SharedSecret) -> [u8; 32] {
+	fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+		assert_eq!(shared_secret.len(), 32);
 		let mut hmac = Hmac::new(Sha256::new(), &[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
 		hmac.input(&shared_secret[..]);
 		let mut res = [0; 32];
@@ -691,7 +693,7 @@ impl ChannelManager {
 		let mut res = Vec::with_capacity(route.hops.len());
 
 		Self::construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
-			let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
+			let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret[..]);
 
 			res.push(OnionKeys {
 				#[cfg(test)]
@@ -815,7 +817,7 @@ impl ChannelManager {
 
 	/// Encrypts a failure packet. raw_packet can either be a
 	/// msgs::DecodedOnionErrorPacket.encode() result or a msgs::OnionErrorPacket.data element.
-	fn encrypt_failure_packet(shared_secret: &SharedSecret, raw_packet: &[u8]) -> msgs::OnionErrorPacket {
+	fn encrypt_failure_packet(shared_secret: &[u8], raw_packet: &[u8]) -> msgs::OnionErrorPacket {
 		let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
 
 		let mut packet_crypted = Vec::with_capacity(raw_packet.len());
@@ -827,7 +829,8 @@ impl ChannelManager {
 		}
 	}
 
-	fn build_failure_packet(shared_secret: &SharedSecret, failure_type: u16, failure_data: &[u8]) -> msgs::DecodedOnionErrorPacket {
+	fn build_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::DecodedOnionErrorPacket {
+		assert_eq!(shared_secret.len(), 32);
 		assert!(failure_data.len() <= 256 - 2);
 
 		let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
@@ -858,7 +861,7 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn build_first_hop_failure_packet(shared_secret: &SharedSecret, failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
+	fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
 		let failure_packet = ChannelManager::build_failure_packet(shared_secret, failure_type, failure_data);
 		ChannelManager::encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 	}
@@ -886,7 +889,11 @@ impl ChannelManager {
 			})), self.channel_state.lock().unwrap());
 		}
 
-		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key);
+		let shared_secret = {
+			let mut arr = [0; 32];
+			arr.copy_from_slice(&SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
+			arr
+		};
 		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
 
 		let mut channel_state = None;
@@ -963,7 +970,7 @@ impl ChannelManager {
 					onion_packet: None,
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
-					incoming_shared_secret: shared_secret.clone(),
+					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
 				})
@@ -977,7 +984,7 @@ impl ChannelManager {
 				let blinding_factor = {
 					let mut sha = Sha256::new();
 					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&shared_secret[..]);
+					sha.input(&shared_secret);
 					let mut res = [0u8; 32];
 					sha.result(&mut res);
 					match SecretKey::from_slice(&self.secp_ctx, &res) {
@@ -1003,7 +1010,7 @@ impl ChannelManager {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: next_hop_data.data.short_channel_id,
-					incoming_shared_secret: shared_secret.clone(),
+					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
 				})
@@ -1938,7 +1945,7 @@ impl ChannelManager {
 				let amt_to_forward = htlc_msat - route_hop.fee_msat;
 				htlc_msat = amt_to_forward;
 
-				let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+				let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret[..]);
 
 				let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
 				decryption_tmp.resize(packet_decrypted.len(), 0);
@@ -1949,7 +1956,7 @@ impl ChannelManager {
 				let is_from_final_node = route.hops.last().unwrap().pubkey == route_hop.pubkey;
 
 				if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
-					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret[..]);
 					let mut hmac = Hmac::new(Sha256::new(), &um);
 					hmac.input(&err_packet.encode()[32..]);
 					let mut calc_tag = [0u8; 32];
@@ -2889,22 +2896,22 @@ mod tests {
 		// Returning Errors test vectors from BOLT 4
 
 		let onion_keys = build_test_onion_keys();
-		let onion_error = ChannelManager::build_failure_packet(&onion_keys[4].shared_secret, 0x2002, &[0; 0]);
+		let onion_error = ChannelManager::build_failure_packet(&onion_keys[4].shared_secret[..], 0x2002, &[0; 0]);
 		assert_eq!(onion_error.encode(), hex::decode("4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
-		let onion_packet_1 = ChannelManager::encrypt_failure_packet(&onion_keys[4].shared_secret, &onion_error.encode()[..]);
+		let onion_packet_1 = ChannelManager::encrypt_failure_packet(&onion_keys[4].shared_secret[..], &onion_error.encode()[..]);
 		assert_eq!(onion_packet_1.data, hex::decode("a5e6bd0c74cb347f10cce367f949098f2457d14c046fd8a22cb96efb30b0fdcda8cb9168b50f2fd45edd73c1b0c8b33002df376801ff58aaa94000bf8a86f92620f343baef38a580102395ae3abf9128d1047a0736ff9b83d456740ebbb4aeb3aa9737f18fb4afb4aa074fb26c4d702f42968888550a3bded8c05247e045b866baef0499f079fdaeef6538f31d44deafffdfd3afa2fb4ca9082b8f1c465371a9894dd8c243fb4847e004f5256b3e90e2edde4c9fb3082ddfe4d1e734cacd96ef0706bf63c9984e22dc98851bcccd1c3494351feb458c9c6af41c0044bea3c47552b1d992ae542b17a2d0bba1a096c78d169034ecb55b6e3a7263c26017f033031228833c1daefc0dedb8cf7c3e37c9c37ebfe42f3225c326e8bcfd338804c145b16e34e4").unwrap());
 
-		let onion_packet_2 = ChannelManager::encrypt_failure_packet(&onion_keys[3].shared_secret, &onion_packet_1.data[..]);
+		let onion_packet_2 = ChannelManager::encrypt_failure_packet(&onion_keys[3].shared_secret[..], &onion_packet_1.data[..]);
 		assert_eq!(onion_packet_2.data, hex::decode("c49a1ce81680f78f5f2000cda36268de34a3f0a0662f55b4e837c83a8773c22aa081bab1616a0011585323930fa5b9fae0c85770a2279ff59ec427ad1bbff9001c0cd1497004bd2a0f68b50704cf6d6a4bf3c8b6a0833399a24b3456961ba00736785112594f65b6b2d44d9f5ea4e49b5e1ec2af978cbe31c67114440ac51a62081df0ed46d4a3df295da0b0fe25c0115019f03f15ec86fabb4c852f83449e812f141a9395b3f70b766ebbd4ec2fae2b6955bd8f32684c15abfe8fd3a6261e52650e8807a92158d9f1463261a925e4bfba44bd20b166d532f0017185c3a6ac7957adefe45559e3072c8dc35abeba835a8cb01a71a15c736911126f27d46a36168ca5ef7dccd4e2886212602b181463e0dd30185c96348f9743a02aca8ec27c0b90dca270").unwrap());
 
-		let onion_packet_3 = ChannelManager::encrypt_failure_packet(&onion_keys[2].shared_secret, &onion_packet_2.data[..]);
+		let onion_packet_3 = ChannelManager::encrypt_failure_packet(&onion_keys[2].shared_secret[..], &onion_packet_2.data[..]);
 		assert_eq!(onion_packet_3.data, hex::decode("a5d3e8634cfe78b2307d87c6d90be6fe7855b4f2cc9b1dfb19e92e4b79103f61ff9ac25f412ddfb7466e74f81b3e545563cdd8f5524dae873de61d7bdfccd496af2584930d2b566b4f8d3881f8c043df92224f38cf094cfc09d92655989531524593ec6d6caec1863bdfaa79229b5020acc034cd6deeea1021c50586947b9b8e6faa83b81fbfa6133c0af5d6b07c017f7158fa94f0d206baf12dda6b68f785b773b360fd0497e16cc402d779c8d48d0fa6315536ef0660f3f4e1865f5b38ea49c7da4fd959de4e83ff3ab686f059a45c65ba2af4a6a79166aa0f496bf04d06987b6d2ea205bdb0d347718b9aeff5b61dfff344993a275b79717cd815b6ad4c0beb568c4ac9c36ff1c315ec1119a1993c4b61e6eaa0375e0aaf738ac691abd3263bf937e3").unwrap());
 
-		let onion_packet_4 = ChannelManager::encrypt_failure_packet(&onion_keys[1].shared_secret, &onion_packet_3.data[..]);
+		let onion_packet_4 = ChannelManager::encrypt_failure_packet(&onion_keys[1].shared_secret[..], &onion_packet_3.data[..]);
 		assert_eq!(onion_packet_4.data, hex::decode("aac3200c4968f56b21f53e5e374e3a2383ad2b1b6501bbcc45abc31e59b26881b7dfadbb56ec8dae8857add94e6702fb4c3a4de22e2e669e1ed926b04447fc73034bb730f4932acd62727b75348a648a1128744657ca6a4e713b9b646c3ca66cac02cdab44dd3439890ef3aaf61708714f7375349b8da541b2548d452d84de7084bb95b3ac2345201d624d31f4d52078aa0fa05a88b4e20202bd2b86ac5b52919ea305a8949de95e935eed0319cf3cf19ebea61d76ba92532497fcdc9411d06bcd4275094d0a4a3c5d3a945e43305a5a9256e333e1f64dbca5fcd4e03a39b9012d197506e06f29339dfee3331995b21615337ae060233d39befea925cc262873e0530408e6990f1cbd233a150ef7b004ff6166c70c68d9f8c853c1abca640b8660db2921").unwrap());
 
-		let onion_packet_5 = ChannelManager::encrypt_failure_packet(&onion_keys[0].shared_secret, &onion_packet_4.data[..]);
+		let onion_packet_5 = ChannelManager::encrypt_failure_packet(&onion_keys[0].shared_secret[..], &onion_packet_4.data[..]);
 		assert_eq!(onion_packet_5.data, hex::decode("9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d").unwrap());
 	}
 
