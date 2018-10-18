@@ -5,9 +5,13 @@ extern crate lightning;
 
 use lightning::ln::channelmonitor;
 use lightning::util::reset_rng_state;
-use lightning::util::ser::{Readable, Writer};
+use lightning::util::ser::{ReadableArgs, Writer};
+
+mod utils;
+use utils::test_logger;
 
 use std::io::Cursor;
+use std::sync::Arc;
 
 struct VecWriter(Vec<u8>);
 impl Writer for VecWriter {
@@ -23,10 +27,11 @@ impl Writer for VecWriter {
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	if let Ok(monitor) = channelmonitor::ChannelMonitor::read(&mut Cursor::new(data)) {
+	let logger = Arc::new(test_logger::TestLogger{});
+	if let Ok(monitor) = channelmonitor::ChannelMonitor::read(&mut Cursor::new(data), logger.clone()) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		assert!(channelmonitor::ChannelMonitor::read(&mut Cursor::new(&w.0)).unwrap() == monitor);
+		assert!(channelmonitor::ChannelMonitor::read(&mut Cursor::new(&w.0), logger.clone()).unwrap() == monitor);
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap();
 	}
