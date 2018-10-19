@@ -1617,20 +1617,26 @@ impl ChannelManager {
 		}
 	}
 
-	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, MsgHandleErrInternal> {
+	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
 		if msg.chain_hash != self.genesis_hash {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
-		}
-		let mut channel_state = self.channel_state.lock().unwrap();
-		if channel_state.by_id.contains_key(&msg.temporary_channel_id) {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!", msg.temporary_channel_id.clone()));
 		}
 
 		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
-		let accept_msg = channel.get_accept_channel();
-		channel_state.by_id.insert(channel.channel_id(), channel);
-		Ok(accept_msg)
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
+		match channel_state.by_id.entry(channel.channel_id()) {
+			hash_map::Entry::Occupied(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!", msg.temporary_channel_id.clone())),
+			hash_map::Entry::Vacant(entry) => {
+				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: their_node_id.clone(),
+					msg: channel.get_accept_channel(),
+				});
+				entry.insert(channel);
+			}
+		}
+		Ok(())
 	}
 
 	fn internal_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
@@ -2453,7 +2459,7 @@ macro_rules! handle_error {
 
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, HandleError> {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_open_channel(their_node_id, msg), their_node_id)
 	}
 
@@ -2841,20 +2847,26 @@ mod tests {
 		(announcement, as_update, bs_update, channel_id, tx)
 	}
 
+	macro_rules! get_event_msg {
+		($node: expr, $event_type: path, $node_id: expr) => {
+			{
+				let events = $node.node.get_and_clear_pending_msg_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					$event_type { ref node_id, ref msg } => {
+						assert_eq!(*node_id, $node_id);
+						(*msg).clone()
+					},
+					_ => panic!("Unexpected event"),
+				}
+			}
+		}
+	}
+
 	fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> Transaction {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
-
-		let events_1 = node_a.node.get_and_clear_pending_msg_events();
-		assert_eq!(events_1.len(), 1);
-		let accept_chan = match events_1[0] {
-			MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
-				assert_eq!(*node_id, node_b.node.get_our_node_id());
-				node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), msg).unwrap()
-			},
-			_ => panic!("Unexpected event"),
-		};
-
-		node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_chan).unwrap();
+		node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id())).unwrap();
+		node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id())).unwrap();
 
 		let chan_id = *node_a.network_chan_count.borrow();
 		let tx;

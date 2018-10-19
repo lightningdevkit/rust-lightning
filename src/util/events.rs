@@ -102,7 +102,15 @@ pub enum Event {
 /// broadcast to most peers).
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.
 pub enum MessageSendEvent {
-	/// Used to indicate that we've initialted a channel open and should send the open_channel
+	/// Used to indicate that we've accepted a channel open and should send the accept_channel
+	/// message provided to the given peer.
+	SendAcceptChannel {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::AcceptChannel,
+	},
+	/// Used to indicate that we've initiated a channel open and should send the open_channel
 	/// message provided to the given peer.
 	SendOpenChannel {
 		/// The node_id of the node which should receive this message
