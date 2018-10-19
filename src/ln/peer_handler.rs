@@ -796,6 +796,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 					Event::PaymentSent {..} => { /* Hand upstream */ },
 					Event::PaymentFailed {..} => { /* Hand upstream */ },
 					Event::PendingHTLCsForwardable {..} => { /* Hand upstream */ },
+					Event::SpendableOutputs { .. } => { /* Hand upstream */ },
 
 					Event::SendOpenChannel { ref node_id, ref msg } => {
 						log_trace!(self, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
