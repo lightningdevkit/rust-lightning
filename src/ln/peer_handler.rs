@@ -559,8 +559,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Channel control:
 											32 => {
 												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
-												let resp = try_potential_handleerror!(self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), &msg));
-												encode_and_send_msg!(resp, 33);
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), &msg));
 											},
 											33 => {
 												let msg = try_potential_decodeerror!(msgs::AcceptChannel::read(&mut reader));
@@ -787,6 +786,16 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 					}
 				}
 				match event {
+					MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.temporary_channel_id));
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 33)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+					},
 					MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
 						log_trace!(self, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),

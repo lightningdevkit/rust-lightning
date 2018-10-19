@@ -168,6 +168,7 @@ pub struct Pong {
 }
 
 /// An open_channel message to be sent or received from a peer
+#[derive(Clone)]
 pub struct OpenChannel {
 	pub(crate) chain_hash: Sha256dHash,
 	pub(crate) temporary_channel_id: [u8; 32],
@@ -191,6 +192,7 @@ pub struct OpenChannel {
 }
 
 /// An accept_channel message to be sent or received from a peer
+#[derive(Clone)]
 pub struct AcceptChannel {
 	pub(crate) temporary_channel_id: [u8; 32],
 	pub(crate) dust_limit_satoshis: u64,
@@ -524,7 +526,7 @@ pub enum RAACommitmentOrder {
 pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<AcceptChannel, HandleError>;
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<(), HandleError>;
 	/// Handle an incoming accept_channel message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
 	/// Handle an incoming funding_created message from the given peer.
