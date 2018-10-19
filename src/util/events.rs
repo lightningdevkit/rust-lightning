@@ -14,6 +14,7 @@
 
 use ln::msgs;
 use chain::transaction::OutPoint;
+use chain::keysinterface::CustomOutputScriptDescriptor;
 
 use bitcoin::blockdata::script::Script;
 
@@ -85,6 +86,11 @@ pub enum Event {
 	PendingHTLCsForwardable {
 		/// The earliest time at which process_pending_htlc_forwards should be called.
 		time_forwardable: Instant,
+	},
+	/// Broadcast spendable outputs to user wallet
+	SpendableOutputs {
+		/// The outputs which should be spent by user wallet
+		outputs: Vec<CustomOutputScriptDescriptor>,
 	},
 
 	// Events indicating the network loop should send a message to a peer:
@@ -183,6 +189,7 @@ pub enum Event {
 		/// The channel/node update which should be sent to router
 		update: msgs::HTLCFailChannelUpdate,
 	}
+
 }
 
 /// A trait indicating an object may generate events

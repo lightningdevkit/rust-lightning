@@ -491,7 +491,7 @@ impl Channel {
 		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key,
 		                                          &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key),
-		                                          &chan_keys.htlc_base_key,
+		                                          &chan_keys.htlc_base_key, &chan_keys.delayed_payment_base_key,
 		                                          BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
 
 		Ok(Channel {
@@ -653,7 +653,7 @@ impl Channel {
 		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let mut channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key,
 		                                              &PublicKey::from_secret_key(&secp_ctx, &chan_keys.delayed_payment_base_key),
-		                                              &chan_keys.htlc_base_key,
+		                                              &chan_keys.htlc_base_key, &chan_keys.delayed_payment_base_key,
 		                                              BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
 		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
