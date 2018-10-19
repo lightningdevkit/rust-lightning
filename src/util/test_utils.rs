@@ -92,7 +92,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
+	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingSigned) -> Result<(), HandleError> {

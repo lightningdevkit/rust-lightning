@@ -125,6 +125,13 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::FundingCreated,
 	},
+	/// Used to indicate that a funding_signed message should be sent to the peer with the given node_id.
+	SendFundingSigned {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::FundingSigned,
+	},
 	/// Used to indicate that a funding_locked message should be sent to the peer with the given node_id.
 	SendFundingLocked {
 		/// The node_id of the node which should receive these message(s)

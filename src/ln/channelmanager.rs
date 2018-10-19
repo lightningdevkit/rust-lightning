@@ -1666,7 +1666,7 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	fn internal_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, MsgHandleErrInternal> {
+	fn internal_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
 		let (chan, funding_msg, monitor_update) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
@@ -1692,16 +1692,21 @@ impl ChannelManager {
 		if let Err(_e) = self.monitor.add_update_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
 			unimplemented!();
 		}
-		let mut channel_state = self.channel_state.lock().unwrap();
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
 		match channel_state.by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id", funding_msg.channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
+				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+					node_id: their_node_id.clone(),
+					msg: funding_msg,
+				});
 				e.insert(chan);
 			}
 		}
-		Ok(funding_msg)
+		Ok(())
 	}
 
 	fn internal_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
@@ -2467,7 +2472,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_accept_channel(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_funding_created(their_node_id, msg), their_node_id)
 	}
 
@@ -2893,22 +2898,15 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
-		let events_3 = node_a.node.get_and_clear_pending_msg_events();
-		assert_eq!(events_3.len(), 1);
-		let funding_signed = match events_3[0] {
-			MessageSendEvent::SendFundingCreated { ref node_id, ref msg } => {
-				assert_eq!(*node_id, node_b.node.get_our_node_id());
-				let res = node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), msg).unwrap();
-				let mut added_monitors = node_b.chan_monitor.added_monitors.lock().unwrap();
-				assert_eq!(added_monitors.len(), 1);
-				assert_eq!(added_monitors[0].0, funding_output);
-				added_monitors.clear();
-				res
-			},
-			_ => panic!("Unexpected event"),
-		};
+		node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id())).unwrap();
+		{
+			let mut added_monitors = node_b.chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			assert_eq!(added_monitors[0].0, funding_output);
+			added_monitors.clear();
+		}
 
-		node_a.node.handle_funding_signed(&node_b.node.get_our_node_id(), &funding_signed).unwrap();
+		node_a.node.handle_funding_signed(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a.node.get_our_node_id())).unwrap();
 		{
 			let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);

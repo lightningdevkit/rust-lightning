@@ -212,6 +212,7 @@ pub struct AcceptChannel {
 }
 
 /// A funding_created message to be sent or received from a peer
+#[derive(Clone)]
 pub struct FundingCreated {
 	pub(crate) temporary_channel_id: [u8; 32],
 	pub(crate) funding_txid: Sha256dHash,
@@ -220,6 +221,7 @@ pub struct FundingCreated {
 }
 
 /// A funding_signed message to be sent or received from a peer
+#[derive(Clone)]
 pub struct FundingSigned {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) signature: Signature,
@@ -530,7 +532,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	/// Handle an incoming accept_channel message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
 	/// Handle an incoming funding_created message from the given peer.
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<FundingSigned, HandleError>;
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<(), HandleError>;
 	/// Handle an incoming funding_signed message from the given peer.
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) -> Result<(), HandleError>;
 	/// Handle an incoming funding_locked message from the given peer.
