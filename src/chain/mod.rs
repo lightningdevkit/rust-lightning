@@ -2,3 +2,4 @@
 
 pub mod chaininterface;
 pub mod transaction;
+pub mod keysinterface;
