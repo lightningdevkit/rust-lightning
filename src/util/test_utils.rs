@@ -74,7 +74,7 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 }
 
 pub struct TestChannelMessageHandler {
-	pub pending_events: Mutex<Vec<events::Event>>,
+	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 }
 
 impl TestChannelMessageHandler {
@@ -141,8 +141,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 }
 
-impl events::EventsProvider for TestChannelMessageHandler {
-	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+impl events::MessageSendEventsProvider for TestChannelMessageHandler {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut *pending_events);

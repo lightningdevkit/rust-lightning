@@ -460,7 +460,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 			_ => return,
 		}
 		loss_detector.handler.process_events();
-		for event in loss_detector.handler.get_and_clear_pending_events() {
+		for event in loss_detector.manager.get_and_clear_pending_events() {
 			match event {
 				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
@@ -473,11 +473,10 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 				},
 				Event::PaymentSent {..} => {},
 				Event::PaymentFailed {..} => {},
-
 				Event::PendingHTLCsForwardable {..} => {
 					should_forward = true;
 				},
-				_ => panic!("Unknown event"),
+				Event::SpendableOutputs {..} => {},
 			}
 		}
 	}
