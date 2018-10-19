@@ -576,11 +576,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											36 => {
 												let msg = try_potential_decodeerror!(msgs::FundingLocked::read(&mut reader));
-												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg));
-												match resp_option {
-													Some(resp) => encode_and_send_msg!(resp, 259),
-													None => {},
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg));
 											},
 
 											38 => {
@@ -828,19 +824,25 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 35)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 					},
-					MessageSendEvent::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
-						log_trace!(self, "Handling SendFundingLocked event in peer_handler for node {}{} for channel {}",
+					MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendFundingLocked event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
-								if announcement_sigs.is_some() { " with announcement sigs" } else { "" },
 								log_bytes!(msg.channel_id));
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 36)));
-						match announcement_sigs {
-							&Some(ref announce_msg) => peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(announce_msg, 259))),
-							&None => {},
-						}
+						Self::do_attempt_write_data(&mut descriptor, peer);
+					},
+					MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: generate a DiscardFunding event indicating to the wallet that
+								//they should just throw away this funding transaction
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 259)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {

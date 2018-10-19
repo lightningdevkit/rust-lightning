@@ -138,8 +138,13 @@ pub enum MessageSendEvent {
 		node_id: PublicKey,
 		/// The funding_locked message which should be sent.
 		msg: msgs::FundingLocked,
-		/// An optional additional announcement_signatures message which should be sent.
-		announcement_sigs: Option<msgs::AnnouncementSignatures>,
+	},
+	/// Used to indicate that an announcement_signatures message should be sent to the peer with the given node_id.
+	SendAnnouncementSignatures {
+		/// The node_id of the node which should receive these message(s)
+		node_id: PublicKey,
+		/// The announcement_signatures message which should be sent.
+		msg: msgs::AnnouncementSignatures,
 	},
 	/// Used to indicate that a series of HTLC update messages, as well as a commitment_signed
 	/// message should be sent to the peer with the given node_id.

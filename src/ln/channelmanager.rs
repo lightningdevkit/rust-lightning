@@ -1735,8 +1735,9 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	fn internal_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, MsgHandleErrInternal> {
-		let mut channel_state = self.channel_state.lock().unwrap();
+	fn internal_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
 		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
@@ -1745,10 +1746,16 @@ impl ChannelManager {
 				}
 				chan.funding_locked(&msg)
 					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
-				return Ok(self.get_announcement_sigs(chan));
+				if let Some(announcement_sigs) = self.get_announcement_sigs(chan) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						node_id: their_node_id.clone(),
+						msg: announcement_sigs,
+					});
+				}
+				Ok(())
 			},
-			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
-		};
+			None => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
 	}
 
 	fn internal_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), MsgHandleErrInternal> {
@@ -2336,12 +2343,16 @@ impl ChainListener for ChannelManager {
 			channel_state.by_id.retain(|_, channel| {
 				let chan_res = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched);
 				if let Ok(Some(funding_locked)) = chan_res {
-					let announcement_sigs = self.get_announcement_sigs(channel);
 					pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
 						node_id: channel.get_their_node_id(),
 						msg: funding_locked,
-						announcement_sigs: announcement_sigs
 					});
+					if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
+						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+							node_id: channel.get_their_node_id(),
+							msg: announcement_sigs,
+						});
+					}
 					short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 				} else if let Err(e) = chan_res {
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
@@ -2480,7 +2491,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_funding_signed(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_funding_locked(their_node_id, msg), their_node_id)
 	}
 
@@ -2929,30 +2940,27 @@ mod tests {
 
 	fn create_chan_between_nodes_with_value_confirm(node_a: &Node, node_b: &Node, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
 		confirm_transaction(&node_b.chain_monitor, &tx, tx.version);
-		let events_5 = node_b.node.get_and_clear_pending_msg_events();
-		assert_eq!(events_5.len(), 1);
-		match events_5[0] {
-			MessageSendEvent::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
-				assert_eq!(*node_id, node_a.node.get_our_node_id());
-				assert!(announcement_sigs.is_none());
-				node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), msg).unwrap()
-			},
-			_ => panic!("Unexpected event"),
-		};
+		node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendFundingLocked, node_a.node.get_our_node_id())).unwrap();
 
 		let channel_id;
 
 		confirm_transaction(&node_a.chain_monitor, &tx, tx.version);
 		let events_6 = node_a.node.get_and_clear_pending_msg_events();
-		assert_eq!(events_6.len(), 1);
-		(match events_6[0] {
-			MessageSendEvent::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {
+		assert_eq!(events_6.len(), 2);
+		((match events_6[0] {
+			MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
 				channel_id = msg.channel_id.clone();
 				assert_eq!(*node_id, node_b.node.get_our_node_id());
-				(msg.clone(), announcement_sigs.clone().unwrap())
+				msg.clone()
 			},
 			_ => panic!("Unexpected event"),
-		}, channel_id)
+		}, match events_6[1] {
+			MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		}), channel_id)
 	}
 
 	fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
@@ -2962,11 +2970,9 @@ mod tests {
 	}
 
 	fn create_chan_between_nodes_with_value_b(node_a: &Node, node_b: &Node, as_funding_msgs: &(msgs::FundingLocked, msgs::AnnouncementSignatures)) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate) {
-		let bs_announcement_sigs = {
-			let bs_announcement_sigs = node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), &as_funding_msgs.0).unwrap().unwrap();
-			node_b.node.handle_announcement_signatures(&node_a.node.get_our_node_id(), &as_funding_msgs.1).unwrap();
-			bs_announcement_sigs
-		};
+		node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), &as_funding_msgs.0).unwrap();
+		let bs_announcement_sigs = get_event_msg!(node_b, MessageSendEvent::SendAnnouncementSignatures, node_a.node.get_our_node_id());
+		node_b.node.handle_announcement_signatures(&node_a.node.get_our_node_id(), &as_funding_msgs.1).unwrap();
 
 		let events_7 = node_b.node.get_and_clear_pending_msg_events();
 		assert_eq!(events_7.len(), 1);
@@ -5007,9 +5013,14 @@ mod tests {
 
 		for chan_msgs in resp_1.drain(..) {
 			if pre_all_htlcs {
-				let a = node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &chan_msgs.0.unwrap());
-				let _announcement_sigs_opt = a.unwrap();
-				//TODO: Test announcement_sigs re-sending when we've implemented it
+				node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &chan_msgs.0.unwrap()).unwrap();
+				let announcement_event = node_a.node.get_and_clear_pending_msg_events();
+				if !announcement_event.is_empty() {
+					assert_eq!(announcement_event.len(), 1);
+					if let MessageSendEvent::SendAnnouncementSignatures { .. } = announcement_event[0] {
+						//TODO: Test announcement_sigs re-sending
+					} else { panic!("Unexpected event!"); }
+				}
 			} else {
 				assert!(chan_msgs.0.is_none());
 			}
@@ -5056,8 +5067,14 @@ mod tests {
 
 		for chan_msgs in resp_2.drain(..) {
 			if pre_all_htlcs {
-				let _announcement_sigs_opt = node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), &chan_msgs.0.unwrap()).unwrap();
-				//TODO: Test announcement_sigs re-sending when we've implemented it
+				node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), &chan_msgs.0.unwrap()).unwrap();
+				let announcement_event = node_b.node.get_and_clear_pending_msg_events();
+				if !announcement_event.is_empty() {
+					assert_eq!(announcement_event.len(), 1);
+					if let MessageSendEvent::SendAnnouncementSignatures { .. } = announcement_event[0] {
+						//TODO: Test announcement_sigs re-sending
+					} else { panic!("Unexpected event!"); }
+				}
 			} else {
 				assert!(chan_msgs.0.is_none());
 			}
@@ -5363,9 +5380,8 @@ mod tests {
 		let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events_1.len(), 1);
 		match events_1[0] {
-			MessageSendEvent::SendFundingLocked { ref node_id, msg: _, ref announcement_sigs } => {
+			MessageSendEvent::SendFundingLocked { ref node_id, msg: _ } => {
 				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-				assert!(announcement_sigs.is_none());
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -5374,9 +5390,8 @@ mod tests {
 		let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events_2.len(), 1);
 		match events_2[0] {
-			MessageSendEvent::SendFundingLocked { ref node_id, msg: _, ref announcement_sigs } => {
+			MessageSendEvent::SendFundingLocked { ref node_id, msg: _ } => {
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-				assert!(announcement_sigs.is_none());
 			},
 			_ => panic!("Unexpected event"),
 		}

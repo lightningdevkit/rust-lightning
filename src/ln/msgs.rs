@@ -536,7 +536,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	/// Handle an incoming funding_signed message from the given peer.
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) -> Result<(), HandleError>;
 	/// Handle an incoming funding_locked message from the given peer.
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<Option<AnnouncementSignatures>, HandleError>;
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<(), HandleError>;
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
