@@ -568,8 +568,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 											34 => {
 												let msg = try_potential_decodeerror!(msgs::FundingCreated::read(&mut reader));
-												let resp = try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg));
-												encode_and_send_msg!(resp, 35);
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg));
 											},
 											35 => {
 												let msg = try_potential_decodeerror!(msgs::FundingSigned::read(&mut reader));
@@ -816,6 +815,17 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								//they should just throw away this funding transaction
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 34)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+					},
+					MessageSendEvent::SendFundingSigned { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendFundingSigned event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: generate a DiscardFunding event indicating to the wallet that
+								//they should just throw away this funding transaction
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 35)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendFundingLocked { ref node_id, ref msg, ref announcement_sigs } => {

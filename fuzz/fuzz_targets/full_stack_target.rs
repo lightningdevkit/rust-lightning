@@ -804,7 +804,7 @@ mod tests {
 
 		let log_entries = logger.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1)); // 1
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 35 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 2
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 2
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 3
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3f00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 4
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Encoding and sending message of type 133 to 030000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4)); // 5
