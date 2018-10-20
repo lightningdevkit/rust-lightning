@@ -235,12 +235,14 @@ pub struct FundingLocked {
 }
 
 /// A shutdown message to be sent or received from a peer
+#[derive(Clone)]
 pub struct Shutdown {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) scriptpubkey: Script,
 }
 
 /// A closing_signed message to be sent or received from a peer
+#[derive(Clone)]
 pub struct ClosingSigned {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) fee_satoshis: u64,
@@ -540,9 +542,9 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(Option<Shutdown>, Option<ClosingSigned>), HandleError>;
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(), HandleError>;
 	/// Handle an incoming closing_signed message from the given peer.
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<Option<ClosingSigned>, HandleError>;
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<(), HandleError>;
 
 	// HTLC handling:
 	/// Handle an incoming update_add_htlc message from the given peer.
