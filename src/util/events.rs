@@ -175,6 +175,13 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::Shutdown,
 	},
+	/// Used to indicate that a channel_reestablish message should be sent to the peer with the given node_id.
+	SendChannelReestablish {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::ChannelReestablish,
+	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
 	BroadcastChannelAnnouncement {
