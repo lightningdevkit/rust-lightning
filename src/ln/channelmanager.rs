@@ -26,7 +26,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, HandleError, RAACommitmentOrder};
+use ln::msgs::{ChannelMessageHandler, HandleError};
 use chain::keysinterface::KeysInterface;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
@@ -242,6 +242,18 @@ struct HTLCForwardInfo {
 	prev_short_channel_id: u64,
 	prev_htlc_id: u64,
 	forward_info: PendingForwardHTLCInfo,
+}
+
+/// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
+/// be sent in the order they appear in the return value, however sometimes the order needs to be
+/// variable at runtime (eg Channel::channel_reestablish needs to re-send messages in the order
+/// they were originally sent). In those cases, this enum is also returned.
+#[derive(Clone, PartialEq)]
+pub(super) enum RAACommitmentOrder {
+	/// Send the CommitmentUpdate messages first
+	CommitmentFirst,
+	/// Send the RevokeAndACK message first
+	RevokeAndACKFirst,
 }
 
 struct ChannelHolder {
@@ -2287,28 +2299,58 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder), MsgHandleErrInternal> {
-		let res = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.get_mut(&msg.channel_id) {
-				Some(chan) => {
-					if chan.get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
-					}
-					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order) = chan.channel_reestablish(msg)
-						.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
-					if let Some(monitor) = channel_monitor {
-						if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-							unimplemented!();
-						}
-					}
-					Ok((funding_locked, revoke_and_ack, commitment_update, order))
-				},
-				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
-			}
-		};
+	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
 
-		res
+		match channel_state.by_id.get_mut(&msg.channel_id) {
+			Some(chan) => {
+				if chan.get_their_node_id() != *their_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order) = chan.channel_reestablish(msg)
+					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
+				if let Some(monitor) = channel_monitor {
+					if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+						unimplemented!();
+					}
+				}
+				if let Some(msg) = funding_locked {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+						node_id: their_node_id.clone(),
+						msg
+					});
+				}
+				macro_rules! send_raa { () => {
+					if let Some(msg) = revoke_and_ack {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+							node_id: their_node_id.clone(),
+							msg
+						});
+					}
+				} }
+				macro_rules! send_cu { () => {
+					if let Some(updates) = commitment_update {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							node_id: their_node_id.clone(),
+							updates
+						});
+					}
+				} }
+				match order {
+					RAACommitmentOrder::RevokeAndACKFirst => {
+						send_raa!();
+						send_cu!();
+					},
+					RAACommitmentOrder::CommitmentFirst => {
+						send_cu!();
+						send_raa!();
+					},
+				}
+				Ok(())
+			},
+			None => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
 	}
 
 	/// Begin Update fee process. Allowed only on an outbound channel.
@@ -2575,7 +2617,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder), HandleError> {
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), their_node_id)
 	}
 
@@ -2675,7 +2717,7 @@ mod tests {
 	use chain::chaininterface::ChainListener;
 	use chain::keysinterface::KeysInterface;
 	use chain::keysinterface;
-	use ln::channelmanager::{ChannelManager,OnionKeys,PaymentFailReason};
+	use ln::channelmanager::{ChannelManager,OnionKeys,PaymentFailReason,RAACommitmentOrder};
 	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
@@ -5155,6 +5197,61 @@ mod tests {
 		assert_eq!(channel_state.short_to_id.len(), 0);
 	}
 
+	macro_rules! handle_chan_reestablish_msgs {
+		($src_node: expr, $dst_node: expr) => {
+			{
+				let msg_events = $src_node.node.get_and_clear_pending_msg_events();
+				let mut idx = 0;
+				let funding_locked = if let Some(&MessageSendEvent::SendFundingLocked { ref node_id, ref msg }) = msg_events.get(0) {
+					idx += 1;
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+					Some(msg.clone())
+				} else {
+					None
+				};
+
+				let mut revoke_and_ack = None;
+				let mut commitment_update = None;
+				let order = if let Some(ev) = msg_events.get(idx) {
+					idx += 1;
+					match ev {
+						&MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+							assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+							revoke_and_ack = Some(msg.clone());
+							RAACommitmentOrder::RevokeAndACKFirst
+						},
+						&MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+							assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+							commitment_update = Some(updates.clone());
+							RAACommitmentOrder::CommitmentFirst
+						},
+						_ => panic!("Unexpected event"),
+					}
+				} else {
+					RAACommitmentOrder::CommitmentFirst
+				};
+
+				if let Some(ev) = msg_events.get(idx) {
+					match ev {
+						&MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+							assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+							assert!(revoke_and_ack.is_none());
+							revoke_and_ack = Some(msg.clone());
+						},
+						&MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+							assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+							assert!(commitment_update.is_none());
+							commitment_update = Some(updates.clone());
+						},
+						_ => panic!("Unexpected event"),
+					}
+				}
+
+				(funding_locked, revoke_and_ack, commitment_update, order)
+			}
+		}
+	}
+
 	/// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
 	/// for claims/fails they are separated out.
 	fn reconnect_nodes(node_a: &Node, node_b: &Node, pre_all_htlcs: bool, pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool)) {
@@ -5163,7 +5260,8 @@ mod tests {
 
 		let mut resp_1 = Vec::new();
 		for msg in reestablish_1 {
-			resp_1.push(node_b.node.handle_channel_reestablish(&node_a.node.get_our_node_id(), &msg).unwrap());
+			node_b.node.handle_channel_reestablish(&node_a.node.get_our_node_id(), &msg).unwrap();
+			resp_1.push(handle_chan_reestablish_msgs!(node_b, node_a));
 		}
 		if pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
 			check_added_monitors!(node_b, 1);
@@ -5173,7 +5271,8 @@ mod tests {
 
 		let mut resp_2 = Vec::new();
 		for msg in reestablish_2 {
-			resp_2.push(node_a.node.handle_channel_reestablish(&node_b.node.get_our_node_id(), &msg).unwrap());
+			node_a.node.handle_channel_reestablish(&node_b.node.get_our_node_id(), &msg).unwrap();
+			resp_2.push(handle_chan_reestablish_msgs!(node_a, node_b));
 		}
 		if pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
 			check_added_monitors!(node_a, 1);
@@ -5199,7 +5298,7 @@ mod tests {
 				assert!(chan_msgs.0.is_none());
 			}
 			if pending_raa.0 {
-				assert!(chan_msgs.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+				assert!(chan_msgs.3 == RAACommitmentOrder::RevokeAndACKFirst);
 				node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &chan_msgs.1.unwrap()).unwrap();
 				assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 				check_added_monitors!(node_a, 1);
@@ -5256,7 +5355,7 @@ mod tests {
 				assert!(chan_msgs.0.is_none());
 			}
 			if pending_raa.1 {
-				assert!(chan_msgs.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+				assert!(chan_msgs.3 == RAACommitmentOrder::RevokeAndACKFirst);
 				node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &chan_msgs.1.unwrap()).unwrap();
 				assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 				check_added_monitors!(node_b, 1);
@@ -5660,8 +5759,10 @@ mod tests {
 		let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 		assert_eq!(reestablish_2.len(), 1);
 
-		let as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
-		let bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+		let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+		let bs_resp = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
 		assert!(as_resp.0.is_none());
 		assert!(bs_resp.0.is_none());
@@ -5669,7 +5770,7 @@ mod tests {
 		assert!(bs_resp.1.is_none());
 		assert!(bs_resp.2.is_none());
 
-		assert!(as_resp.3 == msgs::RAACommitmentOrder::CommitmentFirst);
+		assert!(as_resp.3 == RAACommitmentOrder::CommitmentFirst);
 
 		assert_eq!(as_resp.2.as_ref().unwrap().update_add_htlcs.len(), 1);
 		assert!(as_resp.2.as_ref().unwrap().update_fulfill_htlcs.is_empty());
@@ -5946,8 +6047,10 @@ mod tests {
 			let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 			assert_eq!(reestablish_2.len(), 1);
 
-			let as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
-			let bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+			nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+			let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+			nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+			let bs_resp = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
 			assert!(as_resp.0.is_none());
 			assert!(bs_resp.0.is_none());
@@ -5964,10 +6067,12 @@ mod tests {
 			let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 			assert_eq!(reestablish_2.len(), 1);
 
-			let mut as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+			nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
 			check_added_monitors!(nodes[0], 0);
-			let mut bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+			let mut as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+			nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
 			check_added_monitors!(nodes[1], 0);
+			let mut bs_resp = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
 			assert!(as_resp.0.is_none());
 			assert!(bs_resp.0.is_none());
@@ -5978,7 +6083,7 @@ mod tests {
 
 				assert!(as_resp.1.is_some());
 				assert!(as_resp.2.is_some());
-				assert!(as_resp.3 == msgs::RAACommitmentOrder::CommitmentFirst);
+				assert!(as_resp.3 == RAACommitmentOrder::CommitmentFirst);
 			} else {
 				assert!(bs_resp.2.as_ref().unwrap().update_add_htlcs.is_empty());
 				assert!(bs_resp.2.as_ref().unwrap().update_fail_htlcs.is_empty());
@@ -6087,7 +6192,7 @@ mod tests {
 				assert!(as_resp.2.unwrap() == as_commitment_update);
 				assert!(bs_resp.2.is_none());
 
-				assert!(as_resp.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+				assert!(as_resp.3 == RAACommitmentOrder::RevokeAndACKFirst);
 			}
 
 			handle_initial_raa!();
@@ -6113,7 +6218,7 @@ mod tests {
 				assert!(as_resp.2.is_none());
 				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
 
-				assert!(bs_resp.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+				assert!(bs_resp.3 == RAACommitmentOrder::RevokeAndACKFirst);
 			}
 
 			handle_bs_raa!();

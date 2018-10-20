@@ -13,9 +13,9 @@ use secp256k1;
 use crypto::digest::Digest;
 
 use ln::msgs;
-use ln::msgs::{ErrorAction, HandleError, RAACommitmentOrder};
+use ln::msgs::{ErrorAction, HandleError};
 use ln::channelmonitor::ChannelMonitor;
-use ln::channelmanager::{PendingHTLCStatus, HTLCSource, PendingForwardHTLCInfo, HTLCFailReason, HTLCFailureMsg};
+use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
