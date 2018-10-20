@@ -619,45 +619,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											136 => {
 												let msg = try_potential_decodeerror!(msgs::ChannelReestablish::read(&mut reader));
-												let (funding_locked, revoke_and_ack, commitment_update, order) = try_potential_handleerror!(self.message_handler.chan_handler.handle_channel_reestablish(&peer.their_node_id.unwrap(), &msg));
-												if let Some(lock_msg) = funding_locked {
-													encode_and_send_msg!(lock_msg, 36);
-												}
-												macro_rules! handle_raa { () => {
-													if let Some(revoke_msg) = revoke_and_ack {
-														encode_and_send_msg!(revoke_msg, 133);
-													}
-												} }
-												macro_rules! handle_cu { () => {
-													match commitment_update {
-														Some(resps) => {
-															for resp in resps.update_add_htlcs {
-																encode_and_send_msg!(resp, 128);
-															}
-															for resp in resps.update_fulfill_htlcs {
-																encode_and_send_msg!(resp, 130);
-															}
-															for resp in resps.update_fail_htlcs {
-																encode_and_send_msg!(resp, 131);
-															}
-															if let Some(resp) = resps.update_fee {
-																encode_and_send_msg!(resp, 134);
-															}
-															encode_and_send_msg!(resps.commitment_signed, 132);
-														},
-														None => {},
-													}
-												} }
-												match order {
-													msgs::RAACommitmentOrder::RevokeAndACKFirst => {
-														handle_raa!();
-														handle_cu!();
-													},
-													msgs::RAACommitmentOrder::CommitmentFirst => {
-														handle_cu!();
-														handle_raa!();
-													},
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_channel_reestablish(&peer.their_node_id.unwrap(), &msg));
 											},
 
 											// Routing control:
