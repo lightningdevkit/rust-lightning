@@ -581,20 +581,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 											38 => {
 												let msg = try_potential_decodeerror!(msgs::Shutdown::read(&mut reader));
-												let resp_options = try_potential_handleerror!(self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg));
-												if let Some(resp) = resp_options.0 {
-													encode_and_send_msg!(resp, 38);
-												}
-												if let Some(resp) = resp_options.1 {
-													encode_and_send_msg!(resp, 39);
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg));
 											},
 											39 => {
 												let msg = try_potential_decodeerror!(msgs::ClosingSigned::read(&mut reader));
-												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg));
-												if let Some(resp) = resp_option {
-													encode_and_send_msg!(resp, 39);
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg));
 											},
 
 											128 => {
@@ -881,6 +872,16 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 133)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+					},
+					MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Do whatever we're gonna do for handling dropped messages
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 39)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendShutdown { ref node_id, ref msg } => {

@@ -161,6 +161,13 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::RevokeAndACK,
 	},
+	/// Used to indicate that a closing_signed message should be sent to the peer with the given node_id.
+	SendClosingSigned {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::ClosingSigned,
+	},
 	/// Used to indicate that a shutdown message should be sent to the peer with the given node_id.
 	SendShutdown {
 		/// The node_id of the node which should receive this message
