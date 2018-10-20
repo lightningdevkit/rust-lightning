@@ -308,14 +308,14 @@ pub struct UpdateFee {
 	pub(crate) feerate_per_kw: u32,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub(crate) struct DataLossProtect {
 	pub(crate) your_last_per_commitment_secret: [u8; 32],
 	pub(crate) my_current_per_commitment_point: PublicKey,
 }
 
 /// A channel_reestablish message to be sent or received from a peer
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct ChannelReestablish {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) next_local_commitment_number: u64,
@@ -563,7 +563,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
-	fn peer_connected(&self, their_node_id: &PublicKey) -> Vec<ChannelReestablish>;
+	fn peer_connected(&self, their_node_id: &PublicKey);
 	/// Handle an incoming channel_reestablish message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(), HandleError>;
 

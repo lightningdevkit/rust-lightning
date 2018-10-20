@@ -520,9 +520,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													}, 16);
 												}
 
-												for msg in self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap()) {
-													encode_and_send_msg!(msg, 136);
-												}
+												self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap());
 											},
 											17 => {
 												let msg = try_potential_decodeerror!(msgs::ErrorMessage::read(&mut reader));
@@ -832,6 +830,16 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 38)));
+						Self::do_attempt_write_data(&mut descriptor, peer);
+					},
+					MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
+						log_trace!(self, "Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+								//TODO: Do whatever we're gonna do for handling dropped messages
+							});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 136)));
 						Self::do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
