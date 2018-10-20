@@ -607,33 +607,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 											132 => {
 												let msg = try_potential_decodeerror!(msgs::CommitmentSigned::read(&mut reader));
-												let resps = try_potential_handleerror!(self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg));
-												encode_and_send_msg!(resps.0, 133);
-												if let Some(resp) = resps.1 {
-													encode_and_send_msg!(resp, 132);
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg));
 											},
 											133 => {
 												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::read(&mut reader));
-												let resp_option = try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
-												match resp_option {
-													Some(resps) => {
-														for resp in resps.update_add_htlcs {
-															encode_and_send_msg!(resp, 128);
-														}
-														for resp in resps.update_fulfill_htlcs {
-															encode_and_send_msg!(resp, 130);
-														}
-														for resp in resps.update_fail_htlcs {
-															encode_and_send_msg!(resp, 131);
-														}
-														if let Some(resp) = resps.update_fee {
-															encode_and_send_msg!(resp, 134);
-														}
-														encode_and_send_msg!(resps.commitment_signed, 132);
-													},
-													None => {},
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
 											},
 											134 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFee::read(&mut reader));
