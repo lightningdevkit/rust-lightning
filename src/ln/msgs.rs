@@ -302,7 +302,7 @@ pub struct RevokeAndACK {
 }
 
 /// An update_fee message to be sent or received from a peer
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct UpdateFee {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) feerate_per_kw: u32,
@@ -473,7 +473,7 @@ pub struct HandleError { //TODO: rename me
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct CommitmentUpdate {
 	pub(crate) update_add_htlcs: Vec<UpdateAddHTLC>,
 	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
@@ -556,9 +556,9 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming commitment_signed message from the given peer.
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(), HandleError>;
 	/// Handle an incoming revoke_and_ack message from the given peer.
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<(), HandleError>;
 
 	/// Handle an incoming update_fee message from the given peer.
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
