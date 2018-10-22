@@ -98,7 +98,7 @@ mod channel_held_info {
 		pub(super) incoming_packet_shared_secret: SharedSecret,
 	}
 
-	/// First hop payment data. This can be used to reconstruct amt_to_forward
+	/// First hop payment data. This is used to reconstruct amt_to_forward
 	/// and outgoing_cltv_value for each hop combined with data from RouteHope
 	#[derive(Clone)]
 	pub struct PaymentData {
@@ -122,7 +122,7 @@ mod channel_held_info {
 			HTLCSource::OutboundRoute {
 				route: Route { hops: Vec::new() },
 				session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
-				payment_data: PaymentData {htlc_msat: 0, block_height: 0},
+				payment_data: PaymentData { htlc_msat: 0, block_height: 0 },
 			}
 		}
 	}
@@ -321,7 +321,7 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIM
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - HTLC_FAIL_TIMEOUT_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
-const CLTV_FAR_FAR_AWAY: u16 = 6 * 24 * 7; //TODO?
+const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
@@ -676,8 +676,7 @@ impl ChannelManager {
 		Ok(res)
 	}
 
-	/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-	fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+	fn build_onion_payloads_with_realm(route: &Route, starting_htlc_offset: u32, realm: u8) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
 		let mut cur_value_msat = 0u64;
 		let mut cur_cltv = starting_htlc_offset;
 		let mut last_short_channel_id = 0;
@@ -692,7 +691,7 @@ impl ChannelManager {
 			let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 			let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 			res[idx] = msgs::OnionHopData {
-				realm: 0,
+				realm: realm,
 				data: msgs::OnionRealm0HopData {
 					short_channel_id: last_short_channel_id,
 					amt_to_forward: value_msat,
@@ -711,6 +710,11 @@ impl ChannelManager {
 			last_short_channel_id = hop.short_channel_id;
 		}
 		Ok((res, cur_value_msat, cur_cltv))
+	}
+
+	/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
+	fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+		ChannelManager::build_onion_payloads_with_realm(route, starting_htlc_offset, 0)
 	}
 
 	#[inline]
@@ -910,13 +914,20 @@ impl ChannelManager {
 
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
-				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS) as u64 { // final_expiry_too_soon
-					return_err!("The CLTV expiry is too soon to handle", 17, &[0;0]);
+				// TODO: incorrect_payment_amount
+				//if expected_payment < next_hop_data.amt_to_forward || expected_payment > 2*next_hop_data.amt_to_forward {
+				// return_err!("Payment is incorrect for the payment hash", 0x4000|16, &[0;0]);
+				//}
+				// final_expiry_too_soon
+				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS) as u64 {
+					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
+				// final_incorrect_cltv_expiry
 				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
-				if next_hop_data.data.amt_to_forward != msg.amount_msat {
+				// final_incorrect_htlc_amount
+				if next_hop_data.data.amt_to_forward > msg.amount_msat {
 					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
 
@@ -989,37 +1000,39 @@ impl ChannelManager {
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
 
 					if !chan.is_live() { // temporary_channel_failure
-						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, self.get_channel_update(chan).unwrap()));
+						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
 					}
 					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
-						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, self.get_channel_update(chan).unwrap()));
+						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
 					}
 					let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
-						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()));
+						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
 					}
 					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
-						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()));
+						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
 					}
 					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 					// We want to have at least HTLC_FAIL_TIMEOUT_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
 					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS as u32 { // expiry_too_soon
-						break Some(("CLTV expiry is too close", 0x1000 | 14, self.get_channel_update(chan).unwrap()));
+						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
-						break Some(("CLTV expiry is too far in the future", 0x1000 | 21, self.get_channel_update(chan).unwrap()));
+						break Some(("CLTV expiry is too far in the future", 21, None));
 					}
 					break None;
 				}
 				{
 					let mut res = Vec::with_capacity(8 + 128);
 					if code == 0x1000 | 11 || code == 0x1000 | 12 {
-						res.extend_from_slice(&byte_utils::be64_to_array(*amt_to_forward));
+						res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
 					}
 					else if code == 0x1000 | 13 {
 						res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
 					}
-					res.extend_from_slice(&chan_update.encode_with_len()[..]);
+					if let Some(chan_update) = chan_update {
+						res.extend_from_slice(&chan_update.encode_with_len()[..]);
+					}
 					return_err!(err, code, &res[..]);
 				}
 			}
@@ -1085,11 +1098,15 @@ impl ChannelManager {
 			}
 		}
 
-		let session_priv = SecretKey::from_slice(&self.secp_ctx, &{
-			let mut session_key = [0; 32];
-			rng::fill_bytes(&mut session_key);
-			session_key
-		}).expect("RNG is bad!");
+		let session_priv = if cfg!(test) {
+			SecretKey::from_slice(&self.secp_ctx, &[3; 32]).unwrap()
+		} else {
+			SecretKey::from_slice(&self.secp_ctx, &{
+				let mut session_key = [0; 32];
+				rng::fill_bytes(&mut session_key);
+				session_key
+			}).expect("RNG is bad!")
+		};
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
@@ -1382,12 +1399,25 @@ impl ChannelManager {
 	/// still-available channels.
 	fn fail_htlc_backwards_internal(&self, mut channel_state: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &[u8; 32], onion_error: HTLCFailReason) {
 		match source {
-			HTLCSource::OutboundRoute { .. } => {
+			HTLCSource::OutboundRoute { ref route, ref session_priv, ref payment_data } => {
 				mem::drop(channel_state);
+				let data = if let HTLCFailReason::ErrorPacket { ref err } = onion_error{
+					err.data.clone()
+				} else {
+					panic!("should have onion error packet here");
+				};
 
+				let (channel_update, payment_retryable, error_code) = self.process_onion_failure(route, data, session_priv, payment_data).unwrap(); //TODO: why unwrap here?
 				let mut pending_events = self.pending_events.lock().unwrap();
+				if let Some(channel_update) = channel_update {
+					pending_events.push(events::Event::RouteUpdate {
+						update: channel_update,
+					});
+				}
 				pending_events.push(events::Event::PaymentFailed {
-					payment_hash: payment_hash.clone()
+					payment_hash: payment_hash.clone(),
+					retryable: payment_retryable,
+					error_code: error_code,
 				});
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
@@ -1404,7 +1434,7 @@ impl ChannelManager {
 				let (node_id, fail_msgs) = {
 					let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
 						Some(chan_id) => chan_id.clone(),
-						None => return
+						None => return,
 					};
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
@@ -1441,7 +1471,7 @@ impl ChannelManager {
 					None => {},
 				}
 			},
-		}
+		};
 	}
 
 	/// Provides a payment preimage in response to a PaymentReceived event, returning true and
@@ -1804,17 +1834,18 @@ impl ChannelManager {
 
 	// Process onion peacket processed in only in the origin node. Returns update
 	// for router and boolean flag indicating if payment can be retried
-	fn process_onion_failure(&self, route: &Route, mut packet_decrypted: Vec<u8>, session_priv: &SecretKey, payment_data: &PaymentData) -> Result<(Option<msgs::HTLCFailChannelUpdate>, bool), secp256k1::Error> {
+	fn process_onion_failure(&self, route: &Route, mut packet_decrypted: Vec<u8>, session_priv: &SecretKey, payment_data: &PaymentData) -> Result<(Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>), secp256k1::Error> {
 
 		macro_rules! onion_failure_log {
 			( $error_code_textual: expr, $error_code: expr, $reported_name: expr, $reported_value: expr ) => {
-				log_trace!(self, "{}({}) {}({})", $error_code_textual, $error_code, $reported_name, $reported_value);
+				log_trace!(self, "{}({:#x}) {}({})", $error_code_textual, $error_code, $reported_name, $reported_value);
 			};
 			( $error_code_textual: expr, $error_code: expr ) => {
 				log_trace!(self, "{}({})", $error_code_textual, $error_code);
 			};
 		}
 
+		const BADONION: u16 = 0x8000;
 		const PERM: u16 = 0x4000;
 		const UPDATE: u16 = 0x1000;
 
@@ -1843,11 +1874,12 @@ impl ChannelManager {
 
 			match msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 				Err(_e) => {
-					res = Some((None, false));
+					//TODO: error case
+					return;
 				},
 				Ok(ref err_packet) if err_packet.failuremsg.len() < 2 => {
-					res = Some((None, false));
-					// can't blaim anybody
+					//TODO: no errorcode?
+					return;
 				},
 				Ok(ref err_packet) if err_packet.failuremsg.len() >= 2 => {
 					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
@@ -1870,7 +1902,7 @@ impl ChannelManager {
 							res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
 								node_id: route_hop.pubkey,
 								is_permanent: error_code & PERM == PERM,
-							}), !(error_code & PERM == PERM && is_from_final_node)));
+							}), !(error_code & PERM == PERM && is_from_final_node), Some(error_code)));
 							// node returning invalid_realm is removed from network_map,
 							// although NODE flag is not set, TODO: or remove channel only?
 							// retry payment when removed node is not a final node
@@ -1888,8 +1920,8 @@ impl ChannelManager {
 									let _reported_cltv_expiry = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+4]);
 									true
 								},
-								19 if err_packet.failuremsg.len() == 6 => { // final_incorrect_htlc_amount
-									let _reported_incoming_htlc_msat = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+4]);
+								19 if err_packet.failuremsg.len() == 10 => { // final_incorrect_htlc_amount
+									let _reported_incoming_htlc_msat = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+8]);
 									true
 								},
 								_ => {
@@ -1900,71 +1932,83 @@ impl ChannelManager {
 									res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
 										node_id: route_hop.pubkey,
 										is_permanent: true,
-									}), false));
+									}), false, None));
 									return;
 								}
 							};
 							debug_assert_eq!(payment_retryable, error_code&PERM != PERM);
-							res = Some((None, payment_retryable));
+							res = Some((None, payment_retryable, Some(error_code)));
 							return;
 						}
 
 						// now, error_code should be only from the intermediate nodes
 						match error_code {
 							_c if error_code & PERM == PERM => {
+								match error_code {
+									c if c == BADONION|PERM|4 => {}, // invalid_onion_version
+									c if c == BADONION|PERM|5 => {}, // invalid_onion_hmac
+									c if c == BADONION|PERM|6 => {}, // invalid_onion_key
+									_ => {
+										//TODO: bogus error code handling
+									},
+								}
 								res = Some((Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
 									short_channel_id: route_hop.short_channel_id,
 									is_permanent: true,
-								}), false));
+								}), true, Some(error_code)));
+								return;
 							},
 							_c if error_code & UPDATE == UPDATE => {
-								let mut pos = 2;
-								pos += match error_code {
-									c if c == UPDATE|7 => 0, // temporary_channel_failure
+								let offset = match error_code {
+									c if c == UPDATE|7  => 0, // temporary_channel_failure
 									c if c == UPDATE|11 => 8, // amount_below_minimum
 									c if c == UPDATE|12 => 8, // fee_insufficient
 									c if c == UPDATE|13 => 4, // incorrect_cltv_expiry
+									c if c == UPDATE|14 => 0, // expiry_too_soon
 									c if c == UPDATE|20 => 2, // channel_disabled
-									c if c == UPDATE|21 => 0, // expiry_too_far
 									_ =>  {
 										// node sending unknown code
 										res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
 											node_id: route_hop.pubkey,
 											is_permanent: true,
-										}), false));
+										}), false, Some(error_code)));
 										return;
 									}
 								};
 
-								if err_packet.failuremsg.len() >= pos+2 {
-									let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[pos+2..pos+4]) as usize;
-									if err_packet.failuremsg.len() >= pos+4 + update_len {
-										if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&err_packet.failuremsg[pos+4..pos+4+update_len])) {
+								if err_packet.failuremsg.len() >= offset + 2 {
+									let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[offset+2..offset+4]) as usize;
+									if err_packet.failuremsg.len() >= offset + 2 + update_len {
+										if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&err_packet.failuremsg[offset+4..offset+4+update_len])) {
+
+											// check if channel_update is newer than the one used
+											// when calculating the route
 											if chan_update.contents.timestamp <= route_hop.channel_update_timestamp {
-												res = Some((None, true));
+												res = Some((None, true, Some(error_code)));
 												return;
 											}
 											// if channel_update should NOT have caused the failure:
 											// MAY treat the channel_update as invalid.
 											let is_chan_update_invalid = match error_code {
 												c if c == UPDATE|11 => { // amount_below_minimum
-													let reported_htlc_msat = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+8]);
+													let reported_htlc_msat = byte_utils::slice_to_be64(&err_packet.failuremsg[..offset]);
 													onion_failure_log!("amount_below_minimum", UPDATE|11, "htlc_msat", reported_htlc_msat);
 													incoming_htlc_msat > chan_update.contents.htlc_minimum_msat
 												},
 												c if c == UPDATE|12 => { // fee_insufficient
-													let reported_htlc_msat = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+8]);
+													let reported_htlc_msat = byte_utils::slice_to_be64(&err_packet.failuremsg[..offset]);
 													let new_fee =  amt_to_forward.checked_mul(chan_update.contents.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan_update.contents.fee_base_msat as u64) });
 													onion_failure_log!("fee_insufficient", UPDATE|12, "htlc_msat", reported_htlc_msat);
 													new_fee.is_none() || incoming_htlc_msat >= new_fee.unwrap() && incoming_htlc_msat >= amt_to_forward + new_fee.unwrap()
 												}
 												c if c == UPDATE|13 => { // incorrect_cltv_expiry
-													let reported_cltv_expiry = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+4]);
+													eprintln!("offset({})", offset);
+													let reported_cltv_expiry = byte_utils::slice_to_be32(&err_packet.failuremsg[..offset]);
 													onion_failure_log!("incorrect_cltv_expiry", UPDATE|13, "cltv_expiry", reported_cltv_expiry);
 													route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta
 												},
 												c if c == UPDATE|20 => { // channel_disabled
-													let reported_flags = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+2]);
+													let reported_flags = byte_utils::slice_to_be16(&err_packet.failuremsg[..offset]);
 													onion_failure_log!("channel_disabled", UPDATE|20, "flags", reported_flags);
 													chan_update.contents.flags & 0x01 == 0x01
 												},
@@ -1977,14 +2021,14 @@ impl ChannelManager {
 													msg: chan_update,
 												})
 											};
-											res = Some((msg, true));
+											res = Some((msg, true, Some(error_code)));
 											return;
 										}
 									}
 								}
 							},
-							14 => { // expiry_too_soon
-								res = Some((None, true));
+							21 => { // expiry_too_far
+								res = Some((None, true, Some(error_code)));
 								return;
 							}
 							_ => {
@@ -1992,7 +2036,7 @@ impl ChannelManager {
 								res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
 									node_id: route_hop.pubkey,
 									is_permanent: true,
-								}), false));
+								}), false, None));
 								return;
 							}
 						}
@@ -2004,10 +2048,9 @@ impl ChannelManager {
 		Ok(res.unwrap())
 	}
 
-	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, MsgHandleErrInternal> {
-
+	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let htlc_source = match channel_state.by_id.get_mut(&msg.channel_id) {
+		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					//TODO: here and below MsgHandleErrInternal, #153 case
@@ -2018,17 +2061,7 @@ impl ChannelManager {
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}?;
-
-		// we are the origin node and update route information
-		// also determine if the payment is retryable
-		if let &HTLCSource::OutboundRoute { ref route, ref session_priv, ref payment_data} = htlc_source {
-			let (channel_update, _payment_retry) = self.process_onion_failure(route, msg.reason.data.clone(), session_priv, payment_data).unwrap();
-			Ok(channel_update)
-			// TODO: include pyament_retry info in PaymentFailed event that will be
-			// fired when receiving revoke_and_ack
-		} else {
-			Ok(None)
-		}
+		Ok(())
 	}
 
 	fn internal_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
@@ -2433,7 +2466,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
 	}
 
@@ -2561,12 +2594,12 @@ mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
-	use ln::channelmanager::{ChannelManager,OnionKeys};
+	use ln::channelmanager::{ChannelManager,OnionKeys,HTLCSource};
 	use ln::channelmonitor::{CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
-	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-	use util::test_utils;
+	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate};
+	use util::{test_utils, rng};
 	use util::events::{Event, EventsProvider};
 	use util::errors::APIError;
 	use util::logger::Logger;
@@ -3305,7 +3338,7 @@ mod tests {
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::PaymentFailed { payment_hash } => {
+				Event::PaymentFailed { payment_hash, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 				},
 				_ => panic!("Unexpected event"),
@@ -5077,7 +5110,7 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentFailed { payment_hash } => {
+				Event::PaymentFailed { payment_hash, .. } => {
 					assert_eq!(payment_hash, payment_hash_5);
 				},
 				_ => panic!("Unexpected event"),
@@ -5399,5 +5432,250 @@ mod tests {
 		unsigned_msg.chain_hash = Sha256dHash::from_data(&[1,2,3,4,5,6,7,8,9]);
 		sign_msg!(unsigned_msg);
 		assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
+	}
+
+	fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, channels: &[(msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction)], route: &Route, payment_hash: &[u8; 32], mut callback1: F1, mut callback2: F2, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<HTLCFailChannelUpdate>)
+		where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
+					F2: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
+	{
+		use ln::msgs::HTLCFailChannelUpdate;
+
+		// reset block height
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		for ix in 0..nodes.len() {
+			nodes[ix].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
+		}
+
+		macro_rules! expect_update_htlc_event {
+			($node: expr) => {{
+				let events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::UpdateHTLCs { node_id:_, ref updates } => { },
+					_ => panic!("Unexpected event"),
+				};
+				$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+				$node.node.process_pending_htlc_forwards();
+			}}
+		}
+
+		macro_rules! expect_pending_htlcs_forwardable {
+			($node: expr) => {{
+				let events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PendingHTLCsForwardable { .. } => { },
+					_ => panic!("Unexpected event"),
+				};
+				$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+				$node.node.process_pending_htlc_forwards();
+			}}
+		};
+
+		macro_rules! expect_pending_htlcs_forwardable {
+			($node: expr) => {{
+				let events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PendingHTLCsForwardable { .. } => { },
+					_ => panic!("Unexpected event"),
+				};
+				$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+				$node.node.process_pending_htlc_forwards();
+			}}
+		};
+
+		macro_rules! expect_forward_event {
+			($node: expr) => {{
+				let mut events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				check_added_monitors!($node, 1);
+				SendEvent::from_event(events.remove(0))
+			}}
+		};
+
+		macro_rules! expect_forward_event {
+			($node: expr) => {{
+				let mut events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				check_added_monitors!($node, 1);
+				SendEvent::from_event(events.remove(0))
+			}}
+		};
+
+		macro_rules! expect_fail_backward_event {
+			($node: expr) => {{
+				let events = $node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::UpdateHTLCs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, ref update_fail_htlcs, update_fail_malformed_htlcs:_, update_fee:_, ref commitment_signed } } => {
+						assert_eq!(update_fail_htlcs.len(),1);
+						(update_fail_htlcs[0].clone(), commitment_signed.clone())
+					},
+					_ => panic!("Unexpected event type!"),
+				}
+			}}
+		};
+
+		nodes[0].node.send_payment(route.clone(), payment_hash.clone()).unwrap();
+		let payment_event = expect_forward_event!(nodes[0]);
+		let mut update_add_1 = payment_event.msgs[0].clone();
+
+		callback1(&mut update_add_1);
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_1).unwrap();
+
+		// 0 => 1
+		let (as_revoke_and_ack, as_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+		check_added_monitors!(nodes[0], 1);
+		let (bs_revoke_and_ack, bs_none) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
+		assert!(bs_none.is_none());
+		check_added_monitors!(nodes[0], 1);
+		let commitment_update = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		let (update_fail_htlc, commitment_signed) = match test_case {
+			0 => { // intermediat node failure
+				assert!(commitment_update.is_some());
+				let commitment_update = commitment_update.unwrap();
+				assert!(commitment_update.update_fail_htlcs.len() == 1);
+				(commitment_update.update_fail_htlcs[0].clone(), commitment_update.commitment_signed)
+			},
+			1 => { // final node failure
+				assert!(commitment_update.is_none());
+				expect_pending_htlcs_forwardable!(&nodes[1]);
+
+				let ref payment_event = expect_forward_event!(nodes[1]);
+				let mut update_add_2 = payment_event.msgs[0].clone();
+
+				callback2(&mut update_add_2);
+
+				nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_2).unwrap();
+				let (as_revoke_and_ack, as_commitment_signed) = nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+				check_added_monitors!(nodes[2], 1);
+				assert!(nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+
+				check_added_monitors!(nodes[1], 1);
+				let (bs_revoke_and_ack, bs_none) = nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &as_commitment_signed.unwrap()).unwrap();
+				assert!(bs_none.is_none());
+				check_added_monitors!(nodes[1], 1);
+				let commitment_update = nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap().unwrap();
+				check_added_monitors!(nodes[2], 1);
+
+				assert!(commitment_update.update_fail_htlcs.len() == 1);
+				nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &commitment_update.update_fail_htlcs[0]).unwrap();
+				commitment_signed_dance!(nodes[1], nodes[2], commitment_update.commitment_signed, true);
+
+				let (update_fail_htlc_msg, commitment_signed) = expect_fail_backward_event!(nodes[1]);
+				(update_fail_htlc_msg, commitment_signed)
+			},
+			_ => unreachable!(),
+		};
+
+		// origin node fail handling
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlc).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		//TODO assert_eq!(events.len(), 2);
+		for evt in events.iter() {
+			match evt {
+				&Event::PaymentFailed { payment_hash:_, ref retryable,  ref error_code} => {
+					assert_eq!(*retryable, expected_retryable);
+					assert_eq!(*error_code, expected_error_code);
+				},
+				&Event::RouteUpdate { ref update } => {
+					/* TODO check expected channel update */
+					/*
+					expected_channel_update.unwrap()
+					assert!(expected_channel_update.is_some());
+					if let Some(expected_update) = expected_channel_update {
+						assert!(fail_channel_update.is_some());
+						match fail_channel_update.unwrap() {
+							expected_update => {},
+							_ => panic!("Unexpected channel update"),
+						}
+					}
+					*/
+				},
+				_ => panic!("Unexpected event"),
+			};
+		}
+	}
+
+	#[test]
+	fn test_onion_failure() {
+		use ln::msgs::ChannelUpdate;
+		use ln::channelmanager::CLTV_FAR_FAR_AWAY;
+		use bitcoin::blockdata::transaction::Transaction;
+
+		const BADONION: u16 = 0x8000;
+		const PERM: u16 = 0x4000;
+		const NODE: u16 = 0x1000;
+		const UPDATE: u16 = 0x1000;
+
+		let mut nodes = create_network(3);
+		let channels = [create_announced_chan_between_nodes(&nodes, 0, 1), create_announced_chan_between_nodes(&nodes, 1, 2)];
+		let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 40000, TEST_FINAL_CLTV).unwrap();
+		//
+		run_onion_failure_test("invalid_realm", 0, &nodes, &channels, &route, &payment_hash, |msg| {
+			let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+			let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+			let onion_keys = ChannelManager::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
+			let (onion_payloads, _htlc_msat, _htlc_cltv) = ChannelManager::build_onion_payloads_with_realm(&route, cur_height, 100).unwrap();
+			let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+			msg.onion_routing_packet = onion_packet;
+		}, |_msg| {}, true, Some(PERM|1), None);
+
+		//TODO temporary_node_failure(NODE|2)
+		//TODO permanent_node_failure(PERM|NODE|2)
+		//TODO required_node_feature_missing
+		run_onion_failure_test("invalid_onion_version", 0, &nodes, &channels, &route, &payment_hash, |msg| { msg.onion_routing_packet.version = 1; }, |_msg| {}, true, Some(BADONION|PERM|4), None);
+		run_onion_failure_test("invalid_onion_hmac", 0, &nodes, &channels, &route, &payment_hash, |msg| { msg.onion_routing_packet.hmac = [3; 32]; }, |_msg| {}, true, Some(BADONION|PERM|5), None);
+		//TODO invalid_onion_key
+		//TODO temporary_channel_failure(UPDATE|7)
+		//TODO permanent_channel_failure(PERM|8)
+		//TODO required_channel_feature_missing(PERM|9)
+		//TODO unknown_next_peer(PERM|10)
+		//TODO amount_below_minimum(UPDATE|11)
+		//TODO fee_insufficient(UPDATE|12)
+		run_onion_failure_test("incorrect_cltv_expiry", 0, &nodes, &channels, &route, &payment_hash, |msg| {
+			// need to violate: cltv_expiry - cltv_expiry_delta >= outgoing_cltv_value
+			msg.cltv_expiry -= 1;
+		}, |_msg| {}, true, Some(UPDATE|13), None);
+		run_onion_failure_test("expiry_too_soon", 0, &nodes, &channels, &route, &payment_hash, |msg| {
+			let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - HTLC_FAIL_TIMEOUT_BLOCKS + 1;
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			nodes[1].chain_monitor.block_connected_checked(&header, height, &Vec::new()[..], &[0; 0]);
+		}, |_msg| {}, true, Some(UPDATE|14), None);
+		// TODO: unknown_payment_hash (PERM|15)
+		// TODO: unknown_payment_amount (PERM|15)
+		run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &channels, &route, &payment_hash, |_msg| {}, |msg| {
+			let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - HTLC_FAIL_TIMEOUT_BLOCKS + 1;
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			nodes[2].chain_monitor.block_connected_checked(&header, height, &Vec::new()[..], &[0; 0]);
+		}, true, Some(17), None);
+		run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &channels, &route, &payment_hash, |_msg| {}, |msg| { msg.cltv_expiry += 1; }, true, Some(18), None);
+		/* TODO this raise 'Invalid commitment tx signature from peer'
+		run_onion_failure_test("final_incorrect_htlc_amount", 1, &nodes, &channels, &route, &payment_hash, |_msg| {}, |msg| {
+			// violate amt_to_forward > msg.amount_msat
+			msg.amount_msat -= 1;
+		}, true, Some(19), None);
+		*/
+		// TODO: channel_disabled (UPDATE|20)
+		run_onion_failure_test("expiry_too_far", 0, &nodes, &channels, &route, &payment_hash, |msg| {
+			let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+			let mut route = route.clone();
+			let height = 1;
+			route.hops[1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.hops[0].cltv_expiry_delta + 1;
+			let onion_keys = ChannelManager::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
+			let (onion_payloads, _htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, height).unwrap();
+			let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+			msg.cltv_expiry = htlc_cltv;
+			msg.onion_routing_packet = onion_packet;
+		}, |_msg| {}, true, Some(21), None);
 	}
 }

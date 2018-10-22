@@ -529,7 +529,7 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	/// Handle an incoming update_fulfill_htlc message from the given peer.
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming update_fail_htlc message from the given peer.
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<Option<HTLCFailChannelUpdate>, HandleError>;
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming commitment_signed message from the given peer.

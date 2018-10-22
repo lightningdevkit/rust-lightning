@@ -75,6 +75,10 @@ pub enum Event {
 	PaymentFailed {
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: [u8; 32],
+		/// Inindicates if the payment can be retried.
+		retryable: bool,
+		/// Error code from Onion failure message
+		error_code: Option<u16>,
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
@@ -161,6 +165,13 @@ pub enum Event {
 		node_id: PublicKey,
 		/// The action which should be taken.
 		action: Option<msgs::ErrorAction>
+	},
+
+	/// Used to indicate a change should be made into network map
+	///
+	RouteUpdate {
+		/// The channel/node update which should be sent to router
+		update: msgs::HTLCFailChannelUpdate,
 	}
 }
 
