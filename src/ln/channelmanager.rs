@@ -1381,11 +1381,21 @@ impl ChannelManager {
 		match source {
 			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state);
-
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PaymentFailed {
-					payment_hash: payment_hash.clone()
-				});
+				if let &HTLCFailReason::ErrorPacket { ref err } = &onion_error {
+					let (channel_update, payment_retryable) = self.process_onion_failure(&source, err.data.clone());
+					let mut pending_events = self.pending_events.lock().unwrap();
+					if let Some(channel_update) = channel_update {
+						pending_events.push(events::Event::PaymentFailureNetworkUpdate {
+							update: channel_update,
+						});
+					}
+					pending_events.push(events::Event::PaymentFailed {
+						payment_hash: payment_hash.clone(),
+						rejected_by_dest: !payment_retryable,
+					});
+				} else {
+					panic!("should have onion error packet here");
+				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
 				let err_packet = match onion_error {
@@ -1996,9 +2006,9 @@ impl ChannelManager {
 		} else { ((None, true)) }
 	}
 
-	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, MsgHandleErrInternal> {
+	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let htlc_source = match channel_state.by_id.get_mut(&msg.channel_id) {
+		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					//TODO: here and below MsgHandleErrInternal, #153 case
@@ -2009,17 +2019,7 @@ impl ChannelManager {
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}?;
-
-		// we are the origin node and update route information
-		// also determine if the payment is retryable
-		if let &HTLCSource::OutboundRoute { .. } = htlc_source {
-			let (channel_update, _payment_retry) = self.process_onion_failure(htlc_source, msg.reason.data.clone());
-			Ok(channel_update)
-			// TODO: include pyament_retry info in PaymentFailed event that will be
-			// fired when receiving revoke_and_ack
-		} else {
-			Ok(None)
-		}
+		Ok(())
 	}
 
 	fn internal_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
@@ -2424,7 +2424,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
 	}
 
@@ -3296,8 +3296,9 @@ mod tests {
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::PaymentFailed { payment_hash } => {
+				Event::PaymentFailed { payment_hash, rejected_by_dest } => {
 					assert_eq!(payment_hash, our_payment_hash);
+					assert!(rejected_by_dest);
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -5064,8 +5065,9 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentFailed { payment_hash } => {
+				Event::PaymentFailed { payment_hash, rejected_by_dest } => {
 					assert_eq!(payment_hash, payment_hash_5);
+					assert!(rejected_by_dest);
 				},
 				_ => panic!("Unexpected event"),
 			}

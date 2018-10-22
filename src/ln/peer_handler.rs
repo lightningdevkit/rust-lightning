@@ -615,10 +615,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											131 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::read(&mut reader));
-												let chan_update = try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
-												if let Some(update) = chan_update {
-													self.message_handler.route_handler.handle_htlc_fail_channel_update(&update);
-												}
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
 											},
 											135 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::read(&mut reader));
@@ -904,6 +901,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								Self::do_attempt_write_data(&mut (*descriptor).clone(), peer);
 							}
 						}
+						continue;
+					},
+					Event::PaymentFailureNetworkUpdate { ref update } => {
+						self.message_handler.route_handler.handle_htlc_fail_channel_update(update);
 						continue;
 					},
 					Event::HandleError { ref node_id, ref action } => {
