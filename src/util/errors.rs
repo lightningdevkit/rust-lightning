@@ -32,7 +32,10 @@ pub enum APIError {
 	ChannelUnavailable {
 		/// A human-readable error message
 		err: &'static str
-	}
+	},
+	/// An attempt to call add_update_monitor returned an Err (ie you did this!), causing the
+	/// attempted action to fail.
+	MonitorUpdateFailed,
 }
 
 impl fmt::Debug for APIError {
@@ -42,6 +45,7 @@ impl fmt::Debug for APIError {
 			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
 			APIError::RouteError {ref err} => f.write_str(err),
 			APIError::ChannelUnavailable {ref err} => f.write_str(err),
+			APIError::MonitorUpdateFailed => f.write_str("Client indicated a channel monitor update failed"),
 		}
 	}
 }

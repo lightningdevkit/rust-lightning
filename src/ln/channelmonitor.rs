@@ -39,6 +39,7 @@ use std::sync::{Arc,Mutex};
 use std::{hash,cmp};
 
 /// An error enum representing a failure to persist a channel monitor update.
+#[derive(Clone)]
 pub enum ChannelMonitorUpdateErr {
 	/// Used to indicate a temporary failure (eg connection to a watchtower failed, but is expected
 	/// to succeed at some point in the future).
@@ -47,6 +48,22 @@ pub enum ChannelMonitorUpdateErr {
 	/// submitting new commitment transactions to the remote party.
 	/// ChannelManager::test_restore_channel_monitor can be used to retry the update(s) and restore
 	/// the channel to an operational state.
+	///
+	/// Note that continuing to operate when no copy of the updated ChannelMonitor could be
+	/// persisted is unsafe - if you failed to store the update on your own local disk you should
+	/// instead return PermanentFailure to force closure of the channel ASAP.
+	///
+	/// Even when a channel has been "frozen" updates to the ChannelMonitor can continue to occur
+	/// (eg if an inbound HTLC which we forwarded was claimed upstream resulting in us attempting
+	/// to claim it on this channel) and those updates must be applied wherever they can be. At
+	/// least one such updated ChannelMonitor must be persisted otherwise PermanentFailure should
+	/// be returned to get things on-chain ASAP using only the in-memory copy. Obviously updates to
+	/// the channel which would invalidate previous ChannelMonitors are not made when a channel has
+	/// been "frozen".
+	///
+	/// Note that even if updates made after TemporaryFailure succeed you must still call
+	/// test_restore_channel_monitor to ensure you have the latest monitor and re-enable normal
+	/// channel operation.
 	TemporaryFailure,
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed

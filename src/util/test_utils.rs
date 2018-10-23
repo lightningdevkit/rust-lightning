@@ -38,12 +38,14 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestChannelMonitor {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor)>>,
 	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
+	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
 impl TestChannelMonitor {
 	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster),
+			update_ret: Mutex::new(Ok(())),
 		}
 	}
 }
@@ -57,7 +59,8 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
-		self.simple_monitor.add_update_monitor(funding_txo, monitor)
+		assert!(self.simple_monitor.add_update_monitor(funding_txo, monitor).is_ok());
+		self.update_ret.lock().unwrap().clone()
 	}
 }
 

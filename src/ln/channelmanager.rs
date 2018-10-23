@@ -23,7 +23,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError, ChannelKeys};
-use ln::channelmonitor::{ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+use ln::channelmonitor::{ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, HandleError, RAACommitmentOrder};
@@ -586,6 +586,33 @@ impl ChannelManager {
 		}
 	}
 
+	fn handle_monitor_update_fail(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, channel_id: &[u8; 32], err: ChannelMonitorUpdateErr, reason: RAACommitmentOrder) {
+		match err {
+			ChannelMonitorUpdateErr::PermanentFailure => {
+				let mut chan = {
+					let channel_state = channel_state_lock.borrow_parts();
+					let chan = channel_state.by_id.remove(channel_id).expect("monitor_update_failed must be called within the same lock as the channel get!");
+					if let Some(short_id) = chan.get_short_channel_id() {
+						channel_state.short_to_id.remove(&short_id);
+					}
+					chan
+				};
+				mem::drop(channel_state_lock);
+				self.finish_force_close_channel(chan.force_shutdown());
+				let mut events = self.pending_events.lock().unwrap();
+				if let Ok(update) = self.get_channel_update(&chan) {
+					events.push(events::Event::BroadcastChannelUpdate {
+						msg: update
+					});
+				}
+			},
+			ChannelMonitorUpdateErr::TemporaryFailure => {
+				let channel = channel_state_lock.by_id.get_mut(channel_id).expect("monitor_update_failed must be called within the same lock as the channel get!");
+				channel.monitor_update_failed(reason);
+			},
+		}
+	}
+
 	#[inline]
 	fn gen_rho_mu_from_shared_secret(shared_secret: &SharedSecret) -> ([u8; 32], [u8; 32]) {
 		({
@@ -984,6 +1011,11 @@ impl ChannelManager {
 				if let Some((err, code, chan_update)) = loop {
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
 
+					// Note that we could technically not return an error yet here and just hope
+					// that the connection is reestablished or monitor updated by the time we get
+					// around to doing the actual forward, but better to fail early if we can and
+					// hopefully an attacker trying to path-trace payments cannot make this occur
+					// on a small/per-node/per-channel scale.
 					if !chan.is_live() { // channel_disabled
 						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
 					}
@@ -1027,6 +1059,7 @@ impl ChannelManager {
 	}
 
 	/// only fails if the channel does not yet have an assigned short_id
+	/// May be called with channel_state already locked!
 	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, HandleError> {
 		let short_channel_id = match chan.get_short_channel_id() {
 			None => return Err(HandleError{err: "Channel not yet established", action: None}),
@@ -1096,9 +1129,8 @@ impl ChannelManager {
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
 
-		let (first_hop_node_id, (update_add, commitment_signed, chan_monitor)) = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = channel_state_lock.borrow_parts();
+		let (first_hop_node_id, update_add, commitment_signed) = {
+			let mut channel_state = self.channel_state.lock().unwrap();
 
 			let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
@@ -1106,31 +1138,44 @@ impl ChannelManager {
 			};
 
 			let res = {
-				let chan = channel_state.by_id.get_mut(&id).unwrap();
-				if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
-					return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
+				let res = {
+					let chan = channel_state.by_id.get_mut(&id).unwrap();
+					if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
+						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
+					}
+					if chan.is_awaiting_monitor_update() {
+						return Err(APIError::MonitorUpdateFailed);
+					}
+					if !chan.is_live() {
+						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected!"});
+					}
+					chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
+						route: route.clone(),
+						session_priv: session_priv.clone(),
+						first_hop_htlc_msat: htlc_msat,
+					}, onion_packet).map_err(|he| APIError::ChannelUnavailable{err: he.err})?
+				};
+				match res {
+					Some((update_add, commitment_signed, chan_monitor)) => {
+						if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+							self.handle_monitor_update_fail(channel_state, &id, e, RAACommitmentOrder::CommitmentFirst);
+							return Err(APIError::MonitorUpdateFailed);
+						}
+						Some((update_add, commitment_signed))
+					},
+					None => None,
 				}
-				if !chan.is_live() {
-					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected!"});
-				}
-				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-					route: route.clone(),
-					session_priv: session_priv.clone(),
-					first_hop_htlc_msat: htlc_msat,
-				}, onion_packet).map_err(|he| APIError::ChannelUnavailable{err: he.err})?
 			};
 
 			let first_hop_node_id = route.hops.first().unwrap().pubkey;
 
 			match res {
-				Some(msgs) => (first_hop_node_id, msgs),
+				Some((update_add, commitment_signed)) => {
+					(first_hop_node_id, update_add, commitment_signed)
+				},
 				None => return Ok(()),
 			}
 		};
-
-		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!();
-		}
 
 		let mut events = self.pending_events.lock().unwrap();
 		events.push(events::Event::UpdateHTLCs {
@@ -1184,7 +1229,9 @@ impl ChannelManager {
 				},
 				None => return
 			}
-		}; // Release channel lock for install_watch_outpoint call,
+		};
+		// Because we have exclusive ownership of the channel here we can release the channel_state
+		// lock before add_update_monitor
 		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 			unimplemented!();
 		}
@@ -1299,7 +1346,10 @@ impl ChannelManager {
 								continue;
 							},
 						};
-						new_events.push((Some(monitor), events::Event::UpdateHTLCs {
+						if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+							unimplemented!();// but def dont push the event...
+						}
+						new_events.push(events::Event::UpdateHTLCs {
 							node_id: forward_chan.get_their_node_id(),
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: add_htlc_msgs,
@@ -1309,7 +1359,7 @@ impl ChannelManager {
 								update_fee: None,
 								commitment_signed: commitment_msg,
 							},
-						}));
+						});
 					}
 				} else {
 					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
@@ -1322,10 +1372,10 @@ impl ChannelManager {
 							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
 							hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
 						};
-						new_events.push((None, events::Event::PaymentReceived {
+						new_events.push(events::Event::PaymentReceived {
 							payment_hash: forward_info.payment_hash,
 							amt: forward_info.amt_to_forward,
-						}));
+						});
 					}
 				}
 			}
@@ -1339,21 +1389,8 @@ impl ChannelManager {
 		}
 
 		if new_events.is_empty() { return }
-
-		new_events.retain(|event| {
-			if let &Some(ref monitor) = &event.0 {
-				if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor.clone()) {
-					unimplemented!();// but def dont push the event...
-				}
-			}
-			true
-		});
-
 		let mut events = self.pending_events.lock().unwrap();
-		events.reserve(new_events.len());
-		for event in new_events.drain(..) {
-			events.push(event.1);
-		}
+		events.append(&mut new_events);
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown after a PaymentReceived event.
@@ -1416,7 +1453,13 @@ impl ChannelManager {
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
 					match chan.get_update_fail_htlc_and_commit(htlc_id, err_packet) {
-						Ok(msg) => (chan.get_their_node_id(), msg),
+						Ok(Some((msg, commitment_msg, chan_monitor))) => {
+							if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+								unimplemented!();
+							}
+							(chan.get_their_node_id(), Some((msg, commitment_msg)))
+						},
+						Ok(None) => (chan.get_their_node_id(), None),
 						Err(_e) => {
 							//TODO: Do something with e?
 							return;
@@ -1425,12 +1468,8 @@ impl ChannelManager {
 				};
 
 				match fail_msgs {
-					Some((msg, commitment_msg, chan_monitor)) => {
+					Some((msg, commitment_msg)) => {
 						mem::drop(channel_state);
-
-						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-							unimplemented!();// but def dont push the event...
-						}
 
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push(events::Event::UpdateHTLCs {
@@ -1496,7 +1535,13 @@ impl ChannelManager {
 
 					let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
 					match chan.get_update_fulfill_htlc_and_commit(htlc_id, payment_preimage) {
-						Ok(msg) => (chan.get_their_node_id(), msg),
+						Ok((msgs, Some(chan_monitor))) => {
+							if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+								unimplemented!();// but def dont push the event...
+							}
+							(chan.get_their_node_id(), msgs)
+						},
+						Ok((msgs, None)) => (chan.get_their_node_id(), msgs),
 						Err(_e) => {
 							// TODO: There is probably a channel manager somewhere that needs to
 							// learn the preimage as the channel may be about to hit the chain.
@@ -1507,13 +1552,7 @@ impl ChannelManager {
 				};
 
 				mem::drop(channel_state);
-				if let Some(chan_monitor) = fulfill_msgs.1 {
-					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						unimplemented!();// but def dont push the event...
-					}
-				}
-
-				if let Some((msg, commitment_msg)) = fulfill_msgs.0 {
+				if let Some((msg, commitment_msg)) = fulfill_msgs {
 					let mut pending_events = self.pending_events.lock().unwrap();
 					pending_events.push(events::Event::UpdateHTLCs {
 						node_id: node_id,
@@ -1540,7 +1579,83 @@ impl ChannelManager {
 	/// ChannelMonitorUpdateErr::TemporaryFailure was returned from a channel monitor update
 	/// operation.
 	pub fn test_restore_channel_monitor(&self) {
-		unimplemented!();
+		let mut new_events = Vec::new();
+		let mut close_results = Vec::new();
+		let mut htlc_forwards = Vec::new();
+		let mut htlc_failures = Vec::new();
+
+		{
+			let mut channel_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_lock.borrow_parts();
+			let short_to_id = channel_state.short_to_id;
+			channel_state.by_id.retain(|_, channel| {
+				if channel.is_awaiting_monitor_update() {
+					let chan_monitor = channel.channel_monitor();
+					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						match e {
+							ChannelMonitorUpdateErr::PermanentFailure => {
+								if let Some(short_id) = channel.get_short_channel_id() {
+									short_to_id.remove(&short_id);
+								}
+								close_results.push(channel.force_shutdown());
+								if let Ok(update) = self.get_channel_update(&channel) {
+									new_events.push(events::Event::BroadcastChannelUpdate {
+										msg: update
+									});
+								}
+								false
+							},
+							ChannelMonitorUpdateErr::TemporaryFailure => true,
+						}
+					} else {
+						let (raa, commitment_update, order, pending_forwards, mut pending_failures) = channel.monitor_updating_restored();
+						if !pending_forwards.is_empty() {
+							htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), pending_forwards));
+						}
+						htlc_failures.append(&mut pending_failures);
+
+						macro_rules! handle_cs { () => {
+							if let Some(update) = commitment_update {
+								new_events.push(events::Event::UpdateHTLCs {
+									node_id: channel.get_their_node_id(),
+									updates: update,
+								});
+							}
+						} }
+						macro_rules! handle_raa { () => {
+							if let Some(revoke_and_ack) = raa {
+								new_events.push(events::Event::SendRevokeAndACK {
+									node_id: channel.get_their_node_id(),
+									msg: revoke_and_ack,
+								});
+							}
+						} }
+						match order {
+							RAACommitmentOrder::CommitmentFirst => {
+								handle_cs!();
+								handle_raa!();
+							},
+							RAACommitmentOrder::RevokeAndACKFirst => {
+								handle_raa!();
+								handle_cs!();
+							},
+						}
+						true
+					}
+				} else { true }
+			});
+		}
+
+		for failure in htlc_failures.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		}
+		self.forward_htlcs(&mut htlc_forwards[..]);
+
+		for res in close_results.drain(..) {
+			self.finish_force_close_channel(res);
+		}
+
+		self.pending_events.lock().unwrap().append(&mut new_events);
 	}
 
 	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, MsgHandleErrInternal> {
@@ -1626,10 +1741,9 @@ impl ChannelManager {
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
 			}
-		}; // Release channel lock for install_watch_outpoint call,
-		   // note that this means if the remote end is misbehaving and sends a message for the same
-		   // channel back-to-back with funding_created, we'll end up thinking they sent a message
-		   // for a bogus channel.
+		};
+		// Because we have exclusive ownership of the channel here we can release the channel_state
+		// lock before add_update_monitor
 		if let Err(_e) = self.monitor.add_update_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
 			unimplemented!();
 		}
@@ -1646,7 +1760,7 @@ impl ChannelManager {
 	}
 
 	fn internal_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
-		let (funding_txo, user_id, monitor) = {
+		let (funding_txo, user_id) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -1655,14 +1769,14 @@ impl ChannelManager {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let chan_monitor = chan.funding_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
-					(chan.get_funding_txo().unwrap(), chan.get_user_id(), chan_monitor)
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
+					(chan.get_funding_txo().unwrap(), chan.get_user_id())
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
 		};
-		if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-			unimplemented!();
-		}
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::Event::FundingBroadcastSafe {
 			funding_txo: funding_txo,
@@ -2042,7 +2156,7 @@ impl ChannelManager {
 	}
 
 	fn internal_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), MsgHandleErrInternal> {
-		let (revoke_and_ack, commitment_signed, chan_monitor) = {
+		let (revoke_and_ack, commitment_signed) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -2050,20 +2164,53 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					chan.commitment_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?
+					let (revoke_and_ack, commitment_signed, chan_monitor) = chan.commitment_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
+					(revoke_and_ack, commitment_signed)
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
 		};
-		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!();
-		}
-
 		Ok((revoke_and_ack, commitment_signed))
 	}
 
+	#[inline]
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingForwardHTLCInfo, u64)>)]) {
+		for &mut (prev_short_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
+			let mut forward_event = None;
+			if !pending_forwards.is_empty() {
+				let mut channel_state = self.channel_state.lock().unwrap();
+				if channel_state.forward_htlcs.is_empty() {
+					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+					channel_state.next_forward = forward_event.unwrap();
+				}
+				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
+					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
+						hash_map::Entry::Occupied(mut entry) => {
+							entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info });
+						},
+						hash_map::Entry::Vacant(entry) => {
+							entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info }));
+						}
+					}
+				}
+			}
+			match forward_event {
+				Some(time) => {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::PendingHTLCsForwardable {
+						time_forwardable: time
+					});
+				}
+				None => {},
+			}
+		}
+	}
+
 	fn internal_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, MsgHandleErrInternal> {
-		let ((res, mut pending_forwards, mut pending_failures, chan_monitor), short_channel_id) = {
+		let ((res, pending_forwards, mut pending_failures), short_channel_id) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -2071,45 +2218,19 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					(chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?, chan.get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
+					let (res, pending_forwards, pending_failures, chan_monitor) = chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
+					((res, pending_forwards, pending_failures), chan.get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
 		};
-		if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-			unimplemented!();
-		}
 		for failure in pending_failures.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 		}
-
-		let mut forward_event = None;
-		if !pending_forwards.is_empty() {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			if channel_state.forward_htlcs.is_empty() {
-				forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
-				channel_state.next_forward = forward_event.unwrap();
-			}
-			for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-				match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
-					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id: short_channel_id, prev_htlc_id, forward_info });
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id: short_channel_id, prev_htlc_id, forward_info }));
-					}
-				}
-			}
-		}
-		match forward_event {
-			Some(time) => {
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PendingHTLCsForwardable {
-					time_forwardable: time
-				});
-			}
-			None => {},
-		}
+		self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
 
 		Ok(res)
 	}
@@ -2169,7 +2290,7 @@ impl ChannelManager {
 	}
 
 	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder), MsgHandleErrInternal> {
-		let (res, chan_monitor) = {
+		let res = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.get_mut(&msg.channel_id) {
 				Some(chan) => {
@@ -2178,16 +2299,17 @@ impl ChannelManager {
 					}
 					let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order) = chan.channel_reestablish(msg)
 						.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
-					(Ok((funding_locked, revoke_and_ack, commitment_update, order)), channel_monitor)
+					if let Some(monitor) = channel_monitor {
+						if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+							unimplemented!();
+						}
+					}
+					Ok((funding_locked, revoke_and_ack, commitment_update, order))
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 			}
 		};
-		if let Some(monitor) = chan_monitor {
-			if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-				unimplemented!();
-			}
-		}
+
 		res
 	}
 
@@ -2203,6 +2325,9 @@ impl ChannelManager {
 			Some(chan) => {
 				if !chan.is_outbound() {
 					return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
+				}
+				if chan.is_awaiting_monitor_update() {
+					return Err(APIError::MonitorUpdateFailed);
 				}
 				if !chan.is_live() {
 					return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
@@ -2553,7 +2678,7 @@ mod tests {
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
-	use ln::channelmonitor::{CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -3018,15 +3143,17 @@ mod tests {
 		commitment_msg: msgs::CommitmentSigned,
 	}
 	impl SendEvent {
+		fn from_commitment_update(node_id: PublicKey, updates: msgs::CommitmentUpdate) -> SendEvent {
+			assert!(updates.update_fulfill_htlcs.is_empty());
+			assert!(updates.update_fail_htlcs.is_empty());
+			assert!(updates.update_fail_malformed_htlcs.is_empty());
+			assert!(updates.update_fee.is_none());
+			SendEvent { node_id: node_id, msgs: updates.update_add_htlcs, commitment_msg: updates.commitment_signed }
+		}
+
 		fn from_event(event: Event) -> SendEvent {
 			match event {
-				Event::UpdateHTLCs { node_id, updates: msgs::CommitmentUpdate { update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
-					assert!(update_fulfill_htlcs.is_empty());
-					assert!(update_fail_htlcs.is_empty());
-					assert!(update_fail_malformed_htlcs.is_empty());
-					assert!(update_fee.is_none());
-					SendEvent { node_id: node_id, msgs: update_add_htlcs, commitment_msg: commitment_signed }
-				},
+				Event::UpdateHTLCs { node_id, updates } => SendEvent::from_commitment_update(node_id, updates),
 				_ => panic!("Unexpected event type!"),
 			}
 		}
@@ -4115,6 +4242,19 @@ mod tests {
 		}
 	}
 
+	macro_rules! expect_pending_htlcs_forwardable {
+		($node: expr) => {{
+			let events = $node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PendingHTLCsForwardable { .. } => { },
+				_ => panic!("Unexpected event"),
+			};
+			$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
+			$node.node.process_pending_htlc_forwards();
+		}}
+	}
+
 	#[test]
 	fn channel_reserve_test() {
 		use util::rng;
@@ -4144,19 +4284,6 @@ mod tests {
 				let route = nodes[0].router.get_route(&nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV).unwrap();
 				let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
 				(route, payment_hash, payment_preimage)
-			}}
-		};
-
-		macro_rules! expect_pending_htlcs_forwardable {
-			($node: expr) => {{
-				let events = $node.node.get_and_clear_pending_events();
-				assert_eq!(events.len(), 1);
-				match events[0] {
-					Event::PendingHTLCsForwardable { .. } => { },
-					_ => panic!("Unexpected event"),
-				};
-				$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
-				$node.node.process_pending_htlc_forwards();
 			}}
 		};
 
@@ -5451,6 +5578,447 @@ mod tests {
 		check_added_monitors!(nodes[0], 1);
 
 		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+	}
+
+	#[test]
+	fn test_simple_monitor_permanent_update_fail() {
+		// Test that we handle a simple permanent monitor update failure
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (_, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		};
+
+		// TODO: Once we hit the chain with the failure transaction we should check that we get a
+		// PaymentFailed event
+
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+	}
+
+	fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
+		// Test that we can recover from a simple temporary monitor update failure optionally with
+		// a disconnect in between
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_1) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert!(events_1.is_empty());
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		if disconnect {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+			reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		}
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut events_2 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let payment_event = SendEvent::from_event(events_2.pop().unwrap());
+		assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let events_3 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_3.len(), 1);
+		match events_3[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(payment_hash_1, *payment_hash);
+				assert_eq!(amt, 1000000);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+
+		// Now set it to failed again...
+		let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_2) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_4 = nodes[0].node.get_and_clear_pending_events();
+		assert!(events_4.is_empty());
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		if disconnect {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		}
+
+		// ...and make sure we can force-close a TemporaryFailure channel with a PermanentFailure
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		let events_5 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_5.len(), 1);
+		match events_5[0] {
+			Event::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+
+		// TODO: Once we hit the chain with the failure transaction we should check that we get a
+		// PaymentFailed event
+
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+	}
+
+	#[test]
+	fn test_simple_monitor_temporary_update_fail() {
+		do_test_simple_monitor_temporary_update_fail(false);
+		do_test_simple_monitor_temporary_update_fail(true);
+	}
+
+	fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
+		let disconnect_flags = 8 | 16;
+
+		// Test that we can recover from a temporary monitor update failure with some in-flight
+		// HTLCs going on at the same time potentially with some disconnection thrown in.
+		// * First we route a payment, then get a temporary monitor update failure when trying to
+		//   route a second payment. We then claim the first payment.
+		// * If disconnect_count is set, we will disconnect at this point (which is likely as
+		//   TemporaryFailure likely indicates net disconnect which resulted in failing to update
+		//   the ChannelMonitor on a watchtower).
+		// * If !(disconnect_count & 16) we deliver a update_fulfill_htlc/CS for the first payment
+		//   immediately, otherwise we wait sconnect and deliver them via the reconnect
+		//   channel_reestablish processing (ie disconnect_count & 16 makes no sense if
+		//   disconnect_count & !disconnect_flags is 0).
+		// * We then update the channel monitor, reconnecting if disconnect_count is set and walk
+		//   through message sending, potentially disconnect/reconnecting multiple times based on
+		//   disconnect_count, to get the update_fulfill_htlc through.
+		// * We then walk through more message exchanges to get the original update_add_htlc
+		//   through, swapping message ordering based on disconnect_count & 8 and optionally
+		//   disconnect/reconnecting based on disconnect_count.
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+		// Now try to send a second payment which will fail to send
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_2) {} else { panic!(); }
+		check_added_monitors!(nodes[0], 1);
+
+		let events_1 = nodes[0].node.get_and_clear_pending_events();
+		assert!(events_1.is_empty());
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		// Claim the previous payment, which will result in a update_fulfill_htlc/CS from nodes[1]
+		// but nodes[0] won't respond since it is frozen.
+		assert!(nodes[1].node.claim_funds(payment_preimage_1));
+		check_added_monitors!(nodes[1], 1);
+		let events_2 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_2.len(), 1);
+		let (bs_initial_fulfill, bs_initial_commitment_signed) = match events_2[0] {
+			Event::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				assert!(update_add_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert!(update_fail_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert!(update_fee.is_none());
+
+				if (disconnect_count & 16) == 0 {
+					nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]).unwrap();
+					let events_3 = nodes[0].node.get_and_clear_pending_events();
+					assert_eq!(events_3.len(), 1);
+					match events_3[0] {
+						Event::PaymentSent { ref payment_preimage } => {
+							assert_eq!(*payment_preimage, payment_preimage_1);
+						},
+						_ => panic!("Unexpected event"),
+					}
+
+					if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::IgnoreError) }) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed) {
+						assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
+					} else { panic!(); }
+				}
+
+				(update_fulfill_htlcs[0].clone(), commitment_signed.clone())
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		if disconnect_count & !disconnect_flags > 0 {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		}
+
+		// Now fix monitor updating...
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		macro_rules! disconnect_reconnect_peers { () => { {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+			let reestablish_1 = nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+			assert_eq!(reestablish_1.len(), 1);
+			let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+			assert_eq!(reestablish_2.len(), 1);
+
+			let as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+			let bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+
+			assert!(as_resp.0.is_none());
+			assert!(bs_resp.0.is_none());
+
+			(reestablish_1, reestablish_2, as_resp, bs_resp)
+		} } }
+
+		let (payment_event, initial_revoke_and_ack) = if disconnect_count & !disconnect_flags > 0 {
+			let events_4 = nodes[0].node.get_and_clear_pending_events();
+			assert!(events_4.is_empty());
+
+			let reestablish_1 = nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+			assert_eq!(reestablish_1.len(), 1);
+			let reestablish_2 = nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+			assert_eq!(reestablish_2.len(), 1);
+
+			let mut as_resp = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+			check_added_monitors!(nodes[0], 0);
+			let mut bs_resp = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+			check_added_monitors!(nodes[1], 0);
+
+			assert!(as_resp.0.is_none());
+			assert!(bs_resp.0.is_none());
+
+			assert!(bs_resp.1.is_none());
+			if (disconnect_count & 16) == 0 {
+				assert!(bs_resp.2.is_none());
+
+				assert!(as_resp.1.is_some());
+				assert!(as_resp.2.is_some());
+				assert!(as_resp.3 == msgs::RAACommitmentOrder::CommitmentFirst);
+			} else {
+				assert!(bs_resp.2.as_ref().unwrap().update_add_htlcs.is_empty());
+				assert!(bs_resp.2.as_ref().unwrap().update_fail_htlcs.is_empty());
+				assert!(bs_resp.2.as_ref().unwrap().update_fail_malformed_htlcs.is_empty());
+				assert!(bs_resp.2.as_ref().unwrap().update_fee.is_none());
+				assert!(bs_resp.2.as_ref().unwrap().update_fulfill_htlcs == vec![bs_initial_fulfill]);
+				assert!(bs_resp.2.as_ref().unwrap().commitment_signed == bs_initial_commitment_signed);
+
+				assert!(as_resp.1.is_none());
+
+				nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_resp.2.as_ref().unwrap().update_fulfill_htlcs[0]).unwrap();
+				let events_3 = nodes[0].node.get_and_clear_pending_events();
+				assert_eq!(events_3.len(), 1);
+				match events_3[0] {
+					Event::PaymentSent { ref payment_preimage } => {
+						assert_eq!(*payment_preimage, payment_preimage_1);
+					},
+					_ => panic!("Unexpected event"),
+				}
+
+				let (as_resp_raa, as_resp_cu) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_resp.2.as_ref().unwrap().commitment_signed).unwrap();
+				assert!(as_resp_cu.is_none());
+				check_added_monitors!(nodes[0], 1);
+
+				as_resp.1 = Some(as_resp_raa);
+				bs_resp.2 = None;
+			}
+
+			if disconnect_count & !disconnect_flags > 1 {
+				let (second_reestablish_1, second_reestablish_2, second_as_resp, second_bs_resp) = disconnect_reconnect_peers!();
+
+				if (disconnect_count & 16) == 0 {
+					assert!(reestablish_1 == second_reestablish_1);
+					assert!(reestablish_2 == second_reestablish_2);
+				}
+				assert!(as_resp == second_as_resp);
+				assert!(bs_resp == second_bs_resp);
+			}
+
+			(SendEvent::from_commitment_update(nodes[1].node.get_our_node_id(), as_resp.2.unwrap()), as_resp.1.unwrap())
+		} else {
+			let mut events_4 = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events_4.len(), 2);
+			(SendEvent::from_event(events_4.remove(0)), match events_4[0] {
+				Event::SendRevokeAndACK { ref node_id, ref msg } => {
+					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+					msg.clone()
+				},
+				_ => panic!("Unexpected event"),
+			})
+		};
+
+		assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		let (bs_revoke_and_ack, bs_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+		assert!(bs_commitment_signed.is_none()); // nodes[1] is awaiting an RAA from nodes[0] still
+		check_added_monitors!(nodes[1], 1);
+
+		if disconnect_count & !disconnect_flags > 2 {
+			let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+			assert!(as_resp.1.unwrap() == initial_revoke_and_ack);
+			assert!(bs_resp.1.unwrap() == bs_revoke_and_ack);
+
+			assert!(as_resp.2.is_none());
+			assert!(bs_resp.2.is_none());
+		}
+
+		let as_commitment_update;
+		let bs_second_commitment_update;
+
+		macro_rules! handle_bs_raa { () => {
+			as_commitment_update = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap().unwrap();
+			assert!(as_commitment_update.update_add_htlcs.is_empty());
+			assert!(as_commitment_update.update_fulfill_htlcs.is_empty());
+			assert!(as_commitment_update.update_fail_htlcs.is_empty());
+			assert!(as_commitment_update.update_fail_malformed_htlcs.is_empty());
+			assert!(as_commitment_update.update_fee.is_none());
+			check_added_monitors!(nodes[0], 1);
+		} }
+
+		macro_rules! handle_initial_raa { () => {
+			bs_second_commitment_update = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &initial_revoke_and_ack).unwrap().unwrap();
+			assert!(bs_second_commitment_update.update_add_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fulfill_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fail_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fail_malformed_htlcs.is_empty());
+			assert!(bs_second_commitment_update.update_fee.is_none());
+			check_added_monitors!(nodes[1], 1);
+		} }
+
+		if (disconnect_count & 8) == 0 {
+			handle_bs_raa!();
+
+			if disconnect_count & !disconnect_flags > 3 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.unwrap() == initial_revoke_and_ack);
+				assert!(bs_resp.1.is_none());
+
+				assert!(as_resp.2.unwrap() == as_commitment_update);
+				assert!(bs_resp.2.is_none());
+
+				assert!(as_resp.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+			}
+
+			handle_initial_raa!();
+
+			if disconnect_count & !disconnect_flags > 4 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.is_none());
+				assert!(bs_resp.1.is_none());
+
+				assert!(as_resp.2.unwrap() == as_commitment_update);
+				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			}
+		} else {
+			handle_initial_raa!();
+
+			if disconnect_count & !disconnect_flags > 3 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.is_none());
+				assert!(bs_resp.1.unwrap() == bs_revoke_and_ack);
+
+				assert!(as_resp.2.is_none());
+				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+
+				assert!(bs_resp.3 == msgs::RAACommitmentOrder::RevokeAndACKFirst);
+			}
+
+			handle_bs_raa!();
+
+			if disconnect_count & !disconnect_flags > 4 {
+				let (_, _, as_resp, bs_resp) = disconnect_reconnect_peers!();
+
+				assert!(as_resp.1.is_none());
+				assert!(bs_resp.1.is_none());
+
+				assert!(as_resp.2.unwrap() == as_commitment_update);
+				assert!(bs_resp.2.unwrap() == bs_second_commitment_update);
+			}
+		}
+
+		let (as_revoke_and_ack, as_commitment_signed) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_commitment_update.commitment_signed).unwrap();
+		assert!(as_commitment_signed.is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		let (bs_second_revoke_and_ack, bs_third_commitment_signed) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_update.commitment_signed).unwrap();
+		assert!(bs_third_commitment_signed.is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		assert!(nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap().is_none());
+		check_added_monitors!(nodes[1], 1);
+
+		assert!(nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke_and_ack).unwrap().is_none());
+		check_added_monitors!(nodes[0], 1);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let events_5 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_5.len(), 1);
+		match events_5[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!(payment_hash_2, *payment_hash);
+				assert_eq!(amt, 1000000);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+	}
+
+	#[test]
+	fn test_monitor_temporary_update_fail_a() {
+		do_test_monitor_temporary_update_fail(0);
+		do_test_monitor_temporary_update_fail(1);
+		do_test_monitor_temporary_update_fail(2);
+		do_test_monitor_temporary_update_fail(3);
+		do_test_monitor_temporary_update_fail(4);
+		do_test_monitor_temporary_update_fail(5);
+	}
+
+	#[test]
+	fn test_monitor_temporary_update_fail_b() {
+		do_test_monitor_temporary_update_fail(2 | 8);
+		do_test_monitor_temporary_update_fail(3 | 8);
+		do_test_monitor_temporary_update_fail(4 | 8);
+		do_test_monitor_temporary_update_fail(5 | 8);
+	}
+
+	#[test]
+	fn test_monitor_temporary_update_fail_c() {
+		do_test_monitor_temporary_update_fail(1 | 16);
+		do_test_monitor_temporary_update_fail(2 | 16);
+		do_test_monitor_temporary_update_fail(3 | 16);
+		do_test_monitor_temporary_update_fail(2 | 8 | 16);
+		do_test_monitor_temporary_update_fail(3 | 8 | 16);
 	}
 
 	#[test]
