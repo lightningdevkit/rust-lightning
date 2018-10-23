@@ -14,7 +14,7 @@ use crypto::digest::Digest;
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use ln::msgs;
-use ln::msgs::{ErrorAction, HandleError};
+use ln::msgs::{ErrorAction, HandleError, RAACommitmentOrder};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, PendingForwardHTLCInfo, HTLCFailReason, HTLCFailureMsg};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -296,6 +296,12 @@ pub(super) struct Channel {
 	cur_local_commitment_transaction_number: u64,
 	cur_remote_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
+	/// Upon receipt of a channel_reestablish we have to figure out whether to send a
+	/// revoke_and_ack first or a commitment update first. Generally, we prefer to send
+	/// revoke_and_ack first, but if we had a pending commitment update of our own waiting on a
+	/// remote revoke when we received the latest commitment update from the remote we have to make
+	/// sure that commitment update gets resent first.
+	received_commitment_while_awaiting_raa: bool,
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
@@ -492,6 +498,8 @@ impl Channel {
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
+			received_commitment_while_awaiting_raa: false,
+
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
 			holding_cell_htlc_updates: Vec::new(),
@@ -647,6 +655,8 @@ impl Channel {
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: msg.push_msat,
+			received_commitment_while_awaiting_raa: false,
+
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
 			holding_cell_htlc_updates: Vec::new(),
@@ -1696,6 +1706,7 @@ impl Channel {
 
 		self.cur_local_commitment_transaction_number -= 1;
 		self.last_local_commitment_txn = new_local_commitment_txn;
+		self.received_commitment_while_awaiting_raa = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) != 0;
 
 		let (our_commitment_signed, monitor_update) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
 			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
@@ -1831,6 +1842,7 @@ impl Channel {
 		self.their_prev_commitment_point = self.their_cur_commitment_point;
 		self.their_cur_commitment_point = Some(msg.next_per_commitment_point);
 		self.cur_remote_commitment_transaction_number -= 1;
+		self.received_commitment_while_awaiting_raa = false;
 
 		let mut to_forward_infos = Vec::new();
 		let mut revoked_htlcs = Vec::new();
@@ -2072,7 +2084,7 @@ impl Channel {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>), ChannelError> {
+	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>, RAACommitmentOrder), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -2120,6 +2132,12 @@ impl Channel {
 			})
 		} else { None };
 
+		let order = if self.received_commitment_while_awaiting_raa {
+			RAACommitmentOrder::CommitmentFirst
+		} else {
+			RAACommitmentOrder::RevokeAndACKFirst
+		};
+
 		if msg.next_local_commitment_number == our_next_remote_commitment_number {
 			if required_revoke.is_some() {
 				log_debug!(self, "Reconnected channel {} with only lost outbound RAA", log_bytes!(self.channel_id()));
@@ -2142,11 +2160,11 @@ impl Channel {
 							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
 						}
 					},
-					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor))),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None)),
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order)),
+					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order)),
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None));
+				return Ok((resend_funding_locked, required_revoke, None, None, order));
 			}
 		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -2206,7 +2224,7 @@ impl Channel {
 						update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
 						update_fee: None, //TODO: We need to support re-generating any update_fees in the last commitment_signed!
 						commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
-					}), None));
+					}), None, order));
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
 		}
