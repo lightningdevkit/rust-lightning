@@ -11,7 +11,6 @@ use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1;
 
 use crypto::digest::Digest;
-use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use ln::msgs;
 use ln::msgs::{ErrorAction, HandleError, RAACommitmentOrder};
@@ -21,6 +20,7 @@ use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGH
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
+use chain::keysinterface::ChannelKeys;
 use util::{transaction_utils,rng};
 use util::ser::Writeable;
 use util::sha2::Sha256;
@@ -33,17 +33,6 @@ use std::{cmp,mem};
 use std::time::Instant;
 use std::sync::{Arc};
 
-pub struct ChannelKeys {
-	pub funding_key: SecretKey,
-	pub revocation_base_key: SecretKey,
-	pub payment_base_key: SecretKey,
-	pub delayed_payment_base_key: SecretKey,
-	pub htlc_base_key: SecretKey,
-	pub channel_close_key: SecretKey,
-	pub channel_monitor_claim_key: SecretKey,
-	pub commitment_seed: [u8; 32],
-}
-
 #[cfg(test)]
 pub struct ChannelValueStat {
 	pub value_to_self_msat: u64,
@@ -53,49 +42,6 @@ pub struct ChannelValueStat {
 	pub pending_inbound_htlcs_amount_msat: u64,
 	pub holding_cell_outbound_amount_msat: u64,
 	pub their_max_htlc_value_in_flight_msat: u64, // outgoing
-}
-
-impl ChannelKeys {
-	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
-		let mut prk = [0; 32];
-		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
-		let secp_ctx = Secp256k1::without_caps();
-
-		let mut okm = [0; 32];
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);
-		let funding_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning revocation base key info", &mut okm);
-		let revocation_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning payment base key info", &mut okm);
-		let payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning delayed payment base key info", &mut okm);
-		let delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning htlc base key info", &mut okm);
-		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel close key info", &mut okm);
-		let channel_close_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel monitor claim key info", &mut okm);
-		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &okm)?;
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning local commitment seed info", &mut okm);
-
-		Ok(ChannelKeys {
-			funding_key: funding_key,
-			revocation_base_key: revocation_base_key,
-			payment_base_key: payment_base_key,
-			delayed_payment_base_key: delayed_payment_base_key,
-			htlc_base_key: htlc_base_key,
-			channel_close_key: channel_close_key,
-			channel_monitor_claim_key: channel_monitor_claim_key,
-			commitment_seed: okm
-		})
-	}
 }
 
 enum InboundHTLCRemovalReason {

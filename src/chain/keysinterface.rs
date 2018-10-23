@@ -9,9 +9,14 @@
 use bitcoin::blockdata::transaction::OutPoint;
 use bitcoin::blockdata::script::Script;
 
-use secp256k1::key::SecretKey;
+use secp256k1::key::{SecretKey, PublicKey};
+use secp256k1::Secp256k1;
+use secp256k1;
+
+use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use util::events;
+use util::sha2::Sha256;
 
 /// A trait to describe a wallet which sould receive data to be able to spend onchain outputs
 /// fron a lightning channel
@@ -64,5 +69,89 @@ impl CustomOutputScriptDescriptor {
 			witness_script,
 			to_self_delay,
 		}
+	}
+}
+
+/// A trait to describe an object which should get secrets from user wallet and apply derivation
+/// to provide keys materials downstream
+/// node_id /0'
+/// destination_pubkey /1'
+/// shutdown_pubkey /2'
+/// channel_master_pubkey /3/N'
+pub trait KeysInterface: Send + Sync {
+	/// Get node secret key to derive node_id
+	fn get_node_secret(&self) -> SecretKey;
+	/// Get destination redeemScript to encumber static protocol exit points. For now
+	/// redeemScript is a pay-2-public-key-hash.
+	fn get_destination_script(&self) -> Script;
+	/// Get shutdown_pubkey to use as PublicKey at channel closure
+	fn get_shutdown_pubkey(&self) -> PublicKey;
+	/// Get a new set of ChannelKeys from per-channel random key /3/N'
+	/// For Channel N, keys correspond to ChannelKeys::new_from_seed(/3/N')
+	fn get_channel_keys(&self) -> Option<ChannelKeys>;
+}
+
+/// Set of lightning keys needed to operate a channel as described in BOLT 3
+pub struct ChannelKeys {
+	/// Private key of anchor tx
+	pub funding_key: SecretKey,
+	/// Local secret key for blinded revocation pubkey
+	pub revocation_base_key: SecretKey,
+	/// Local secret key used in commitment tx htlc outputs
+	pub payment_base_key: SecretKey,
+	/// Local secret key used in HTLC tx
+	pub delayed_payment_base_key: SecretKey,
+	/// Local htlc secret key used in commitment tx htlc outputs
+	pub htlc_base_key: SecretKey,
+	/// Local secret key used for closing tx
+	pub channel_close_key: SecretKey,
+	/// Local secret key used in justice tx, claim tx and preimage tx outputs
+	pub channel_monitor_claim_key: SecretKey,
+	/// Commitment seed
+	pub commitment_seed: [u8; 32],
+}
+
+impl ChannelKeys {
+	/// Generate a set of lightning keys needed to operate a channel as described in BOLT 3 from
+	/// used-provided seed
+	pub fn new_from_seed(seed: &[u8; 32]) -> Result<ChannelKeys, secp256k1::Error> {
+		let mut prk = [0; 32];
+		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
+		let secp_ctx = Secp256k1::without_caps();
+
+		let mut okm = [0; 32];
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);
+		let funding_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning revocation base key info", &mut okm);
+		let revocation_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning payment base key info", &mut okm);
+		let payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning delayed payment base key info", &mut okm);
+		let delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning htlc base key info", &mut okm);
+		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel close key info", &mut okm);
+		let channel_close_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel monitor claim key info", &mut okm);
+		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &okm)?;
+
+		hkdf_expand(Sha256::new(), &prk, b"rust-lightning local commitment seed info", &mut okm);
+
+		Ok(ChannelKeys {
+			funding_key: funding_key,
+			revocation_base_key: revocation_base_key,
+			payment_base_key: payment_base_key,
+			delayed_payment_base_key: delayed_payment_base_key,
+			htlc_base_key: htlc_base_key,
+			channel_close_key: channel_close_key,
+			channel_monitor_claim_key: channel_monitor_claim_key,
+			commitment_seed: okm
+		})
 	}
 }

@@ -22,11 +22,12 @@ use secp256k1;
 
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
-use ln::channel::{Channel, ChannelError, ChannelKeys};
+use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, HandleError, RAACommitmentOrder};
+use chain::keysinterface::ChannelKeys;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::ser::{Readable, Writeable};
