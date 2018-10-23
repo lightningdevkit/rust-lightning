@@ -75,6 +75,10 @@ pub enum Event {
 	PaymentFailed {
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: [u8; 32],
+		/// Indicates the payment was rejected for some reason by the recipient. This implies that
+		/// the payment has failed, not just the route in question. If this is not set, you may
+		/// retry the payment via a different route.
+		rejected_by_dest: bool,
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
@@ -161,6 +165,14 @@ pub enum Event {
 		node_id: PublicKey,
 		/// The action which should be taken.
 		action: Option<msgs::ErrorAction>
+	},
+	/// When a payment fails we may receive updates back from the hop where it failed. In such
+	/// cases this event is generated so that we can inform the router of this information.
+	///
+	/// This event is handled by PeerManager::process_events if you are using a PeerManager.
+	PaymentFailureNetworkUpdate {
+		/// The channel/node update which should be sent to router
+		update: msgs::HTLCFailChannelUpdate,
 	}
 }
 

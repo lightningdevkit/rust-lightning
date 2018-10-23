@@ -110,7 +110,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
+	fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {

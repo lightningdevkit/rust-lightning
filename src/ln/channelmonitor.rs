@@ -155,7 +155,13 @@ impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
 const CLTV_SHARED_CLAIM_BUFFER: u32 = 12;
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.
-const CLTV_CLAIM_BUFFER: u32 = 6;
+/// In other words, this is an upper bound on how many blocks we think it can take us to get a
+/// transaction confirmed (and we use it in a few more, equivalent, places).
+pub(crate) const CLTV_CLAIM_BUFFER: u32 = 6;
+/// Number of blocks by which point we expect our counterparty to have seen new blocks on the
+/// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
+/// copies of ChannelMonitors, including watchtowers).
+pub(crate) const HTLC_FAIL_TIMEOUT_BLOCKS: u32 = 3;
 
 #[derive(Clone, PartialEq)]
 enum KeyStorage {
@@ -1184,16 +1190,7 @@ impl ChannelMonitor {
 			}
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			let mut needs_broadcast = false;
-			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
-				if htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER {
-					if htlc.offered || self.payment_preimages.contains_key(&htlc.payment_hash) {
-						needs_broadcast = true;
-					}
-				}
-			}
-
-			if needs_broadcast {
+			if self.would_broadcast_at_height(height) {
 				broadcaster.broadcast_transaction(&cur_local_tx.tx);
 				for tx in self.broadcast_by_local_state(&cur_local_tx) {
 					broadcaster.broadcast_transaction(&tx);
@@ -1206,10 +1203,29 @@ impl ChannelMonitor {
 	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
-				if htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER {
-					if htlc.offered || self.payment_preimages.contains_key(&htlc.payment_hash) {
-						return true;
-					}
+				// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
+				// chain with enough room to claim the HTLC without our counterparty being able to
+				// time out the HTLC first.
+				// For outbound HTLCs which our counterparty hasn't failed/claimed, our primary
+				// concern is being able to claim the corresponding inbound HTLC (on another
+				// channel) before it expires. In fact, we don't even really care if our
+				// counterparty here claims such an outbound HTLC after it expired as long as we
+				// can still claim the corresponding HTLC. Thus, to avoid needlessly hitting the
+				// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
+				// we give ourselves a few blocks of headroom after expiration before going
+				// on-chain for an expired HTLC.
+				// Note that, to avoid a potential attack whereby a node delays claiming an HTLC
+				// from us until we've reached the point where we go on-chain with the
+				// corresponding inbound HTLC, we must ensure that outbound HTLCs go on chain at
+				// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
+				//  aka outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS == height - CLTV_CLAIM_BUFFER
+				//      inbound_cltv == height + CLTV_CLAIM_BUFFER
+				//      outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS + CLTV_CLAIM_BUFER <= inbound_cltv - CLTV_CLAIM_BUFFER
+				//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= inbound_cltv - outbound_cltv
+				//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= CLTV_EXPIRY_DELTA
+				if ( htlc.offered && htlc.cltv_expiry + HTLC_FAIL_TIMEOUT_BLOCKS <= height) ||
+				   (!htlc.offered && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
+					return true;
 				}
 			}
 		}

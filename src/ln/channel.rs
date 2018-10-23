@@ -1545,7 +1545,7 @@ impl Channel {
 		Ok(())
 	}
 
-	/// Removes an outbound HTLC which has been commitment_signed by the remote end
+	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<[u8; 32]>, fail_reason: Option<HTLCFailReason>) -> Result<&HTLCSource, ChannelError> {
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
@@ -1559,13 +1559,13 @@ impl Channel {
 				};
 				match htlc.state {
 					OutboundHTLCState::LocalAnnounced(_) =>
-						return Err(ChannelError::Close("Remote tried to fulfill HTLC before it had been committed")),
+						return Err(ChannelError::Close("Remote tried to fulfill/fail HTLC before it had been committed")),
 					OutboundHTLCState::Committed => {
 						htlc.state = OutboundHTLCState::RemoteRemoved;
 						htlc.fail_reason = fail_reason;
 					},
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove | OutboundHTLCState::AwaitingRemovedRemoteRevoke | OutboundHTLCState::RemoteRemoved =>
-						return Err(ChannelError::Close("Remote tried to fulfill HTLC that they'd already fulfilled")),
+						return Err(ChannelError::Close("Remote tried to fulfill/fail HTLC that they'd already fulfilled/failed")),
 				}
 				return Ok(&htlc.source);
 			}
@@ -2447,6 +2447,11 @@ impl Channel {
 
 	/// Allowed in any state (including after shutdown)
 	pub fn get_our_htlc_minimum_msat(&self) -> u64 {
+		self.our_htlc_minimum_msat
+	}
+
+	/// Allowed in any state (including after shutdown)
+	pub fn get_their_htlc_minimum_msat(&self) -> u64 {
 		self.our_htlc_minimum_msat
 	}
 

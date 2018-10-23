@@ -485,7 +485,19 @@ pub enum HTLCFailChannelUpdate {
 	ChannelClosed {
 		/// The short_channel_id which has now closed.
 		short_channel_id: u64,
+		/// when this true, this channel should be permanently removed from the
+		/// consideration. Otherwise, this channel can be restored as new channel_update is received
+		is_permanent: bool,
 	},
+	/// We received an error which indicated only that a node has failed
+	NodeFailure {
+		/// The node_id that has failed.
+		node_id: PublicKey,
+		/// when this true, node should be permanently removed from the
+		/// consideration. Otherwise, the channels connected to this node can be
+		/// restored as new channel_update is received
+		is_permanent: bool,
+	}
 }
 
 /// A trait to describe an object which can receive channel messages.
@@ -517,7 +529,7 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	/// Handle an incoming update_fulfill_htlc message from the given peer.
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming update_fail_htlc message from the given peer.
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<Option<HTLCFailChannelUpdate>, HandleError>;
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming commitment_signed message from the given peer.

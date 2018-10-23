@@ -23,7 +23,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError, ChannelKeys};
-use ln::channelmonitor::ManyChannelMonitor;
+use ln::channelmonitor::{ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{HandleError,ChannelMessageHandler};
@@ -105,6 +105,9 @@ mod channel_held_info {
 		OutboundRoute {
 			route: Route,
 			session_priv: SecretKey,
+			/// Technically we can recalculate this from the route, but we cache it here to avoid
+			/// doing a double-pass on route when we get a failure back
+			first_hop_htlc_msat: u64,
 		},
 	}
 	#[cfg(test)]
@@ -113,6 +116,7 @@ mod channel_held_info {
 			HTLCSource::OutboundRoute {
 				route: Route { hops: Vec::new() },
 				session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
+				first_hop_htlc_msat: 0,
 			}
 		}
 	}
@@ -290,7 +294,27 @@ pub struct ChannelManager {
 	logger: Arc<Logger>,
 }
 
+/// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
+/// HTLC's CLTV. This should always be a few blocks greater than channelmonitor::CLTV_CLAIM_BUFFER,
+/// ie the node we forwarded the payment on to should always have enough room to reliably time out
+/// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
+/// CLTV_CLAIM_BUFFER point (we static assert that its at least 3 blocks more).
 const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
+const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
+
+// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + 2*HTLC_FAIL_TIMEOUT_BLOCKS, ie that
+// if the next-hop peer fails the HTLC within HTLC_FAIL_TIMEOUT_BLOCKS then we'll still have
+// HTLC_FAIL_TIMEOUT_BLOCKS left to fail it backwards ourselves before hitting the
+// CLTV_CLAIM_BUFFER point and failing the channel on-chain to time out the HTLC.
+#[deny(const_err)]
+#[allow(dead_code)]
+const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIMEOUT_BLOCKS - CLTV_CLAIM_BUFFER;
+
+// Check for ability of an attacker to make us fail on-chain by delaying inbound claim. See
+// ChannelMontior::would_broadcast_at_height for a description of why this is needed.
+#[deny(const_err)]
+#[allow(dead_code)]
+const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - HTLC_FAIL_TIMEOUT_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
@@ -877,13 +901,17 @@ impl ChannelManager {
 			}
 		};
 
-		//TODO: Check that msg.cltv_expiry is within acceptable bounds!
-
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
-				if next_hop_data.data.amt_to_forward != msg.amount_msat {
+				// final_expiry_too_soon
+				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS) as u64 {
+					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
+				}
+				// final_incorrect_htlc_amount
+				if next_hop_data.data.amt_to_forward > msg.amount_msat {
 					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
+				// final_incorrect_cltv_expiry
 				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
@@ -948,29 +976,49 @@ impl ChannelManager {
 			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				let forwarding_id = match id_option {
-					None => {
+					None => { // unknown_next_peer
 						return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
 					},
 					Some(id) => id.clone(),
 				};
-				if let Some((err, code, chan_update)) = {
+				if let Some((err, code, chan_update)) = loop {
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
-					if !chan.is_live() {
-						Some(("Forwarding channel is not in a ready state.", 0x1000 | 7, self.get_channel_update(chan).unwrap()))
-					} else {
-						let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
-						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward {
-							Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, self.get_channel_update(chan).unwrap()))
-						} else {
-							if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 {
-								Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, self.get_channel_update(chan).unwrap()))
-							} else {
-								None
-							}
-						}
+
+					if !chan.is_live() { // channel_disabled
+						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
 					}
-				} {
-					return_err!(err, code, &chan_update.encode_with_len()[..]);
+					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
+						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
+					}
+					let fee = amt_to_forward.checked_mul(self.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
+					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
+						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
+					}
+					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
+					}
+					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+					// We want to have at least HTLC_FAIL_TIMEOUT_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
+					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS as u32 { // expiry_too_soon
+						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
+					}
+					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
+						break Some(("CLTV expiry is too far in the future", 21, None));
+					}
+					break None;
+				}
+				{
+					let mut res = Vec::with_capacity(8 + 128);
+					if code == 0x1000 | 11 || code == 0x1000 | 12 {
+						res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
+					}
+					else if code == 0x1000 | 13 {
+						res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+					}
+					if let Some(chan_update) = chan_update {
+						res.extend_from_slice(&chan_update.encode_with_len()[..]);
+					}
+					return_err!(err, code, &res[..]);
 				}
 			}
 		}
@@ -1068,6 +1116,7 @@ impl ChannelManager {
 				chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 					route: route.clone(),
 					session_priv: session_priv.clone(),
+					first_hop_htlc_msat: htlc_msat,
 				}, onion_packet).map_err(|he| APIError::ChannelUnavailable{err: he.err})?
 			};
 
@@ -1309,6 +1358,8 @@ impl ChannelManager {
 
 	/// Indicates that the preimage for payment_hash is unknown after a PaymentReceived event.
 	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32]) -> bool {
+		// TODO: Add ability to return 0x4000|16 (incorrect_payment_amount) if the amount we
+		// received is < expected or > 2*expected
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
@@ -1330,11 +1381,21 @@ impl ChannelManager {
 		match source {
 			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state);
-
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PaymentFailed {
-					payment_hash: payment_hash.clone()
-				});
+				if let &HTLCFailReason::ErrorPacket { ref err } = &onion_error {
+					let (channel_update, payment_retryable) = self.process_onion_failure(&source, err.data.clone());
+					let mut pending_events = self.pending_events.lock().unwrap();
+					if let Some(channel_update) = channel_update {
+						pending_events.push(events::Event::PaymentFailureNetworkUpdate {
+							update: channel_update,
+						});
+					}
+					pending_events.push(events::Event::PaymentFailed {
+						payment_hash: payment_hash.clone(),
+						rejected_by_dest: !payment_retryable,
+					});
+				} else {
+					panic!("should have onion error packet here");
+				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
 				let err_packet = match onion_error {
@@ -1748,9 +1809,206 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, MsgHandleErrInternal> {
+	// Process failure we got back from upstream on a payment we sent. Returns update and a boolean
+	// indicating that the payment itself failed
+	fn process_onion_failure(&self, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool) {
+		if let &HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
+			macro_rules! onion_failure_log {
+				( $error_code_textual: expr, $error_code: expr, $reported_name: expr, $reported_value: expr ) => {
+					log_trace!(self, "{}({:#x}) {}({})", $error_code_textual, $error_code, $reported_name, $reported_value);
+				};
+				( $error_code_textual: expr, $error_code: expr ) => {
+					log_trace!(self, "{}({})", $error_code_textual, $error_code);
+				};
+			}
+
+			const BADONION: u16 = 0x8000;
+			const PERM: u16 = 0x4000;
+			const UPDATE: u16 = 0x1000;
+
+			let mut res = None;
+			let mut htlc_msat = *first_hop_htlc_msat;
+
+			// Handle packed channel/node updates for passing back for the route handler
+			Self::construct_onion_keys_callback(&self.secp_ctx, route, session_priv, |shared_secret, _, _, route_hop| {
+				if res.is_some() { return; }
+
+				let incoming_htlc_msat = htlc_msat;
+				let amt_to_forward = htlc_msat - route_hop.fee_msat;
+				htlc_msat = amt_to_forward;
+
+				let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+
+				let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
+				decryption_tmp.resize(packet_decrypted.len(), 0);
+				let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
+				chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
+				packet_decrypted = decryption_tmp;
+
+				let is_from_final_node = route.hops.last().unwrap().pubkey == route_hop.pubkey;
+
+				if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
+					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+					let mut hmac = Hmac::new(Sha256::new(), &um);
+					hmac.input(&err_packet.encode()[32..]);
+					let mut calc_tag = [0u8; 32];
+					hmac.raw_result(&mut calc_tag);
+
+					if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
+						if err_packet.failuremsg.len() < 2 {
+							// Useless packet that we can't use but it passed HMAC, so it
+							// definitely came from the peer in question
+							res = Some((None, !is_from_final_node));
+						} else {
+							let error_code = byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]);
+
+							match error_code & 0xff {
+								1|2|3 => {
+									// either from an intermediate or final node
+									//   invalid_realm(PERM|1),
+									//   temporary_node_failure(NODE|2)
+									//   permanent_node_failure(PERM|NODE|2)
+									//   required_node_feature_mssing(PERM|NODE|3)
+									res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
+										node_id: route_hop.pubkey,
+										is_permanent: error_code & PERM == PERM,
+									}), !(error_code & PERM == PERM && is_from_final_node)));
+									// node returning invalid_realm is removed from network_map,
+									// although NODE flag is not set, TODO: or remove channel only?
+									// retry payment when removed node is not a final node
+									return;
+								},
+								_ => {}
+							}
+
+							if is_from_final_node {
+								let payment_retryable = match error_code {
+									c if c == PERM|15 => false, // unknown_payment_hash
+									c if c == PERM|16 => false, // incorrect_payment_amount
+									17 => true, // final_expiry_too_soon
+									18 if err_packet.failuremsg.len() == 6 => { // final_incorrect_cltv_expiry
+										let _reported_cltv_expiry = byte_utils::slice_to_be32(&err_packet.failuremsg[2..2+4]);
+										true
+									},
+									19 if err_packet.failuremsg.len() == 10 => { // final_incorrect_htlc_amount
+										let _reported_incoming_htlc_msat = byte_utils::slice_to_be64(&err_packet.failuremsg[2..2+8]);
+										true
+									},
+									_ => {
+										// A final node has sent us either an invalid code or an error_code that
+										// MUST be sent from the processing node, or the formmat of failuremsg
+										// does not coform to the spec.
+										// Remove it from the network map and don't may retry payment
+										res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
+											node_id: route_hop.pubkey,
+											is_permanent: true,
+										}), false));
+										return;
+									}
+								};
+								res = Some((None, payment_retryable));
+								return;
+							}
+
+							// now, error_code should be only from the intermediate nodes
+							match error_code {
+								_c if error_code & PERM == PERM => {
+									res = Some((Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
+										short_channel_id: route_hop.short_channel_id,
+										is_permanent: true,
+									}), false));
+								},
+								_c if error_code & UPDATE == UPDATE => {
+									let offset = match error_code {
+										c if c == UPDATE|7  => 0, // temporary_channel_failure
+										c if c == UPDATE|11 => 8, // amount_below_minimum
+										c if c == UPDATE|12 => 8, // fee_insufficient
+										c if c == UPDATE|13 => 4, // incorrect_cltv_expiry
+										c if c == UPDATE|14 => 0, // expiry_too_soon
+										c if c == UPDATE|20 => 2, // channel_disabled
+										_ =>  {
+											// node sending unknown code
+											res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
+												node_id: route_hop.pubkey,
+												is_permanent: true,
+											}), false));
+											return;
+										}
+									};
+
+									if err_packet.failuremsg.len() >= offset + 2 {
+										let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[offset+2..offset+4]) as usize;
+										if err_packet.failuremsg.len() >= offset + 4 + update_len {
+											if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&err_packet.failuremsg[offset + 4..offset + 4 + update_len])) {
+												// if channel_update should NOT have caused the failure:
+												// MAY treat the channel_update as invalid.
+												let is_chan_update_invalid = match error_code {
+													c if c == UPDATE|7 => { // temporary_channel_failure
+														false
+													},
+													c if c == UPDATE|11 => { // amount_below_minimum
+														let reported_htlc_msat = byte_utils::slice_to_be64(&err_packet.failuremsg[2..2+8]);
+														onion_failure_log!("amount_below_minimum", UPDATE|11, "htlc_msat", reported_htlc_msat);
+														incoming_htlc_msat > chan_update.contents.htlc_minimum_msat
+													},
+													c if c == UPDATE|12 => { // fee_insufficient
+														let reported_htlc_msat = byte_utils::slice_to_be64(&err_packet.failuremsg[2..2+8]);
+														let new_fee =  amt_to_forward.checked_mul(chan_update.contents.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan_update.contents.fee_base_msat as u64) });
+														onion_failure_log!("fee_insufficient", UPDATE|12, "htlc_msat", reported_htlc_msat);
+														new_fee.is_none() || incoming_htlc_msat >= new_fee.unwrap() && incoming_htlc_msat >= amt_to_forward + new_fee.unwrap()
+													}
+													c if c == UPDATE|13 => { // incorrect_cltv_expiry
+														let reported_cltv_expiry = byte_utils::slice_to_be32(&err_packet.failuremsg[2..2+4]);
+														onion_failure_log!("incorrect_cltv_expiry", UPDATE|13, "cltv_expiry", reported_cltv_expiry);
+														route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta
+													},
+													c if c == UPDATE|20 => { // channel_disabled
+														let reported_flags = byte_utils::slice_to_be16(&err_packet.failuremsg[2..2+2]);
+														onion_failure_log!("channel_disabled", UPDATE|20, "flags", reported_flags);
+														chan_update.contents.flags & 0x01 == 0x01
+													},
+													c if c == UPDATE|21 => true, // expiry_too_far
+													_ => { unreachable!(); },
+												};
+
+												let msg = if is_chan_update_invalid { None } else {
+													Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
+														msg: chan_update,
+													})
+												};
+												res = Some((msg, true));
+												return;
+											}
+										}
+									}
+								},
+								_c if error_code & BADONION == BADONION => {
+									//TODO
+								},
+								14 => { // expiry_too_soon
+									res = Some((None, true));
+									return;
+								}
+								_ => {
+									// node sending unknown code
+									res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
+										node_id: route_hop.pubkey,
+										is_permanent: true,
+									}), false));
+									return;
+								}
+							}
+						}
+					}
+				}
+			}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
+			res.unwrap_or((None, true))
+		} else { ((None, true)) }
+	}
+
+	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let htlc_source = match channel_state.by_id.get_mut(&msg.channel_id) {
+		match channel_state.by_id.get_mut(&msg.channel_id) {
 			Some(chan) => {
 				if chan.get_their_node_id() != *their_node_id {
 					//TODO: here and below MsgHandleErrInternal, #153 case
@@ -1761,64 +2019,7 @@ impl ChannelManager {
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}?;
-
-		match htlc_source {
-			&HTLCSource::OutboundRoute { ref route, ref session_priv, .. } => {
-				// Handle packed channel/node updates for passing back for the route handler
-				let mut packet_decrypted = msg.reason.data.clone();
-				let mut res = None;
-				Self::construct_onion_keys_callback(&self.secp_ctx, &route, &session_priv, |shared_secret, _, _, route_hop| {
-					if res.is_some() { return; }
-
-					let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
-
-					let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-					decryption_tmp.resize(packet_decrypted.len(), 0);
-					let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-					chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-					packet_decrypted = decryption_tmp;
-
-					if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
-						if err_packet.failuremsg.len() >= 2 {
-							let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
-
-							let mut hmac = Hmac::new(Sha256::new(), &um);
-							hmac.input(&err_packet.encode()[32..]);
-							let mut calc_tag = [0u8; 32];
-							hmac.raw_result(&mut calc_tag);
-							if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
-								const UNKNOWN_CHAN: u16 = 0x4000|10;
-								const TEMP_CHAN_FAILURE: u16 = 0x4000|7;
-								match byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]) {
-									TEMP_CHAN_FAILURE => {
-										if err_packet.failuremsg.len() >= 4 {
-											let update_len = byte_utils::slice_to_be16(&err_packet.failuremsg[2..4]) as usize;
-											if err_packet.failuremsg.len() >= 4 + update_len {
-												if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&err_packet.failuremsg[4..4 + update_len])) {
-													res = Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
-														msg: chan_update,
-													});
-												}
-											}
-										}
-									},
-									UNKNOWN_CHAN => {
-										// No such next-hop. We know this came from the
-										// current node as the HMAC validated.
-										res = Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-											short_channel_id: route_hop.short_channel_id
-										});
-									},
-									_ => {}, //TODO: Enumerate all of these!
-								}
-							}
-						}
-					}
-				}).unwrap();
-				Ok(res)
-			},
-			_ => { Ok(None) },
-		}
+		Ok(())
 	}
 
 	fn internal_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
@@ -2223,7 +2424,7 @@ impl ChannelMessageHandler for ChannelManager {
 		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<Option<msgs::HTLCFailChannelUpdate>, HandleError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
 	}
 
@@ -2352,6 +2553,7 @@ mod tests {
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
+	use ln::channelmonitor::{CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -2384,6 +2586,7 @@ mod tests {
 	use std::default::Default;
 	use std::rc::Rc;
 	use std::sync::{Arc, Mutex};
+	use std::sync::atomic::Ordering;
 	use std::time::Instant;
 	use std::mem;
 
@@ -3093,8 +3296,9 @@ mod tests {
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::PaymentFailed { payment_hash } => {
+				Event::PaymentFailed { payment_hash, rejected_by_dest } => {
 					assert_eq!(payment_hash, our_payment_hash);
+					assert!(rejected_by_dest);
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -4269,13 +4473,22 @@ mod tests {
 		assert_eq!(nodes[2].node.list_channels().len(), 0);
 		assert_eq!(nodes[3].node.list_channels().len(), 1);
 
+		{ // Cheat and reset nodes[4]'s height to 1
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			nodes[4].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![] }, 1);
+		}
+
+		assert_eq!(nodes[3].node.latest_block_height.load(Ordering::Acquire), 1);
+		assert_eq!(nodes[4].node.latest_block_height.load(Ordering::Acquire), 1);
 		// One pending HTLC to time out:
 		let payment_preimage_2 = route_payment(&nodes[3], &vec!(&nodes[4])[..], 3000000).0;
+		// CLTV expires at TEST_FINAL_CLTV + 1 (current height) + 1 (added in send_payment for
+		// buffer space).
 
 		{
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[3].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 3 {
+			nodes[3].chain_monitor.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
+			for i in 3..TEST_FINAL_CLTV + 2 + HTLC_FAIL_TIMEOUT_BLOCKS + 1 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[3].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
@@ -4286,8 +4499,8 @@ mod tests {
 			claim_funds!(nodes[4], nodes[3], payment_preimage_2);
 
 			header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[4].chain_monitor.block_connected_checked(&header, 1, &Vec::new()[..], &[0; 0]);
-			for i in 2..TEST_FINAL_CLTV - 3 {
+			nodes[4].chain_monitor.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
+			for i in 3..TEST_FINAL_CLTV + 2 - CLTV_CLAIM_BUFFER + 1 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				nodes[4].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 			}
@@ -4852,8 +5065,9 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentFailed { payment_hash } => {
+				Event::PaymentFailed { payment_hash, rejected_by_dest } => {
 					assert_eq!(payment_hash, payment_hash_5);
+					assert!(rejected_by_dest);
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -5115,7 +5329,7 @@ mod tests {
 		let as_chan = a_channel_lock.by_id.get(&chan_announcement.3).unwrap();
 		let bs_chan = b_channel_lock.by_id.get(&chan_announcement.3).unwrap();
 
-		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap() } );
+		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
 		let as_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &as_chan.get_local_keys().funding_key);
 		let bs_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &bs_chan.get_local_keys().funding_key);
@@ -5162,7 +5376,7 @@ mod tests {
 		let unsigned_msg = dummy_unsigned_msg!();
 		sign_msg!(unsigned_msg);
 		assert_eq!(nodes[0].router.handle_channel_announcement(&chan_announcement).unwrap(), true);
-		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap() } );
+		let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
 		// Configured with Network::Testnet
 		let mut unsigned_msg = dummy_unsigned_msg!();
