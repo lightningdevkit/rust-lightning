@@ -243,6 +243,7 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 ///
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
+#[derive(Clone)]
 pub struct ChannelMonitor {
 	funding_txo: Option<(OutPoint, Script)>,
 	commitment_transaction_number_obscure_factor: u64,
@@ -263,7 +264,7 @@ pub struct ChannelMonitor {
 	/// spending. Thus, in order to claim them via revocation key, we track all the remote
 	/// commitment transactions which we find on-chain, mapping them to the commitment number which
 	/// can be used to derive the revocation key and claim the transactions.
-	remote_commitment_txn_on_chain: Mutex<HashMap<Sha256dHash, u64>>,
+	remote_commitment_txn_on_chain: HashMap<Sha256dHash, (u64, Vec<Script>)>,
 	/// Cache used to make pruning of payment_preimages faster.
 	/// Maps payment_hash values to commitment numbers for remote transactions for non-revoked
 	/// remote transactions (ie should remain pretty small).
@@ -290,37 +291,6 @@ pub struct ChannelMonitor {
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 	logger: Arc<Logger>,
 }
-impl Clone for ChannelMonitor {
-	fn clone(&self) -> Self {
-		ChannelMonitor {
-			funding_txo: self.funding_txo.clone(),
-			commitment_transaction_number_obscure_factor: self.commitment_transaction_number_obscure_factor.clone(),
-
-			key_storage: self.key_storage.clone(),
-			their_htlc_base_key: self.their_htlc_base_key.clone(),
-			their_delayed_payment_base_key: self.their_delayed_payment_base_key.clone(),
-			their_cur_revocation_points: self.their_cur_revocation_points.clone(),
-
-			our_to_self_delay: self.our_to_self_delay,
-			their_to_self_delay: self.their_to_self_delay,
-
-			old_secrets: self.old_secrets.clone(),
-			remote_claimable_outpoints: self.remote_claimable_outpoints.clone(),
-			remote_commitment_txn_on_chain: Mutex::new((*self.remote_commitment_txn_on_chain.lock().unwrap()).clone()),
-			remote_hash_commitment_number: self.remote_hash_commitment_number.clone(),
-
-			prev_local_signed_commitment_tx: self.prev_local_signed_commitment_tx.clone(),
-			current_local_signed_commitment_tx: self.current_local_signed_commitment_tx.clone(),
-
-			payment_preimages: self.payment_preimages.clone(),
-
-			destination_script: self.destination_script.clone(),
-			last_block_hash: self.last_block_hash.clone(),
-			secp_ctx: self.secp_ctx.clone(),
-			logger: self.logger.clone(),
-		}
-	}
-}
 
 #[cfg(any(test, feature = "fuzztarget"))]
 /// Used only in testing and fuzztarget to check serialization roundtrips don't change the
@@ -336,6 +306,7 @@ impl PartialEq for ChannelMonitor {
 			self.our_to_self_delay != other.our_to_self_delay ||
 			self.their_to_self_delay != other.their_to_self_delay ||
 			self.remote_claimable_outpoints != other.remote_claimable_outpoints ||
+			self.remote_commitment_txn_on_chain != other.remote_commitment_txn_on_chain ||
 			self.remote_hash_commitment_number != other.remote_hash_commitment_number ||
 			self.prev_local_signed_commitment_tx != other.prev_local_signed_commitment_tx ||
 			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
@@ -349,9 +320,7 @@ impl PartialEq for ChannelMonitor {
 					return false
 				}
 			}
-			let us = self.remote_commitment_txn_on_chain.lock().unwrap();
-			let them = other.remote_commitment_txn_on_chain.lock().unwrap();
-			*us == *them
+			true
 		}
 	}
 }
@@ -378,7 +347,7 @@ impl ChannelMonitor {
 
 			old_secrets: [([0; 32], 1 << 48); 49],
 			remote_claimable_outpoints: HashMap::new(),
-			remote_commitment_txn_on_chain: Mutex::new(HashMap::new()),
+			remote_commitment_txn_on_chain: HashMap::new(),
 			remote_hash_commitment_number: HashMap::new(),
 
 			prev_local_signed_commitment_tx: None,
@@ -613,6 +582,20 @@ impl ChannelMonitor {
 		}
 	}
 
+	/// Gets the sets of all outpoints which this ChannelMonitor expects to hear about spends of.
+	/// Generally useful when deserializing as during normal operation the return values of
+	/// block_connected are sufficient to ensure all relevant outpoints are being monitored (note
+	/// that the get_funding_txo outpoint and transaction must also be monitored for!).
+	pub fn get_monitored_outpoints(&self) -> Vec<(Sha256dHash, u32, &Script)> {
+		let mut res = Vec::with_capacity(self.remote_commitment_txn_on_chain.len() * 2);
+		for (ref txid, &(_, ref outputs)) in self.remote_commitment_txn_on_chain.iter() {
+			for (idx, output) in outputs.iter().enumerate() {
+				res.push(((*txid).clone(), idx as u32, output));
+			}
+		}
+		res
+	}
+
 	/// Serializes into a vec, with various modes for the exposed pub fns
 	fn write<W: Writer>(&self, writer: &mut W, for_local_storage: bool) -> Result<(), ::std::io::Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
@@ -707,12 +690,13 @@ impl ChannelMonitor {
 			}
 		}
 
-		{
-			let remote_commitment_txn_on_chain = self.remote_commitment_txn_on_chain.lock().unwrap();
-			writer.write_all(&byte_utils::be64_to_array(remote_commitment_txn_on_chain.len() as u64))?;
-			for (txid, commitment_number) in remote_commitment_txn_on_chain.iter() {
-				writer.write_all(&txid[..])?;
-				writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
+		writer.write_all(&byte_utils::be64_to_array(self.remote_commitment_txn_on_chain.len() as u64))?;
+		for (txid, (commitment_number, txouts)) in self.remote_commitment_txn_on_chain.iter() {
+			writer.write_all(&txid[..])?;
+			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
+			(txouts.len() as u64).write(writer)?;
+			for script in txouts.iter() {
+				script.write(writer)?;
 			}
 		}
 
@@ -826,7 +810,7 @@ impl ChannelMonitor {
 	/// data in remote_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions.
-	fn check_spend_remote_transaction(&self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>) {
+	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>) {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
@@ -966,7 +950,7 @@ impl ChannelMonitor {
 			if !inputs.is_empty() || !txn_to_broadcast.is_empty() { // ie we're confident this is actually ours
 				// We're definitely a remote commitment transaction!
 				watch_outputs.append(&mut tx.output.clone());
-				self.remote_commitment_txn_on_chain.lock().unwrap().insert(commitment_txid, commitment_number);
+				self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 			}
 			if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); } // Nothing to be done...probably a false positive/local tx
 
@@ -1003,7 +987,7 @@ impl ChannelMonitor {
 			// not being generated by the above conditional. Thus, to be safe, we go ahead and
 			// insert it here.
 			watch_outputs.append(&mut tx.output.clone());
-			self.remote_commitment_txn_on_chain.lock().unwrap().insert(commitment_txid, commitment_number);
+			self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 
 			if let Some(revocation_points) = self.their_cur_revocation_points {
 				let revocation_point_option =
@@ -1330,9 +1314,8 @@ impl ChannelMonitor {
 						txn = remote_txn;
 					}
 				} else {
-					let remote_commitment_txn_on_chain = self.remote_commitment_txn_on_chain.lock().unwrap();
-					if let Some(commitment_number) = remote_commitment_txn_on_chain.get(&prevout.txid) {
-						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, *commitment_number);
+					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
+						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, commitment_number);
 						if let Some(tx) = tx {
 							txn.push(tx);
 						}
@@ -1521,7 +1504,12 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 		for _ in 0..remote_commitment_txn_on_chain_len {
 			let txid: Sha256dHash = Readable::read(reader)?;
 			let commitment_number = <U48 as Readable<R>>::read(reader)?.0;
-			if let Some(_) = remote_commitment_txn_on_chain.insert(txid, commitment_number) {
+			let outputs_count = <u64 as Readable<R>>::read(reader)?;
+			let mut outputs = Vec::with_capacity(cmp::min(outputs_count as usize, MAX_ALLOC_SIZE / 8));
+			for _ in 0..outputs_count {
+				outputs.push(Readable::read(reader)?);
+			}
+			if let Some(_) = remote_commitment_txn_on_chain.insert(txid, (commitment_number, outputs)) {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -1619,7 +1607,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 			old_secrets,
 			remote_claimable_outpoints,
-			remote_commitment_txn_on_chain: Mutex::new(remote_commitment_txn_on_chain),
+			remote_commitment_txn_on_chain,
 			remote_hash_commitment_number,
 
 			prev_local_signed_commitment_tx,
