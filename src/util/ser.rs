@@ -2,19 +2,19 @@
 //! as ChannelsManagers and ChannelMonitors.
 
 use std::result::Result;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
 
 use secp256k1::{Secp256k1, Signature};
-use secp256k1::key::PublicKey;
+use secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
 use util::byte_utils;
 
-use util::byte_utils::{be64_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be64};
+use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
 
 const MAX_BUF_SIZE: usize = 64 * 1024;
 
@@ -30,13 +30,27 @@ pub trait Writer {
 	fn size_hint(&mut self, size: usize);
 }
 
-impl<W: ::std::io::Write> Writer for W {
+impl<W: Write> Writer for W {
 	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		<Self as ::std::io::Write>::write_all(self, buf)
 	}
 	#[inline]
 	fn size_hint(&mut self, _size: usize) { }
+}
+
+pub(crate) struct WriterWriteAdaptor<'a, W: Writer + 'a>(pub &'a mut W);
+impl<'a, W: Writer + 'a> Write for WriterWriteAdaptor<'a, W> {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0.write_all(buf)
+	}
+	fn write(&mut self, buf: &[u8]) -> Result<usize, ::std::io::Error> {
+		self.0.write_all(buf)?;
+		Ok(buf.len())
+	}
+	fn flush(&mut self) -> Result<(), ::std::io::Error> {
+		Ok(())
+	}
 }
 
 struct VecWriter(Vec<u8>);
@@ -90,6 +104,22 @@ pub trait ReadableArgs<R, P>
 {
 	/// Reads a Self in from the given Read
 	fn read(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+}
+
+pub(crate) struct U48(pub u64);
+impl Writeable for U48 {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		writer.write_all(&be48_to_array(self.0))
+	}
+}
+impl<R: Read> Readable<R> for U48 {
+	#[inline]
+	fn read(reader: &mut R) -> Result<U48, DecodeError> {
+		let mut buf = [0; 6];
+		reader.read_exact(&mut buf)?;
+		Ok(U48(slice_to_be48(&buf)))
+	}
 }
 
 macro_rules! impl_writeable_primitive {
@@ -304,6 +334,24 @@ impl<R: Read> Readable<R> for PublicKey {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 33] = Readable::read(r)?;
 		match PublicKey::from_slice(&Secp256k1::without_caps(), &buf) {
+			Ok(key) => Ok(key),
+			Err(_) => return Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for SecretKey {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		let mut ser = [0; 32];
+		ser.copy_from_slice(&self[..]);
+		ser.write(w)
+	}
+}
+
+impl<R: Read> Readable<R> for SecretKey {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		match SecretKey::from_slice(&Secp256k1::without_caps(), &buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
