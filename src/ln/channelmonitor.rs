@@ -16,6 +16,7 @@ use bitcoin::blockdata::transaction::{TxIn,TxOut,SigHashType,Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 use bitcoin::network::serialize;
+use bitcoin::network::serialize::BitcoinHash;
 use bitcoin::network::encodable::{ConsensusDecodable, ConsensusEncodable};
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::util::bip143;
@@ -114,12 +115,13 @@ pub struct SimpleManyChannelMonitor<Key> {
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
-	fn block_connected(&self, _header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
+	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
+		let block_hash = header.bitcoin_hash();
 		let mut new_events: Vec<events::Event> = Vec::with_capacity(0);
 		{
-			let monitors = self.monitors.lock().unwrap();
-			for monitor in monitors.values() {
-				let (txn_outputs, spendable_outputs) = monitor.block_connected(txn_matched, height, &*self.broadcaster);
+			let mut monitors = self.monitors.lock().unwrap();
+			for monitor in monitors.values_mut() {
+				let (txn_outputs, spendable_outputs) = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster);
 				if spendable_outputs.len() > 0 {
 					new_events.push(events::Event::SpendableOutputs {
 						outputs: spendable_outputs,
@@ -279,6 +281,12 @@ pub struct ChannelMonitor {
 
 	destination_script: Script,
 
+	// We simply modify last_block_hash in Channel's block_connected so that serialization is
+	// consistent but hopefully the users' copy handles block_connected in a consistent way.
+	// (we do *not*, however, update them in insert_combine to ensure any local user copies keep
+	// their last_block_hash from its state and not based on updated copies that didn't run through
+	// the full block_connected).
+	pub(crate) last_block_hash: Sha256dHash,
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 	logger: Arc<Logger>,
 }
@@ -307,6 +315,7 @@ impl Clone for ChannelMonitor {
 			payment_preimages: self.payment_preimages.clone(),
 
 			destination_script: self.destination_script.clone(),
+			last_block_hash: self.last_block_hash.clone(),
 			secp_ctx: self.secp_ctx.clone(),
 			logger: self.logger.clone(),
 		}
@@ -378,6 +387,7 @@ impl ChannelMonitor {
 			payment_preimages: HashMap::new(),
 			destination_script: destination_script,
 
+			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
 			logger,
 		}
@@ -759,17 +769,30 @@ impl ChannelMonitor {
 			writer.write_all(payment_preimage)?;
 		}
 
+		self.last_block_hash.write(writer)?;
 		self.destination_script.write(writer)?;
 
 		Ok(())
 	}
 
 	/// Writes this monitor into the given writer, suitable for writing to disk.
+	///
+	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
+	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+	/// the "reorg path" (ie not just starting at the same height but starting at the highest
+	/// common block that appears on your best chain as well as on the chain which contains the
+	/// last block hash returned) upon deserializing the object!
 	pub fn write_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.write(writer, true)
 	}
 
 	/// Encodes this monitor into the given writer, suitable for sending to a remote watchtower
+	///
+	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
+	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+	/// the "reorg path" (ie not just starting at the same height but starting at the highest
+	/// common block that appears on your best chain as well as on the chain which contains the
+	/// last block hash returned) upon deserializing the object!
 	pub fn write_for_watchtower<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.write(writer, false)
 	}
@@ -1283,7 +1306,7 @@ impl ChannelMonitor {
 		(Vec::new(), Vec::new())
 	}
 
-	fn block_connected(&self, txn_matched: &[&Transaction], height: u32, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>) {
+	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>) {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		for tx in txn_matched {
@@ -1344,6 +1367,7 @@ impl ChannelMonitor {
 				}
 			}
 		}
+		self.last_block_hash = block_hash.clone();
 		(watch_outputs, spendable_outputs)
 	}
 
@@ -1382,7 +1406,7 @@ impl ChannelMonitor {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for ChannelMonitor {
+impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelMonitor) {
 	fn read(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let secp_ctx = Secp256k1::new();
 		macro_rules! unwrap_obj {
@@ -1578,9 +1602,10 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for ChannelMonitor {
 			}
 		}
 
+		let last_block_hash: Sha256dHash = Readable::read(reader)?;
 		let destination_script = Readable::read(reader)?;
 
-		Ok(ChannelMonitor {
+		Ok((last_block_hash.clone(), ChannelMonitor {
 			funding_txo,
 			commitment_transaction_number_obscure_factor,
 
@@ -1603,9 +1628,10 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for ChannelMonitor {
 			payment_preimages,
 
 			destination_script,
+			last_block_hash,
 			secp_ctx,
 			logger,
-		})
+		}))
 	}
 
 }

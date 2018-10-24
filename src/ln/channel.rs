@@ -2674,6 +2674,7 @@ impl Channel {
 		if self.funding_tx_confirmations > 0 {
 			if header.bitcoin_hash() != self.last_block_connected {
 				self.last_block_connected = header.bitcoin_hash();
+				self.channel_monitor.last_block_hash = self.last_block_connected;
 				self.funding_tx_confirmations += 1;
 				if self.funding_tx_confirmations == Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
