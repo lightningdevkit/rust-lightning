@@ -349,18 +349,25 @@ impl RoutingMessageHandler for Router {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
 				let _ = self.handle_channel_update(msg);
 			},
-			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id, is_permanent:_ } => {
-//XXX
+			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id, ref is_permanent } => {
 				let mut network = self.network_map.write().unwrap();
-				if let Some(chan) = network.channels.remove(short_channel_id) {
-					Self::remove_channel_in_nodes(&mut network.nodes, &chan, *short_channel_id);
+				if *is_permanent {
+					if let Some(chan) = network.channels.remove(short_channel_id) {
+						Self::remove_channel_in_nodes(&mut network.nodes, &chan, *short_channel_id);
+					}
+				} else {
+					if let Some(chan) = network.channels.get_mut(short_channel_id) {
+						chan.one_to_two.enabled = false;
+						chan.two_to_one.enabled = false;
+					}
 				}
 			},
-			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent:_ } => {
-//XXX
-				//let mut network = self.network_map.write().unwrap();
-				//TODO: check _blamed_upstream_node
-				self.mark_node_bad(node_id, false);
+			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, ref is_permanent } => {
+				if *is_permanent {
+					//TODO: Wholly remove the node
+				} else {
+					self.mark_node_bad(node_id, false);
+				}
 			},
 		}
 	}
