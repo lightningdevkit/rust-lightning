@@ -15,7 +15,7 @@ use crypto::digest::Digest;
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmonitor;
-use lightning::ln::channelmanager::ChannelManager;
+use lightning::ln::channelmanager::{ChannelManager, PaymentFailReason};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
@@ -337,7 +337,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 					// fulfill this HTLC, but if they are, we can just take the first byte and
 					// place that anywhere in our preimage.
 					if &payment[1..] != &[0; 31] {
-						channelmanager.fail_htlc_backwards(&payment);
+						channelmanager.fail_htlc_backwards(&payment, PaymentFailReason::PreimageUnknown);
 					} else {
 						let mut payment_preimage = [0; 32];
 						payment_preimage[0] = payment[0];
@@ -347,7 +347,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 			},
 			9 => {
 				for payment in payments_received.drain(..) {
-					channelmanager.fail_htlc_backwards(&payment);
+					channelmanager.fail_htlc_backwards(&payment, PaymentFailReason::PreimageUnknown);
 				}
 			},
 			10 => {
