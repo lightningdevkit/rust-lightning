@@ -278,6 +278,10 @@ pub struct ChannelMonitor {
 	prev_local_signed_commitment_tx: Option<LocalSignedTx>,
 	current_local_signed_commitment_tx: Option<LocalSignedTx>,
 
+	// Used just for ChannelManager to make sure it has the latest channel data during
+	// deserialization
+	current_remote_commitment_number: u64,
+
 	payment_preimages: HashMap<[u8; 32], [u8; 32]>,
 
 	destination_script: Script,
@@ -309,6 +313,7 @@ impl PartialEq for ChannelMonitor {
 			self.remote_commitment_txn_on_chain != other.remote_commitment_txn_on_chain ||
 			self.remote_hash_commitment_number != other.remote_hash_commitment_number ||
 			self.prev_local_signed_commitment_tx != other.prev_local_signed_commitment_tx ||
+			self.current_remote_commitment_number != other.current_remote_commitment_number ||
 			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
 			self.payment_preimages != other.payment_preimages ||
 			self.destination_script != other.destination_script
@@ -352,6 +357,7 @@ impl ChannelMonitor {
 
 			prev_local_signed_commitment_tx: None,
 			current_local_signed_commitment_tx: None,
+			current_remote_commitment_number: 1 << 48,
 
 			payment_preimages: HashMap::new(),
 			destination_script: destination_script,
@@ -471,6 +477,7 @@ impl ChannelMonitor {
 			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
 		}
 		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), htlc_outputs);
+		self.current_remote_commitment_number = commitment_number;
 	}
 
 	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
@@ -528,6 +535,8 @@ impl ChannelMonitor {
 		if our_min_secret > other_min_secret {
 			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap(), None)?;
 		}
+		// TODO: We should use current_remote_commitment_number and the commitment number out of
+		// local transactions to decide how to merge
 		if our_min_secret >= other_min_secret {
 			self.their_cur_revocation_points = other.their_cur_revocation_points;
 			for (txid, htlcs) in other.remote_claimable_outpoints.drain() {
@@ -541,6 +550,7 @@ impl ChannelMonitor {
 			}
 			self.payment_preimages = other.payment_preimages;
 		}
+		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
 		Ok(())
 	}
 
@@ -748,6 +758,12 @@ impl ChannelMonitor {
 			writer.write_all(&[0; 1])?;
 		}
 
+		if for_local_storage {
+			writer.write_all(&byte_utils::be48_to_array(self.current_remote_commitment_number))?;
+		} else {
+			writer.write_all(&byte_utils::be48_to_array(0))?;
+		}
+
 		writer.write_all(&byte_utils::be64_to_array(self.payment_preimages.len() as u64))?;
 		for payment_preimage in self.payment_preimages.values() {
 			writer.write_all(payment_preimage)?;
@@ -804,6 +820,16 @@ impl ChannelMonitor {
 			}
 		}
 		min
+	}
+
+	pub(super) fn get_cur_remote_commitment_number(&self) -> u64 {
+		self.current_remote_commitment_number
+	}
+
+	pub(super) fn get_cur_local_commitment_number(&self) -> u64 {
+		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
+			0xffff_ffff_ffff - ((((local_tx.tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor)
+		} else { 0xffff_ffff_ffff }
 	}
 
 	/// Attempts to claim a remote commitment transaction's outputs using the revocation key and
@@ -1290,6 +1316,23 @@ impl ChannelMonitor {
 		(Vec::new(), Vec::new())
 	}
 
+	/// Used by ChannelManager deserialization to broadcast the latest local state if it's copy of
+	/// the Channel was out-of-date.
+	pub(super) fn get_latest_local_commitment_txn(&self) -> Vec<Transaction> {
+		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
+			let mut res = vec![local_tx.tx.clone()];
+			match self.key_storage {
+				KeyStorage::PrivMode { ref delayed_payment_base_key, ref prev_latest_per_commitment_point, .. } => {
+					res.append(&mut self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key)).0);
+				},
+				_ => panic!("Can only broadcast by local channelmonitor"),
+			};
+			res
+		} else {
+			Vec::new()
+		}
+	}
+
 	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>) {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
@@ -1576,6 +1619,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
+		let current_remote_commitment_number = <U48 as Readable<R>>::read(reader)?.0;
+
 		let payment_preimages_len: u64 = Readable::read(reader)?;
 		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
 		let mut sha = Sha256::new();
@@ -1612,6 +1657,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 			prev_local_signed_commitment_tx,
 			current_local_signed_commitment_tx,
+			current_remote_commitment_number,
 
 			payment_preimages,
 

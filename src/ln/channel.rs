@@ -2560,6 +2560,18 @@ impl Channel {
 		self.feerate_per_kw
 	}
 
+	pub fn get_cur_local_commitment_transaction_number(&self) -> u64 {
+		self.cur_local_commitment_transaction_number + 1
+	}
+
+	pub fn get_cur_remote_commitment_transaction_number(&self) -> u64 {
+		self.cur_remote_commitment_transaction_number + 1 - if self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 }
+	}
+
+	pub fn get_revoked_remote_commitment_transaction_number(&self) -> u64 {
+		self.cur_remote_commitment_transaction_number + 2
+	}
+
 	//TODO: Testing purpose only, should be changed in another way after #81
 	#[cfg(test)]
 	pub fn get_local_keys(&self) -> &ChannelKeys {
