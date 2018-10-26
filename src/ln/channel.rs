@@ -436,11 +436,9 @@ impl Channel {
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let secp_ctx = Secp256k1::new();
-		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).serialize());
-		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key, &chan_keys.delayed_payment_base_key,
-		                                          &chan_keys.htlc_base_key,
-		                                          BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
+		                                          &chan_keys.htlc_base_key, BREAKDOWN_TIMEOUT,
+		                                          keys_provider.get_destination_script());
 
 		Ok(Channel {
 			user_id: user_id,
@@ -600,11 +598,9 @@ impl Channel {
 		}
 
 		let secp_ctx = Secp256k1::new();
-		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &chan_keys.channel_monitor_claim_key).serialize());
-		let our_channel_monitor_claim_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script();
 		let mut channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key, &chan_keys.delayed_payment_base_key,
-		                                              &chan_keys.htlc_base_key,
-		                                              BREAKDOWN_TIMEOUT, our_channel_monitor_claim_script);
+		                                              &chan_keys.htlc_base_key, BREAKDOWN_TIMEOUT,
+		                                              keys_provider.get_destination_script());
 		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
 
@@ -3232,11 +3228,12 @@ impl Channel {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::util::hash::{Sha256dHash, Hash160};
 	use bitcoin::util::bip143;
 	use bitcoin::network::serialize::serialize;
-	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::transaction::Transaction;
+	use bitcoin::blockdata::opcodes;
 	use hex;
 	use ln::channelmanager::HTLCSource;
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
@@ -3273,7 +3270,12 @@ mod tests {
 	}
 	impl KeysInterface for Keys {
 		fn get_node_secret(&self) -> SecretKey { panic!(); }
-		fn get_destination_script(&self) -> Script { panic!(); }
+		fn get_destination_script(&self) -> Script {
+			let secp_ctx = Secp256k1::signing_only();
+			let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
+			let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+			Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+		}
 
 		fn get_shutdown_pubkey(&self) -> PublicKey {
 			let secp_ctx = Secp256k1::signing_only();
@@ -3299,7 +3301,6 @@ mod tests {
 
 			// These aren't set in the test vectors:
 			revocation_base_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-			channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
 		};
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan_keys.funding_key).serialize()[..],
