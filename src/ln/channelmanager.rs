@@ -221,6 +221,16 @@ impl MsgHandleErrInternal {
 	}
 }
 
+/// Pass to fail_htlc_backwwards to indicate the reason to fail the payment
+/// after a PaymentReceived event.
+#[derive(PartialEq)]
+pub enum PaymentFailReason {
+	/// Indicate the preimage for payment_hash is not known after a PaymentReceived event
+	PreimageUnknown,
+	/// Indicate the payment amount is incorrect ( received is < expected or > 2*expected ) after a PaymentReceived event
+	AmountMismatch,
+}
+
 /// We hold back HTLCs we intend to relay for a random interval in the range (this, 5*this). This
 /// provides some limited amount of privacy. Ideally this would range from somewhere like 1 second
 /// to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly. We could
@@ -1393,16 +1403,14 @@ impl ChannelManager {
 		events.append(&mut new_events);
 	}
 
-	/// Indicates that the preimage for payment_hash is unknown after a PaymentReceived event.
-	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32]) -> bool {
-		// TODO: Add ability to return 0x4000|16 (incorrect_payment_amount) if the amount we
-		// received is < expected or > 2*expected
+	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect after a PaymentReceived event.
+	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32], reason: PaymentFailReason) -> bool {
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
 			for htlc_with_hash in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				self.fail_htlc_backwards_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: Vec::new() });
+				self.fail_htlc_backwards_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_hash, HTLCFailReason::Reason { failure_code: if reason == PaymentFailReason::PreimageUnknown {0x4000 | 15} else {0x4000 | 16}, data: Vec::new() });
 			}
 			true
 		} else { false }
@@ -2677,7 +2685,7 @@ mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
-	use ln::channelmanager::{ChannelManager,OnionKeys};
+	use ln::channelmanager::{ChannelManager,OnionKeys,PaymentFailReason};
 	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
@@ -3368,7 +3376,7 @@ mod tests {
 	}
 
 	fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: [u8; 32]) {
-		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
+		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, PaymentFailReason::PreimageUnknown));
 		check_added_monitors!(expected_route.last().unwrap(), 1);
 
 		let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;

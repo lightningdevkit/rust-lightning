@@ -50,8 +50,11 @@ pub enum Event {
 	},
 	/// Indicates we've received money! Just gotta dig out that payment preimage and feed it to
 	/// ChannelManager::claim_funds to get it....
-	/// Note that if the preimage is not known, you must call ChannelManager::fail_htlc_backwards
-	/// to free up resources for this HTLC.
+	/// Note that if the preimage is not known or the amount paid is incorrect, you must call
+	/// ChannelManager::fail_htlc_backwards with PaymentFailReason::PreimageUnknown or
+	/// PaymentFailReason::AmountMismatch, respectively, to free up resources for this HTLC.
+	/// The amount paid should be considered 'incorrect' when it is less than or more than twice
+	/// the amount expected.
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: [u8; 32],
