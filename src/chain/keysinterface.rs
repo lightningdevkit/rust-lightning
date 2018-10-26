@@ -7,7 +7,13 @@
 //!
 
 use bitcoin::blockdata::transaction::OutPoint;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::network::constants::Network;
+use bitcoin::network::serialize::BitcoinHash;
+use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::Secp256k1;
@@ -17,6 +23,9 @@ use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use util::events;
 use util::sha2::Sha256;
+use util::logger::Logger;
+
+use std::sync::Arc;
 
 /// A trait to describe a wallet which sould receive data to be able to spend onchain outputs
 /// fron a lightning channel
@@ -153,5 +162,84 @@ impl ChannelKeys {
 			channel_monitor_claim_key: channel_monitor_claim_key,
 			commitment_seed: okm
 		})
+	}
+}
+
+/// Utility for storing/deriving lightning keys materials
+pub struct KeysManager {
+	genesis_hash: Sha256dHash,
+	secp_ctx: Secp256k1<secp256k1::All>,
+	master_key: SecretKey,
+	node_secret: SecretKey,
+	destination_script: Script,
+	shutdown_pubkey: PublicKey,
+	channel_master_key: ExtendedPrivKey,
+
+	logger: Arc<Logger>,
+}
+
+impl KeysManager {
+	/// Constructs and empty KeysManager
+	pub fn new(seed: &[u8;32], network: Network, logger: Arc<Logger>) -> Option<KeysManager> {
+		let secp_ctx = Secp256k1::new();
+		match ExtendedPrivKey::new_master(&secp_ctx, network.clone(), seed) {
+			Ok(master_key) => {
+				let node_secret = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)) {
+					Ok(node_secret) => node_secret.secret_key,
+					Err(_) => return None,
+				};
+				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1)) {
+					Ok(destination_key) => Builder::new().push_slice(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..])
+									             .push_opcode(opcodes::All::OP_CHECKSIG)
+									             .into_script(),
+					Err(_) => return None,
+				};
+				let shutdown_pubkey = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(2)) {
+					Ok(shutdown_key) => ExtendedPubKey::from_private(&secp_ctx, &shutdown_key).public_key,
+					Err(_) => return None,
+				};
+				let channel_master_key = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3)) {
+					Ok(channel_master_key) => channel_master_key,
+					Err(_) => return None,
+				};
+				return Some(KeysManager {
+					genesis_hash: genesis_block(network).header.bitcoin_hash(),
+					secp_ctx,
+					master_key: master_key.secret_key,
+					node_secret,
+					destination_script,
+					shutdown_pubkey,
+					channel_master_key,
+
+					logger,
+				});
+			},
+			Err(_) => return None,
+		};
+	}
+}
+
+impl KeysInterface for KeysManager {
+	fn get_node_secret(&self) -> SecretKey {
+		self.node_secret.clone()
+	}
+
+	fn get_destination_script(&self) -> Script {
+		self.destination_script.clone()
+	}
+
+	fn get_shutdown_pubkey(&self) -> PublicKey {
+		self.shutdown_pubkey.clone()
+	}
+
+	fn get_channel_keys(&self) -> Option<ChannelKeys> {
+		let channel_pubkey = ExtendedPubKey::from_private(&self.secp_ctx, &self. channel_master_key);
+		let mut seed = [0; 32];
+		for (arr, slice) in seed.iter_mut().zip((&channel_pubkey.public_key.serialize()[0..32]).iter()) {
+			*arr = *slice;
+		}
+		if let Ok(channel_keys) = ChannelKeys::new_from_seed(&seed) {
+			return Some(channel_keys);
+		} else { None }
 	}
 }
