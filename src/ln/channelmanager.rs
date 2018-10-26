@@ -28,6 +28,7 @@ use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, HandleError, RAACommitmentOrder};
 use chain::keysinterface::ChannelKeys;
+use chain::keysinterface::KeysInterface;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::ser::{Readable, Writeable};
@@ -292,6 +293,8 @@ pub struct ChannelManager {
 
 	pending_events: Mutex<Vec<events::Event>>,
 
+	keys_manager: Arc<KeysInterface>,
+
 	logger: Arc<Logger>,
 }
 
@@ -364,7 +367,7 @@ impl ChannelManager {
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(our_network_key: SecretKey, fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	pub fn new(fee_proportional_millionths: u32, announce_channels_publicly: bool, network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, keys_manager: Arc<KeysInterface>) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -386,9 +389,11 @@ impl ChannelManager {
 				forward_htlcs: HashMap::new(),
 				claimable_htlcs: HashMap::new(),
 			}),
-			our_network_key,
+			our_network_key: keys_manager.get_node_secret(),
 
 			pending_events: Mutex::new(Vec::new()),
+
+			keys_manager,
 
 			logger,
 		});
@@ -421,11 +426,10 @@ impl ChannelManager {
 				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 			}
 		} else {
-			let mut key_seed = [0u8; 32];
-			rng::fill_bytes(&mut key_seed);
-			match ChannelKeys::new_from_seed(&key_seed) {
-				Ok(key) => key,
-				Err(_) => panic!("RNG is busted!")
+			if let Some(keys) = self.keys_manager.get_channel_keys() {
+				keys
+			} else {
+				panic!("KeysManager is busted!");
 			}
 		};
 
@@ -1680,11 +1684,10 @@ impl ChannelManager {
 				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 			}
 		} else {
-			let mut key_seed = [0u8; 32];
-			rng::fill_bytes(&mut key_seed);
-			match ChannelKeys::new_from_seed(&key_seed) {
-				Ok(key) => key,
-				Err(_) => panic!("RNG is busted!")
+			if let Some(keys) = self.keys_manager.get_channel_keys() {
+				keys
+			} else {
+				panic!("KeysManager is busted!");
 			}
 		};
 
@@ -2678,6 +2681,8 @@ mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::ChainListener;
+	use chain::keysinterface::KeysInterface;
+	use chain::keysinterface;
 	use ln::channelmanager::{ChannelManager,OnionKeys};
 	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 	use ln::router::{Route, RouteHop, Router};
@@ -3450,14 +3455,12 @@ mod tests {
 			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
+			let mut seed = [0; 32];
+			rng.fill_bytes(&mut seed);
+			let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)).unwrap());
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
-			let node_id = {
-				let mut key_slice = [0; 32];
-				rng.fill_bytes(&mut key_slice);
-				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
-			};
-			let node = ChannelManager::new(node_id.clone(), 0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger)).unwrap();
-			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &node_id), chain_monitor.clone(), Arc::clone(&logger));
+			let node = ChannelManager::new(0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
+			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
 			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router,
 				network_payment_count: payment_count.clone(),
 				network_chan_count: chan_count.clone(),

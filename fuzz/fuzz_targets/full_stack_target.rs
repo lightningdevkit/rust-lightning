@@ -2,6 +2,7 @@ extern crate bitcoin;
 extern crate crypto;
 extern crate lightning;
 extern crate secp256k1;
+extern crate rand;
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -14,6 +15,8 @@ use crypto::digest::Digest;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
+use lightning::chain::keysinterface::KeysInterface;
+use lightning::chain::keysinterface;
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
@@ -29,6 +32,8 @@ use utils::test_logger;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
+
+use rand::{thread_rng,Rng};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -236,8 +241,12 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	let broadcast = Arc::new(TestBroadcaster{});
 	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone());
 
-	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger)).unwrap();
-	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key), watch.clone(), Arc::clone(&logger)));
+	let mut seed = [0; 32];
+	let mut rng = thread_rng();
+	rng.fill_bytes(&mut seed);
+	let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)).unwrap());
+	let channelmanager = ChannelManager::new(slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
+	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
