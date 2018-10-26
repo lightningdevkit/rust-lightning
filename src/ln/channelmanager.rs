@@ -3175,7 +3175,7 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
-	use chain::chaininterface::ChainListener;
+	use chain::chaininterface::{ChainListener, ChainWatchInterface};
 	use chain::keysinterface::KeysInterface;
 	use chain::keysinterface;
 	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
@@ -6867,6 +6867,68 @@ mod tests {
 		fn size_hint(&mut self, size: usize) {
 			self.0.reserve_exact(size);
 		}
+	}
+
+	#[test]
+	fn test_no_txn_manager_serialize_deserialize() {
+		let mut nodes = create_network(2);
+
+		let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001);
+
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		let nodes_0_serialized = nodes[0].node.encode();
+		let mut chan_0_monitor_serialized = VecWriter(Vec::new());
+		nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+		let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+		assert!(chan_0_monitor_read.is_empty());
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let (_, nodes_0_deserialized) = {
+			let mut channel_monitors = HashMap::new();
+			channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
+			<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+				keys_manager,
+				fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+				monitor: nodes[0].chan_monitor.clone(),
+				chain_monitor: nodes[0].chain_monitor.clone(),
+				tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+				logger: Arc::new(test_utils::TestLogger::new()),
+				channel_monitors: &channel_monitors,
+			}).unwrap()
+		};
+		assert!(nodes_0_read.is_empty());
+
+		assert!(nodes[0].chan_monitor.add_update_monitor(chan_0_monitor.get_funding_txo().unwrap(), chan_0_monitor).is_ok());
+		nodes[0].node = Arc::new(nodes_0_deserialized);
+		let nodes_0_as_listener: Arc<ChainListener> = nodes[0].node.clone();
+		nodes[0].chain_monitor.register_listener(Arc::downgrade(&nodes_0_as_listener));
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+		check_added_monitors!(nodes[0], 1);
+
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+		let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+		let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+		let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+		for node in nodes.iter() {
+			assert!(node.router.handle_channel_announcement(&announcement).unwrap());
+			node.router.handle_channel_update(&as_update).unwrap();
+			node.router.handle_channel_update(&bs_update).unwrap();
+		}
+
+		send_payment(&nodes[0], &[&nodes[1]], 1000000);
 	}
 
 	#[test]

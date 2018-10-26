@@ -2215,14 +2215,31 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent a loose channel_reestablish not after reconnect"));
 		}
 
-		if msg.next_local_commitment_number == 0 || msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-				msg.next_remote_commitment_number == 0 || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER {
+		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER {
 			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish"));
 		}
 
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
+
+		if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) == ChannelState::FundingSent as u32 {
+			// Short circuit the whole handler as there is nothing we can resend them
+			return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst));
+		}
+
+		if msg.next_local_commitment_number == 0 || msg.next_remote_commitment_number == 0 {
+			if self.channel_state & (ChannelState::FundingSent as u32) != ChannelState::FundingSent as u32 {
+				return Err(ChannelError::Close("Peer sent a pre-funding channel_reestablish after we exchanged funding_locked"));
+			}
+			// We have OurFundingLocked set!
+			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+			return Ok((Some(msgs::FundingLocked {
+				channel_id: self.channel_id(),
+				next_per_commitment_point: next_per_commitment_point,
+			}), None, None, None, RAACommitmentOrder::CommitmentFirst));
+		}
 
 		let required_revoke = if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
 			// Remote isn't waiting on any RevokeAndACK from us!
@@ -2951,7 +2968,8 @@ impl Channel {
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
 			next_local_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number,
-			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number,
+			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number -
+				if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) == (ChannelState::FundingSent as u32) { 1 } else { 0 },
 			data_loss_protect: None,
 		}
 	}
