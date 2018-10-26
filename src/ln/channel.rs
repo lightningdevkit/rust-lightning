@@ -238,6 +238,7 @@ pub(super) struct Channel {
 	channel_value_satoshis: u64,
 
 	local_keys: ChannelKeys,
+	shutdown_pubkey: PublicKey,
 
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
@@ -415,7 +416,7 @@ impl Channel {
 	}
 
 	// Constructors:
-	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, shutdown_pubkey: PublicKey, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
 		}
@@ -451,6 +452,7 @@ impl Channel {
 			channel_value_satoshis: channel_value_satoshis,
 
 			local_keys: chan_keys,
+			shutdown_pubkey,
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
@@ -525,7 +527,7 @@ impl Channel {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, shutdown_pubkey: PublicKey,their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, ChannelError> {
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(ChannelError::Close("funding value > 2^24"));
@@ -614,6 +616,7 @@ impl Channel {
 			announce_publicly: their_announce,
 
 			local_keys: chan_keys,
+			shutdown_pubkey,
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: msg.push_msat,
@@ -896,7 +899,7 @@ impl Channel {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let our_channel_close_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.channel_close_key).serialize());
+		let our_channel_close_key_hash = Hash160::from_data(&self.shutdown_pubkey.serialize());
 		Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
 	}
 
@@ -3277,15 +3280,18 @@ mod tests {
 
 			// These aren't set in the test vectors:
 			revocation_base_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-			channel_close_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+		};
+		let channel_close_pubkey = {
+			let channel_close_key = SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
+			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
 		};
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan_keys.funding_key).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap());
-		let mut chan = Channel::new_outbound(&feeest, chan_keys, their_node_id, 10000000, 100000, false, 42, Arc::clone(&logger)).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::new_outbound(&feeest, chan_keys, channel_close_pubkey, their_node_id, 10000000, 100000, false, 42, Arc::clone(&logger)).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
