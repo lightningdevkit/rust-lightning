@@ -22,11 +22,12 @@ use secp256k1;
 
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
-use ln::channel::{Channel, ChannelError, ChannelKeys};
+use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, HandleError, RAACommitmentOrder};
+use chain::keysinterface::ChannelKeys;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
 use util::ser::{Readable, Writeable};
@@ -432,10 +433,7 @@ impl ChannelManager {
 		} else {
 			let mut key_seed = [0u8; 32];
 			rng::fill_bytes(&mut key_seed);
-			match ChannelKeys::new_from_seed(&key_seed) {
-				Ok(key) => key,
-				Err(_) => panic!("RNG is busted!")
-			}
+			ChannelKeys::new_from_seed(&key_seed)
 		};
 
 		let channel = Channel::new_outbound(&*self.fee_estimator, chan_keys, their_network_key, channel_value_satoshis, push_msat, self.announce_channels_publicly, user_id, Arc::clone(&self.logger))?;
@@ -1689,10 +1687,7 @@ impl ChannelManager {
 		} else {
 			let mut key_seed = [0u8; 32];
 			rng::fill_bytes(&mut key_seed);
-			match ChannelKeys::new_from_seed(&key_seed) {
-				Ok(key) => key,
-				Err(_) => panic!("RNG is busted!")
-			}
+			ChannelKeys::new_from_seed(&key_seed)
 		};
 
 		let channel = Channel::new_from_req(&*self.fee_estimator, chan_keys, their_node_id.clone(), msg, 0, false, self.announce_channels_publicly, Arc::clone(&self.logger))
