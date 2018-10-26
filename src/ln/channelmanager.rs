@@ -4050,7 +4050,7 @@ mod tests {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 			let mut seed = [0; 32];
 			rng.fill_bytes(&mut seed);
-			let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)));
+			let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)).0);
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
 			let node = ChannelManager::new(0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
@@ -6889,7 +6889,7 @@ mod tests {
 		assert!(chan_0_monitor_read.is_empty());
 
 		let mut nodes_0_read = &nodes_0_serialized[..];
-		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())).0);
 		let (_, nodes_0_deserialized) = {
 			let mut channel_monitors = HashMap::new();
 			channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
@@ -6952,7 +6952,7 @@ mod tests {
 		}
 
 		let mut nodes_0_read = &nodes_0_serialized[..];
-		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())).0);
 		let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			keys_manager,
 			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),

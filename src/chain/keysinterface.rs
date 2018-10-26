@@ -144,14 +144,17 @@ pub struct KeysManager {
 impl KeysManager {
 	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
 	/// RNG is busted) this may panic.
-	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> KeysManager {
+	/// Return destination_key to user wallet to spend P2WPKH destination_script
+	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> (KeysManager, SecretKey) {
 		let secp_ctx = Secp256k1::new();
+		let destination_secret;
 		match ExtendedPrivKey::new_master(&secp_ctx, network.clone(), seed) {
 			Ok(master_key) => {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)).expect("Your RNG is busted").secret_key;
 				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1)) {
 					Ok(destination_key) => {
-						let pubkey_hash160 = Hash160::from_data(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..]);
+						destination_secret = destination_key;
+						let pubkey_hash160 = Hash160::from_data(&ExtendedPubKey::from_private(&secp_ctx, &destination_secret).public_key.serialize()[..]);
 						Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0)
 						              .push_slice(pubkey_hash160.as_bytes())
 						              .into_script()
@@ -163,7 +166,7 @@ impl KeysManager {
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3)).expect("Your RNG is busted");
-				KeysManager {
+				(KeysManager {
 					secp_ctx,
 					node_secret,
 					destination_script,
@@ -171,7 +174,7 @@ impl KeysManager {
 					channel_master_key,
 
 					logger,
-				}
+				}, destination_secret.secret_key)
 			},
 			Err(_) => panic!("Your rng is busted"),
 		}
