@@ -238,6 +238,7 @@ pub(super) struct Channel {
 	channel_value_satoshis: u64,
 
 	local_keys: ChannelKeys,
+	shutdown_pubkey: PublicKey,
 
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
@@ -452,6 +453,7 @@ impl Channel {
 			channel_value_satoshis: channel_value_satoshis,
 
 			local_keys: chan_keys,
+			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
@@ -616,6 +618,7 @@ impl Channel {
 			announce_publicly: their_announce,
 
 			local_keys: chan_keys,
+			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: msg.push_msat,
@@ -898,7 +901,7 @@ impl Channel {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let our_channel_close_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.channel_close_key).serialize());
+		let our_channel_close_key_hash = Hash160::from_data(&self.shutdown_pubkey.serialize());
 		Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
 	}
 
@@ -3271,7 +3274,13 @@ mod tests {
 	impl KeysInterface for Keys {
 		fn get_node_secret(&self) -> SecretKey { panic!(); }
 		fn get_destination_script(&self) -> Script { panic!(); }
-		fn get_shutdown_pubkey(&self) -> PublicKey { panic!(); }
+
+		fn get_shutdown_pubkey(&self) -> PublicKey {
+			let secp_ctx = Secp256k1::signing_only();
+			let channel_close_key = SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
+			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
+		}
+
 		fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys { self.chan_keys.clone() }
 	}
 
@@ -3290,7 +3299,6 @@ mod tests {
 
 			// These aren't set in the test vectors:
 			revocation_base_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-			channel_close_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
 		};
