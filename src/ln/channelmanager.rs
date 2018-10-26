@@ -23,14 +23,14 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, HandleError};
+use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
 use chain::keysinterface::KeysInterface;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
-use util::ser::{Readable, Writeable};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::chacha20poly1305rfc::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
@@ -41,9 +41,8 @@ use crypto::hmac::Hmac;
 use crypto::digest::Digest;
 use crypto::symmetriccipher::SynchronousStreamCipher;
 
-use std::{ptr, mem};
-use std::collections::HashMap;
-use std::collections::hash_map;
+use std::{cmp, ptr, mem};
+use std::collections::{HashMap, hash_map, HashSet};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -301,6 +300,25 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 ///
 /// Implements ChannelMessageHandler, handling the multi-channel parts and passing things through
 /// to individual Channels.
+///
+/// Implements Writeable to write out all channel state to disk. Implies peer_disconnected() for
+/// all peers during write/read (though does not modify this instance, only the instance being
+/// serialized). This will result in any channels which have not yet exchanged funding_created (ie
+/// called funding_transaction_generated for outbound channels).
+///
+/// Note that you can be a bit lazier about writing out ChannelManager than you can be with
+/// ChannelMonitors. With ChannelMonitors you MUST write each monitor update out to disk before
+/// returning from ManyChannelMonitor::add_update_monitor, with ChannelManagers, writing updates
+/// happens out-of-band (and will prevent any other ChannelManager operations from occurring during
+/// the serialization process). If the deserialized version is out-of-date compared to the
+/// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
+/// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
+///
+/// Note that the deserializer is only implemented for (Sha256dHash, ChannelManager), which
+/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+/// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
+/// block_connected() to step towards your best block) upon deserialization before using the
+/// object!
 pub struct ChannelManager {
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
@@ -311,6 +329,7 @@ pub struct ChannelManager {
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
 	latest_block_height: AtomicUsize,
+	last_block_hash: Mutex<Sha256dHash>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	channel_state: Mutex<ChannelHolder>,
@@ -408,7 +427,8 @@ impl ChannelManager {
 
 			announce_channels_publicly,
 			fee_proportional_millionths,
-			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value (generally need to replay recent chain on chain_monitor registration)
+			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value
+			last_block_hash: Mutex::new(Default::default()),
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
@@ -2519,6 +2539,7 @@ impl ChainListener for ChannelManager {
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
@@ -2551,6 +2572,7 @@ impl ChainListener for ChannelManager {
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
 	}
 }
 
@@ -2761,6 +2783,391 @@ impl ChannelMessageHandler for ChannelManager {
 		} else {
 			self.force_close_channel(&msg.channel_id);
 		}
+	}
+}
+
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
+impl Writeable for PendingForwardHTLCInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		if let &Some(ref onion) = &self.onion_packet {
+			1u8.write(writer)?;
+			onion.write(writer)?;
+		} else {
+			0u8.write(writer)?;
+		}
+		self.incoming_shared_secret.write(writer)?;
+		self.payment_hash.write(writer)?;
+		self.short_channel_id.write(writer)?;
+		self.amt_to_forward.write(writer)?;
+		self.outgoing_cltv_value.write(writer)?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for PendingForwardHTLCInfo {
+	fn read(reader: &mut R) -> Result<PendingForwardHTLCInfo, DecodeError> {
+		let onion_packet = match <u8 as Readable<R>>::read(reader)? {
+			0 => None,
+			1 => Some(msgs::OnionPacket::read(reader)?),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		Ok(PendingForwardHTLCInfo {
+			onion_packet,
+			incoming_shared_secret: Readable::read(reader)?,
+			payment_hash: Readable::read(reader)?,
+			short_channel_id: Readable::read(reader)?,
+			amt_to_forward: Readable::read(reader)?,
+			outgoing_cltv_value: Readable::read(reader)?,
+		})
+	}
+}
+
+impl Writeable for HTLCFailureMsg {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCFailureMsg::Relay(ref fail_msg) => {
+				0u8.write(writer)?;
+				fail_msg.write(writer)?;
+			},
+			&HTLCFailureMsg::Malformed(ref fail_msg) => {
+				1u8.write(writer)?;
+				fail_msg.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCFailureMsg {
+	fn read(reader: &mut R) -> Result<HTLCFailureMsg, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCFailureMsg::Relay(Readable::read(reader)?)),
+			1 => Ok(HTLCFailureMsg::Malformed(Readable::read(reader)?)),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for PendingHTLCStatus {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&PendingHTLCStatus::Forward(ref forward_info) => {
+				0u8.write(writer)?;
+				forward_info.write(writer)?;
+			},
+			&PendingHTLCStatus::Fail(ref fail_msg) => {
+				1u8.write(writer)?;
+				fail_msg.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for PendingHTLCStatus {
+	fn read(reader: &mut R) -> Result<PendingHTLCStatus, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(PendingHTLCStatus::Forward(Readable::read(reader)?)),
+			1 => Ok(PendingHTLCStatus::Fail(Readable::read(reader)?)),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl_writeable!(HTLCPreviousHopData, 0, {
+	short_channel_id,
+	htlc_id,
+	incoming_packet_shared_secret
+});
+
+impl Writeable for HTLCSource {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCSource::PreviousHopData(ref hop_data) => {
+				0u8.write(writer)?;
+				hop_data.write(writer)?;
+			},
+			&HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } => {
+				1u8.write(writer)?;
+				route.write(writer)?;
+				session_priv.write(writer)?;
+				first_hop_htlc_msat.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCSource {
+	fn read(reader: &mut R) -> Result<HTLCSource, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
+			1 => Ok(HTLCSource::OutboundRoute {
+				route: Readable::read(reader)?,
+				session_priv: Readable::read(reader)?,
+				first_hop_htlc_msat: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for HTLCFailReason {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCFailReason::ErrorPacket { ref err } => {
+				0u8.write(writer)?;
+				err.write(writer)?;
+			},
+			&HTLCFailReason::Reason { ref failure_code, ref data } => {
+				1u8.write(writer)?;
+				failure_code.write(writer)?;
+				data.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCFailReason {
+	fn read(reader: &mut R) -> Result<HTLCFailReason, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCFailReason::ErrorPacket { err: Readable::read(reader)? }),
+			1 => Ok(HTLCFailReason::Reason {
+				failure_code: Readable::read(reader)?,
+				data: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl_writeable!(HTLCForwardInfo, 0, {
+	prev_short_channel_id,
+	prev_htlc_id,
+	forward_info
+});
+
+impl Writeable for ChannelManager {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		let _ = self.total_consistency_lock.write().unwrap();
+
+		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
+		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
+
+		self.genesis_hash.write(writer)?;
+		self.announce_channels_publicly.write(writer)?;
+		self.fee_proportional_millionths.write(writer)?;
+		(self.latest_block_height.load(Ordering::Acquire) as u32).write(writer)?;
+		self.last_block_hash.lock().unwrap().write(writer)?;
+
+		let channel_state = self.channel_state.lock().unwrap();
+		let mut unfunded_channels = 0;
+		for (_, channel) in channel_state.by_id.iter() {
+			if !channel.is_funding_initiated() {
+				unfunded_channels += 1;
+			}
+		}
+		((channel_state.by_id.len() - unfunded_channels) as u64).write(writer)?;
+		for (_, channel) in channel_state.by_id.iter() {
+			if channel.is_funding_initiated() {
+				channel.write(writer)?;
+			}
+		}
+
+		(channel_state.forward_htlcs.len() as u64).write(writer)?;
+		for (short_channel_id, pending_forwards) in channel_state.forward_htlcs.iter() {
+			short_channel_id.write(writer)?;
+			(pending_forwards.len() as u64).write(writer)?;
+			for forward in pending_forwards {
+				forward.write(writer)?;
+			}
+		}
+
+		(channel_state.claimable_htlcs.len() as u64).write(writer)?;
+		for (payment_hash, previous_hops) in channel_state.claimable_htlcs.iter() {
+			payment_hash.write(writer)?;
+			(previous_hops.len() as u64).write(writer)?;
+			for previous_hop in previous_hops {
+				previous_hop.write(writer)?;
+			}
+		}
+
+		Ok(())
+	}
+}
+
+/// Arguments for the creation of a ChannelManager that are not deserialized.
+///
+/// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
+/// is:
+/// 1) Deserialize all stored ChannelMonitors.
+/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Sha256dHash,
+///    ChannelManager)>::read(reader, args).
+///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
+///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
+/// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
+///    ChannelMonitor::get_monitored_outpoints and ChannelMonitor::get_funding_txo().
+/// 4) Reconnect blocks on your ChannelMonitors.
+/// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
+/// 6) Disconnect/connect blocks on the ChannelManager.
+/// 7) Register the new ChannelManager with your ChainWatchInterface (this does not happen
+///    automatically as it does in ChannelManager::new()).
+pub struct ChannelManagerReadArgs<'a> {
+	/// The keys provider which will give us relevant keys. Some keys will be loaded during
+	/// deserialization.
+	pub keys_manager: Arc<KeysInterface>,
+
+	/// The fee_estimator for use in the ChannelManager in the future.
+	///
+	/// No calls to the FeeEstimator will be made during deserialization.
+	pub fee_estimator: Arc<FeeEstimator>,
+	/// The ManyChannelMonitor for use in the ChannelManager in the future.
+	///
+	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
+	/// you have deserialized ChannelMonitors separately and will add them to your
+	/// ManyChannelMonitor after deserializing this ChannelManager.
+	pub monitor: Arc<ManyChannelMonitor>,
+	/// The ChainWatchInterface for use in the ChannelManager in the future.
+	///
+	/// No calls to the ChainWatchInterface will be made during deserialization.
+	pub chain_monitor: Arc<ChainWatchInterface>,
+	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
+	/// used to broadcast the latest local commitment transactions of channels which must be
+	/// force-closed during deserialization.
+	pub tx_broadcaster: Arc<BroadcasterInterface>,
+	/// The Logger for use in the ChannelManager and which may be used to log information during
+	/// deserialization.
+	pub logger: Arc<Logger>,
+
+
+	/// A map from channel funding outpoints to ChannelMonitors for those channels (ie
+	/// value.get_funding_txo() should be the key).
+	///
+	/// If a monitor is inconsistent with the channel state during deserialization the channel will
+	/// be force-closed using the data in the channelmonitor and the Channel will be dropped. This
+	/// is true for missing channels as well. If there is a monitor missing for which we find
+	/// channel data Err(DecodeError::InvalidValue) will be returned.
+	///
+	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
+	/// this struct.
+	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
+}
+
+impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (Sha256dHash, ChannelManager) {
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a>) -> Result<Self, DecodeError> {
+		let _ver: u8 = Readable::read(reader)?;
+		let min_ver: u8 = Readable::read(reader)?;
+		if min_ver > SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+
+		let genesis_hash: Sha256dHash = Readable::read(reader)?;
+		let announce_channels_publicly: bool = Readable::read(reader)?;
+		let fee_proportional_millionths: u32 = Readable::read(reader)?;
+		let latest_block_height: u32 = Readable::read(reader)?;
+		let last_block_hash: Sha256dHash = Readable::read(reader)?;
+
+		let mut closed_channels = Vec::new();
+
+		let channel_count: u64 = Readable::read(reader)?;
+		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		for _ in 0..channel_count {
+			let mut channel: Channel = ReadableArgs::read(reader, args.logger.clone())?;
+			if channel.last_block_connected != last_block_hash {
+				return Err(DecodeError::InvalidValue);
+			}
+
+			let funding_txo = channel.channel_monitor().get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+			funding_txo_set.insert(funding_txo.clone());
+			if let Some(monitor) = args.channel_monitors.get(&funding_txo) {
+				if channel.get_cur_local_commitment_transaction_number() != monitor.get_cur_local_commitment_number() ||
+						channel.get_revoked_remote_commitment_transaction_number() != monitor.get_min_seen_secret() ||
+						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() {
+					let mut force_close_res = channel.force_shutdown();
+					force_close_res.0 = monitor.get_latest_local_commitment_txn();
+					closed_channels.push(force_close_res);
+				} else {
+					if let Some(short_channel_id) = channel.get_short_channel_id() {
+						short_to_id.insert(short_channel_id, channel.channel_id());
+					}
+					by_id.insert(channel.channel_id(), channel);
+				}
+			} else {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		for (ref funding_txo, ref monitor) in args.channel_monitors.iter() {
+			if !funding_txo_set.contains(funding_txo) {
+				closed_channels.push((monitor.get_latest_local_commitment_txn(), Vec::new()));
+			}
+		}
+
+		let forward_htlcs_count: u64 = Readable::read(reader)?;
+		let mut forward_htlcs = HashMap::with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+		for _ in 0..forward_htlcs_count {
+			let short_channel_id = Readable::read(reader)?;
+			let pending_forwards_count: u64 = Readable::read(reader)?;
+			let mut pending_forwards = Vec::with_capacity(cmp::min(pending_forwards_count as usize, 128));
+			for _ in 0..pending_forwards_count {
+				pending_forwards.push(Readable::read(reader)?);
+			}
+			forward_htlcs.insert(short_channel_id, pending_forwards);
+		}
+
+		let claimable_htlcs_count: u64 = Readable::read(reader)?;
+		let mut claimable_htlcs = HashMap::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
+		for _ in 0..claimable_htlcs_count {
+			let payment_hash = Readable::read(reader)?;
+			let previous_hops_len: u64 = Readable::read(reader)?;
+			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, 2));
+			for _ in 0..previous_hops_len {
+				previous_hops.push(Readable::read(reader)?);
+			}
+			claimable_htlcs.insert(payment_hash, previous_hops);
+		}
+
+		let channel_manager = ChannelManager {
+			genesis_hash,
+			fee_estimator: args.fee_estimator,
+			monitor: args.monitor,
+			chain_monitor: args.chain_monitor,
+			tx_broadcaster: args.tx_broadcaster,
+
+			announce_channels_publicly,
+			fee_proportional_millionths,
+			latest_block_height: AtomicUsize::new(latest_block_height as usize),
+			last_block_hash: Mutex::new(last_block_hash),
+			secp_ctx: Secp256k1::new(),
+
+			channel_state: Mutex::new(ChannelHolder {
+				by_id,
+				short_to_id,
+				next_forward: Instant::now(),
+				forward_htlcs,
+				claimable_htlcs,
+				pending_msg_events: Vec::new(),
+			}),
+			our_network_key: args.keys_manager.get_node_secret(),
+
+			pending_events: Mutex::new(Vec::new()),
+			total_consistency_lock: RwLock::new(()),
+			keys_manager: args.keys_manager,
+			logger: args.logger,
+		};
+
+		for close_res in closed_channels.drain(..) {
+			channel_manager.finish_force_close_channel(close_res);
+			//TODO: Broadcast channel update for closed channels, but only after we've made a
+			//connection or two.
+		}
+
+		Ok((last_block_hash.clone(), channel_manager))
 	}
 }
 

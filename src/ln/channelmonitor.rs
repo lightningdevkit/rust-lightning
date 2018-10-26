@@ -692,7 +692,7 @@ impl ChannelMonitor {
 		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.remote_claimable_outpoints.len() as u64))?;
-		for (txid, htlc_outputs) in self.remote_claimable_outpoints.iter() {
+		for (ref txid, ref htlc_outputs) in self.remote_claimable_outpoints.iter() {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&byte_utils::be64_to_array(htlc_outputs.len() as u64))?;
 			for htlc_output in htlc_outputs.iter() {
@@ -701,9 +701,9 @@ impl ChannelMonitor {
 		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.remote_commitment_txn_on_chain.len() as u64))?;
-		for (txid, (commitment_number, txouts)) in self.remote_commitment_txn_on_chain.iter() {
+		for (ref txid, &(commitment_number, ref txouts)) in self.remote_commitment_txn_on_chain.iter() {
 			writer.write_all(&txid[..])?;
-			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
+			writer.write_all(&byte_utils::be48_to_array(commitment_number))?;
 			(txouts.len() as u64).write(writer)?;
 			for script in txouts.iter() {
 				script.write(writer)?;
@@ -712,8 +712,8 @@ impl ChannelMonitor {
 
 		if for_local_storage {
 			writer.write_all(&byte_utils::be64_to_array(self.remote_hash_commitment_number.len() as u64))?;
-			for (payment_hash, commitment_number) in self.remote_hash_commitment_number.iter() {
-				writer.write_all(payment_hash)?;
+			for (ref payment_hash, commitment_number) in self.remote_hash_commitment_number.iter() {
+				writer.write_all(*payment_hash)?;
 				writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 			}
 		} else {
