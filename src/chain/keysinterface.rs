@@ -3,14 +3,22 @@
 //! on-chain output which is theirs.
 
 use bitcoin::blockdata::transaction::{OutPoint, TxOut};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::opcodes;
+use bitcoin::network::constants::Network;
+use bitcoin::util::hash::Hash160;
+use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::Secp256k1;
+use secp256k1;
 
 use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use util::sha2::Sha256;
+use util::logger::Logger;
+
+use std::sync::Arc;
 
 /// When on-chain outputs are created by rust-lightning an event is generated which informs the
 /// user thereof. This enum describes the format of the output and provides the OutPoint.
@@ -115,5 +123,82 @@ impl ChannelKeys {
 			channel_monitor_claim_key: channel_monitor_claim_key,
 			commitment_seed: okm
 		}
+	}
+}
+
+/// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
+/// and derives keys from that.
+///
+/// Your node_id is seed/0'
+/// ChannelMonitor closes may use seed/1'
+/// Cooperative closes may use seed/2'
+/// The two close keys may be needed to claim on-chain funds!
+pub struct KeysManager {
+	secp_ctx: Secp256k1<secp256k1::All>,
+	node_secret: SecretKey,
+	destination_script: Script,
+	shutdown_pubkey: PublicKey,
+	channel_master_key: ExtendedPrivKey,
+
+	logger: Arc<Logger>,
+}
+
+impl KeysManager {
+	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
+	/// RNG is busted) this may panic.
+	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> KeysManager {
+		let secp_ctx = Secp256k1::new();
+		match ExtendedPrivKey::new_master(&secp_ctx, network.clone(), seed) {
+			Ok(master_key) => {
+				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)).expect("Your RNG is busted").secret_key;
+				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1)) {
+					Ok(destination_key) => {
+						let pubkey_hash160 = Hash160::from_data(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..]);
+						Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0)
+						              .push_slice(pubkey_hash160.as_bytes())
+						              .into_script()
+					},
+					Err(_) => panic!("Your RNG is busted"),
+				};
+				let shutdown_pubkey = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(2)) {
+					Ok(shutdown_key) => ExtendedPubKey::from_private(&secp_ctx, &shutdown_key).public_key,
+					Err(_) => panic!("Your RNG is busted"),
+				};
+				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3)).expect("Your RNG is busted");
+				KeysManager {
+					secp_ctx,
+					node_secret,
+					destination_script,
+					shutdown_pubkey,
+					channel_master_key,
+
+					logger,
+				}
+			},
+			Err(_) => panic!("Your rng is busted"),
+		}
+	}
+}
+
+impl KeysInterface for KeysManager {
+	fn get_node_secret(&self) -> SecretKey {
+		self.node_secret.clone()
+	}
+
+	fn get_destination_script(&self) -> Script {
+		self.destination_script.clone()
+	}
+
+	fn get_shutdown_pubkey(&self) -> PublicKey {
+		self.shutdown_pubkey.clone()
+	}
+
+	fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys {
+		let channel_pubkey = ExtendedPubKey::from_private(&self.secp_ctx, &self. channel_master_key);
+		let mut seed = [0; 32];
+		for (arr, slice) in seed.iter_mut().zip((&channel_pubkey.public_key.serialize()[0..32]).iter()) {
+			*arr = *slice;
+		}
+		ChannelKeys::new_from_seed(&seed)
 	}
 }
