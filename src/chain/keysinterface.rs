@@ -21,10 +21,11 @@ use util::logger::Logger;
 use std::sync::Arc;
 
 /// When on-chain outputs are created by rust-lightning an event is generated which informs the
-/// user thereof. This enum descibes the format of the output and provides the OutPoint.
+/// user thereof. This enum describes the format of the output and provides the OutPoint.
 pub enum SpendableOutputDescriptor {
 	/// Outpoint with an output to a script which was provided via KeysInterface, thus you should
 	/// have stored somewhere how to spend script_pubkey!
+	/// Outputs from a justice tx, claim tx or preimage tx
 	StaticOutput {
 		/// The outpoint spendable by user wallet
 		outpoint: OutPoint,
@@ -34,6 +35,7 @@ pub enum SpendableOutputDescriptor {
 	/// Outpoint commits to a P2WSH, should be spend by the following witness :
 	/// <local_delayedsig> 0 <witnessScript>
 	/// With input nSequence set to_self_delay.
+	/// Outputs from a HTLC-Success/Timeout tx
 	DynamicOutput {
 		/// Outpoint spendable by user wallet
 		outpoint: OutPoint,
@@ -122,12 +124,13 @@ impl ChannelKeys {
 	}
 }
 
-/// Simple CKeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
+/// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
 /// and derives keys from that.
 ///
 /// Your node_id is seed/0'
 /// ChannelMonitor closes may use seed/1'
 /// Cooperative closes may use seed/2'
+/// Per-channel root secret may use 32 first bytes of pubkey from seed/3'
 pub struct KeysManager {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	node_secret: SecretKey,
