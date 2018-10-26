@@ -3178,8 +3178,8 @@ mod tests {
 	use chain::chaininterface::ChainListener;
 	use chain::keysinterface::KeysInterface;
 	use chain::keysinterface;
-	use ln::channelmanager::{ChannelManager,OnionKeys,PaymentFailReason,RAACommitmentOrder};
-	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
+	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -3187,7 +3187,7 @@ mod tests {
 	use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 	use util::errors::APIError;
 	use util::logger::Logger;
-	use util::ser::Writeable;
+	use util::ser::{Writeable, Writer, ReadableArgs};
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -3382,6 +3382,7 @@ mod tests {
 		chan_monitor: Arc<test_utils::TestChannelMonitor>,
 		node: Arc<ChannelManager>,
 		router: Router,
+		node_seed: [u8; 32],
 		network_payment_count: Rc<RefCell<u8>>,
 		network_chan_count: Rc<RefCell<u32>>,
 	}
@@ -4053,7 +4054,7 @@ mod tests {
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
 			let node = ChannelManager::new(0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
-			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router,
+			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, node_seed: seed,
 				network_payment_count: payment_count.clone(),
 				network_chan_count: chan_count.clone(),
 			});
@@ -6855,5 +6856,138 @@ mod tests {
 		unsigned_msg.chain_hash = Sha256dHash::from_data(&[1,2,3,4,5,6,7,8,9]);
 		sign_msg!(unsigned_msg);
 		assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
+	}
+
+	struct VecWriter(Vec<u8>);
+	impl Writer for VecWriter {
+		fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+			self.0.extend_from_slice(buf);
+			Ok(())
+		}
+		fn size_hint(&mut self, size: usize) {
+			self.0.reserve_exact(size);
+		}
+	}
+
+	#[test]
+	fn test_simple_manager_serialize_deserialize() {
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+		let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		let nodes_0_serialized = nodes[0].node.encode();
+		let mut chan_0_monitor_serialized = VecWriter(Vec::new());
+		nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+		let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+		assert!(chan_0_monitor_read.is_empty());
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let (_, nodes_0_deserialized) = {
+			let mut channel_monitors = HashMap::new();
+			channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
+			<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+				keys_manager,
+				fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+				monitor: nodes[0].chan_monitor.clone(),
+				chain_monitor: nodes[0].chain_monitor.clone(),
+				tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+				logger: Arc::new(test_utils::TestLogger::new()),
+				channel_monitors: &channel_monitors,
+			}).unwrap()
+		};
+		assert!(nodes_0_read.is_empty());
+
+		assert!(nodes[0].chan_monitor.add_update_monitor(chan_0_monitor.get_funding_txo().unwrap(), chan_0_monitor).is_ok());
+		nodes[0].node = Arc::new(nodes_0_deserialized);
+		check_added_monitors!(nodes[0], 1);
+
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+		fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
+		claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+	}
+
+	#[test]
+	fn test_manager_serialize_deserialize_inconsistent_monitor() {
+		// Test deserializing a ChannelManager with a out-of-date ChannelMonitor
+		let mut nodes = create_network(4);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 2, 0);
+		let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3);
+
+		let (our_payment_preimage, _) = route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 1000000);
+
+		// Serialize the ChannelManager here, but the monitor we keep up-to-date
+		let nodes_0_serialized = nodes[0].node.encode();
+
+		route_payment(&nodes[0], &[&nodes[3]], 1000000);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[2].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[3].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		// Now the ChannelMonitor (which is now out-of-sync with ChannelManager for channel w/
+		// nodes[3])
+		let mut node_0_monitors_serialized = Vec::new();
+		for monitor in nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter() {
+			let mut writer = VecWriter(Vec::new());
+			monitor.1.write_for_disk(&mut writer).unwrap();
+			node_0_monitors_serialized.push(writer.0);
+		}
+
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		let mut node_0_monitors = Vec::new();
+		for serialized in node_0_monitors_serialized.iter() {
+			let mut read = &serialized[..];
+			let (_, monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut read, Arc::new(test_utils::TestLogger::new())).unwrap();
+			assert!(read.is_empty());
+			node_0_monitors.push(monitor);
+		}
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+			keys_manager,
+			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+			monitor: nodes[0].chan_monitor.clone(),
+			chain_monitor: nodes[0].chain_monitor.clone(),
+			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+			logger: Arc::new(test_utils::TestLogger::new()),
+			channel_monitors: &node_0_monitors.iter().map(|monitor| { (monitor.get_funding_txo().unwrap(), monitor) }).collect(),
+		}).unwrap();
+		assert!(nodes_0_read.is_empty());
+
+		{ // Channel close should result in a commitment tx and an HTLC tx
+			let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			assert_eq!(txn.len(), 2);
+			assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
+			assert_eq!(txn[1].input[0].previous_output.txid, txn[0].txid());
+		}
+
+		for monitor in node_0_monitors.drain(..) {
+			assert!(nodes[0].chan_monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor).is_ok());
+			check_added_monitors!(nodes[0], 1);
+		}
+		nodes[0].node = Arc::new(nodes_0_deserialized);
+
+		// nodes[1] and nodes[2] have no lost state with nodes[0]...
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[2], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		//... and we can even still claim the payment!
+		claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
+
+		nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id());
+		let reestablish = get_event_msg!(nodes[3], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+		nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id());
+		if let Err(msgs::HandleError { action: Some(msgs::ErrorAction::SendErrorMessage { msg }), .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
+			assert_eq!(msg.channel_id, channel_id);
+		} else { panic!("Unexpected result"); }
 	}
 }
