@@ -4,7 +4,9 @@ use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
 use bitcoin::util::hash::{Sha256dHash, Hash160};
 use bitcoin::util::bip143;
-use bitcoin::network::serialize::BitcoinHash;
+use bitcoin::network;
+use bitcoin::network::serialize::{BitcoinHash, RawDecoder, RawEncoder};
+use bitcoin::network::encodable::{ConsensusEncodable, ConsensusDecodable};
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Message,Signature};
@@ -13,7 +15,7 @@ use secp256k1;
 use crypto::digest::Digest;
 
 use ln::msgs;
-use ln::msgs::{ErrorAction, HandleError};
+use ln::msgs::{DecodeError, ErrorAction, HandleError};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -22,7 +24,7 @@ use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::{transaction_utils,rng};
-use util::ser::Writeable;
+use util::ser::{Readable, ReadableArgs, Writeable, Writer, WriterWriteAdaptor};
 use util::sha2::Sha256;
 use util::logger::Logger;
 use util::errors::APIError;
@@ -306,8 +308,9 @@ pub(super) struct Channel {
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
 	funding_tx_confirmed_in: Option<Sha256dHash>,
 	short_channel_id: Option<u64>,
-	/// Used to deduplicate block_connected callbacks
-	last_block_connected: Sha256dHash,
+	/// Used to deduplicate block_connected callbacks, also used to verify consistency during
+	/// ChannelManager deserialization (hence pub(super))
+	pub(super) last_block_connected: Sha256dHash,
 	funding_tx_confirmations: u64,
 
 	their_dust_limit_satoshis: u64,
@@ -2683,10 +2686,10 @@ impl Channel {
 	/// Only returns an ErrorAction of DisconnectPeer, if Err.
 	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Result<Option<msgs::FundingLocked>, HandleError> {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if self.funding_tx_confirmations > 0 {
-			if header.bitcoin_hash() != self.last_block_connected {
-				self.last_block_connected = header.bitcoin_hash();
-				self.channel_monitor.last_block_hash = self.last_block_connected;
+		if header.bitcoin_hash() != self.last_block_connected {
+			self.last_block_connected = header.bitcoin_hash();
+			self.channel_monitor.last_block_hash = self.last_block_connected;
+			if self.funding_tx_confirmations > 0 {
 				self.funding_tx_confirmations += 1;
 				if self.funding_tx_confirmations == Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
@@ -2767,6 +2770,8 @@ impl Channel {
 		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 - 1;
 		}
+		self.last_block_connected = header.bitcoin_hash();
+		self.channel_monitor.last_block_hash = self.last_block_connected;
 		false
 	}
 
@@ -3237,6 +3242,494 @@ impl Channel {
 		let mut res = Vec::new();
 		mem::swap(&mut res, &mut self.last_local_commitment_txn);
 		(res, dropped_outbound_htlcs)
+	}
+}
+
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
+impl Writeable for InboundHTLCRemovalReason {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&InboundHTLCRemovalReason::FailRelay(ref error_packet) => {
+				0u8.write(writer)?;
+				error_packet.write(writer)?;
+			},
+			&InboundHTLCRemovalReason::FailMalformed((ref onion_hash, ref err_code)) => {
+				1u8.write(writer)?;
+				onion_hash.write(writer)?;
+				err_code.write(writer)?;
+			},
+			&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
+				2u8.write(writer)?;
+				payment_preimage.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for InboundHTLCRemovalReason {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(match <u8 as Readable<R>>::read(reader)? {
+			0 => InboundHTLCRemovalReason::FailRelay(Readable::read(reader)?),
+			1 => InboundHTLCRemovalReason::FailMalformed((Readable::read(reader)?, Readable::read(reader)?)),
+			2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
+			_ => return Err(DecodeError::InvalidValue),
+		})
+	}
+}
+
+impl Writeable for Channel {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
+		// called but include holding cell updates (and obviously we don't modify self).
+
+		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
+		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
+
+		self.user_id.write(writer)?;
+
+		self.channel_id.write(writer)?;
+		(self.channel_state | ChannelState::PeerDisconnected as u32).write(writer)?;
+		self.channel_outbound.write(writer)?;
+		self.announce_publicly.write(writer)?;
+		self.channel_value_satoshis.write(writer)?;
+
+		self.local_keys.write(writer)?;
+		self.shutdown_pubkey.write(writer)?;
+
+		self.cur_local_commitment_transaction_number.write(writer)?;
+		self.cur_remote_commitment_transaction_number.write(writer)?;
+		self.value_to_self_msat.write(writer)?;
+
+		self.received_commitment_while_awaiting_raa.write(writer)?;
+
+		let mut dropped_inbound_htlcs = 0;
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
+				dropped_inbound_htlcs += 1;
+			}
+		}
+		(self.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
+		for htlc in self.pending_inbound_htlcs.iter() {
+			htlc.htlc_id.write(writer)?;
+			htlc.amount_msat.write(writer)?;
+			htlc.cltv_expiry.write(writer)?;
+			htlc.payment_hash.write(writer)?;
+			match &htlc.state {
+				&InboundHTLCState::RemoteAnnounced(_) => {}, // Drop
+				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
+					1u8.write(writer)?;
+					htlc_state.write(writer)?;
+				},
+				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
+					2u8.write(writer)?;
+					htlc_state.write(writer)?;
+				},
+				&InboundHTLCState::Committed => {
+					3u8.write(writer)?;
+				},
+				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
+					4u8.write(writer)?;
+					removal_reason.write(writer)?;
+				},
+			}
+		}
+
+		macro_rules! write_option {
+			($thing: expr) => {
+				match &$thing {
+					&None => 0u8.write(writer)?,
+					&Some(ref v) => {
+						1u8.write(writer)?;
+						v.write(writer)?;
+					},
+				}
+			}
+		}
+
+		(self.pending_outbound_htlcs.len() as u64).write(writer)?;
+		for htlc in self.pending_outbound_htlcs.iter() {
+			htlc.htlc_id.write(writer)?;
+			htlc.amount_msat.write(writer)?;
+			htlc.cltv_expiry.write(writer)?;
+			htlc.payment_hash.write(writer)?;
+			htlc.source.write(writer)?;
+			write_option!(htlc.fail_reason);
+			match &htlc.state {
+				&OutboundHTLCState::LocalAnnounced(ref onion_packet) => {
+					0u8.write(writer)?;
+					onion_packet.write(writer)?;
+				},
+				&OutboundHTLCState::Committed => {
+					1u8.write(writer)?;
+				},
+				&OutboundHTLCState::RemoteRemoved => {
+					2u8.write(writer)?;
+				},
+				&OutboundHTLCState::AwaitingRemoteRevokeToRemove => {
+					3u8.write(writer)?;
+				},
+				&OutboundHTLCState::AwaitingRemovedRemoteRevoke => {
+					4u8.write(writer)?;
+				},
+			}
+		}
+
+		(self.holding_cell_htlc_updates.len() as u64).write(writer)?;
+		for update in self.holding_cell_htlc_updates.iter() {
+			match update {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, time_created: _ } => {
+					0u8.write(writer)?;
+					amount_msat.write(writer)?;
+					cltv_expiry.write(writer)?;
+					payment_hash.write(writer)?;
+					source.write(writer)?;
+					onion_routing_packet.write(writer)?;
+					// time_created is not serialized - we re-init the timeout upon deserialization
+				},
+				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
+					1u8.write(writer)?;
+					payment_preimage.write(writer)?;
+					htlc_id.write(writer)?;
+				},
+				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
+					2u8.write(writer)?;
+					htlc_id.write(writer)?;
+					err_packet.write(writer)?;
+				}
+			}
+		}
+
+		self.monitor_pending_revoke_and_ack.write(writer)?;
+		self.monitor_pending_commitment_signed.write(writer)?;
+		match self.monitor_pending_order {
+			None => 0u8.write(writer)?,
+			Some(RAACommitmentOrder::CommitmentFirst) => 1u8.write(writer)?,
+			Some(RAACommitmentOrder::RevokeAndACKFirst) => 2u8.write(writer)?,
+		}
+
+		(self.monitor_pending_forwards.len() as u64).write(writer)?;
+		for &(ref pending_forward, ref htlc_id) in self.monitor_pending_forwards.iter() {
+			pending_forward.write(writer)?;
+			htlc_id.write(writer)?;
+		}
+
+		(self.monitor_pending_failures.len() as u64).write(writer)?;
+		for &(ref htlc_source, ref payment_hash, ref fail_reason) in self.monitor_pending_failures.iter() {
+			htlc_source.write(writer)?;
+			payment_hash.write(writer)?;
+			fail_reason.write(writer)?;
+		}
+
+		write_option!(self.pending_update_fee);
+		write_option!(self.holding_cell_update_fee);
+
+		self.next_local_htlc_id.write(writer)?;
+		(self.next_remote_htlc_id - dropped_inbound_htlcs).write(writer)?;
+		self.channel_update_count.write(writer)?;
+		self.feerate_per_kw.write(writer)?;
+
+		(self.last_local_commitment_txn.len() as u64).write(writer)?;
+		for tx in self.last_local_commitment_txn.iter() {
+			if let Err(e) = tx.consensus_encode(&mut RawEncoder::new(WriterWriteAdaptor(writer))) {
+				match e {
+					network::serialize::Error::Io(e) => return Err(e),
+					_ => panic!("last_local_commitment_txn must have been well-formed!"),
+				}
+			}
+		}
+
+		match self.last_sent_closing_fee {
+			Some((feerate, fee)) => {
+				1u8.write(writer)?;
+				feerate.write(writer)?;
+				fee.write(writer)?;
+			},
+			None => 0u8.write(writer)?,
+		}
+
+		write_option!(self.funding_tx_confirmed_in);
+		write_option!(self.short_channel_id);
+
+		self.last_block_connected.write(writer)?;
+		self.funding_tx_confirmations.write(writer)?;
+
+		self.their_dust_limit_satoshis.write(writer)?;
+		self.our_dust_limit_satoshis.write(writer)?;
+		self.their_max_htlc_value_in_flight_msat.write(writer)?;
+		self.their_channel_reserve_satoshis.write(writer)?;
+		self.their_htlc_minimum_msat.write(writer)?;
+		self.our_htlc_minimum_msat.write(writer)?;
+		self.their_to_self_delay.write(writer)?;
+		self.their_max_accepted_htlcs.write(writer)?;
+
+		write_option!(self.their_funding_pubkey);
+		write_option!(self.their_revocation_basepoint);
+		write_option!(self.their_payment_basepoint);
+		write_option!(self.their_delayed_payment_basepoint);
+		write_option!(self.their_htlc_basepoint);
+		write_option!(self.their_cur_commitment_point);
+
+		write_option!(self.their_prev_commitment_point);
+		self.their_node_id.write(writer)?;
+
+		write_option!(self.their_shutdown_scriptpubkey);
+
+		self.channel_monitor.write_for_disk(writer)?;
+		Ok(())
+	}
+}
+
+impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
+	fn read(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+		let _ver: u8 = Readable::read(reader)?;
+		let min_ver: u8 = Readable::read(reader)?;
+		if min_ver > SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+
+		let user_id = Readable::read(reader)?;
+
+		let channel_id = Readable::read(reader)?;
+		let channel_state = Readable::read(reader)?;
+		let channel_outbound = Readable::read(reader)?;
+		let announce_publicly = Readable::read(reader)?;
+		let channel_value_satoshis = Readable::read(reader)?;
+
+		let local_keys = Readable::read(reader)?;
+		let shutdown_pubkey = Readable::read(reader)?;
+
+		let cur_local_commitment_transaction_number = Readable::read(reader)?;
+		let cur_remote_commitment_transaction_number = Readable::read(reader)?;
+		let value_to_self_msat = Readable::read(reader)?;
+
+		let received_commitment_while_awaiting_raa = Readable::read(reader)?;
+
+		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
+		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
+		for _ in 0..pending_inbound_htlc_count {
+			pending_inbound_htlcs.push(InboundHTLCOutput {
+				htlc_id: Readable::read(reader)?,
+				amount_msat: Readable::read(reader)?,
+				cltv_expiry: Readable::read(reader)?,
+				payment_hash: Readable::read(reader)?,
+				state: match <u8 as Readable<R>>::read(reader)? {
+					1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
+					2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
+					3 => InboundHTLCState::Committed,
+					4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
+					_ => return Err(DecodeError::InvalidValue),
+				},
+			});
+		}
+
+		macro_rules! read_option { () => {
+			match <u8 as Readable<R>>::read(reader)? {
+				0 => None,
+				1 => Some(Readable::read(reader)?),
+				_ => return Err(DecodeError::InvalidValue),
+			}
+		} }
+
+		let pending_outbound_htlc_count: u64 = Readable::read(reader)?;
+		let mut pending_outbound_htlcs = Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
+		for _ in 0..pending_outbound_htlc_count {
+			pending_outbound_htlcs.push(OutboundHTLCOutput {
+				htlc_id: Readable::read(reader)?,
+				amount_msat: Readable::read(reader)?,
+				cltv_expiry: Readable::read(reader)?,
+				payment_hash: Readable::read(reader)?,
+				source: Readable::read(reader)?,
+				fail_reason: read_option!(),
+				state: match <u8 as Readable<R>>::read(reader)? {
+					0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
+					1 => OutboundHTLCState::Committed,
+					2 => OutboundHTLCState::RemoteRemoved,
+					3 => OutboundHTLCState::AwaitingRemoteRevokeToRemove,
+					4 => OutboundHTLCState::AwaitingRemovedRemoteRevoke,
+					_ => return Err(DecodeError::InvalidValue),
+				},
+			});
+		}
+
+		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
+		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
+		for _ in 0..holding_cell_htlc_update_count {
+			holding_cell_htlc_updates.push(match <u8 as Readable<R>>::read(reader)? {
+				0 => HTLCUpdateAwaitingACK::AddHTLC {
+					amount_msat: Readable::read(reader)?,
+					cltv_expiry: Readable::read(reader)?,
+					payment_hash: Readable::read(reader)?,
+					source: Readable::read(reader)?,
+					onion_routing_packet: Readable::read(reader)?,
+					time_created: Instant::now(),
+				},
+				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
+					payment_preimage: Readable::read(reader)?,
+					htlc_id: Readable::read(reader)?,
+				},
+				2 => HTLCUpdateAwaitingACK::FailHTLC {
+					htlc_id: Readable::read(reader)?,
+					err_packet: Readable::read(reader)?,
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			});
+		}
+
+		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
+		let monitor_pending_commitment_signed = Readable::read(reader)?;
+
+		let monitor_pending_order = match <u8 as Readable<R>>::read(reader)? {
+			0 => None,
+			1 => Some(RAACommitmentOrder::CommitmentFirst),
+			2 => Some(RAACommitmentOrder::RevokeAndACKFirst),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
+		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, OUR_MAX_HTLCS as usize));
+		for _ in 0..monitor_pending_forwards_count {
+			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?));
+		}
+
+		let monitor_pending_failures_count: u64 = Readable::read(reader)?;
+		let mut monitor_pending_failures = Vec::with_capacity(cmp::min(monitor_pending_failures_count as usize, OUR_MAX_HTLCS as usize));
+		for _ in 0..monitor_pending_failures_count {
+			monitor_pending_failures.push((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?));
+		}
+
+		let pending_update_fee = read_option!();
+		let holding_cell_update_fee = read_option!();
+
+		let next_local_htlc_id = Readable::read(reader)?;
+		let next_remote_htlc_id = Readable::read(reader)?;
+		let channel_update_count = Readable::read(reader)?;
+		let feerate_per_kw = Readable::read(reader)?;
+
+		let last_local_commitment_txn_count: u64 = Readable::read(reader)?;
+		let mut last_local_commitment_txn = Vec::with_capacity(cmp::min(last_local_commitment_txn_count as usize, OUR_MAX_HTLCS as usize*2 + 1));
+		for _ in 0..last_local_commitment_txn_count {
+			last_local_commitment_txn.push(match Transaction::consensus_decode(&mut RawDecoder::new(reader.by_ref())) {
+				Ok(tx) => tx,
+				Err(_) => return Err(DecodeError::InvalidValue),
+			});
+		}
+
+		let last_sent_closing_fee = match <u8 as Readable<R>>::read(reader)? {
+			0 => None,
+			1 => Some((Readable::read(reader)?, Readable::read(reader)?)),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let funding_tx_confirmed_in = read_option!();
+		let short_channel_id = read_option!();
+
+		let last_block_connected = Readable::read(reader)?;
+		let funding_tx_confirmations = Readable::read(reader)?;
+
+		let their_dust_limit_satoshis = Readable::read(reader)?;
+		let our_dust_limit_satoshis = Readable::read(reader)?;
+		let their_max_htlc_value_in_flight_msat = Readable::read(reader)?;
+		let their_channel_reserve_satoshis = Readable::read(reader)?;
+		let their_htlc_minimum_msat = Readable::read(reader)?;
+		let our_htlc_minimum_msat = Readable::read(reader)?;
+		let their_to_self_delay = Readable::read(reader)?;
+		let their_max_accepted_htlcs = Readable::read(reader)?;
+
+		let their_funding_pubkey = read_option!();
+		let their_revocation_basepoint = read_option!();
+		let their_payment_basepoint = read_option!();
+		let their_delayed_payment_basepoint = read_option!();
+		let their_htlc_basepoint = read_option!();
+		let their_cur_commitment_point = read_option!();
+
+		let their_prev_commitment_point = read_option!();
+		let their_node_id = Readable::read(reader)?;
+
+		let their_shutdown_scriptpubkey = read_option!();
+		let (monitor_last_block, channel_monitor) = ReadableArgs::read(reader, logger.clone())?;
+		// We drop the ChannelMonitor's last block connected hash cause we don't actually bother
+		// doing full block connection operations on the internal CHannelMonitor copies
+		if monitor_last_block != last_block_connected {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		Ok(Channel {
+			user_id,
+
+			channel_id,
+			channel_state,
+			channel_outbound,
+			secp_ctx: Secp256k1::new(),
+			announce_publicly,
+			channel_value_satoshis,
+
+			local_keys,
+			shutdown_pubkey,
+
+			cur_local_commitment_transaction_number,
+			cur_remote_commitment_transaction_number,
+			value_to_self_msat,
+
+			received_commitment_while_awaiting_raa,
+			pending_inbound_htlcs,
+			pending_outbound_htlcs,
+			holding_cell_htlc_updates,
+
+			monitor_pending_revoke_and_ack,
+			monitor_pending_commitment_signed,
+			monitor_pending_order,
+			monitor_pending_forwards,
+			monitor_pending_failures,
+
+			pending_update_fee,
+			holding_cell_update_fee,
+			next_local_htlc_id,
+			next_remote_htlc_id,
+			channel_update_count,
+			feerate_per_kw,
+
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((0, 0)),
+			#[cfg(debug_assertions)]
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((0, 0)),
+
+			last_local_commitment_txn,
+
+			last_sent_closing_fee,
+
+			funding_tx_confirmed_in,
+			short_channel_id,
+			last_block_connected,
+			funding_tx_confirmations,
+
+			their_dust_limit_satoshis,
+			our_dust_limit_satoshis,
+			their_max_htlc_value_in_flight_msat,
+			their_channel_reserve_satoshis,
+			their_htlc_minimum_msat,
+			our_htlc_minimum_msat,
+			their_to_self_delay,
+			their_max_accepted_htlcs,
+
+			their_funding_pubkey,
+			their_revocation_basepoint,
+			their_payment_basepoint,
+			their_delayed_payment_basepoint,
+			their_htlc_basepoint,
+			their_cur_commitment_point,
+
+			their_prev_commitment_point,
+			their_node_id,
+
+			their_shutdown_scriptpubkey,
+
+			channel_monitor,
+
+			logger,
+		})
 	}
 }
 

@@ -1,7 +1,7 @@
 macro_rules! impl_writeable {
 	($st:ident, $len: expr, {$($field:ident),*}) => {
-		impl Writeable for $st {
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		impl ::util::ser::Writeable for $st {
+			fn write<W: ::util::ser::Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 				if $len != 0 {
 					w.size_hint($len);
 				}
@@ -10,10 +10,10 @@ macro_rules! impl_writeable {
 			}
 		}
 
-		impl<R: ::std::io::Read> Readable<R> for $st {
-			fn read(r: &mut R) -> Result<Self, DecodeError> {
+		impl<R: ::std::io::Read> ::util::ser::Readable<R> for $st {
+			fn read(r: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
 				Ok(Self {
-					$($field: Readable::read(r)?),*
+					$($field: ::util::ser::Readable::read(r)?),*
 				})
 			}
 		}
