@@ -74,8 +74,6 @@ pub struct ChannelKeys {
 	pub delayed_payment_base_key: SecretKey,
 	/// Local htlc secret key used in commitment tx htlc outputs
 	pub htlc_base_key: SecretKey,
-	/// Local secret key used in justice tx, claim tx and preimage tx outputs
-	pub channel_monitor_claim_key: SecretKey,
 	/// Commitment seed
 	pub commitment_seed: [u8; 32],
 }
@@ -104,9 +102,6 @@ impl ChannelKeys {
 		hkdf_expand(Sha256::new(), &prk, b"rust-lightning htlc base key info", &mut okm);
 		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
 
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning channel monitor claim key info", &mut okm);
-		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
-
 		hkdf_expand(Sha256::new(), &prk, b"rust-lightning local commitment seed info", &mut okm);
 
 		ChannelKeys {
@@ -115,7 +110,6 @@ impl ChannelKeys {
 			payment_base_key: payment_base_key,
 			delayed_payment_base_key: delayed_payment_base_key,
 			htlc_base_key: htlc_base_key,
-			channel_monitor_claim_key: channel_monitor_claim_key,
 			commitment_seed: okm
 		}
 	}
