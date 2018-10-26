@@ -62,6 +62,7 @@ pub trait KeysInterface: Send + Sync {
 }
 
 /// Set of lightning keys needed to operate a channel as described in BOLT 3
+#[derive(Clone)]
 pub struct ChannelKeys {
 	/// Private key of anchor tx
 	pub funding_key: SecretKey,

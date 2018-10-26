@@ -20,7 +20,7 @@ use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGH
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
-use chain::keysinterface::ChannelKeys;
+use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::{transaction_utils,rng};
 use util::ser::Writeable;
 use util::sha2::Sha256;
@@ -415,7 +415,9 @@ impl Channel {
 	}
 
 	// Constructors:
-	pub fn new_outbound(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
+		let chan_keys = keys_provider.get_channel_keys(false);
+
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
 		}
@@ -524,7 +526,9 @@ impl Channel {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, chan_keys: ChannelKeys, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, ChannelError> {
+		let chan_keys = keys_provider.get_channel_keys(true);
+
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(ChannelError::Close("funding value > 2^24"));
@@ -3236,6 +3240,7 @@ mod tests {
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::chan_utils;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
+	use chain::keysinterface::KeysInterface;
 	use chain::transaction::OutPoint;
 	use util::test_utils;
 	use util::logger::Logger;
@@ -3260,6 +3265,16 @@ mod tests {
 		        "MAX_FUNDING_SATOSHIS is greater than all satoshis on existence");
 	}
 
+	struct Keys {
+		chan_keys: ChannelKeys,
+	}
+	impl KeysInterface for Keys {
+		fn get_node_secret(&self) -> SecretKey { panic!(); }
+		fn get_destination_script(&self) -> Script { panic!(); }
+		fn get_shutdown_pubkey(&self) -> PublicKey { panic!(); }
+		fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys { self.chan_keys.clone() }
+	}
+
 	#[test]
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendix C:
@@ -3281,9 +3296,10 @@ mod tests {
 		};
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, &chan_keys.funding_key).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
+		let keys_provider: Arc<KeysInterface> = Arc::new(Keys { chan_keys });
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap());
-		let mut chan = Channel::new_outbound(&feeest, chan_keys, their_node_id, 10000000, 100000, false, 42, Arc::clone(&logger)).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, false, 42, Arc::clone(&logger)).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 

@@ -5,15 +5,17 @@ extern crate secp256k1;
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::network::serialize::{deserialize, serialize, BitcoinHash};
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::hash::{Sha256dHash, Hash160};
 
 use crypto::digest::Digest;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
+use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::{ChannelManager, PaymentFailReason};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
@@ -196,6 +198,54 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 	}
 }
 
+struct KeyProvider {
+	node_secret: SecretKey,
+}
+impl KeysInterface for KeyProvider {
+	fn get_node_secret(&self) -> SecretKey {
+		self.node_secret.clone()
+	}
+
+	fn get_destination_script(&self) -> Script {
+		let secp_ctx = Secp256k1::signing_only();
+		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
+		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+	}
+
+	fn get_shutdown_pubkey(&self) -> PublicKey {
+		let secp_ctx = Secp256k1::signing_only();
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap())
+	}
+
+	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys {
+		let secp_ctx = Secp256k1::without_caps();
+		if inbound {
+			ChannelKeys {
+				funding_key:               SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]).unwrap(),
+				revocation_base_key:       SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0]).unwrap(),
+				payment_base_key:          SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]).unwrap(),
+				delayed_payment_base_key:  SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0]).unwrap(),
+				htlc_base_key:             SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0]).unwrap(),
+				channel_close_key:         SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0]).unwrap(),
+				channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0]).unwrap(),
+				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+			}
+		} else {
+			ChannelKeys {
+				funding_key:               SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				revocation_base_key:       SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				payment_base_key:          SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				delayed_payment_base_key:  SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				htlc_base_key:             SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				channel_close_key:         SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				channel_monitor_claim_key: SecretKey::from_slice(&secp_ctx, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+			}
+		}
+	}
+}
+
 #[inline]
 pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	reset_rng_state();
@@ -236,8 +286,9 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	let broadcast = Arc::new(TestBroadcaster{});
 	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone());
 
-	let channelmanager = ChannelManager::new(our_network_key, slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger)).unwrap();
-	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &our_network_key), watch.clone(), Arc::clone(&logger)));
+	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone() });
+	let channelmanager = ChannelManager::new(slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
+	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
