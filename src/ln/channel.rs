@@ -1506,6 +1506,7 @@ impl Channel {
 
 		self.their_prev_commitment_point = self.their_cur_commitment_point;
 		self.their_cur_commitment_point = Some(msg.next_per_commitment_point);
+		self.channel_monitor.init_remote_per_commitment_point(self.cur_remote_commitment_transaction_number, msg.next_per_commitment_point);
 		Ok(())
 	}
 
