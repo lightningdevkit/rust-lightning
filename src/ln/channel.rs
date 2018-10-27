@@ -3084,7 +3084,7 @@ impl Channel {
 		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
 			panic!("Cannot create commitment tx while disconnected, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
-		if (self.channel_state & (ChannelState::MonitorUpdateFailed as u32)) == (ChannelState::PeerDisconnected as u32) {
+		if (self.channel_state & (ChannelState::MonitorUpdateFailed as u32)) == (ChannelState::MonitorUpdateFailed as u32) {
 			panic!("Cannot create commitment tx while awaiting monitor update unfreeze, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
 		let mut have_updates = self.pending_update_fee.is_some();
