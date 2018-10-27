@@ -168,6 +168,7 @@ pub struct Pong {
 }
 
 /// An open_channel message to be sent or received from a peer
+#[derive(Clone)]
 pub struct OpenChannel {
 	pub(crate) chain_hash: Sha256dHash,
 	pub(crate) temporary_channel_id: [u8; 32],
@@ -191,6 +192,7 @@ pub struct OpenChannel {
 }
 
 /// An accept_channel message to be sent or received from a peer
+#[derive(Clone)]
 pub struct AcceptChannel {
 	pub(crate) temporary_channel_id: [u8; 32],
 	pub(crate) dust_limit_satoshis: u64,
@@ -210,6 +212,7 @@ pub struct AcceptChannel {
 }
 
 /// A funding_created message to be sent or received from a peer
+#[derive(Clone)]
 pub struct FundingCreated {
 	pub(crate) temporary_channel_id: [u8; 32],
 	pub(crate) funding_txid: Sha256dHash,
@@ -218,6 +221,7 @@ pub struct FundingCreated {
 }
 
 /// A funding_signed message to be sent or received from a peer
+#[derive(Clone)]
 pub struct FundingSigned {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) signature: Signature,
@@ -231,12 +235,14 @@ pub struct FundingLocked {
 }
 
 /// A shutdown message to be sent or received from a peer
+#[derive(Clone)]
 pub struct Shutdown {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) scriptpubkey: Script,
 }
 
 /// A closing_signed message to be sent or received from a peer
+#[derive(Clone)]
 pub struct ClosingSigned {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) fee_satoshis: u64,
@@ -296,20 +302,20 @@ pub struct RevokeAndACK {
 }
 
 /// An update_fee message to be sent or received from a peer
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct UpdateFee {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) feerate_per_kw: u32,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub(crate) struct DataLossProtect {
 	pub(crate) your_last_per_commitment_secret: [u8; 32],
 	pub(crate) my_current_per_commitment_point: PublicKey,
 }
 
 /// A channel_reestablish message to be sent or received from a peer
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct ChannelReestablish {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) next_local_commitment_number: u64,
@@ -467,7 +473,7 @@ pub struct HandleError { //TODO: rename me
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct CommitmentUpdate {
 	pub(crate) update_add_htlcs: Vec<UpdateAddHTLC>,
 	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
@@ -505,40 +511,28 @@ pub enum HTLCFailChannelUpdate {
 	}
 }
 
-/// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
-/// be sent in the order they appear in the return value, however sometimes the order needs to be
-/// variable at runtime (eg handle_channel_reestablish needs to re-send messages in the order they
-/// were originally sent). In those cases, this enum is also returned.
-#[derive(Clone, PartialEq)]
-pub enum RAACommitmentOrder {
-	/// Send the CommitmentUpdate messages first
-	CommitmentFirst,
-	/// Send the RevokeAndACK message first
-	RevokeAndACKFirst,
-}
-
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different their_node_ids, however
 /// they MUST NOT be called in parallel when the two calls have the same their_node_id.
-pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
+pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<AcceptChannel, HandleError>;
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<(), HandleError>;
 	/// Handle an incoming accept_channel message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
 	/// Handle an incoming funding_created message from the given peer.
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<FundingSigned, HandleError>;
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<(), HandleError>;
 	/// Handle an incoming funding_signed message from the given peer.
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) -> Result<(), HandleError>;
 	/// Handle an incoming funding_locked message from the given peer.
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<Option<AnnouncementSignatures>, HandleError>;
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<(), HandleError>;
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(Option<Shutdown>, Option<ClosingSigned>), HandleError>;
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(), HandleError>;
 	/// Handle an incoming closing_signed message from the given peer.
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<Option<ClosingSigned>, HandleError>;
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<(), HandleError>;
 
 	// HTLC handling:
 	/// Handle an incoming update_add_htlc message from the given peer.
@@ -550,9 +544,9 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), HandleError>;
 	/// Handle an incoming commitment_signed message from the given peer.
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(RevokeAndACK, Option<CommitmentSigned>), HandleError>;
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(), HandleError>;
 	/// Handle an incoming revoke_and_ack message from the given peer.
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<Option<CommitmentUpdate>, HandleError>;
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<(), HandleError>;
 
 	/// Handle an incoming update_fee message from the given peer.
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), HandleError>;
@@ -569,9 +563,9 @@ pub trait ChannelMessageHandler : events::EventsProvider + Send + Sync {
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
-	fn peer_connected(&self, their_node_id: &PublicKey) -> Vec<ChannelReestablish>;
+	fn peer_connected(&self, their_node_id: &PublicKey);
 	/// Handle an incoming channel_reestablish message from the given peer.
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(Option<FundingLocked>, Option<RevokeAndACK>, Option<CommitmentUpdate>, RAACommitmentOrder), HandleError>;
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(), HandleError>;
 
 	// Error:
 	/// Handle an incoming error message from the given peer.

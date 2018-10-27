@@ -74,7 +74,7 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 }
 
 pub struct TestChannelMessageHandler {
-	pub pending_events: Mutex<Vec<events::Event>>,
+	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 }
 
 impl TestChannelMessageHandler {
@@ -86,25 +86,25 @@ impl TestChannelMessageHandler {
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::OpenChannel) -> Result<msgs::AcceptChannel, HandleError> {
+	fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<msgs::FundingSigned, HandleError> {
+	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingSigned) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingLocked) -> Result<Option<msgs::AnnouncementSignatures>, HandleError> {
+	fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingLocked) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_shutdown(&self, _their_node_id: &PublicKey, _msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>), HandleError> {
+	fn handle_shutdown(&self, _their_node_id: &PublicKey, _msg: &msgs::Shutdown) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::ClosingSigned) -> Result<Option<msgs::ClosingSigned>, HandleError> {
+	fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::ClosingSigned) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateAddHTLC) -> Result<(), HandleError> {
@@ -119,10 +119,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_commitment_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>), HandleError> {
+	fn handle_commitment_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::CommitmentSigned) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, _msg: &msgs::RevokeAndACK) -> Result<Option<msgs::CommitmentUpdate>, HandleError> {
+	fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, _msg: &msgs::RevokeAndACK) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFee) -> Result<(), HandleError> {
@@ -131,18 +131,16 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, msgs::RAACommitmentOrder), HandleError> {
+	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey) -> Vec<msgs::ChannelReestablish> {
-		Vec::new()
-	}
+	fn peer_connected(&self, _their_node_id: &PublicKey) {}
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 }
 
-impl events::EventsProvider for TestChannelMessageHandler {
-	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+impl events::MessageSendEventsProvider for TestChannelMessageHandler {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut *pending_events);
