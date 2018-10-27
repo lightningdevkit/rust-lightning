@@ -5500,25 +5500,27 @@ mod tests {
 			// Drop the payment_event messages, and let them get re-generated in reconnect_nodes!
 		} else {
 			nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
-			nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
-			check_added_monitors!(nodes[1], 1);
-			let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-
 			if messages_delivered >= 3 {
-				nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
-				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-				check_added_monitors!(nodes[0], 1);
+				nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+				check_added_monitors!(nodes[1], 1);
+				let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 				if messages_delivered >= 4 {
-					nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_commitment_signed).unwrap();
-					let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-					// No commitment_signed so get_event_msg's assert(len == 1) passes
+					nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
+					assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 					check_added_monitors!(nodes[0], 1);
 
 					if messages_delivered >= 5 {
-						nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap();
-						assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-						check_added_monitors!(nodes[1], 1);
+						nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_commitment_signed).unwrap();
+						let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+						// No commitment_signed so get_event_msg's assert(len == 1) passes
+						check_added_monitors!(nodes[0], 1);
+
+						if messages_delivered >= 6 {
+							nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap();
+							assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+							check_added_monitors!(nodes[1], 1);
+						}
 					}
 				}
 			}
@@ -5526,20 +5528,20 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		if messages_delivered < 2 {
+		if messages_delivered < 3 {
 			// Even if the funding_locked messages get exchanged, as long as nothing further was
 			// received on either side, both sides will need to resend them.
 			reconnect_nodes(&nodes[0], &nodes[1], true, (0, 1), (0, 0), (0, 0), (0, 0), (false, false));
-		} else if messages_delivered == 2 {
+		} else if messages_delivered == 3 {
 			// nodes[0] still wants its RAA + commitment_signed
 			reconnect_nodes(&nodes[0], &nodes[1], false, (-1, 0), (0, 0), (0, 0), (0, 0), (true, false));
-		} else if messages_delivered == 3 {
+		} else if messages_delivered == 4 {
 			// nodes[0] still wants its commitment_signed
 			reconnect_nodes(&nodes[0], &nodes[1], false, (-1, 0), (0, 0), (0, 0), (0, 0), (false, false));
-		} else if messages_delivered == 4 {
+		} else if messages_delivered == 5 {
 			// nodes[1] still wants its final RAA
 			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
-		} else if messages_delivered == 5 {
+		} else if messages_delivered == 6 {
 			// Everything was delivered...
 			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		}
@@ -5667,13 +5669,14 @@ mod tests {
 		do_test_drop_messages_peer_disconnect(0);
 		do_test_drop_messages_peer_disconnect(1);
 		do_test_drop_messages_peer_disconnect(2);
+		do_test_drop_messages_peer_disconnect(3);
 	}
 
 	#[test]
 	fn test_drop_messages_peer_disconnect_b() {
-		do_test_drop_messages_peer_disconnect(3);
 		do_test_drop_messages_peer_disconnect(4);
 		do_test_drop_messages_peer_disconnect(5);
+		do_test_drop_messages_peer_disconnect(6);
 	}
 
 	#[test]

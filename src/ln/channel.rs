@@ -2044,6 +2044,7 @@ impl Channel {
 				},
 			}
 		});
+		self.next_remote_htlc_id -= inbound_drop_count;
 
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
 			if let OutboundHTLCState::RemoteRemoved = htlc.state {
