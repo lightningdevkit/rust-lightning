@@ -14,6 +14,7 @@
 
 use ln::msgs;
 use chain::transaction::OutPoint;
+use chain::keysinterface::SpendableOutputDescriptor;
 
 use bitcoin::blockdata::script::Script;
 
@@ -88,6 +89,13 @@ pub enum Event {
 	PendingHTLCsForwardable {
 		/// The earliest time at which process_pending_htlc_forwards should be called.
 		time_forwardable: Instant,
+	},
+	/// Used to indicate that an output was generated on-chain which you should know how to spend.
+	/// Such an output will *not* ever be spent by rust-lightning, so you need to store them
+	/// somewhere and spend them when you create on-chain spends.
+	SpendableOutputs {
+		/// The outputs which you should store as spendable by you.
+		outputs: Vec<SpendableOutputDescriptor>,
 	},
 
 	// Events indicating the network loop should send a message to a peer:
