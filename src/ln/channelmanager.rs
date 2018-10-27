@@ -23,14 +23,14 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, HandleError};
+use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
 use chain::keysinterface::KeysInterface;
 use util::{byte_utils, events, internal_traits, rng};
 use util::sha2::Sha256;
-use util::ser::{Readable, Writeable};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::chacha20poly1305rfc::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
@@ -41,11 +41,10 @@ use crypto::hmac::Hmac;
 use crypto::digest::Digest;
 use crypto::symmetriccipher::SynchronousStreamCipher;
 
-use std::{ptr, mem};
-use std::collections::HashMap;
-use std::collections::hash_map;
+use std::{cmp, ptr, mem};
+use std::collections::{HashMap, hash_map, HashSet};
 use std::io::Cursor;
-use std::sync::{Mutex,MutexGuard,Arc};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
 
@@ -65,13 +64,12 @@ mod channel_held_info {
 	use ln::msgs;
 	use ln::router::Route;
 	use secp256k1::key::SecretKey;
-	use secp256k1::ecdh::SharedSecret;
 
 	/// Stores the info we will need to send when we want to forward an HTLC onwards
 	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 	pub struct PendingForwardHTLCInfo {
 		pub(super) onion_packet: Option<msgs::OnionPacket>,
-		pub(super) incoming_shared_secret: SharedSecret,
+		pub(super) incoming_shared_secret: [u8; 32],
 		pub(super) payment_hash: [u8; 32],
 		pub(super) short_channel_id: u64,
 		pub(super) amt_to_forward: u64,
@@ -96,7 +94,7 @@ mod channel_held_info {
 	pub struct HTLCPreviousHopData {
 		pub(super) short_channel_id: u64,
 		pub(super) htlc_id: u64,
-		pub(super) incoming_packet_shared_secret: SharedSecret,
+		pub(super) incoming_packet_shared_secret: [u8; 32],
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -302,6 +300,25 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 ///
 /// Implements ChannelMessageHandler, handling the multi-channel parts and passing things through
 /// to individual Channels.
+///
+/// Implements Writeable to write out all channel state to disk. Implies peer_disconnected() for
+/// all peers during write/read (though does not modify this instance, only the instance being
+/// serialized). This will result in any channels which have not yet exchanged funding_created (ie
+/// called funding_transaction_generated for outbound channels).
+///
+/// Note that you can be a bit lazier about writing out ChannelManager than you can be with
+/// ChannelMonitors. With ChannelMonitors you MUST write each monitor update out to disk before
+/// returning from ManyChannelMonitor::add_update_monitor, with ChannelManagers, writing updates
+/// happens out-of-band (and will prevent any other ChannelManager operations from occurring during
+/// the serialization process). If the deserialized version is out-of-date compared to the
+/// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
+/// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
+///
+/// Note that the deserializer is only implemented for (Sha256dHash, ChannelManager), which
+/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+/// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
+/// block_connected() to step towards your best block) upon deserialization before using the
+/// object!
 pub struct ChannelManager {
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
@@ -312,12 +329,17 @@ pub struct ChannelManager {
 	announce_channels_publicly: bool,
 	fee_proportional_millionths: u32,
 	latest_block_height: AtomicUsize,
+	last_block_hash: Mutex<Sha256dHash>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	channel_state: Mutex<ChannelHolder>,
 	our_network_key: SecretKey,
 
 	pending_events: Mutex<Vec<events::Event>>,
+	/// Used when we have to take a BIG lock to make sure everything is self-consistent.
+	/// Essentially just when we're serializing ourselves out.
+	/// Taken first everywhere where we are making changes before any other locks.
+	total_consistency_lock: RwLock<()>,
 
 	keys_manager: Arc<KeysInterface>,
 
@@ -405,7 +427,8 @@ impl ChannelManager {
 
 			announce_channels_publicly,
 			fee_proportional_millionths,
-			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value (generally need to replay recent chain on chain_monitor registration)
+			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value
+			last_block_hash: Mutex::new(Default::default()),
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
@@ -419,6 +442,7 @@ impl ChannelManager {
 			our_network_key: keys_manager.get_node_secret(),
 
 			pending_events: Mutex::new(Vec::new()),
+			total_consistency_lock: RwLock::new(()),
 
 			keys_manager,
 
@@ -443,6 +467,8 @@ impl ChannelManager {
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
 		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, self.announce_channels_publicly, user_id, Arc::clone(&self.logger))?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator);
+
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.entry(channel.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
@@ -506,6 +532,8 @@ impl ChannelManager {
 	///
 	/// May generate a SendShutdown message event on success, which should be relayed.
 	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let (mut failed_htlcs, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -568,6 +596,8 @@ impl ChannelManager {
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
 	/// the chain and rejecting new HTLCs on the given channel.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -625,7 +655,8 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn gen_rho_mu_from_shared_secret(shared_secret: &SharedSecret) -> ([u8; 32], [u8; 32]) {
+	fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
+		assert_eq!(shared_secret.len(), 32);
 		({
 			let mut hmac = Hmac::new(Sha256::new(), &[0x72, 0x68, 0x6f]); // rho
 			hmac.input(&shared_secret[..]);
@@ -643,7 +674,8 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn gen_um_from_shared_secret(shared_secret: &SharedSecret) -> [u8; 32] {
+	fn gen_um_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+		assert_eq!(shared_secret.len(), 32);
 		let mut hmac = Hmac::new(Sha256::new(), &[0x75, 0x6d]); // um
 		hmac.input(&shared_secret[..]);
 		let mut res = [0; 32];
@@ -652,7 +684,8 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn gen_ammag_from_shared_secret(shared_secret: &SharedSecret) -> [u8; 32] {
+	fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+		assert_eq!(shared_secret.len(), 32);
 		let mut hmac = Hmac::new(Sha256::new(), &[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
 		hmac.input(&shared_secret[..]);
 		let mut res = [0; 32];
@@ -691,7 +724,7 @@ impl ChannelManager {
 		let mut res = Vec::with_capacity(route.hops.len());
 
 		Self::construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
-			let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
+			let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret[..]);
 
 			res.push(OnionKeys {
 				#[cfg(test)]
@@ -815,7 +848,7 @@ impl ChannelManager {
 
 	/// Encrypts a failure packet. raw_packet can either be a
 	/// msgs::DecodedOnionErrorPacket.encode() result or a msgs::OnionErrorPacket.data element.
-	fn encrypt_failure_packet(shared_secret: &SharedSecret, raw_packet: &[u8]) -> msgs::OnionErrorPacket {
+	fn encrypt_failure_packet(shared_secret: &[u8], raw_packet: &[u8]) -> msgs::OnionErrorPacket {
 		let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
 
 		let mut packet_crypted = Vec::with_capacity(raw_packet.len());
@@ -827,7 +860,8 @@ impl ChannelManager {
 		}
 	}
 
-	fn build_failure_packet(shared_secret: &SharedSecret, failure_type: u16, failure_data: &[u8]) -> msgs::DecodedOnionErrorPacket {
+	fn build_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::DecodedOnionErrorPacket {
+		assert_eq!(shared_secret.len(), 32);
 		assert!(failure_data.len() <= 256 - 2);
 
 		let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
@@ -858,7 +892,7 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn build_first_hop_failure_packet(shared_secret: &SharedSecret, failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
+	fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
 		let failure_packet = ChannelManager::build_failure_packet(shared_secret, failure_type, failure_data);
 		ChannelManager::encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 	}
@@ -886,7 +920,11 @@ impl ChannelManager {
 			})), self.channel_state.lock().unwrap());
 		}
 
-		let shared_secret = SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key);
+		let shared_secret = {
+			let mut arr = [0; 32];
+			arr.copy_from_slice(&SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
+			arr
+		};
 		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
 
 		let mut channel_state = None;
@@ -963,7 +1001,7 @@ impl ChannelManager {
 					onion_packet: None,
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
-					incoming_shared_secret: shared_secret.clone(),
+					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
 				})
@@ -977,7 +1015,7 @@ impl ChannelManager {
 				let blinding_factor = {
 					let mut sha = Sha256::new();
 					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&shared_secret[..]);
+					sha.input(&shared_secret);
 					let mut res = [0u8; 32];
 					sha.result(&mut res);
 					match SecretKey::from_slice(&self.secp_ctx, &res) {
@@ -1003,7 +1041,7 @@ impl ChannelManager {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: next_hop_data.data.short_channel_id,
-					incoming_shared_secret: shared_secret.clone(),
+					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
 				})
@@ -1140,6 +1178,7 @@ impl ChannelManager {
 		let (onion_payloads, htlc_msat, htlc_cltv) = ChannelManager::build_onion_payloads(&route, cur_height)?;
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
 
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state = self.channel_state.lock().unwrap();
 
 		let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
@@ -1196,6 +1235,8 @@ impl ChannelManager {
 	/// May panic if the funding_txo is duplicative with some other channel (note that this should
 	/// be trivially prevented by using unique funding transaction keys per-channel).
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let (chan, msg, chan_monitor) = {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			match channel_state.by_id.remove(temporary_channel_id) {
@@ -1261,6 +1302,8 @@ impl ChannelManager {
 	/// Should only really ever be called in response to an PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
 		{
@@ -1382,6 +1425,8 @@ impl ChannelManager {
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect after a PaymentReceived event.
 	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32], reason: PaymentFailReason) -> bool {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
@@ -1477,6 +1522,8 @@ impl ChannelManager {
 		let mut payment_hash = [0; 32];
 		sha.result(&mut payment_hash);
 
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some(mut sources) = removed_source {
@@ -1555,6 +1602,7 @@ impl ChannelManager {
 		let mut close_results = Vec::new();
 		let mut htlc_forwards = Vec::new();
 		let mut htlc_failures = Vec::new();
+		let _ = self.total_consistency_lock.read().unwrap();
 
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -1938,7 +1986,7 @@ impl ChannelManager {
 				let amt_to_forward = htlc_msat - route_hop.fee_msat;
 				htlc_msat = amt_to_forward;
 
-				let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret);
+				let ammag = ChannelManager::gen_ammag_from_shared_secret(&shared_secret[..]);
 
 				let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
 				decryption_tmp.resize(packet_decrypted.len(), 0);
@@ -1949,7 +1997,7 @@ impl ChannelManager {
 				let is_from_final_node = route.hops.last().unwrap().pubkey == route_hop.pubkey;
 
 				if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
-					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret);
+					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret[..]);
 					let mut hmac = Hmac::new(Sha256::new(), &um);
 					hmac.input(&err_packet.encode()[32..]);
 					let mut calc_tag = [0u8; 32];
@@ -2359,6 +2407,7 @@ impl ChannelManager {
 	/// Note: This API is likely to change!
 	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
 
@@ -2416,6 +2465,7 @@ impl events::EventsProvider for ChannelManager {
 
 impl ChainListener for ChannelManager {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -2489,10 +2539,12 @@ impl ChainListener for ChannelManager {
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
 	fn block_disconnected(&self, header: &BlockHeader) {
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -2520,6 +2572,7 @@ impl ChainListener for ChannelManager {
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
 	}
 }
 
@@ -2558,70 +2611,87 @@ macro_rules! handle_error {
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_open_channel(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_accept_channel(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_funding_created(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_funding_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_funding_locked(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_shutdown(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_closing_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_commitment_signed(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fee(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), their_node_id)
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut failed_payments = Vec::new();
 		{
@@ -2677,6 +2747,7 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn peer_connected(&self, their_node_id: &PublicKey) {
+		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
 		let pending_msg_events = channel_state.pending_msg_events;
@@ -2701,6 +2772,8 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
 				if chan.remote_network_id == *their_node_id {
@@ -2713,6 +2786,391 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 }
 
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
+impl Writeable for PendingForwardHTLCInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		if let &Some(ref onion) = &self.onion_packet {
+			1u8.write(writer)?;
+			onion.write(writer)?;
+		} else {
+			0u8.write(writer)?;
+		}
+		self.incoming_shared_secret.write(writer)?;
+		self.payment_hash.write(writer)?;
+		self.short_channel_id.write(writer)?;
+		self.amt_to_forward.write(writer)?;
+		self.outgoing_cltv_value.write(writer)?;
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for PendingForwardHTLCInfo {
+	fn read(reader: &mut R) -> Result<PendingForwardHTLCInfo, DecodeError> {
+		let onion_packet = match <u8 as Readable<R>>::read(reader)? {
+			0 => None,
+			1 => Some(msgs::OnionPacket::read(reader)?),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		Ok(PendingForwardHTLCInfo {
+			onion_packet,
+			incoming_shared_secret: Readable::read(reader)?,
+			payment_hash: Readable::read(reader)?,
+			short_channel_id: Readable::read(reader)?,
+			amt_to_forward: Readable::read(reader)?,
+			outgoing_cltv_value: Readable::read(reader)?,
+		})
+	}
+}
+
+impl Writeable for HTLCFailureMsg {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCFailureMsg::Relay(ref fail_msg) => {
+				0u8.write(writer)?;
+				fail_msg.write(writer)?;
+			},
+			&HTLCFailureMsg::Malformed(ref fail_msg) => {
+				1u8.write(writer)?;
+				fail_msg.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCFailureMsg {
+	fn read(reader: &mut R) -> Result<HTLCFailureMsg, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCFailureMsg::Relay(Readable::read(reader)?)),
+			1 => Ok(HTLCFailureMsg::Malformed(Readable::read(reader)?)),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for PendingHTLCStatus {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&PendingHTLCStatus::Forward(ref forward_info) => {
+				0u8.write(writer)?;
+				forward_info.write(writer)?;
+			},
+			&PendingHTLCStatus::Fail(ref fail_msg) => {
+				1u8.write(writer)?;
+				fail_msg.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for PendingHTLCStatus {
+	fn read(reader: &mut R) -> Result<PendingHTLCStatus, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(PendingHTLCStatus::Forward(Readable::read(reader)?)),
+			1 => Ok(PendingHTLCStatus::Fail(Readable::read(reader)?)),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl_writeable!(HTLCPreviousHopData, 0, {
+	short_channel_id,
+	htlc_id,
+	incoming_packet_shared_secret
+});
+
+impl Writeable for HTLCSource {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCSource::PreviousHopData(ref hop_data) => {
+				0u8.write(writer)?;
+				hop_data.write(writer)?;
+			},
+			&HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } => {
+				1u8.write(writer)?;
+				route.write(writer)?;
+				session_priv.write(writer)?;
+				first_hop_htlc_msat.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCSource {
+	fn read(reader: &mut R) -> Result<HTLCSource, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
+			1 => Ok(HTLCSource::OutboundRoute {
+				route: Readable::read(reader)?,
+				session_priv: Readable::read(reader)?,
+				first_hop_htlc_msat: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for HTLCFailReason {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCFailReason::ErrorPacket { ref err } => {
+				0u8.write(writer)?;
+				err.write(writer)?;
+			},
+			&HTLCFailReason::Reason { ref failure_code, ref data } => {
+				1u8.write(writer)?;
+				failure_code.write(writer)?;
+				data.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCFailReason {
+	fn read(reader: &mut R) -> Result<HTLCFailReason, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCFailReason::ErrorPacket { err: Readable::read(reader)? }),
+			1 => Ok(HTLCFailReason::Reason {
+				failure_code: Readable::read(reader)?,
+				data: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl_writeable!(HTLCForwardInfo, 0, {
+	prev_short_channel_id,
+	prev_htlc_id,
+	forward_info
+});
+
+impl Writeable for ChannelManager {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		let _ = self.total_consistency_lock.write().unwrap();
+
+		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
+		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
+
+		self.genesis_hash.write(writer)?;
+		self.announce_channels_publicly.write(writer)?;
+		self.fee_proportional_millionths.write(writer)?;
+		(self.latest_block_height.load(Ordering::Acquire) as u32).write(writer)?;
+		self.last_block_hash.lock().unwrap().write(writer)?;
+
+		let channel_state = self.channel_state.lock().unwrap();
+		let mut unfunded_channels = 0;
+		for (_, channel) in channel_state.by_id.iter() {
+			if !channel.is_funding_initiated() {
+				unfunded_channels += 1;
+			}
+		}
+		((channel_state.by_id.len() - unfunded_channels) as u64).write(writer)?;
+		for (_, channel) in channel_state.by_id.iter() {
+			if channel.is_funding_initiated() {
+				channel.write(writer)?;
+			}
+		}
+
+		(channel_state.forward_htlcs.len() as u64).write(writer)?;
+		for (short_channel_id, pending_forwards) in channel_state.forward_htlcs.iter() {
+			short_channel_id.write(writer)?;
+			(pending_forwards.len() as u64).write(writer)?;
+			for forward in pending_forwards {
+				forward.write(writer)?;
+			}
+		}
+
+		(channel_state.claimable_htlcs.len() as u64).write(writer)?;
+		for (payment_hash, previous_hops) in channel_state.claimable_htlcs.iter() {
+			payment_hash.write(writer)?;
+			(previous_hops.len() as u64).write(writer)?;
+			for previous_hop in previous_hops {
+				previous_hop.write(writer)?;
+			}
+		}
+
+		Ok(())
+	}
+}
+
+/// Arguments for the creation of a ChannelManager that are not deserialized.
+///
+/// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
+/// is:
+/// 1) Deserialize all stored ChannelMonitors.
+/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Sha256dHash,
+///    ChannelManager)>::read(reader, args).
+///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
+///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
+/// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
+///    ChannelMonitor::get_monitored_outpoints and ChannelMonitor::get_funding_txo().
+/// 4) Reconnect blocks on your ChannelMonitors.
+/// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
+/// 6) Disconnect/connect blocks on the ChannelManager.
+/// 7) Register the new ChannelManager with your ChainWatchInterface (this does not happen
+///    automatically as it does in ChannelManager::new()).
+pub struct ChannelManagerReadArgs<'a> {
+	/// The keys provider which will give us relevant keys. Some keys will be loaded during
+	/// deserialization.
+	pub keys_manager: Arc<KeysInterface>,
+
+	/// The fee_estimator for use in the ChannelManager in the future.
+	///
+	/// No calls to the FeeEstimator will be made during deserialization.
+	pub fee_estimator: Arc<FeeEstimator>,
+	/// The ManyChannelMonitor for use in the ChannelManager in the future.
+	///
+	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
+	/// you have deserialized ChannelMonitors separately and will add them to your
+	/// ManyChannelMonitor after deserializing this ChannelManager.
+	pub monitor: Arc<ManyChannelMonitor>,
+	/// The ChainWatchInterface for use in the ChannelManager in the future.
+	///
+	/// No calls to the ChainWatchInterface will be made during deserialization.
+	pub chain_monitor: Arc<ChainWatchInterface>,
+	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
+	/// used to broadcast the latest local commitment transactions of channels which must be
+	/// force-closed during deserialization.
+	pub tx_broadcaster: Arc<BroadcasterInterface>,
+	/// The Logger for use in the ChannelManager and which may be used to log information during
+	/// deserialization.
+	pub logger: Arc<Logger>,
+
+
+	/// A map from channel funding outpoints to ChannelMonitors for those channels (ie
+	/// value.get_funding_txo() should be the key).
+	///
+	/// If a monitor is inconsistent with the channel state during deserialization the channel will
+	/// be force-closed using the data in the channelmonitor and the Channel will be dropped. This
+	/// is true for missing channels as well. If there is a monitor missing for which we find
+	/// channel data Err(DecodeError::InvalidValue) will be returned.
+	///
+	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
+	/// this struct.
+	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
+}
+
+impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (Sha256dHash, ChannelManager) {
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a>) -> Result<Self, DecodeError> {
+		let _ver: u8 = Readable::read(reader)?;
+		let min_ver: u8 = Readable::read(reader)?;
+		if min_ver > SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+
+		let genesis_hash: Sha256dHash = Readable::read(reader)?;
+		let announce_channels_publicly: bool = Readable::read(reader)?;
+		let fee_proportional_millionths: u32 = Readable::read(reader)?;
+		let latest_block_height: u32 = Readable::read(reader)?;
+		let last_block_hash: Sha256dHash = Readable::read(reader)?;
+
+		let mut closed_channels = Vec::new();
+
+		let channel_count: u64 = Readable::read(reader)?;
+		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		for _ in 0..channel_count {
+			let mut channel: Channel = ReadableArgs::read(reader, args.logger.clone())?;
+			if channel.last_block_connected != last_block_hash {
+				return Err(DecodeError::InvalidValue);
+			}
+
+			let funding_txo = channel.channel_monitor().get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+			funding_txo_set.insert(funding_txo.clone());
+			if let Some(monitor) = args.channel_monitors.get(&funding_txo) {
+				if channel.get_cur_local_commitment_transaction_number() != monitor.get_cur_local_commitment_number() ||
+						channel.get_revoked_remote_commitment_transaction_number() != monitor.get_min_seen_secret() ||
+						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() {
+					let mut force_close_res = channel.force_shutdown();
+					force_close_res.0 = monitor.get_latest_local_commitment_txn();
+					closed_channels.push(force_close_res);
+				} else {
+					if let Some(short_channel_id) = channel.get_short_channel_id() {
+						short_to_id.insert(short_channel_id, channel.channel_id());
+					}
+					by_id.insert(channel.channel_id(), channel);
+				}
+			} else {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		for (ref funding_txo, ref monitor) in args.channel_monitors.iter() {
+			if !funding_txo_set.contains(funding_txo) {
+				closed_channels.push((monitor.get_latest_local_commitment_txn(), Vec::new()));
+			}
+		}
+
+		let forward_htlcs_count: u64 = Readable::read(reader)?;
+		let mut forward_htlcs = HashMap::with_capacity(cmp::min(forward_htlcs_count as usize, 128));
+		for _ in 0..forward_htlcs_count {
+			let short_channel_id = Readable::read(reader)?;
+			let pending_forwards_count: u64 = Readable::read(reader)?;
+			let mut pending_forwards = Vec::with_capacity(cmp::min(pending_forwards_count as usize, 128));
+			for _ in 0..pending_forwards_count {
+				pending_forwards.push(Readable::read(reader)?);
+			}
+			forward_htlcs.insert(short_channel_id, pending_forwards);
+		}
+
+		let claimable_htlcs_count: u64 = Readable::read(reader)?;
+		let mut claimable_htlcs = HashMap::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
+		for _ in 0..claimable_htlcs_count {
+			let payment_hash = Readable::read(reader)?;
+			let previous_hops_len: u64 = Readable::read(reader)?;
+			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, 2));
+			for _ in 0..previous_hops_len {
+				previous_hops.push(Readable::read(reader)?);
+			}
+			claimable_htlcs.insert(payment_hash, previous_hops);
+		}
+
+		let channel_manager = ChannelManager {
+			genesis_hash,
+			fee_estimator: args.fee_estimator,
+			monitor: args.monitor,
+			chain_monitor: args.chain_monitor,
+			tx_broadcaster: args.tx_broadcaster,
+
+			announce_channels_publicly,
+			fee_proportional_millionths,
+			latest_block_height: AtomicUsize::new(latest_block_height as usize),
+			last_block_hash: Mutex::new(last_block_hash),
+			secp_ctx: Secp256k1::new(),
+
+			channel_state: Mutex::new(ChannelHolder {
+				by_id,
+				short_to_id,
+				next_forward: Instant::now(),
+				forward_htlcs,
+				claimable_htlcs,
+				pending_msg_events: Vec::new(),
+			}),
+			our_network_key: args.keys_manager.get_node_secret(),
+
+			pending_events: Mutex::new(Vec::new()),
+			total_consistency_lock: RwLock::new(()),
+			keys_manager: args.keys_manager,
+			logger: args.logger,
+		};
+
+		for close_res in closed_channels.drain(..) {
+			channel_manager.finish_force_close_channel(close_res);
+			//TODO: Broadcast channel update for closed channels, but only after we've made a
+			//connection or two.
+		}
+
+		Ok((last_block_hash.clone(), channel_manager))
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use chain::chaininterface;
@@ -2720,8 +3178,8 @@ mod tests {
 	use chain::chaininterface::ChainListener;
 	use chain::keysinterface::KeysInterface;
 	use chain::keysinterface;
-	use ln::channelmanager::{ChannelManager,OnionKeys,PaymentFailReason,RAACommitmentOrder};
-	use ln::channelmonitor::{ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
+	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 	use ln::router::{Route, RouteHop, Router};
 	use ln::msgs;
 	use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -2729,7 +3187,7 @@ mod tests {
 	use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 	use util::errors::APIError;
 	use util::logger::Logger;
-	use util::ser::Writeable;
+	use util::ser::{Writeable, Writer, ReadableArgs};
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -2889,22 +3347,22 @@ mod tests {
 		// Returning Errors test vectors from BOLT 4
 
 		let onion_keys = build_test_onion_keys();
-		let onion_error = ChannelManager::build_failure_packet(&onion_keys[4].shared_secret, 0x2002, &[0; 0]);
+		let onion_error = ChannelManager::build_failure_packet(&onion_keys[4].shared_secret[..], 0x2002, &[0; 0]);
 		assert_eq!(onion_error.encode(), hex::decode("4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
-		let onion_packet_1 = ChannelManager::encrypt_failure_packet(&onion_keys[4].shared_secret, &onion_error.encode()[..]);
+		let onion_packet_1 = ChannelManager::encrypt_failure_packet(&onion_keys[4].shared_secret[..], &onion_error.encode()[..]);
 		assert_eq!(onion_packet_1.data, hex::decode("a5e6bd0c74cb347f10cce367f949098f2457d14c046fd8a22cb96efb30b0fdcda8cb9168b50f2fd45edd73c1b0c8b33002df376801ff58aaa94000bf8a86f92620f343baef38a580102395ae3abf9128d1047a0736ff9b83d456740ebbb4aeb3aa9737f18fb4afb4aa074fb26c4d702f42968888550a3bded8c05247e045b866baef0499f079fdaeef6538f31d44deafffdfd3afa2fb4ca9082b8f1c465371a9894dd8c243fb4847e004f5256b3e90e2edde4c9fb3082ddfe4d1e734cacd96ef0706bf63c9984e22dc98851bcccd1c3494351feb458c9c6af41c0044bea3c47552b1d992ae542b17a2d0bba1a096c78d169034ecb55b6e3a7263c26017f033031228833c1daefc0dedb8cf7c3e37c9c37ebfe42f3225c326e8bcfd338804c145b16e34e4").unwrap());
 
-		let onion_packet_2 = ChannelManager::encrypt_failure_packet(&onion_keys[3].shared_secret, &onion_packet_1.data[..]);
+		let onion_packet_2 = ChannelManager::encrypt_failure_packet(&onion_keys[3].shared_secret[..], &onion_packet_1.data[..]);
 		assert_eq!(onion_packet_2.data, hex::decode("c49a1ce81680f78f5f2000cda36268de34a3f0a0662f55b4e837c83a8773c22aa081bab1616a0011585323930fa5b9fae0c85770a2279ff59ec427ad1bbff9001c0cd1497004bd2a0f68b50704cf6d6a4bf3c8b6a0833399a24b3456961ba00736785112594f65b6b2d44d9f5ea4e49b5e1ec2af978cbe31c67114440ac51a62081df0ed46d4a3df295da0b0fe25c0115019f03f15ec86fabb4c852f83449e812f141a9395b3f70b766ebbd4ec2fae2b6955bd8f32684c15abfe8fd3a6261e52650e8807a92158d9f1463261a925e4bfba44bd20b166d532f0017185c3a6ac7957adefe45559e3072c8dc35abeba835a8cb01a71a15c736911126f27d46a36168ca5ef7dccd4e2886212602b181463e0dd30185c96348f9743a02aca8ec27c0b90dca270").unwrap());
 
-		let onion_packet_3 = ChannelManager::encrypt_failure_packet(&onion_keys[2].shared_secret, &onion_packet_2.data[..]);
+		let onion_packet_3 = ChannelManager::encrypt_failure_packet(&onion_keys[2].shared_secret[..], &onion_packet_2.data[..]);
 		assert_eq!(onion_packet_3.data, hex::decode("a5d3e8634cfe78b2307d87c6d90be6fe7855b4f2cc9b1dfb19e92e4b79103f61ff9ac25f412ddfb7466e74f81b3e545563cdd8f5524dae873de61d7bdfccd496af2584930d2b566b4f8d3881f8c043df92224f38cf094cfc09d92655989531524593ec6d6caec1863bdfaa79229b5020acc034cd6deeea1021c50586947b9b8e6faa83b81fbfa6133c0af5d6b07c017f7158fa94f0d206baf12dda6b68f785b773b360fd0497e16cc402d779c8d48d0fa6315536ef0660f3f4e1865f5b38ea49c7da4fd959de4e83ff3ab686f059a45c65ba2af4a6a79166aa0f496bf04d06987b6d2ea205bdb0d347718b9aeff5b61dfff344993a275b79717cd815b6ad4c0beb568c4ac9c36ff1c315ec1119a1993c4b61e6eaa0375e0aaf738ac691abd3263bf937e3").unwrap());
 
-		let onion_packet_4 = ChannelManager::encrypt_failure_packet(&onion_keys[1].shared_secret, &onion_packet_3.data[..]);
+		let onion_packet_4 = ChannelManager::encrypt_failure_packet(&onion_keys[1].shared_secret[..], &onion_packet_3.data[..]);
 		assert_eq!(onion_packet_4.data, hex::decode("aac3200c4968f56b21f53e5e374e3a2383ad2b1b6501bbcc45abc31e59b26881b7dfadbb56ec8dae8857add94e6702fb4c3a4de22e2e669e1ed926b04447fc73034bb730f4932acd62727b75348a648a1128744657ca6a4e713b9b646c3ca66cac02cdab44dd3439890ef3aaf61708714f7375349b8da541b2548d452d84de7084bb95b3ac2345201d624d31f4d52078aa0fa05a88b4e20202bd2b86ac5b52919ea305a8949de95e935eed0319cf3cf19ebea61d76ba92532497fcdc9411d06bcd4275094d0a4a3c5d3a945e43305a5a9256e333e1f64dbca5fcd4e03a39b9012d197506e06f29339dfee3331995b21615337ae060233d39befea925cc262873e0530408e6990f1cbd233a150ef7b004ff6166c70c68d9f8c853c1abca640b8660db2921").unwrap());
 
-		let onion_packet_5 = ChannelManager::encrypt_failure_packet(&onion_keys[0].shared_secret, &onion_packet_4.data[..]);
+		let onion_packet_5 = ChannelManager::encrypt_failure_packet(&onion_keys[0].shared_secret[..], &onion_packet_4.data[..]);
 		assert_eq!(onion_packet_5.data, hex::decode("9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d").unwrap());
 	}
 
@@ -2924,6 +3382,7 @@ mod tests {
 		chan_monitor: Arc<test_utils::TestChannelMonitor>,
 		node: Arc<ChannelManager>,
 		router: Router,
+		node_seed: [u8; 32],
 		network_payment_count: Rc<RefCell<u8>>,
 		network_chan_count: Rc<RefCell<u32>>,
 	}
@@ -3595,7 +4054,7 @@ mod tests {
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
 			let node = ChannelManager::new(0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
-			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router,
+			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, node_seed: seed,
 				network_payment_count: payment_count.clone(),
 				network_chan_count: chan_count.clone(),
 			});
@@ -6397,5 +6856,138 @@ mod tests {
 		unsigned_msg.chain_hash = Sha256dHash::from_data(&[1,2,3,4,5,6,7,8,9]);
 		sign_msg!(unsigned_msg);
 		assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
+	}
+
+	struct VecWriter(Vec<u8>);
+	impl Writer for VecWriter {
+		fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+			self.0.extend_from_slice(buf);
+			Ok(())
+		}
+		fn size_hint(&mut self, size: usize) {
+			self.0.reserve_exact(size);
+		}
+	}
+
+	#[test]
+	fn test_simple_manager_serialize_deserialize() {
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+		let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		let nodes_0_serialized = nodes[0].node.encode();
+		let mut chan_0_monitor_serialized = VecWriter(Vec::new());
+		nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+		let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+		assert!(chan_0_monitor_read.is_empty());
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let (_, nodes_0_deserialized) = {
+			let mut channel_monitors = HashMap::new();
+			channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
+			<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+				keys_manager,
+				fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+				monitor: nodes[0].chan_monitor.clone(),
+				chain_monitor: nodes[0].chain_monitor.clone(),
+				tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+				logger: Arc::new(test_utils::TestLogger::new()),
+				channel_monitors: &channel_monitors,
+			}).unwrap()
+		};
+		assert!(nodes_0_read.is_empty());
+
+		assert!(nodes[0].chan_monitor.add_update_monitor(chan_0_monitor.get_funding_txo().unwrap(), chan_0_monitor).is_ok());
+		nodes[0].node = Arc::new(nodes_0_deserialized);
+		check_added_monitors!(nodes[0], 1);
+
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+		fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
+		claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+	}
+
+	#[test]
+	fn test_manager_serialize_deserialize_inconsistent_monitor() {
+		// Test deserializing a ChannelManager with a out-of-date ChannelMonitor
+		let mut nodes = create_network(4);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 2, 0);
+		let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3);
+
+		let (our_payment_preimage, _) = route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 1000000);
+
+		// Serialize the ChannelManager here, but the monitor we keep up-to-date
+		let nodes_0_serialized = nodes[0].node.encode();
+
+		route_payment(&nodes[0], &[&nodes[3]], 1000000);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[2].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[3].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		// Now the ChannelMonitor (which is now out-of-sync with ChannelManager for channel w/
+		// nodes[3])
+		let mut node_0_monitors_serialized = Vec::new();
+		for monitor in nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter() {
+			let mut writer = VecWriter(Vec::new());
+			monitor.1.write_for_disk(&mut writer).unwrap();
+			node_0_monitors_serialized.push(writer.0);
+		}
+
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		let mut node_0_monitors = Vec::new();
+		for serialized in node_0_monitors_serialized.iter() {
+			let mut read = &serialized[..];
+			let (_, monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut read, Arc::new(test_utils::TestLogger::new())).unwrap();
+			assert!(read.is_empty());
+			node_0_monitors.push(monitor);
+		}
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+		let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+			keys_manager,
+			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+			monitor: nodes[0].chan_monitor.clone(),
+			chain_monitor: nodes[0].chain_monitor.clone(),
+			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+			logger: Arc::new(test_utils::TestLogger::new()),
+			channel_monitors: &node_0_monitors.iter().map(|monitor| { (monitor.get_funding_txo().unwrap(), monitor) }).collect(),
+		}).unwrap();
+		assert!(nodes_0_read.is_empty());
+
+		{ // Channel close should result in a commitment tx and an HTLC tx
+			let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			assert_eq!(txn.len(), 2);
+			assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
+			assert_eq!(txn[1].input[0].previous_output.txid, txn[0].txid());
+		}
+
+		for monitor in node_0_monitors.drain(..) {
+			assert!(nodes[0].chan_monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor).is_ok());
+			check_added_monitors!(nodes[0], 1);
+		}
+		nodes[0].node = Arc::new(nodes_0_deserialized);
+
+		// nodes[1] and nodes[2] have no lost state with nodes[0]...
+		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[2], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		//... and we can even still claim the payment!
+		claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
+
+		nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id());
+		let reestablish = get_event_msg!(nodes[3], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+		nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id());
+		if let Err(msgs::HandleError { action: Some(msgs::ErrorAction::SendErrorMessage { msg }), .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
+			assert_eq!(msg.channel_id, channel_id);
+		} else { panic!("Unexpected result"); }
 	}
 }

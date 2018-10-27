@@ -78,6 +78,15 @@ pub struct ChannelKeys {
 	pub commitment_seed: [u8; 32],
 }
 
+impl_writeable!(ChannelKeys, 0, {
+	funding_key,
+	revocation_base_key,
+	payment_base_key,
+	delayed_payment_base_key,
+	htlc_base_key,
+	commitment_seed
+});
+
 impl ChannelKeys {
 	/// Generate a set of lightning keys needed to operate a channel by HKDF-expanding a given
 	/// random 32-byte seed

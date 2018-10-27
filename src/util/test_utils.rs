@@ -6,9 +6,10 @@ use ln::msgs;
 use ln::msgs::{HandleError};
 use util::events;
 use util::logger::{Logger, Level, Record};
-use util::ser::{Readable, Writer};
+use util::ser::{ReadableArgs, Writer};
 
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::util::hash::Sha256dHash;
 
 use secp256k1::PublicKey;
 
@@ -55,7 +56,8 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 		// to a watchtower and disk...
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		assert!(channelmonitor::ChannelMonitor::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == monitor);
+		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == monitor);
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));

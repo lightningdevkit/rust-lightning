@@ -13,9 +13,9 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
-use ln::msgs::{ErrorAction,HandleError,RoutingMessageHandler,NetAddress,GlobalFeatures};
+use ln::msgs::{DecodeError,ErrorAction,HandleError,RoutingMessageHandler,NetAddress,GlobalFeatures};
 use ln::msgs;
-use util::ser::Writeable;
+use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
 use std::cmp;
@@ -45,6 +45,37 @@ pub struct Route {
 	/// must always be at least length one. By protocol rules, this may not currently exceed 20 in
 	/// length.
 	pub hops: Vec<RouteHop>,
+}
+
+impl Writeable for Route {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		(self.hops.len() as u8).write(writer)?;
+		for hop in self.hops.iter() {
+			hop.pubkey.write(writer)?;
+			hop.short_channel_id.write(writer)?;
+			hop.fee_msat.write(writer)?;
+			hop.cltv_expiry_delta.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for Route {
+	fn read(reader: &mut R) -> Result<Route, DecodeError> {
+		let hops_count: u8 = Readable::read(reader)?;
+		let mut hops = Vec::with_capacity(hops_count as usize);
+		for _ in 0..hops_count {
+			hops.push(RouteHop {
+				pubkey: Readable::read(reader)?,
+				short_channel_id: Readable::read(reader)?,
+				fee_msat: Readable::read(reader)?,
+				cltv_expiry_delta: Readable::read(reader)?,
+			});
+		}
+		Ok(Route {
+			hops
+		})
+	}
 }
 
 struct DirectionalChannelInfo {
