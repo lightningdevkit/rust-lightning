@@ -6,7 +6,7 @@ use bitcoin::blockdata::transaction::{OutPoint, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::Hash160;
+use bitcoin::util::hash::{Hash160,Sha256dHash};
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 
 use secp256k1::key::{SecretKey, PublicKey};
@@ -17,8 +17,12 @@ use crypto::hkdf::{hkdf_extract,hkdf_expand};
 
 use util::sha2::Sha256;
 use util::logger::Logger;
+use util::rng;
+use util::byte_utils;
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// When on-chain outputs are created by rust-lightning an event is generated which informs the
 /// user thereof. This enum describes the format of the output and provides the OutPoint.
@@ -39,7 +43,7 @@ pub enum SpendableOutputDescriptor {
 	DynamicOutput {
 		/// Outpoint spendable by user wallet
 		outpoint: OutPoint,
-		/// local_delayedkey = delayed_payment_basepoint_secret + SHA256(per_commitment_point || delayed_payment_basepoint
+		/// local_delayedkey = delayed_payment_basepoint_secret + SHA256(per_commitment_point || delayed_payment_basepoint)
 		local_delayedkey: SecretKey,
 		/// witness redeemScript encumbering output
 		witness_script: Script,
@@ -137,6 +141,7 @@ pub struct KeysManager {
 	destination_script: Script,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
+	channel_child_index: AtomicUsize,
 
 	logger: Arc<Logger>,
 }
@@ -169,6 +174,7 @@ impl KeysManager {
 					destination_script,
 					shutdown_pubkey,
 					channel_master_key,
+					channel_child_index: AtomicUsize::new(0),
 
 					logger,
 				}
@@ -192,11 +198,18 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys {
-		let channel_pubkey = ExtendedPubKey::from_private(&self.secp_ctx, &self. channel_master_key);
-		let mut seed = [0; 32];
-		for (arr, slice) in seed.iter_mut().zip((&channel_pubkey.public_key.serialize()[0..32]).iter()) {
-			*arr = *slice;
-		}
-		ChannelKeys::new_from_seed(&seed)
+		// We only seriously intend to rely on the channel_master_key for true secure entropy,
+		// everything else just ensures uniqueness. We generally don't expect all clients
+		// to have non-broken RNGs here, so we also include the current time as a fallback to get uniqueness."
+		let mut seed = [0u8; 32 + 4 + 8 + 32];
+		rng::fill_bytes(&mut seed[..32]);
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
+		seed[32..32+4].copy_from_slice(&byte_utils::be32_to_array(now.subsec_nanos()));
+		seed[32+4..32+4+8].copy_from_slice(&byte_utils::be64_to_array(now.as_secs()));
+
+		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
+		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
+		seed[32+4+8..32+4+8+32].copy_from_slice(&child_privkey.secret_key[..32]);
+		ChannelKeys::new_from_seed(&Sha256dHash::from_data(&seed).as_bytes())
 	}
 }
