@@ -280,7 +280,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 
 	let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 	let broadcast = Arc::new(TestBroadcaster{});
-	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone());
+	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone(), Arc::clone(&logger));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone() });
 	let channelmanager = ChannelManager::new(slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();

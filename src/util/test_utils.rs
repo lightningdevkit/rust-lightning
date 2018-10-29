@@ -42,10 +42,10 @@ pub struct TestChannelMonitor {
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
 impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>) -> Self {
+	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
-			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster),
+			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger),
 			update_ret: Mutex::new(Ok(())),
 		}
 	}
