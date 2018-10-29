@@ -33,7 +33,7 @@ use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map};
 use std::cmp;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -140,10 +140,11 @@ struct MoneyLossDetector<'a> {
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
+	txids_confirmed: HashMap<Sha256dHash, usize>,
 	header_hashes: Vec<Sha256dHash>,
 	height: usize,
 	max_height: usize,
-
+	blocks_connected: u32,
 }
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
@@ -154,17 +155,34 @@ impl<'a> MoneyLossDetector<'a> {
 
 			peers,
 			funding_txn: Vec::new(),
+			txids_confirmed: HashMap::new(),
 			header_hashes: vec![Default::default()],
 			height: 0,
 			max_height: 0,
+			blocks_connected: 0,
 		}
 	}
 
-	fn connect_block(&mut self, txn: &[&Transaction], txn_idxs: &[u32]) {
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	fn connect_block(&mut self, all_txn: &[Transaction]) {
+		let mut txn = Vec::with_capacity(all_txn.len());
+		let mut txn_idxs = Vec::with_capacity(all_txn.len());
+		for (idx, tx) in all_txn.iter().enumerate() {
+			let txid = Sha256dHash::from_data(&serialize(tx).unwrap()[..]);
+			match self.txids_confirmed.entry(txid) {
+				hash_map::Entry::Vacant(e) => {
+					e.insert(self.height);
+					txn.push(tx);
+					txn_idxs.push(idx as u32 + 1);
+				},
+				_ => {},
+			}
+		}
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
 		self.height += 1;
-		self.manager.block_connected(&header, self.height as u32, txn, txn_idxs);
-		(*self.monitor).block_connected(&header, self.height as u32, txn, txn_idxs);
+		self.blocks_connected += 1;
+		self.manager.block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
+		(*self.monitor).block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
 		if self.header_hashes.len() > self.height {
 			self.header_hashes[self.height] = header.bitcoin_hash();
 		} else {
@@ -180,6 +198,10 @@ impl<'a> MoneyLossDetector<'a> {
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			self.manager.block_disconnected(&header);
 			self.monitor.block_disconnected(&header);
+			let removal_height = self.height;
+			self.txids_confirmed.retain(|_, height| {
+				removal_height != *height
+			});
 		}
 	}
 }
@@ -398,36 +420,36 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 				}
 			},
 			10 => {
-				for funding_generation in pending_funding_generation.drain(..) {
+				'outer_loop: for funding_generation in pending_funding_generation.drain(..) {
 					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 							value: funding_generation.1, script_pubkey: funding_generation.2,
 						}] };
-					let funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
-					let mut found_duplicate_txo = false;
-					for chan in channelmanager.list_channels() {
-						if chan.channel_id == funding_output.to_channel_id() {
-							found_duplicate_txo = true;
+					let funding_output = 'search_loop: loop {
+						let funding_txid = Sha256dHash::from_data(&serialize(&tx).unwrap()[..]);
+						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
+							let outpoint = OutPoint::new(funding_txid, 0);
+							for chan in channelmanager.list_channels() {
+								if chan.channel_id == outpoint.to_channel_id() {
+									tx.version += 1;
+									continue 'search_loop;
+								}
+							}
+							break outpoint;
 						}
-					}
-					if !found_duplicate_txo {
-						channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
-						pending_funding_signatures.insert(funding_output, tx);
-					}
+						tx.version += 1;
+						if tx.version > 0xff {
+							continue 'outer_loop;
+						}
+					};
+					channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
+					pending_funding_signatures.insert(funding_output, tx);
 				}
 			},
 			11 => {
 				if !pending_funding_relay.is_empty() {
-					let mut txn = Vec::with_capacity(pending_funding_relay.len());
-					let mut txn_idxs = Vec::with_capacity(pending_funding_relay.len());
-					for (idx, tx) in pending_funding_relay.iter().enumerate() {
-						txn.push(tx);
-						txn_idxs.push(idx as u32 + 1);
-					}
-
-					loss_detector.connect_block(&txn[..], &txn_idxs[..]);
-					txn_idxs.clear();
+					loss_detector.connect_block(&pending_funding_relay[..]);
 					for _ in 2..100 {
-						loss_detector.connect_block(&txn[..], &txn_idxs[..]);
+						loss_detector.connect_block(&[]);
 					}
 				}
 				for tx in pending_funding_relay.drain(..) {
@@ -437,11 +459,11 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 			12 => {
 				let txlen = slice_to_be16(get_slice!(2));
 				if txlen == 0 {
-					loss_detector.connect_block(&[], &[]);
+					loss_detector.connect_block(&[]);
 				} else {
 					let txres: Result<Transaction, _> = deserialize(get_slice!(txlen));
 					if let Ok(tx) = txres {
-						loss_detector.connect_block(&[&tx], &[1]);
+						loss_detector.connect_block(&[tx]);
 					} else {
 						return;
 					}
