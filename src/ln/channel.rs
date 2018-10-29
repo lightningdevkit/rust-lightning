@@ -2365,40 +2365,40 @@ impl Channel {
 		}
 	}
 
-	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), HandleError> {
+	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent shutdown when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent shutdown when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish"));
 		}
 		if self.channel_state < ChannelState::FundingSent as u32 {
-			self.channel_state = ChannelState::ShutdownComplete as u32;
-			self.channel_update_count += 1;
-			return Ok((None, None, Vec::new()));
+			// Spec says we should fail the connection, not the channel, but that's nonsense, there
+			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
+			// can do that via error message without getting a connection fail anyway...
+			return Err(ChannelError::Close("Peer sent shutdown pre-funding generation"));
 		}
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
-				return Err(HandleError{err: "Got shutdown with remote pending HTLCs", action: None});
+				return Err(ChannelError::Close("Got shutdown with remote pending HTLCs"));
 			}
 		}
 		if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
-			return Err(HandleError{err: "Remote peer sent duplicate shutdown message", action: None});
+			return Err(ChannelError::Ignore("Remote peer sent duplicate shutdown message"));
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		// BOLT 2 says we must only send a scriptpubkey of certain standard forms, which are up to
 		// 34 bytes in length, so dont let the remote peer feed us some super fee-heavy script.
 		if self.channel_outbound && msg.scriptpubkey.len() > 34 {
-			return Err(HandleError{err: "Got shutdown_scriptpubkey of absurd length from remote peer", action: None});
+			return Err(ChannelError::Close("Got shutdown_scriptpubkey of absurd length from remote peer"));
 		}
 
 		//Check shutdown_scriptpubkey form as BOLT says we must
-		if !(msg.scriptpubkey.is_p2pkh()) && !(msg.scriptpubkey.is_p2sh())
-			&& !(msg.scriptpubkey.is_v0_p2wpkh()) && !(msg.scriptpubkey.is_v0_p2wsh()){
-			return Err(HandleError{err: "Got an invalid scriptpubkey from remote peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+		if !msg.scriptpubkey.is_p2pkh() && !msg.scriptpubkey.is_p2sh() && !msg.scriptpubkey.is_v0_p2wpkh() && !msg.scriptpubkey.is_v0_p2wsh() {
+			return Err(ChannelError::Close("Got a nonstandard scriptpubkey from remote peer"));
 		}
 
 		if self.their_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.their_shutdown_scriptpubkey.as_ref() {
-				return Err(HandleError{err: "Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey", action: None});
+				return Err(ChannelError::Close("Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey"));
 			}
 		} else {
 			self.their_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
