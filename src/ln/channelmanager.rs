@@ -1233,6 +1233,9 @@ impl ChannelManager {
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	///
+	/// Note that ALL inputs in the transaction pointed to by funding_txo MUST spend SegWit outputs
+	/// or your counterparty can steal your funds!
+	///
 	/// Panics if a funding transaction has already been provided for this channel.
 	///
 	/// May panic if the funding_txo is duplicative with some other channel (note that this should

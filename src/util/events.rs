@@ -27,6 +27,8 @@ pub enum Event {
 	/// Used to indicate that the client should generate a funding transaction with the given
 	/// parameters and then call ChannelManager::funding_transaction_generated.
 	/// Generated in ChannelManager message handling.
+	/// Note that *all inputs* in the funding transaction must spend SegWit outputs or your
+	/// counterparty can steal your funds!
 	FundingGenerationReady {
 		/// The random channel_id we picked which you'll need to pass into
 		/// ChannelManager::funding_transaction_generated.
