@@ -2446,11 +2446,9 @@ impl Channel {
 				_ => true
 			}
 		});
-		for htlc in self.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				return Ok((None, None, dropped_outbound_htlcs));
-			}
-		}
+		// If we have any LocalAnnounced updates we'll probably just get back a update_fail_htlc
+		// immediately after the commitment dance, but we can send a Shutdown cause we won't send
+		// any further commitment updates after we set LocalShutdownSent.
 
 		let our_shutdown = if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
 			None
