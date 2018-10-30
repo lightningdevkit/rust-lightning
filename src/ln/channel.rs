@@ -2365,6 +2365,30 @@ impl Channel {
 		}
 	}
 
+	fn maybe_propose_first_closing_signed(&mut self, fee_estimator: &FeeEstimator) -> Option<msgs::ClosingSigned> {
+		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
+			return None;
+		}
+
+		let mut proposed_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+		if self.feerate_per_kw > proposed_feerate {
+			proposed_feerate = self.feerate_per_kw;
+		}
+		let tx_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
+		let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
+
+		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
+		let funding_redeemscript = self.get_funding_redeemscript();
+		let sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
+
+		self.last_sent_closing_fee = Some((proposed_feerate, total_fee_satoshis));
+		Some(msgs::ClosingSigned {
+			channel_id: self.channel_id,
+			fee_satoshis: total_fee_satoshis,
+			signature: self.secp_ctx.sign(&sighash, &self.local_keys.funding_key),
+		})
+	}
+
 	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish"));
@@ -2404,23 +2428,6 @@ impl Channel {
 			self.their_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
 		}
 
-		let our_closing_script = self.get_closing_scriptpubkey();
-
-		let (proposed_feerate, proposed_fee, our_sig) = if self.channel_outbound && self.pending_inbound_htlcs.is_empty() && self.pending_outbound_htlcs.is_empty() {
-			let mut proposed_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-			if self.feerate_per_kw > proposed_feerate {
-				proposed_feerate = self.feerate_per_kw;
-			}
-			let tx_weight = Self::get_closing_transaction_weight(&our_closing_script, &msg.scriptpubkey);
-			let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
-
-			let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
-			let funding_redeemscript = self.get_funding_redeemscript();
-			let sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
-
-			(Some(proposed_feerate), Some(total_fee_satoshis), Some(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key)))
-		} else { (None, None, None) };
-
 		// From here on out, we may not fail!
 
 		self.channel_state |= ChannelState::RemoteShutdownSent as u32;
@@ -2450,24 +2457,13 @@ impl Channel {
 		} else {
 			Some(msgs::Shutdown {
 				channel_id: self.channel_id,
-				scriptpubkey: our_closing_script,
+				scriptpubkey: self.get_closing_scriptpubkey(),
 			})
 		};
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		self.channel_update_count += 1;
-		if self.pending_inbound_htlcs.is_empty() && self.pending_outbound_htlcs.is_empty() && self.channel_outbound {
-			// There are no more HTLCs and we're the funder, this means we start the closing_signed
-			// dance with an initial fee proposal!
-			self.last_sent_closing_fee = Some((proposed_feerate.unwrap(), proposed_fee.unwrap()));
-			Ok((our_shutdown, Some(msgs::ClosingSigned {
-				channel_id: self.channel_id,
-				fee_satoshis: proposed_fee.unwrap(),
-				signature: our_sig.unwrap(),
-			}), dropped_outbound_htlcs))
-		} else {
-			Ok((our_shutdown, None, dropped_outbound_htlcs))
-		}
+		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
 	}
 
 	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), HandleError> {
