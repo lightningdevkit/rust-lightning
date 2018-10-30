@@ -404,6 +404,38 @@ pub struct ChannelDetails {
 	pub user_id: u64,
 }
 
+macro_rules! handle_error {
+	($self: ident, $internal: expr, $their_node_id: expr) => {
+		match $internal {
+			Ok(msg) => Ok(msg),
+			Err(MsgHandleErrInternal { err, needs_channel_force_close }) => {
+				if needs_channel_force_close {
+					match &err.action {
+						&Some(msgs::ErrorAction::DisconnectPeer { msg: Some(ref msg) }) => {
+							if msg.channel_id == [0; 32] {
+								$self.peer_disconnected(&$their_node_id, true);
+							} else {
+								$self.force_close_channel(&msg.channel_id);
+							}
+						},
+						&Some(msgs::ErrorAction::DisconnectPeer { msg: None }) => {},
+						&Some(msgs::ErrorAction::IgnoreError) => {},
+						&Some(msgs::ErrorAction::SendErrorMessage { ref msg }) => {
+							if msg.channel_id == [0; 32] {
+								$self.peer_disconnected(&$their_node_id, true);
+							} else {
+								$self.force_close_channel(&msg.channel_id);
+							}
+						},
+						&None => {},
+					}
+				}
+				Err(err)
+			},
+		}
+	}
+}
+
 impl ChannelManager {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -1203,7 +1235,17 @@ impl ChannelManager {
 				route: route.clone(),
 				session_priv: session_priv.clone(),
 				first_hop_htlc_msat: htlc_msat,
-			}, onion_packet).map_err(|he| APIError::ChannelUnavailable{err: he.err})?
+			}, onion_packet).map_err(|he|
+				match he {
+					ChannelError::Close(err) => {
+						// TODO: We need to close the channel here, but for that to be safe we have
+						// to do all channel closure inside the channel_state lock which is a
+						// somewhat-larger refactor, so we leave that for later.
+						APIError::ChannelUnavailable { err }
+					},
+					ChannelError::Ignore(err) => APIError::ChannelUnavailable { err },
+				}
+			)?
 		};
 		match res {
 			Some((update_add, commitment_signed, chan_monitor)) => {
@@ -1243,24 +1285,30 @@ impl ChannelManager {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		let (chan, msg, chan_monitor) = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			match channel_state.by_id.remove(temporary_channel_id) {
-				Some(mut chan) => {
-					match chan.get_outbound_funding_created(funding_txo) {
-						Ok(funding_msg) => {
-							(chan, funding_msg.0, funding_msg.1)
-						},
-						Err(e) => {
-							log_error!(self, "Got bad signatures: {}!", e.err);
-							channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-								node_id: chan.get_their_node_id(),
-								action: e.action,
-							});
-							return;
-						},
-					}
+			let (res, chan) = {
+				let mut channel_state = self.channel_state.lock().unwrap();
+				match channel_state.by_id.remove(temporary_channel_id) {
+					Some(mut chan) => {
+						(chan.get_outbound_funding_created(funding_txo)
+							.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, chan.channel_id()))
+						, chan)
+					},
+					None => return
+				}
+			};
+			match handle_error!(self, res, chan.get_their_node_id()) {
+				Ok(funding_msg) => {
+					(chan, funding_msg.0, funding_msg.1)
 				},
-				None => return
+				Err(e) => {
+					log_error!(self, "Got bad signatures: {}!", e.err);
+					let mut channel_state = self.channel_state.lock().unwrap();
+					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+						node_id: chan.get_their_node_id(),
+						action: e.action,
+					});
+					return;
+				},
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
@@ -1372,9 +1420,7 @@ impl ChannelManager {
 						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
 							Ok(res) => res,
 							Err(e) => {
-								if let &Some(msgs::ErrorAction::DisconnectPeer{msg: Some(ref _err_msg)}) = &e.action {
-								} else if let &Some(msgs::ErrorAction::SendErrorMessage{msg: ref _err_msg}) = &e.action {
-								} else {
+								if let ChannelError::Ignore(_) = e {
 									panic!("Stated return value requirements in send_commitment() were not met");
 								}
 								//TODO: Handle...this is bad!
@@ -1745,7 +1791,7 @@ impl ChannelManager {
 							(chan.remove(), funding_msg, monitor_update)
 						},
 						Err(e) => {
-							return Err(e).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+							return Err(e).map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.temporary_channel_id))
 						}
 					}
 				},
@@ -1783,7 +1829,7 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let chan_monitor = chan.funding_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let chan_monitor = chan.funding_signed(&msg).map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						unimplemented!();
 					}
@@ -2213,7 +2259,8 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) = chan.commitment_signed(&msg, &*self.fee_estimator).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) = chan.commitment_signed(&msg, &*self.fee_estimator)
+					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 				if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 					unimplemented!();
 				}
@@ -2289,7 +2336,8 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) = chan.revoke_and_ack(&msg, &*self.fee_estimator).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) = chan.revoke_and_ack(&msg, &*self.fee_estimator)
+							.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						unimplemented!();
 					}
@@ -2455,7 +2503,16 @@ impl ChannelManager {
 				if !chan.is_live() {
 					return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
 				}
-				if let Some((update_fee, commitment_signed, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw).map_err(|e| APIError::APIMisuseError{err: e.err})? {
+				if let Some((update_fee, commitment_signed, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw)
+						.map_err(|e| match e {
+							ChannelError::Ignore(err) => APIError::APIMisuseError{err},
+							ChannelError::Close(err) => {
+								// TODO: We need to close the channel here, but for that to be safe we have
+								// to do all channel closure inside the channel_state lock which is a
+								// somewhat-larger refactor, so we leave that for later.
+								APIError::APIMisuseError{err}
+							},
+						})? {
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						unimplemented!();
 					}
@@ -2605,38 +2662,6 @@ impl ChainListener for ChannelManager {
 		}
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
-	}
-}
-
-macro_rules! handle_error {
-	($self: ident, $internal: expr, $their_node_id: expr) => {
-		match $internal {
-			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, needs_channel_force_close }) => {
-				if needs_channel_force_close {
-					match &err.action {
-						&Some(msgs::ErrorAction::DisconnectPeer { msg: Some(ref msg) }) => {
-							if msg.channel_id == [0; 32] {
-								$self.peer_disconnected(&$their_node_id, true);
-							} else {
-								$self.force_close_channel(&msg.channel_id);
-							}
-						},
-						&Some(msgs::ErrorAction::DisconnectPeer { msg: None }) => {},
-						&Some(msgs::ErrorAction::IgnoreError) => {},
-						&Some(msgs::ErrorAction::SendErrorMessage { ref msg }) => {
-							if msg.channel_id == [0; 32] {
-								$self.peer_disconnected(&$their_node_id, true);
-							} else {
-								$self.force_close_channel(&msg.channel_id);
-							}
-						},
-						&None => {},
-					}
-				}
-				Err(err)
-			},
-		}
 	}
 }
 
