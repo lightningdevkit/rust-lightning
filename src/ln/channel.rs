@@ -1632,12 +1632,15 @@ impl Channel {
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
 
-	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitor), HandleError> {
+	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &FeeEstimator) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got commitment signed message when channel was not in an operational state", action: None});
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(HandleError{err: "Peer sent commitment_signed when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent commitment_signed when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.last_sent_closing_fee.is_some() {
+			return Err(HandleError{err: "Peer sent commitment_signed after we'd started exchanging closing_signeds", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent commitment_signed after we'd started exchanging closing_signeds".to_string(), channel_id: msg.channel_id}})});
 		}
 
 		let funding_script = self.get_funding_redeemscript();
@@ -1730,19 +1733,21 @@ impl Channel {
 			return Err(HandleError{err: "Previous monitor update failure prevented generation of RAA", action: Some(ErrorAction::IgnoreError)});
 		}
 
-		let (our_commitment_signed, monitor_update) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+		let (our_commitment_signed, monitor_update, closing_signed) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
 			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
 			// we'll send one right away when we get the revoke_and_ack when we
 			// free_holding_cell_htlcs().
 			let (msg, monitor) = self.send_commitment_no_status_check()?;
-			(Some(msg), monitor)
-		} else { (None, self.channel_monitor.clone()) };
+			(Some(msg), monitor, None)
+		} else if !need_our_commitment {
+			(None, self.channel_monitor.clone(), self.maybe_propose_first_closing_signed(fee_estimator))
+		} else { (None, self.channel_monitor.clone(), None) };
 
 		Ok((msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret: per_commitment_secret,
 			next_per_commitment_point: next_per_commitment_point,
-		}, our_commitment_signed, monitor_update))
+		}, our_commitment_signed, closing_signed, monitor_update))
 	}
 
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
@@ -1843,12 +1848,15 @@ impl Channel {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>, ChannelMonitor), HandleError> {
+	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", action: None});
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(HandleError{err: "Peer sent revoke_and_ack when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent revoke_and_ack when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.last_sent_closing_fee.is_some() {
+			return Err(HandleError{err: "Peer sent revoke_and_ack after we'd started exchanging closing_signeds", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_string(), channel_id: msg.channel_id}})});
 		}
 
 		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
@@ -1971,7 +1979,7 @@ impl Channel {
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
-			return Ok((None, Vec::new(), Vec::new(), self.channel_monitor.clone()));
+			return Ok((None, Vec::new(), Vec::new(), None, self.channel_monitor.clone()));
 		}
 
 		match self.free_holding_cell_htlcs()? {
@@ -1984,7 +1992,7 @@ impl Channel {
 				for fail_msg in update_fail_malformed_htlcs.drain(..) {
 					commitment_update.0.update_fail_malformed_htlcs.push(fail_msg);
 				}
-				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, commitment_update.1))
+				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, None, commitment_update.1))
 			},
 			None => {
 				if require_commitment {
@@ -1996,9 +2004,9 @@ impl Channel {
 						update_fail_malformed_htlcs,
 						update_fee: None,
 						commitment_signed
-					}), to_forward_infos, revoked_htlcs, monitor_update))
+					}), to_forward_infos, revoked_htlcs, None, monitor_update))
 				} else {
-					Ok((None, to_forward_infos, revoked_htlcs, self.channel_monitor.clone()))
+					Ok((None, to_forward_infos, revoked_htlcs, self.maybe_propose_first_closing_signed(fee_estimator), self.channel_monitor.clone()))
 				}
 			}
 		}
@@ -2366,7 +2374,9 @@ impl Channel {
 	}
 
 	fn maybe_propose_first_closing_signed(&mut self, fee_estimator: &FeeEstimator) -> Option<msgs::ClosingSigned> {
-		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
+		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
+				self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32) != BOTH_SIDES_SHUTDOWN_MASK ||
+				self.last_sent_closing_fee.is_some() {
 			return None;
 		}
 

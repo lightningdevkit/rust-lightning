@@ -2205,7 +2205,7 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, chan_monitor) = chan.commitment_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) = chan.commitment_signed(&msg, &*self.fee_estimator).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
 				if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 					unimplemented!();
 				}
@@ -2224,6 +2224,12 @@ impl ChannelManager {
 							update_fee: None,
 							commitment_signed: msg,
 						},
+					});
+				}
+				if let Some(msg) = closing_signed {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+						node_id: their_node_id.clone(),
+						msg,
 					});
 				}
 				Ok(())
@@ -2275,7 +2281,7 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (commitment_update, pending_forwards, pending_failures, chan_monitor) = chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) = chan.revoke_and_ack(&msg, &*self.fee_estimator).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						unimplemented!();
 					}
@@ -2283,6 +2289,12 @@ impl ChannelManager {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: their_node_id.clone(),
 							updates,
+						});
+					}
+					if let Some(msg) = closing_signed {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+							node_id: their_node_id.clone(),
+							msg,
 						});
 					}
 					(pending_forwards, pending_failures, chan.get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
