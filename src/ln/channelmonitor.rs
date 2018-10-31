@@ -1230,6 +1230,33 @@ impl ChannelMonitor {
 		let mut res = Vec::with_capacity(local_tx.htlc_outputs.len());
 		let mut spendable_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
 
+		macro_rules! add_dynamic_output {
+			($father_tx: expr, $vout: expr) => {
+				if let Some(ref per_commitment_point) = *per_commitment_point {
+					if let Some(ref delayed_payment_base_key) = *delayed_payment_base_key {
+						if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, per_commitment_point, delayed_payment_base_key) {
+							spendable_outputs.push(SpendableOutputDescriptor::DynamicOutput {
+								outpoint: BitcoinOutPoint { txid: $father_tx.txid(), vout: $vout },
+								local_delayedkey,
+								witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
+								to_self_delay: self.our_to_self_delay
+							});
+						}
+					}
+				}
+			}
+		}
+
+
+		let redeemscript = chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.their_to_self_delay.unwrap(), &local_tx.delayed_payment_key);
+		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
+		for (idx, output) in local_tx.tx.output.iter().enumerate() {
+			if output.script_pubkey == revokeable_p2wsh {
+				add_dynamic_output!(local_tx.tx, idx as u32);
+				break;
+			}
+		}
+
 		for &(ref htlc, ref their_sig, ref our_sig) in local_tx.htlc_outputs.iter() {
 			if htlc.offered {
 				let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
@@ -1244,18 +1271,7 @@ impl ChannelMonitor {
 				htlc_timeout_tx.input[0].witness.push(Vec::new());
 				htlc_timeout_tx.input[0].witness.push(chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key).into_bytes());
 
-				if let Some(ref per_commitment_point) = *per_commitment_point {
-					if let Some(ref delayed_payment_base_key) = *delayed_payment_base_key {
-						if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, per_commitment_point, delayed_payment_base_key) {
-							spendable_outputs.push(SpendableOutputDescriptor::DynamicOutput {
-								outpoint: BitcoinOutPoint { txid: htlc_timeout_tx.txid(), vout: 0 },
-								local_delayedkey,
-								witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
-								to_self_delay: self.our_to_self_delay
-							});
-						}
-					}
-				}
+				add_dynamic_output!(htlc_timeout_tx, 0);
 				res.push(htlc_timeout_tx);
 			} else {
 				if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
@@ -1271,18 +1287,7 @@ impl ChannelMonitor {
 					htlc_success_tx.input[0].witness.push(payment_preimage.to_vec());
 					htlc_success_tx.input[0].witness.push(chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key).into_bytes());
 
-					if let Some(ref per_commitment_point) = *per_commitment_point {
-						if let Some(ref delayed_payment_base_key) = *delayed_payment_base_key {
-							if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, per_commitment_point, delayed_payment_base_key) {
-								spendable_outputs.push(SpendableOutputDescriptor::DynamicOutput {
-									outpoint: BitcoinOutPoint { txid: htlc_success_tx.txid(), vout: 0 },
-									local_delayedkey,
-									witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
-									to_self_delay: self.our_to_self_delay
-								});
-							}
-						}
-					}
+					add_dynamic_output!(htlc_success_tx, 0);
 					res.push(htlc_success_tx);
 				}
 			}
