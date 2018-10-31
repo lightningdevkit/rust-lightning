@@ -1553,6 +1553,12 @@ impl Channel {
 
 		//TODO: Check msg.cltv_expiry further? Do this in channel manager?
 
+		if self.channel_state & ChannelState::LocalShutdownSent as u32 != 0 {
+			if let PendingHTLCStatus::Forward(_) = pending_forward_state {
+				panic!("ChannelManager shouldn't be trying to add a forwardable HTLC after we've started closing");
+			}
+		}
+
 		// Now update local state:
 		self.next_remote_htlc_id += 1;
 		self.pending_inbound_htlcs.push(InboundHTLCOutput {

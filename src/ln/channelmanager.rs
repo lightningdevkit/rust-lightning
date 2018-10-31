@@ -1929,7 +1929,7 @@ impl ChannelManager {
 		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let (mut pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = channel_state_lock.borrow_parts();
 
 		match channel_state.by_id.get_mut(&msg.channel_id) {
@@ -1939,7 +1939,16 @@ impl ChannelManager {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if !chan.is_usable() {
-					return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Channel not yet available for receiving HTLCs", action: Some(msgs::ErrorAction::IgnoreError)}));
+					// If the update_add is completely bogus, the call will Err and we will close,
+					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
+					// want to reject the new HTLC and fail it backwards instead of forwarding.
+					if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
+						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							reason: ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &self.get_channel_update(chan).unwrap().encode_with_len()[..]),
+						}));
+					}
 				}
 				chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
 			},
