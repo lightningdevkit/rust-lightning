@@ -3209,7 +3209,7 @@ mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::{ChainListener, ChainWatchInterface};
-	use chain::keysinterface::KeysInterface;
+	use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 	use chain::keysinterface;
 	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
 	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
@@ -3224,8 +3224,11 @@ mod tests {
 	use util::config::UserConfig;
 
 	use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
+	use bitcoin::util::bip143;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType};
+	use bitcoin::blockdata::script::{Builder, Script};
+	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 
@@ -7531,5 +7534,77 @@ mod tests {
 		if let Err(msgs::HandleError { action: Some(msgs::ErrorAction::SendErrorMessage { msg }), .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
 			assert_eq!(msg.channel_id, channel_id);
 		} else { panic!("Unexpected result"); }
+	}
+
+	macro_rules! check_dynamic_output {
+		($node: expr) => {
+			{
+				let events = $node.chan_monitor.simple_monitor.get_and_clear_pending_events();
+				let mut txn = Vec::new();
+				for event in events {
+					match event {
+						Event::SpendableOutputs { ref outputs } => {
+							for outp in outputs {
+								match *outp {
+									SpendableOutputDescriptor::DynamicOutput { ref outpoint, ref local_delayedkey, ref witness_script, ref to_self_delay, ref output } => {
+										let input = TxIn {
+											previous_output: outpoint.clone(),
+											script_sig: Script::new(),
+											sequence: *to_self_delay as u32,
+											witness: Vec::new(),
+										};
+										let outp = TxOut {
+											script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+											value: output.value,
+										};
+										let mut spend_tx = Transaction {
+											version: 2,
+											lock_time: 0,
+											input: vec![input],
+											output: vec![outp],
+										};
+										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], witness_script, output.value)[..]).unwrap();
+										let secp_ctx = Secp256k1::new();
+										let local_delaysig = secp_ctx.sign(&sighash, local_delayedkey);
+										spend_tx.input[0].witness.push(local_delaysig.serialize_der(&secp_ctx).to_vec());
+										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+										spend_tx.input[0].witness.push(vec!(0));
+										spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
+										txn.push(spend_tx);
+									},
+									_ => panic!("Unexpected event"),
+								}
+							}
+						},
+						_ => panic!("Unexpected event"),
+					};
+				}
+				txn
+			}
+		}
+	}
+
+	#[test]
+	fn test_claim_sizeable_push_msat() {
+		// Incidentally test SpendableOutput event generation due to detection of to_local output on commitment tx
+		let nodes = create_network(2);
+
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
+		nodes[1].node.force_close_channel(&chan.2);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], chan.3.clone());
+		assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+		let spend_txn = check_dynamic_output!(nodes[1]);
+		assert_eq!(spend_txn.len(), 1);
+		check_spends!(spend_txn[0], node_txn[0].clone());
 	}
 }
