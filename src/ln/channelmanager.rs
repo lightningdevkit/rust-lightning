@@ -4051,7 +4051,7 @@ mod tests {
 			let mut seed = [0; 32];
 			rng.fill_bytes(&mut seed);
 			let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)));
-			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone()));
+			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone()));
 			let node = ChannelManager::new(0, true, Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
 			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, node_seed: seed,
@@ -6881,7 +6881,7 @@ mod tests {
 		let mut chan_0_monitor_serialized = VecWriter(Vec::new());
 		nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new())));
 		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 		let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
 		assert!(chan_0_monitor_read.is_empty());
@@ -6945,7 +6945,7 @@ mod tests {
 		let mut chan_0_monitor_serialized = VecWriter(Vec::new());
 		nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new())));
 		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 		let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
 		assert!(chan_0_monitor_read.is_empty());
@@ -7004,7 +7004,7 @@ mod tests {
 			node_0_monitors_serialized.push(writer.0);
 		}
 
-		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone()));
+		nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new())));
 		let mut node_0_monitors = Vec::new();
 		for serialized in node_0_monitors_serialized.iter() {
 			let mut read = &serialized[..];

@@ -112,6 +112,7 @@ pub struct SimpleManyChannelMonitor<Key> {
 	chain_monitor: Arc<ChainWatchInterface>,
 	broadcaster: Arc<BroadcasterInterface>,
 	pending_events: Mutex<Vec<events::Event>>,
+	logger: Arc<Logger>,
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
@@ -144,12 +145,13 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>) -> Arc<SimpleManyChannelMonitor<Key>> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>) -> Arc<SimpleManyChannelMonitor<Key>> {
 		let res = Arc::new(SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
 			broadcaster,
 			pending_events: Mutex::new(Vec::new()),
+			logger,
 		});
 		let weak_res = Arc::downgrade(&res);
 		res.chain_monitor.register_listener(weak_res);
@@ -160,12 +162,19 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor) -> Result<(), HandleError> {
 		let mut monitors = self.monitors.lock().unwrap();
 		match monitors.get_mut(&key) {
-			Some(orig_monitor) => return orig_monitor.insert_combine(monitor),
+			Some(orig_monitor) => {
+				log_trace!(self, "Updating Channel Monitor for channel {}", log_funding_option!(monitor.funding_txo));
+				return orig_monitor.insert_combine(monitor);
+			},
 			None => {}
 		};
 		match &monitor.funding_txo {
-			&None => self.chain_monitor.watch_all_txn(),
+			&None => {
+				log_trace!(self, "Got new Channel Monitor for no-funding-set channel (monitoring all txn!)");
+				self.chain_monitor.watch_all_txn()
+			},
 			&Some((ref outpoint, ref script)) => {
+				log_trace!(self, "Got new Channel Monitor for channel {}", log_bytes!(outpoint.to_channel_id()[..]));
 				self.chain_monitor.install_watch_tx(&outpoint.txid, script);
 				self.chain_monitor.install_watch_outpoint((outpoint.txid, outpoint.index as u32), script);
 			},

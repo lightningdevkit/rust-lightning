@@ -52,6 +52,21 @@ macro_rules! log_funding_channel_id {
 	}
 }
 
+pub(crate) struct DebugFundingOption<'a, T: 'a>(pub &'a Option<(OutPoint, T)>);
+impl<'a, T> std::fmt::Display for DebugFundingOption<'a, T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		match self.0.as_ref() {
+			Some(&(ref funding_output, _)) => DebugBytes(&funding_output.to_channel_id()[..]).fmt(f),
+			None => write!(f, "without funding output set"),
+		}
+	}
+}
+macro_rules! log_funding_option {
+	($funding_option: expr) => {
+		::util::macro_logger::DebugFundingOption(&$funding_option)
+	}
+}
+
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
 impl<'a> std::fmt::Display for DebugRoute<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
