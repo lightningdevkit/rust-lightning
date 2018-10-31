@@ -24,6 +24,7 @@ use lightning::util::events::{EventsProvider,Event};
 use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
 use lightning::util::sha2::Sha256;
+use lightning::util::config::UserConfig;
 
 mod utils;
 
@@ -305,7 +306,11 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone(), Arc::clone(&logger));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone() });
-	let channelmanager = ChannelManager::new(slice_to_be32(get_slice!(4)), get_slice!(1)[0] != 0, Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone()).unwrap();
+	let mut config = UserConfig::new();
+	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
+	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
+	config.channel_limits.min_dust_limit_satoshis = 0;
+	let channelmanager = ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config).unwrap();
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);

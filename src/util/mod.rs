@@ -15,8 +15,9 @@ pub(crate) mod ser_macros;
 #[macro_use]
 pub(crate) mod macro_logger;
 
-// Logger has to come after macro_logger for tests to build:
+// These have to come after macro_logger to build
 pub mod logger;
+pub mod config;
 
 #[cfg(feature = "fuzztarget")]
 pub mod sha2;
