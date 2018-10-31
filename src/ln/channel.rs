@@ -28,6 +28,7 @@ use util::ser::{Readable, ReadableArgs, Writeable, Writer, WriterWriteAdaptor};
 use util::sha2::Sha256;
 use util::logger::Logger;
 use util::errors::APIError;
+use util::config::{UserConfig,ChannelConfig};
 
 use std;
 use std::default::Default;
@@ -230,13 +231,14 @@ const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
 // inbound channel.
 pub(super) struct Channel {
+	config: ChannelConfig,
+
 	user_id: u64,
 
 	channel_id: [u8; 32],
 	channel_state: u32,
 	channel_outbound: bool,
 	secp_ctx: Secp256k1<secp256k1::All>,
-	announce_publicly: bool,
 	channel_value_satoshis: u64,
 
 	local_keys: ChannelKeys,
@@ -326,6 +328,7 @@ pub(super) struct Channel {
 	//implied by BREAKDOWN_TIMEOUT: our_to_self_delay: u16,
 	their_max_accepted_htlcs: u16,
 	//implied by OUR_MAX_HTLCS: our_max_accepted_htlcs: u16,
+	minimum_depth: u32,
 
 	their_funding_pubkey: Option<PublicKey>,
 	their_revocation_basepoint: Option<PublicKey>,
@@ -399,7 +402,7 @@ impl Channel {
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
-		at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000 //TODO
+		cmp::max(at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
 	}
 
 	fn derive_our_htlc_minimum_msat(_at_open_channel_feerate_per_kw: u64) -> u64 {
@@ -413,13 +416,8 @@ impl Channel {
 		CONF_TARGET
 	}
 
-	fn derive_maximum_minimum_depth(_channel_value_satoshis_msat: u64, _value_to_self_msat: u64) -> u32 {
-		const CONF_TARGET: u32 = 12; //TODO: Should be much higher
-		CONF_TARGET * 2
-	}
-
 	// Constructors:
-	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, announce_publicly: bool, user_id: u64, logger: Arc<Logger>) -> Result<Channel, APIError> {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, APIError> {
 		let chan_keys = keys_provider.get_channel_keys(false);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -445,12 +443,12 @@ impl Channel {
 
 		Ok(Channel {
 			user_id: user_id,
+			config: config.channel_options.clone(),
 
 			channel_id: rng::rand_u832(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: secp_ctx,
-			announce_publicly: announce_publicly,
 			channel_value_satoshis: channel_value_satoshis,
 
 			local_keys: chan_keys,
@@ -498,6 +496,7 @@ impl Channel {
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(feerate),
 			their_to_self_delay: 0,
 			their_max_accepted_htlcs: 0,
+			minimum_depth: 0, // Filled in in accept_channel
 
 			their_funding_pubkey: None,
 			their_revocation_basepoint: None,
@@ -529,8 +528,9 @@ impl Channel {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, require_announce: bool, allow_announce: bool, logger: Arc<Logger>) -> Result<Channel, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, ChannelError> {
 		let chan_keys = keys_provider.get_channel_keys(true);
+		let mut local_config = (*config).channel_options.clone();
 
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -563,22 +563,46 @@ impl Channel {
 			return Err(ChannelError::Close("max_accpted_htlcs > 483"));
 		}
 
+		// Now check against optional parameters as set by config...
+		if msg.funding_satoshis < config.channel_limits.min_funding_satoshis {
+			return Err(ChannelError::Close("funding satoshis is less than the user specified limit"));
+		}
+		if msg.htlc_minimum_msat > config.channel_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::Close("htlc minimum msat is higher than the user specified limit"));
+		}
+		if msg.max_htlc_value_in_flight_msat < config.channel_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::Close("max htlc value in flight msat is less than the user specified limit"));
+		}
+		if msg.channel_reserve_satoshis > config.channel_limits.max_channel_reserve_satoshis {
+			return Err(ChannelError::Close("channel reserve satoshis is higher than the user specified limit"));
+		}
+		if msg.max_accepted_htlcs < config.channel_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::Close("max accepted htlcs is less than the user specified limit"));
+		}
+		if msg.dust_limit_satoshis < config.channel_limits.min_dust_limit_satoshis {
+			return Err(ChannelError::Close("dust limit satoshis is less than the user specified limit"));
+		}
+		if msg.dust_limit_satoshis > config.channel_limits.max_dust_limit_satoshis {
+			return Err(ChannelError::Close("dust limit satoshis is greater than the user specified limit"));
+		}
+
 		// Convert things into internal flags and prep our state:
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
-		if require_announce && !their_announce {
-			return Err(ChannelError::Close("Peer tried to open unannounced channel, but we require public ones"));
+		if config.channel_limits.force_announced_channel_preference {
+			if local_config.announced_channel != their_announce {
+				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours"));
+			}
 		}
-		if !allow_announce && their_announce {
-			return Err(ChannelError::Close("Peer tried to open announced channel, but we require private ones"));
-		}
+		// we either accept their preference or the preferences match
+		local_config.announced_channel = their_announce;
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let our_dust_limit_satoshis = Channel::derive_our_dust_limit_satoshis(background_feerate);
 		let our_channel_reserve_satoshis = Channel::get_our_channel_reserve_satoshis(msg.funding_satoshis);
 		if our_channel_reserve_satoshis < our_dust_limit_satoshis {
-			return Err(ChannelError::Close("Suitalbe channel reserve not found. aborting"));
+			return Err(ChannelError::Close("Suitable channel reserve not found. aborting"));
 		}
 		if msg.channel_reserve_satoshis < our_dust_limit_satoshis {
 			return Err(ChannelError::Close("channel_reserve_satoshis too small"));
@@ -609,12 +633,12 @@ impl Channel {
 
 		let mut chan = Channel {
 			user_id: user_id,
+			config: local_config,
 
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
 			channel_outbound: false,
 			secp_ctx: secp_ctx,
-			announce_publicly: their_announce,
 
 			local_keys: chan_keys,
 			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
@@ -662,6 +686,7 @@ impl Channel {
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(msg.feerate_per_kw as u64),
 			their_to_self_delay: msg.to_self_delay,
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
+			minimum_depth: Channel::derive_minimum_depth(msg.funding_satoshis*1000, msg.push_msat),
 
 			their_funding_pubkey: Some(msg.funding_pubkey),
 			their_revocation_basepoint: Some(msg.revocation_basepoint),
@@ -1264,7 +1289,7 @@ impl Channel {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer"));
@@ -1290,9 +1315,6 @@ impl Channel {
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(ChannelError::Close("Minimum htlc value is full channel value"));
 		}
-		if msg.minimum_depth > Channel::derive_maximum_minimum_depth(self.channel_value_satoshis*1000,  self.value_to_self_msat) {
-			return Err(ChannelError::Close("minimum_depth too large"));
-		}
 		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
@@ -1303,14 +1325,28 @@ impl Channel {
 			return Err(ChannelError::Close("max_accpted_htlcs > 483"));
 		}
 
-		// TODO: Optional additional constraints mentioned in the spec
-		// MAY fail the channel if
-		// funding_satoshi is too small
-		// htlc_minimum_msat too large
-		// max_htlc_value_in_flight_msat too small
-		// channel_reserve_satoshis too large
-		// max_accepted_htlcs too small
-		// dust_limit_satoshis too small
+		// Now check against optional parameters as set by config...
+		if msg.htlc_minimum_msat > config.channel_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::Close("htlc minimum msat is higher than the user specified limit"));
+		}
+		if msg.max_htlc_value_in_flight_msat < config.channel_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::Close("max htlc value in flight msat is less than the user specified limit"));
+		}
+		if msg.channel_reserve_satoshis > config.channel_limits.max_channel_reserve_satoshis {
+			return Err(ChannelError::Close("channel reserve satoshis is higher than the user specified limit"));
+		}
+		if msg.max_accepted_htlcs < config.channel_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::Close("max accepted htlcs is less than the user specified limit"));
+		}
+		if msg.dust_limit_satoshis < config.channel_limits.min_dust_limit_satoshis {
+			return Err(ChannelError::Close("dust limit satoshis is less than the user specified limit"));
+		}
+		if msg.dust_limit_satoshis > config.channel_limits.max_dust_limit_satoshis {
+			return Err(ChannelError::Close("dust limit satoshis is greater than the user specified limit"));
+		}
+		if msg.minimum_depth > config.channel_limits.max_minimum_depth {
+			return Err(ChannelError::Close("We consider the minimum depth to be unreasonably large"));
+		}
 
 		self.channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 
@@ -1320,6 +1356,7 @@ impl Channel {
 		self.their_htlc_minimum_msat = msg.htlc_minimum_msat;
 		self.their_to_self_delay = msg.to_self_delay;
 		self.their_max_accepted_htlcs = msg.max_accepted_htlcs;
+		self.minimum_depth = msg.minimum_depth;
 		self.their_funding_pubkey = Some(msg.funding_pubkey);
 		self.their_revocation_basepoint = Some(msg.revocation_basepoint);
 		self.their_payment_basepoint = Some(msg.payment_basepoint);
@@ -2575,6 +2612,10 @@ impl Channel {
 		self.channel_value_satoshis
 	}
 
+	pub fn get_fee_proportional_millionths(&self) -> u32 {
+		self.config.fee_proportional_millionths
+	}
+
 	#[cfg(test)]
 	pub fn get_feerate(&self) -> u64 {
 		self.feerate_per_kw
@@ -2628,7 +2669,7 @@ impl Channel {
 	}
 
 	pub fn should_announce(&self) -> bool {
-		self.announce_publicly
+		self.config.announced_channel
 	}
 
 	pub fn is_outbound(&self) -> bool {
@@ -2708,7 +2749,7 @@ impl Channel {
 			self.channel_monitor.last_block_hash = self.last_block_connected;
 			if self.funding_tx_confirmations > 0 {
 				self.funding_tx_confirmations += 1;
-				if self.funding_tx_confirmations == Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 {
+				if self.funding_tx_confirmations == self.minimum_depth as u64 {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
 						true
@@ -2785,7 +2826,7 @@ impl Channel {
 			}
 		}
 		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
-			self.funding_tx_confirmations = Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat) as u64 - 1;
+			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
 		self.last_block_connected = header.bitcoin_hash();
 		self.channel_monitor.last_block_hash = self.last_block_connected;
@@ -2827,7 +2868,7 @@ impl Channel {
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.delayed_payment_base_key),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
-			channel_flags: if self.announce_publicly {1} else {0},
+			channel_flags: if self.config.announced_channel {1} else {0},
 			shutdown_scriptpubkey: None,
 		}
 	}
@@ -2851,7 +2892,7 @@ impl Channel {
 			max_htlc_value_in_flight_msat: Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
 			channel_reserve_satoshis: Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
-			minimum_depth: Channel::derive_minimum_depth(self.channel_value_satoshis*1000, self.value_to_self_msat),
+			minimum_depth: self.minimum_depth,
 			to_self_delay: BREAKDOWN_TIMEOUT,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key),
@@ -2931,7 +2972,7 @@ impl Channel {
 	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
 	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
 	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
-		if !self.announce_publicly {
+		if !self.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements"));
 		}
 		if self.channel_state & (ChannelState::ChannelFunded as u32) == 0 {
@@ -3307,11 +3348,11 @@ impl Writeable for Channel {
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
 
 		self.user_id.write(writer)?;
+		self.config.write(writer)?;
 
 		self.channel_id.write(writer)?;
 		(self.channel_state | ChannelState::PeerDisconnected as u32).write(writer)?;
 		self.channel_outbound.write(writer)?;
-		self.announce_publicly.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 
 		self.local_keys.write(writer)?;
@@ -3482,6 +3523,7 @@ impl Writeable for Channel {
 		self.our_htlc_minimum_msat.write(writer)?;
 		self.their_to_self_delay.write(writer)?;
 		self.their_max_accepted_htlcs.write(writer)?;
+		self.minimum_depth.write(writer)?;
 
 		write_option!(self.their_funding_pubkey);
 		write_option!(self.their_revocation_basepoint);
@@ -3509,11 +3551,11 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		}
 
 		let user_id = Readable::read(reader)?;
+		let config: ChannelConfig = Readable::read(reader)?;
 
 		let channel_id = Readable::read(reader)?;
 		let channel_state = Readable::read(reader)?;
 		let channel_outbound = Readable::read(reader)?;
-		let announce_publicly = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
 		let local_keys = Readable::read(reader)?;
@@ -3655,6 +3697,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let our_htlc_minimum_msat = Readable::read(reader)?;
 		let their_to_self_delay = Readable::read(reader)?;
 		let their_max_accepted_htlcs = Readable::read(reader)?;
+		let minimum_depth = Readable::read(reader)?;
 
 		let their_funding_pubkey = read_option!();
 		let their_revocation_basepoint = read_option!();
@@ -3677,11 +3720,11 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		Ok(Channel {
 			user_id,
 
+			config,
 			channel_id,
 			channel_state,
 			channel_outbound,
 			secp_ctx: Secp256k1::new(),
-			announce_publicly,
 			channel_value_satoshis,
 
 			local_keys,
@@ -3731,6 +3774,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			our_htlc_minimum_msat,
 			their_to_self_delay,
 			their_max_accepted_htlcs,
+			minimum_depth,
 
 			their_funding_pubkey,
 			their_revocation_basepoint,
@@ -3767,6 +3811,7 @@ mod tests {
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::KeysInterface;
 	use chain::transaction::OutPoint;
+	use util::config::UserConfig;
 	use util::test_utils;
 	use util::logger::Logger;
 	use secp256k1::{Secp256k1,Message,Signature};
@@ -3833,7 +3878,9 @@ mod tests {
 		let keys_provider: Arc<KeysInterface> = Arc::new(Keys { chan_keys });
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap());
-		let mut chan = Channel::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, false, 42, Arc::clone(&logger)).unwrap(); // Nothing uses their network key in this test
+		let mut config = UserConfig::new();
+		config.channel_options.announced_channel = false;
+		let mut chan = Channel::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
