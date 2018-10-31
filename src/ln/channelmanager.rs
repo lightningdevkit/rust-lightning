@@ -463,8 +463,13 @@ impl ChannelManager {
 	/// If successful, will generate a SendOpenChannel message event, so you should probably poll
 	/// PeerManager::process_events afterwards.
 	///
-	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat being greater than channel_value_satoshis * 1k
+	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
+	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
+		if channel_value_satoshis < 1000 {
+			return Err(APIError::APIMisuseError { err: "channel_value must be at least 1000 satoshis" });
+		}
+
 		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, self.announce_channels_publicly, user_id, Arc::clone(&self.logger))?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator);
 

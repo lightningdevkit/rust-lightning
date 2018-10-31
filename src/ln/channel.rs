@@ -400,7 +400,7 @@ impl Channel {
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
-		at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000 //TODO
+		cmp::max(at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
 	}
 
 	fn derive_our_htlc_minimum_msat(_at_open_channel_feerate_per_kw: u64) -> u64 {
