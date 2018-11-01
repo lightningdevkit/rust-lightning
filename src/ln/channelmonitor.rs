@@ -400,12 +400,10 @@ impl ChannelMonitor {
 		res
 	}
 
-	/// Inserts a revocation secret into this channel monitor. Also optionally tracks the next
-	/// revocation point which may be required to claim HTLC outputs which we know the preimage of
-	/// in case the remote end force-closes using their latest state. Prunes old preimages if neither
+	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
 	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32], their_next_revocation_point: Option<(u64, PublicKey)>) -> Result<(), HandleError> {
+	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), HandleError> {
 		let pos = ChannelMonitor::place_secret(idx);
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
@@ -414,27 +412,6 @@ impl ChannelMonitor {
 			}
 		}
 		self.old_secrets[pos as usize] = (secret, idx);
-
-		if let Some(new_revocation_point) = their_next_revocation_point {
-			match self.their_cur_revocation_points {
-				Some(old_points) => {
-					if old_points.0 == new_revocation_point.0 + 1 {
-						self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(new_revocation_point.1)));
-					} else if old_points.0 == new_revocation_point.0 + 2 {
-						if let Some(old_second_point) = old_points.2 {
-							self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(new_revocation_point.1)));
-						} else {
-							self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-						}
-					} else {
-						self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-					}
-				},
-				None => {
-					self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-				}
-			}
-		}
 
 		if !self.payment_preimages.is_empty() {
 			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
@@ -469,6 +446,32 @@ impl ChannelMonitor {
 		}
 
 		Ok(())
+	}
+
+	/// Tracks the next revocation point which may be required to claim HTLC outputs which we know
+	/// the preimage of in case the remote end force-closes using their latest state. When called at
+	/// channel opening revocation point is the CURRENT one used for first commitment tx. Needed in case of sizeable push_msat.
+	pub(super) fn provide_their_next_revocation_point(&mut self, their_next_revocation_point: Option<(u64, PublicKey)>) {
+		if let Some(new_revocation_point) = their_next_revocation_point {
+			match self.their_cur_revocation_points {
+				Some(old_points) => {
+					if old_points.0 == new_revocation_point.0 + 1 {
+						self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(new_revocation_point.1)));
+					} else if old_points.0 == new_revocation_point.0 + 2 {
+						if let Some(old_second_point) = old_points.2 {
+							self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(new_revocation_point.1)));
+						} else {
+							self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
+						}
+					} else {
+						self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
+					}
+				},
+				None => {
+					self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
+				}
+			}
+		}
 	}
 
 	/// Informs this monitor of the latest remote (ie non-broadcastable) commitment transaction.
@@ -540,7 +543,7 @@ impl ChannelMonitor {
 		let other_min_secret = other.get_min_seen_secret();
 		let our_min_secret = self.get_min_seen_secret();
 		if our_min_secret > other_min_secret {
-			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap(), None)?;
+			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap())?;
 		}
 		// TODO: We should use current_remote_commitment_number and the commitment number out of
 		// local transactions to decide how to merge
@@ -1725,42 +1728,42 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 		}
 
@@ -1771,12 +1774,12 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -1787,22 +1790,22 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -1813,22 +1816,22 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -1839,42 +1842,42 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -1885,32 +1888,32 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -1921,42 +1924,42 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -1967,42 +1970,42 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
@@ -2013,42 +2016,42 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 	}
@@ -2142,14 +2145,14 @@ mod tests {
 		// Now provide a secret, pruning preimages 10-15
 		let mut secret = [0; 32];
 		secret[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-		monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710655, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 15);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[15..20], monitor);
 
 		// Now provide a further secret, pruning preimages 15-17
 		secret[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-		monitor.provide_secret(281474976710654, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710654, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 13);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[17..20], monitor);
@@ -2158,7 +2161,7 @@ mod tests {
 		// previous commitment tx's preimages too
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5]));
 		secret[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-		monitor.provide_secret(281474976710653, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 12);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[18..20], monitor);
@@ -2166,7 +2169,7 @@ mod tests {
 		// But if we do it again, we'll prune 5-10
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3]));
 		secret[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-		monitor.provide_secret(281474976710652, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 5);
 		test_preimages_exist!(&preimages[0..5], monitor);
 	}

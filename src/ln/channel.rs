@@ -627,6 +627,7 @@ impl Channel {
 		                                              &chan_keys.htlc_base_key, BREAKDOWN_TIMEOUT,
 		                                              keys_provider.get_destination_script(), logger.clone());
 		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
+		channel_monitor.provide_their_next_revocation_point(Some((INITIAL_COMMITMENT_NUMBER, msg.first_per_commitment_point)));
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
 
 		let mut chan = Channel {
@@ -1347,6 +1348,7 @@ impl Channel {
 		}
 
 		self.channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
+		self.channel_monitor.provide_their_next_revocation_point(Some((INITIAL_COMMITMENT_NUMBER, msg.first_per_commitment_point)));
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
 		self.their_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
@@ -1494,6 +1496,7 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent a funding_locked at a strange time"));
 		}
 
+		self.channel_monitor.provide_their_next_revocation_point(Some((INITIAL_COMMITMENT_NUMBER - 1 , msg.next_per_commitment_point)));
 		self.their_prev_commitment_point = self.their_cur_commitment_point;
 		self.their_cur_commitment_point = Some(msg.next_per_commitment_point);
 		Ok(())
@@ -1873,7 +1876,8 @@ impl Channel {
 				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", action: None});
 			}
 		}
-		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret, Some((self.cur_remote_commitment_transaction_number - 1, msg.next_per_commitment_point)))?;
+		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)?;
+		self.channel_monitor.provide_their_next_revocation_point(Some((self.cur_remote_commitment_transaction_number - 1, msg.next_per_commitment_point)));
 
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
