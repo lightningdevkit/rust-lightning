@@ -2382,7 +2382,8 @@ impl Channel {
 	fn maybe_propose_first_closing_signed(&mut self, fee_estimator: &FeeEstimator) -> Option<msgs::ClosingSigned> {
 		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
 				self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32) != BOTH_SIDES_SHUTDOWN_MASK ||
-				self.last_sent_closing_fee.is_some() {
+				self.last_sent_closing_fee.is_some() ||
+				self.cur_remote_commitment_transaction_number != self.cur_local_commitment_transaction_number{
 			return None;
 		}
 
@@ -2452,6 +2453,7 @@ impl Channel {
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
 		// cell HTLCs and return them to fail the payment.
+		self.holding_cell_update_fee = None;
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
@@ -3260,9 +3262,9 @@ impl Channel {
 		}
 		self.channel_update_count += 1;
 
-		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
-		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
-		// cell HTLCs and return them to fail the payment.
+		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
+		// our shutdown until we've committed all of the pending changes.
+		self.holding_cell_update_fee = None;
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
