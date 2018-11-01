@@ -2383,7 +2383,7 @@ impl ChannelManager {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order) = chan.channel_reestablish(msg)
+				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order, shutdown) = chan.channel_reestablish(msg)
 					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 				if let Some(monitor) = channel_monitor {
 					if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
@@ -2421,6 +2421,12 @@ impl ChannelManager {
 						send_cu!();
 						send_raa!();
 					},
+				}
+				if let Some(msg) = shutdown {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+						node_id: their_node_id.clone(),
+						msg,
+					});
 				}
 				Ok(())
 			},

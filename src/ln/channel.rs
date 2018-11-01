@@ -2071,6 +2071,9 @@ impl Channel {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
 			return outbound_drops;
 		}
+		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
+		// will be retransmitted.
+		self.last_sent_closing_fee = None;
 
 		let mut inbound_drop_count = 0;
 		self.pending_inbound_htlcs.retain(|htlc| {
@@ -2258,7 +2261,7 @@ impl Channel {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>, RAACommitmentOrder), ChannelError> {
+	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>, RAACommitmentOrder, Option<msgs::Shutdown>), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -2274,9 +2277,16 @@ impl Channel {
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
 
+		let shutdown_msg = if self.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
+			Some(msgs::Shutdown {
+				channel_id: self.channel_id,
+				scriptpubkey: self.get_closing_scriptpubkey(),
+			})
+		} else { None };
+
 		if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			// Short circuit the whole handler as there is nothing we can resend them
-			return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst));
+			return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 		}
 
 		if msg.next_local_commitment_number == 0 || msg.next_remote_commitment_number == 0 {
@@ -2289,7 +2299,7 @@ impl Channel {
 			return Ok((Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point: next_per_commitment_point,
-			}), None, None, None, RAACommitmentOrder::CommitmentFirst));
+			}), None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 		}
 
 		let required_revoke = if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
@@ -2352,11 +2362,11 @@ impl Channel {
 							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
 						}
 					},
-					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order)),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order)),
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order, shutdown_msg)),
+					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg)),
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None, order));
+				return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg));
 			}
 		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -2370,10 +2380,10 @@ impl Channel {
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
-				return Ok((resend_funding_locked, None, None, None, order));
+				return Ok((resend_funding_locked, None, None, None, order, shutdown_msg));
 			}
 
-			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, order));
+			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, order, shutdown_msg));
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
 		}
@@ -2420,9 +2430,6 @@ impl Channel {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
 				return Err(ChannelError::Close("Got shutdown with remote pending HTLCs"));
 			}
-		}
-		if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
-			return Err(ChannelError::Ignore("Remote peer sent duplicate shutdown message"));
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
