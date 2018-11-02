@@ -359,6 +359,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 							macro_rules! try_potential_handleerror {
 								($thing: expr) => {
+									try_potential_handleerror!($thing, false);
+								};
+								($thing: expr, $pre_noise: expr) => {
 									match $thing {
 										Ok(x) => x,
 										Err(e) => {
@@ -367,6 +370,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 														//TODO: Try to push msg
 														log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
+														if $pre_noise {
+															peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
+														}
 														return Err(PeerHandleError{ no_connection_possible: false });
 													},
 													msgs::ErrorAction::IgnoreError => {
@@ -432,12 +438,12 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let next_step = peer.channel_encryptor.get_noise_step();
 							match next_step {
 								NextNoiseStep::ActOne => {
-									let act_two = try_potential_handleerror!(peer.channel_encryptor.process_act_one_with_key(&peer.pending_read_buffer[..], &self.our_node_secret)).to_vec();
+									let act_two = try_potential_handleerror!(peer.channel_encryptor.process_act_one_with_key(&peer.pending_read_buffer[..], &self.our_node_secret), true).to_vec();
 									peer.pending_outbound_buffer.push_back(act_two);
 									peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 								},
 								NextNoiseStep::ActTwo => {
-									let act_three = try_potential_handleerror!(peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..], &self.our_node_secret)).to_vec();
+									let act_three = try_potential_handleerror!(peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..], &self.our_node_secret), true).to_vec();
 									peer.pending_outbound_buffer.push_back(act_three);
 									peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 									peer.pending_read_is_header = true;
@@ -454,7 +460,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									}, 16);
 								},
 								NextNoiseStep::ActThree => {
-									let their_node_id = try_potential_handleerror!(peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]));
+									let their_node_id = try_potential_handleerror!(peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]), true);
 									peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 									peer.pending_read_is_header = true;
 									peer.their_node_id = Some(their_node_id);
