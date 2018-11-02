@@ -2703,6 +2703,7 @@ impl ChannelMessageHandler for ChannelManager {
 			let short_to_id = channel_state.short_to_id;
 			let pending_msg_events = channel_state.pending_msg_events;
 			if no_connection_possible {
+				log_debug!(self, "Failing all channels with {} due to no_connection_possible", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
 						if let Some(short_id) = chan.get_short_channel_id() {
@@ -2720,6 +2721,7 @@ impl ChannelMessageHandler for ChannelManager {
 					}
 				});
 			} else {
+				log_debug!(self, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
 						//TODO: mark channel disabled (and maybe announce such after a timeout).
@@ -2750,6 +2752,8 @@ impl ChannelMessageHandler for ChannelManager {
 	}
 
 	fn peer_connected(&self, their_node_id: &PublicKey) {
+		log_debug!(self, "Generating channel_reestablish events for {}", log_pubkey!(their_node_id));
+
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();

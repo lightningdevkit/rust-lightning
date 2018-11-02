@@ -417,10 +417,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 								() => {
 									match peers.node_id_to_descriptor.entry(peer.their_node_id.unwrap()) {
 										hash_map::Entry::Occupied(_) => {
+											log_trace!(self, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap()));
 											peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
 											return Err(PeerHandleError{ no_connection_possible: false })
 										},
-										hash_map::Entry::Vacant(entry) => entry.insert(peer_descriptor.clone()),
+										hash_map::Entry::Vacant(entry) => {
+											log_trace!(self, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
+											entry.insert(peer_descriptor.clone())
+										},
 									};
 								}
 							}
@@ -477,6 +481,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 										log_trace!(self, "Received message of type {} from {}", msg_type, log_pubkey!(peer.their_node_id.unwrap()));
 										if msg_type != 16 && peer.their_global_features.is_none() {
 											// Need an init message as first message
+											log_trace!(self, "Peer {} sent non-Init first message", log_pubkey!(peer.their_node_id.unwrap()));
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}
 										let mut reader = ::std::io::Cursor::new(&msg_data[2..]);
