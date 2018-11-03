@@ -151,6 +151,7 @@ pub struct Init {
 }
 
 /// An error message to be sent or received from a peer
+#[derive(Clone)]
 pub struct ErrorMessage {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) data: String,
@@ -235,14 +236,14 @@ pub struct FundingLocked {
 }
 
 /// A shutdown message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Shutdown {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) scriptpubkey: Script,
 }
 
 /// A closing_signed message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ClosingSigned {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) fee_satoshis: u64,
@@ -448,6 +449,7 @@ pub struct ChannelUpdate {
 }
 
 /// Used to put an error message in a HandleError
+#[derive(Clone)]
 pub enum ErrorAction {
 	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer {
@@ -486,6 +488,7 @@ pub struct CommitmentUpdate {
 /// The information we received from a peer along the route of a payment we originated. This is
 /// returned by ChannelMessageHandler::handle_update_fail_htlc to be passed into
 /// RoutingMessageHandler::handle_htlc_fail_channel_update to update our network map.
+#[derive(Clone)]
 pub enum HTLCFailChannelUpdate {
 	/// We received an error which included a full ChannelUpdate message.
 	ChannelUpdateMessage {

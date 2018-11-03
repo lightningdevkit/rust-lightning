@@ -1233,6 +1233,9 @@ impl ChannelManager {
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	///
+	/// Note that ALL inputs in the transaction pointed to by funding_txo MUST spend SegWit outputs
+	/// or your counterparty can steal your funds!
+	///
 	/// Panics if a funding transaction has already been provided for this channel.
 	///
 	/// May panic if the funding_txo is duplicative with some other channel (note that this should
@@ -1832,7 +1835,7 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (shutdown, closing_signed, dropped_htlcs) = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let (shutdown, closing_signed, dropped_htlcs) = chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: their_node_id.clone(),
@@ -1926,7 +1929,7 @@ impl ChannelManager {
 		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let (mut pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = channel_state_lock.borrow_parts();
 
 		match channel_state.by_id.get_mut(&msg.channel_id) {
@@ -1936,7 +1939,16 @@ impl ChannelManager {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if !chan.is_usable() {
-					return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Channel not yet available for receiving HTLCs", action: Some(msgs::ErrorAction::IgnoreError)}));
+					// If the update_add is completely bogus, the call will Err and we will close,
+					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
+					// want to reject the new HTLC and fail it backwards instead of forwarding.
+					if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
+						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+							channel_id: msg.channel_id,
+							htlc_id: msg.htlc_id,
+							reason: ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &self.get_channel_update(chan).unwrap().encode_with_len()[..]),
+						}));
+					}
 				}
 				chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
 			},
@@ -2202,7 +2214,7 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, chan_monitor) = chan.commitment_signed(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) = chan.commitment_signed(&msg, &*self.fee_estimator).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
 				if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 					unimplemented!();
 				}
@@ -2221,6 +2233,12 @@ impl ChannelManager {
 							update_fee: None,
 							commitment_signed: msg,
 						},
+					});
+				}
+				if let Some(msg) = closing_signed {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+						node_id: their_node_id.clone(),
+						msg,
 					});
 				}
 				Ok(())
@@ -2272,7 +2290,7 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (commitment_update, pending_forwards, pending_failures, chan_monitor) = chan.revoke_and_ack(&msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) = chan.revoke_and_ack(&msg, &*self.fee_estimator).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
 					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						unimplemented!();
 					}
@@ -2280,6 +2298,12 @@ impl ChannelManager {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: their_node_id.clone(),
 							updates,
+						});
+					}
+					if let Some(msg) = closing_signed {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+							node_id: their_node_id.clone(),
+							msg,
 						});
 					}
 					(pending_forwards, pending_failures, chan.get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
@@ -2359,7 +2383,7 @@ impl ChannelManager {
 				if chan.get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order) = chan.channel_reestablish(msg)
+				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order, shutdown) = chan.channel_reestablish(msg)
 					.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 				if let Some(monitor) = channel_monitor {
 					if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
@@ -2397,6 +2421,12 @@ impl ChannelManager {
 						send_cu!();
 						send_raa!();
 					},
+				}
+				if let Some(msg) = shutdown {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+						node_id: their_node_id.clone(),
+						msg,
+					});
 				}
 				Ok(())
 			},
@@ -3612,6 +3642,30 @@ mod tests {
 		}
 	}
 
+	macro_rules! get_closing_signed_broadcast {
+		($node: expr, $dest_pubkey: expr) => {
+			{
+				let events = $node.get_and_clear_pending_msg_events();
+				assert!(events.len() == 1 || events.len() == 2);
+				(match events[events.len() - 1] {
+					MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+						assert_eq!(msg.contents.flags & 2, 2);
+						msg.clone()
+					},
+					_ => panic!("Unexpected event"),
+				}, if events.len() == 2 {
+					match events[0] {
+						MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
+							assert_eq!(*node_id, $dest_pubkey);
+							Some(msg.clone())
+						},
+						_ => panic!("Unexpected event"),
+					}
+				} else { None })
+			}
+		}
+	}
+
 	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
 		let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
@@ -3642,29 +3696,6 @@ mod tests {
 				_ => panic!("Unexpected event"),
 			})
 		};
-
-		macro_rules! get_closing_signed_broadcast {
-			($node: expr, $dest_pubkey: expr) => {
-				{
-					let events = $node.get_and_clear_pending_msg_events();
-					assert!(events.len() == 1 || events.len() == 2);
-					(match events[events.len() - 1] {
-						MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-							msg.clone()
-						},
-						_ => panic!("Unexpected event"),
-					}, if events.len() == 2 {
-						match events[0] {
-							MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
-								assert_eq!(*node_id, $dest_pubkey);
-								Some(msg.clone())
-							},
-							_ => panic!("Unexpected event"),
-						}
-					} else { None })
-				}
-			}
-		}
 
 		node_a.handle_shutdown(&node_b.get_our_node_id(), &shutdown_b).unwrap();
 		let (as_update, bs_update) = if close_inbound_first {
@@ -3734,35 +3765,41 @@ mod tests {
 	}
 
 	macro_rules! commitment_signed_dance {
-		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
+		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
 			{
 				check_added_monitors!($node_a, 0);
 				assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 				$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed).unwrap();
-				let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!($node_a, $node_b.node.get_our_node_id());
 				check_added_monitors!($node_a, 1);
+				commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, false);
+			}
+		};
+		($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */) => {
+			{
+				let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!($node_a, $node_b.node.get_our_node_id());
 				check_added_monitors!($node_b, 0);
 				assert!($node_b.node.get_and_clear_pending_msg_events().is_empty());
 				$node_b.node.handle_revoke_and_ack(&$node_a.node.get_our_node_id(), &as_revoke_and_ack).unwrap();
 				assert!($node_b.node.get_and_clear_pending_msg_events().is_empty());
 				check_added_monitors!($node_b, 1);
 				$node_b.node.handle_commitment_signed(&$node_a.node.get_our_node_id(), &as_commitment_signed).unwrap();
-				let bs_revoke_and_ack = get_event_msg!($node_b, MessageSendEvent::SendRevokeAndACK, $node_a.node.get_our_node_id());
+				let (bs_revoke_and_ack, extra_msg_option) = {
+					let events = $node_b.node.get_and_clear_pending_msg_events();
+					assert!(events.len() <= 2);
+					(match events[0] {
+						MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+							assert_eq!(*node_id, $node_a.node.get_our_node_id());
+							(*msg).clone()
+						},
+						_ => panic!("Unexpected event"),
+					}, events.get(1).map(|e| e.clone()))
+				};
 				check_added_monitors!($node_b, 1);
 				if $fail_backwards {
 					assert!($node_a.node.get_and_clear_pending_events().is_empty());
 					assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 				}
 				$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
-				if $fail_backwards {
-					let channel_state = $node_a.node.channel_state.lock().unwrap();
-					assert_eq!(channel_state.pending_msg_events.len(), 1);
-					if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = channel_state.pending_msg_events[0] {
-						assert_ne!(*node_id, $node_b.node.get_our_node_id());
-					} else { panic!("Unexpected event"); }
-				} else {
-					assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-				}
 				{
 					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
 					if $fail_backwards {
@@ -3772,6 +3809,26 @@ mod tests {
 						assert_eq!(added_monitors.len(), 1);
 					}
 					added_monitors.clear();
+				}
+				extra_msg_option
+			}
+		};
+		($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */) => {
+			{
+				assert!(commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true).is_none());
+			}
+		};
+		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
+			{
+				commitment_signed_dance!($node_a, $node_b, $commitment_signed, $fail_backwards, true);
+				if $fail_backwards {
+					let channel_state = $node_a.node.channel_state.lock().unwrap();
+					assert_eq!(channel_state.pending_msg_events.len(), 1);
+					if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = channel_state.pending_msg_events[0] {
+						assert_ne!(*node_id, $node_b.node.get_our_node_id());
+					} else { panic!("Unexpected event"); }
+				} else {
+					assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 				}
 			}
 		}
@@ -4616,6 +4673,375 @@ mod tests {
 		assert_eq!(get_feerate!(nodes[0]), feerate + 30);
 		assert_eq!(get_feerate!(nodes[1]), feerate + 30);
 		close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
+	}
+
+	#[test]
+	fn pre_funding_lock_shutdown_test() {
+		// Test sending a shutdown prior to funding_locked after funding generation
+		let nodes = create_network(2);
+		let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 8000000, 0);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&tx; 1], &[1; 1]);
+		nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&tx; 1], &[1; 1]);
+
+		nodes[0].node.close_channel(&OutPoint::new(tx.txid(), 0).to_channel_id()).unwrap();
+		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+		let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+
+		let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+		let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+		assert!(node_0_none.is_none());
+
+		assert!(nodes[0].node.list_channels().is_empty());
+		assert!(nodes[1].node.list_channels().is_empty());
+	}
+
+	#[test]
+	fn updates_shutdown_wait() {
+		// Test sending a shutdown with outstanding updates pending
+		let mut nodes = create_network(3);
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+		let route_1 = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+		let route_2 = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+
+		let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+
+		nodes[0].node.close_channel(&chan_1.2).unwrap();
+		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+		let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route_1, payment_hash) {}
+		else { panic!("New sends should fail!") };
+		if let Err(APIError::ChannelUnavailable {..}) = nodes[1].node.send_payment(route_2, payment_hash) {}
+		else { panic!("New sends should fail!") };
+
+		assert!(nodes[2].node.claim_funds(our_payment_preimage));
+		check_added_monitors!(nodes[2], 1);
+		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+
+		assert!(updates_2.update_add_htlcs.is_empty());
+		assert!(updates_2.update_fail_htlcs.is_empty());
+		assert!(updates_2.update_fail_malformed_htlcs.is_empty());
+		assert!(updates_2.update_fee.is_none());
+		assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fulfill_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentSent { ref payment_preimage } => {
+				assert_eq!(our_payment_preimage, *payment_preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+		let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+		assert!(node_0_none.is_none());
+
+		assert!(nodes[0].node.list_channels().is_empty());
+
+		assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+		nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+		close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+		assert!(nodes[1].node.list_channels().is_empty());
+		assert!(nodes[2].node.list_channels().is_empty());
+	}
+
+	#[test]
+	fn htlc_fail_async_shutdown() {
+		// Test HTLCs fail if shutdown starts even if messages are delivered out-of-order
+		let mut nodes = create_network(3);
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+		let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		assert_eq!(updates.update_add_htlcs.len(), 1);
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+
+		nodes[1].node.close_channel(&chan_1.2).unwrap();
+		let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
+
+		let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates_2.update_add_htlcs.is_empty());
+		assert!(updates_2.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates_2.update_fail_htlcs.len(), 1);
+		assert!(updates_2.update_fail_malformed_htlcs.is_empty());
+		assert!(updates_2.update_fee.is_none());
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fail_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, ref rejected_by_dest } => {
+				assert_eq!(our_payment_hash, *payment_hash);
+				assert!(!rejected_by_dest);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+		let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+		assert!(node_0_none.is_none());
+
+		assert!(nodes[0].node.list_channels().is_empty());
+
+		assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+		nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+		close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+		assert!(nodes[1].node.list_channels().is_empty());
+		assert!(nodes[2].node.list_channels().is_empty());
+	}
+
+	#[test]
+	fn update_fee_async_shutdown() {
+		// Test update_fee works after shutdown start if messages are delivered out-of-order
+		let nodes = create_network(2);
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let starting_feerate = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().get_feerate();
+		nodes[0].node.update_fee(chan_1.2.clone(), starting_feerate + 20).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_some());
+
+		nodes[1].node.close_channel(&chan_1.2).unwrap();
+		let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+		// Note that we don't actually test normative behavior here. The spec indicates we could
+		// actually send a closing_signed here, but is kinda unclear and could possibly be amended
+		// to require waiting on the full commitment dance before doing so (see
+		// https://github.com/lightningnetwork/lightning-rfc/issues/499). In any case, to avoid
+		// ambiguity, we should wait until after the full commitment dance to send closing_signed.
+		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &updates.update_fee.unwrap()).unwrap();
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+		let node_0_closing_signed = commitment_signed_dance!(nodes[1], nodes[0], (), false, true, true);
+
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), match node_0_closing_signed.unwrap() {
+			MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				msg
+			},
+			_ => panic!("Unexpected event"),
+		}).unwrap();
+		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+		let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+		assert!(node_0_none.is_none());
+	}
+
+	fn do_test_shutdown_rebroadcast(recv_count: u8) {
+		// Test that shutdown/closing_signed is re-sent on reconnect with a variable number of
+		// messages delivered prior to disconnect
+		let nodes = create_network(3);
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+
+		nodes[1].node.close_channel(&chan_1.2).unwrap();
+		let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		if recv_count > 0 {
+			nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+			let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+			if recv_count > 1 {
+				nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+			}
+		}
+
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+		let node_0_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+		let node_1_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_reestablish).unwrap();
+		let node_1_2nd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		assert!(node_1_shutdown == node_1_2nd_shutdown);
+
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_reestablish).unwrap();
+		let node_0_2nd_shutdown = if recv_count > 0 {
+			let node_0_2nd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+			nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown).unwrap();
+			node_0_2nd_shutdown
+		} else {
+			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+			nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown).unwrap();
+			get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id())
+		};
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown).unwrap();
+
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		assert!(nodes[2].node.claim_funds(our_payment_preimage));
+		check_added_monitors!(nodes[2], 1);
+		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+
+		assert!(updates_2.update_add_htlcs.is_empty());
+		assert!(updates_2.update_fail_htlcs.is_empty());
+		assert!(updates_2.update_fail_malformed_htlcs.is_empty());
+		assert!(updates_2.update_fee.is_none());
+		assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fulfill_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentSent { ref payment_preimage } => {
+				assert_eq!(our_payment_preimage, *payment_preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+		if recv_count > 0 {
+			nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+			let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+			assert!(node_1_closing_signed.is_some());
+		}
+
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+		let node_0_2nd_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+		if recv_count == 0 {
+			// If all closing_signeds weren't delivered we can just resume where we left off...
+			let node_1_2nd_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+			nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_2nd_reestablish).unwrap();
+			let node_0_3rd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+			assert!(node_0_2nd_shutdown == node_0_3rd_shutdown);
+
+			nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_2nd_reestablish).unwrap();
+			let node_1_3rd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+			assert!(node_1_3rd_shutdown == node_1_2nd_shutdown);
+
+			nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_3rd_shutdown).unwrap();
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+			nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_3rd_shutdown).unwrap();
+			let node_0_2nd_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+			assert!(node_0_closing_signed == node_0_2nd_closing_signed);
+
+			nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed).unwrap();
+			let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+			let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+			assert!(node_0_none.is_none());
+		} else {
+			// If one node, however, received + responded with an identical closing_signed we end
+			// up erroring and node[0] will try to broadcast its own latest commitment transaction.
+			// There isn't really anything better we can do simply, but in the future we might
+			// explore storing a set of recently-closed channels that got disconnected during
+			// closing_signed and avoiding broadcasting local commitment txn for some timeout to
+			// give our counterparty enough time to (potentially) broadcast a cooperative closing
+			// transaction.
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+			if let Err(msgs::HandleError{action: Some(msgs::ErrorAction::SendErrorMessage{msg}), ..}) =
+					nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_2nd_reestablish) {
+				nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msg);
+				let msgs::ErrorMessage {ref channel_id, ..} = msg;
+				assert_eq!(*channel_id, chan_1.2);
+			} else { panic!("Needed SendErrorMessage close"); }
+
+			// get_closing_signed_broadcast usually eats the BroadcastChannelUpdate for us and
+			// checks it, but in this case nodes[0] didn't ever get a chance to receive a
+			// closing_signed so we do it ourselves
+			let events = nodes[0].node.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+					assert_eq!(msg.contents.flags & 2, 2);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+
+		assert!(nodes[0].node.list_channels().is_empty());
+
+		assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+		nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+		close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+		assert!(nodes[1].node.list_channels().is_empty());
+		assert!(nodes[2].node.list_channels().is_empty());
+	}
+
+	#[test]
+	fn test_shutdown_rebroadcast() {
+		do_test_shutdown_rebroadcast(0);
+		do_test_shutdown_rebroadcast(1);
+		do_test_shutdown_rebroadcast(2);
 	}
 
 	#[test]

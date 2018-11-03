@@ -1553,6 +1553,12 @@ impl Channel {
 
 		//TODO: Check msg.cltv_expiry further? Do this in channel manager?
 
+		if self.channel_state & ChannelState::LocalShutdownSent as u32 != 0 {
+			if let PendingHTLCStatus::Forward(_) = pending_forward_state {
+				panic!("ChannelManager shouldn't be trying to add a forwardable HTLC after we've started closing");
+			}
+		}
+
 		// Now update local state:
 		self.next_remote_htlc_id += 1;
 		self.pending_inbound_htlcs.push(InboundHTLCOutput {
@@ -1632,12 +1638,15 @@ impl Channel {
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
 	}
 
-	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitor), HandleError> {
+	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &FeeEstimator) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got commitment signed message when channel was not in an operational state", action: None});
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(HandleError{err: "Peer sent commitment_signed when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent commitment_signed when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.last_sent_closing_fee.is_some() {
+			return Err(HandleError{err: "Peer sent commitment_signed after we'd started exchanging closing_signeds", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent commitment_signed after we'd started exchanging closing_signeds".to_string(), channel_id: msg.channel_id}})});
 		}
 
 		let funding_script = self.get_funding_redeemscript();
@@ -1730,19 +1739,21 @@ impl Channel {
 			return Err(HandleError{err: "Previous monitor update failure prevented generation of RAA", action: Some(ErrorAction::IgnoreError)});
 		}
 
-		let (our_commitment_signed, monitor_update) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+		let (our_commitment_signed, monitor_update, closing_signed) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
 			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
 			// we'll send one right away when we get the revoke_and_ack when we
 			// free_holding_cell_htlcs().
 			let (msg, monitor) = self.send_commitment_no_status_check()?;
-			(Some(msg), monitor)
-		} else { (None, self.channel_monitor.clone()) };
+			(Some(msg), monitor, None)
+		} else if !need_our_commitment {
+			(None, self.channel_monitor.clone(), self.maybe_propose_first_closing_signed(fee_estimator))
+		} else { (None, self.channel_monitor.clone(), None) };
 
 		Ok((msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret: per_commitment_secret,
 			next_per_commitment_point: next_per_commitment_point,
-		}, our_commitment_signed, monitor_update))
+		}, our_commitment_signed, closing_signed, monitor_update))
 	}
 
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
@@ -1843,12 +1854,15 @@ impl Channel {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>, ChannelMonitor), HandleError> {
+	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", action: None});
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(HandleError{err: "Peer sent revoke_and_ack when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent revoke_and_ack when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+		}
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.last_sent_closing_fee.is_some() {
+			return Err(HandleError{err: "Peer sent revoke_and_ack after we'd started exchanging closing_signeds", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_string(), channel_id: msg.channel_id}})});
 		}
 
 		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
@@ -1971,7 +1985,7 @@ impl Channel {
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
-			return Ok((None, Vec::new(), Vec::new(), self.channel_monitor.clone()));
+			return Ok((None, Vec::new(), Vec::new(), None, self.channel_monitor.clone()));
 		}
 
 		match self.free_holding_cell_htlcs()? {
@@ -1984,7 +1998,7 @@ impl Channel {
 				for fail_msg in update_fail_malformed_htlcs.drain(..) {
 					commitment_update.0.update_fail_malformed_htlcs.push(fail_msg);
 				}
-				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, commitment_update.1))
+				Ok((Some(commitment_update.0), to_forward_infos, revoked_htlcs, None, commitment_update.1))
 			},
 			None => {
 				if require_commitment {
@@ -1996,9 +2010,9 @@ impl Channel {
 						update_fail_malformed_htlcs,
 						update_fee: None,
 						commitment_signed
-					}), to_forward_infos, revoked_htlcs, monitor_update))
+					}), to_forward_infos, revoked_htlcs, None, monitor_update))
 				} else {
-					Ok((None, to_forward_infos, revoked_htlcs, self.channel_monitor.clone()))
+					Ok((None, to_forward_infos, revoked_htlcs, self.maybe_propose_first_closing_signed(fee_estimator), self.channel_monitor.clone()))
 				}
 			}
 		}
@@ -2057,6 +2071,9 @@ impl Channel {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
 			return outbound_drops;
 		}
+		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
+		// will be retransmitted.
+		self.last_sent_closing_fee = None;
 
 		let mut inbound_drop_count = 0;
 		self.pending_inbound_htlcs.retain(|htlc| {
@@ -2244,7 +2261,7 @@ impl Channel {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>, RAACommitmentOrder), ChannelError> {
+	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitor>, RAACommitmentOrder, Option<msgs::Shutdown>), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -2260,9 +2277,16 @@ impl Channel {
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
 
+		let shutdown_msg = if self.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
+			Some(msgs::Shutdown {
+				channel_id: self.channel_id,
+				scriptpubkey: self.get_closing_scriptpubkey(),
+			})
+		} else { None };
+
 		if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			// Short circuit the whole handler as there is nothing we can resend them
-			return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst));
+			return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 		}
 
 		if msg.next_local_commitment_number == 0 || msg.next_remote_commitment_number == 0 {
@@ -2275,7 +2299,7 @@ impl Channel {
 			return Ok((Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point: next_per_commitment_point,
-			}), None, None, None, RAACommitmentOrder::CommitmentFirst));
+			}), None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 		}
 
 		let required_revoke = if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
@@ -2338,11 +2362,11 @@ impl Channel {
 							panic!("Got non-channel-failing result from free_holding_cell_htlcs");
 						}
 					},
-					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order)),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order)),
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order, shutdown_msg)),
+					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg)),
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None, order));
+				return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg));
 			}
 		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -2356,70 +2380,77 @@ impl Channel {
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
-				return Ok((resend_funding_locked, None, None, None, order));
+				return Ok((resend_funding_locked, None, None, None, order, shutdown_msg));
 			}
 
-			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, order));
+			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, order, shutdown_msg));
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
 		}
 	}
 
-	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), HandleError> {
+	fn maybe_propose_first_closing_signed(&mut self, fee_estimator: &FeeEstimator) -> Option<msgs::ClosingSigned> {
+		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
+				self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32) != BOTH_SIDES_SHUTDOWN_MASK ||
+				self.last_sent_closing_fee.is_some() ||
+				self.cur_remote_commitment_transaction_number != self.cur_local_commitment_transaction_number{
+			return None;
+		}
+
+		let mut proposed_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+		if self.feerate_per_kw > proposed_feerate {
+			proposed_feerate = self.feerate_per_kw;
+		}
+		let tx_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
+		let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
+
+		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
+		let funding_redeemscript = self.get_funding_redeemscript();
+		let sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
+
+		self.last_sent_closing_fee = Some((proposed_feerate, total_fee_satoshis));
+		Some(msgs::ClosingSigned {
+			channel_id: self.channel_id,
+			fee_satoshis: total_fee_satoshis,
+			signature: self.secp_ctx.sign(&sighash, &self.local_keys.funding_key),
+		})
+	}
+
+	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, [u8; 32])>), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(HandleError{err: "Peer sent shutdown when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent shutdown when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
+			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish"));
 		}
 		if self.channel_state < ChannelState::FundingSent as u32 {
-			self.channel_state = ChannelState::ShutdownComplete as u32;
-			self.channel_update_count += 1;
-			return Ok((None, None, Vec::new()));
+			// Spec says we should fail the connection, not the channel, but that's nonsense, there
+			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
+			// can do that via error message without getting a connection fail anyway...
+			return Err(ChannelError::Close("Peer sent shutdown pre-funding generation"));
 		}
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
-				return Err(HandleError{err: "Got shutdown with remote pending HTLCs", action: None});
+				return Err(ChannelError::Close("Got shutdown with remote pending HTLCs"));
 			}
-		}
-		if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
-			return Err(HandleError{err: "Remote peer sent duplicate shutdown message", action: None});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		// BOLT 2 says we must only send a scriptpubkey of certain standard forms, which are up to
 		// 34 bytes in length, so dont let the remote peer feed us some super fee-heavy script.
 		if self.channel_outbound && msg.scriptpubkey.len() > 34 {
-			return Err(HandleError{err: "Got shutdown_scriptpubkey of absurd length from remote peer", action: None});
+			return Err(ChannelError::Close("Got shutdown_scriptpubkey of absurd length from remote peer"));
 		}
 
 		//Check shutdown_scriptpubkey form as BOLT says we must
-		if !(msg.scriptpubkey.is_p2pkh()) && !(msg.scriptpubkey.is_p2sh())
-			&& !(msg.scriptpubkey.is_v0_p2wpkh()) && !(msg.scriptpubkey.is_v0_p2wsh()){
-			return Err(HandleError{err: "Got an invalid scriptpubkey from remote peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+		if !msg.scriptpubkey.is_p2pkh() && !msg.scriptpubkey.is_p2sh() && !msg.scriptpubkey.is_v0_p2wpkh() && !msg.scriptpubkey.is_v0_p2wsh() {
+			return Err(ChannelError::Close("Got a nonstandard scriptpubkey from remote peer"));
 		}
 
 		if self.their_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.their_shutdown_scriptpubkey.as_ref() {
-				return Err(HandleError{err: "Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey", action: None});
+				return Err(ChannelError::Close("Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey"));
 			}
 		} else {
 			self.their_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
 		}
-
-		let our_closing_script = self.get_closing_scriptpubkey();
-
-		let (proposed_feerate, proposed_fee, our_sig) = if self.channel_outbound && self.pending_inbound_htlcs.is_empty() && self.pending_outbound_htlcs.is_empty() {
-			let mut proposed_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-			if self.feerate_per_kw > proposed_feerate {
-				proposed_feerate = self.feerate_per_kw;
-			}
-			let tx_weight = Self::get_closing_transaction_weight(&our_closing_script, &msg.scriptpubkey);
-			let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
-
-			let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
-			let funding_redeemscript = self.get_funding_redeemscript();
-			let sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
-
-			(Some(proposed_feerate), Some(total_fee_satoshis), Some(self.secp_ctx.sign(&sighash, &self.local_keys.funding_key)))
-		} else { (None, None, None) };
 
 		// From here on out, we may not fail!
 
@@ -2429,6 +2460,7 @@ impl Channel {
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
 		// cell HTLCs and return them to fail the payment.
+		self.holding_cell_update_fee = None;
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
@@ -2439,35 +2471,22 @@ impl Channel {
 				_ => true
 			}
 		});
-		for htlc in self.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				return Ok((None, None, dropped_outbound_htlcs));
-			}
-		}
+		// If we have any LocalAnnounced updates we'll probably just get back a update_fail_htlc
+		// immediately after the commitment dance, but we can send a Shutdown cause we won't send
+		// any further commitment updates after we set LocalShutdownSent.
 
 		let our_shutdown = if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
 			None
 		} else {
 			Some(msgs::Shutdown {
 				channel_id: self.channel_id,
-				scriptpubkey: our_closing_script,
+				scriptpubkey: self.get_closing_scriptpubkey(),
 			})
 		};
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		self.channel_update_count += 1;
-		if self.pending_inbound_htlcs.is_empty() && self.pending_outbound_htlcs.is_empty() && self.channel_outbound {
-			// There are no more HTLCs and we're the funder, this means we start the closing_signed
-			// dance with an initial fee proposal!
-			self.last_sent_closing_fee = Some((proposed_feerate.unwrap(), proposed_fee.unwrap()));
-			Ok((our_shutdown, Some(msgs::ClosingSigned {
-				channel_id: self.channel_id,
-				fee_satoshis: proposed_fee.unwrap(),
-				signature: our_sig.unwrap(),
-			}), dropped_outbound_htlcs))
-		} else {
-			Ok((our_shutdown, None, dropped_outbound_htlcs))
-		}
+		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
 	}
 
 	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), HandleError> {
@@ -3250,9 +3269,9 @@ impl Channel {
 		}
 		self.channel_update_count += 1;
 
-		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
-		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
-		// cell HTLCs and return them to fail the payment.
+		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
+		// our shutdown until we've committed all of the pending changes.
+		self.holding_cell_update_fee = None;
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
