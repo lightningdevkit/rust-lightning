@@ -209,15 +209,17 @@ impl<'a> MoneyLossDetector<'a> {
 
 impl<'a> Drop for MoneyLossDetector<'a> {
 	fn drop(&mut self) {
-		// Disconnect all peers
-		for (idx, peer) in self.peers.borrow().iter().enumerate() {
-			if *peer {
-				self.handler.disconnect_event(&Peer{id: idx as u8, peers_connected: &self.peers});
+		if !::std::thread::panicking() {
+			// Disconnect all peers
+			for (idx, peer) in self.peers.borrow().iter().enumerate() {
+				if *peer {
+					self.handler.disconnect_event(&Peer{id: idx as u8, peers_connected: &self.peers});
+				}
 			}
-		}
 
-		// Force all channels onto the chain (and time out claim txn)
-		self.manager.force_close_all_channels();
+			// Force all channels onto the chain (and time out claim txn)
+			self.manager.force_close_all_channels();
+		}
 	}
 }
 
