@@ -2827,6 +2827,16 @@ impl Channel {
 						self.channel_update_count += 1;
 						return Err(HandleError{err: "funding tx had wrong script/value", action: Some(ErrorAction::DisconnectPeer{msg: None})});
 					} else {
+						if self.channel_outbound {
+							for input in tx.input.iter() {
+								if input.witness.is_empty() {
+									// We generated a malleable funding transaction, implying we've
+									// just exposed ourselves to funds loss to our counterparty.
+									#[cfg(not(feature = "fuzztarget"))]
+									panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+								}
+							}
+						}
 						self.funding_tx_confirmations = 1;
 						self.short_channel_id = Some(((height as u64)          << (5*8)) |
 						                             ((*index_in_block as u64) << (2*8)) |
