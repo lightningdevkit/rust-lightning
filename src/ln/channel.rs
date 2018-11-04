@@ -1122,8 +1122,9 @@ impl Channel {
 		Ok(our_sig)
 	}
 
-	/// May return an IgnoreError, but should not, and will always return Ok(_) when
-	/// debug_assertions are turned on
+	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
+	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
+	/// Ok(_) if debug assertions are turned on and preconditions are met.
 	fn get_update_fulfill_htlc(&mut self, htlc_id_arg: u64, payment_preimage_arg: [u8; 32]) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitor>), HandleError> {
 		// Either ChannelFunded got set (which means it wont bet unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -1175,7 +1176,9 @@ impl Channel {
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							debug_assert!(false, "Tried to fulfill an HTLC we already had a holding-cell failure on");
-							return Err(HandleError{err: "Unable to find a pending HTLC which matched the given HTLC ID", action: Some(msgs::ErrorAction::IgnoreError)});
+							// Return the new channel monitor in a last-ditch effort to hit the
+							// chain and claim the funds
+							return Ok((None, Some(self.channel_monitor.clone())));
 						}
 					},
 					_ => {}
@@ -1215,8 +1218,9 @@ impl Channel {
 		}
 	}
 
-	/// May return an IgnoreError, but should not, and will always return Ok(_) when
-	/// debug_assertions are turned on
+	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
+	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
+	/// Ok(_) if debug assertions are turned on and preconditions are met.
 	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
