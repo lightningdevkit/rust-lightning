@@ -264,7 +264,7 @@ pub(super) struct Channel {
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
 	monitor_pending_order: Option<RAACommitmentOrder>,
-	monitor_pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>,
+	monitor_pending_forwards: Vec<(PendingForwardHTLCInfo, u64, u32)>,
 	monitor_pending_failures: Vec<(HTLCSource, [u8; 32], HTLCFailReason)>,
 
 	// pending_update_fee is filled when sending and receiving update_fee
@@ -1854,7 +1854,7 @@ impl Channel {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitor), HandleError> {
+	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64, u32)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitor), HandleError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(HandleError{err: "Got revoke/ACK message when channel was not in an operational state", action: None});
 		}
@@ -1942,7 +1942,7 @@ impl Channel {
 							}
 						},
 						PendingHTLCStatus::Forward(forward_info) => {
-							to_forward_infos.push((forward_info, htlc.htlc_id));
+							to_forward_infos.push((forward_info, htlc.htlc_id, htlc.cltv_expiry));
 							htlc.state = InboundHTLCState::Committed;
 						}
 					}
@@ -2152,7 +2152,7 @@ impl Channel {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>) {
+	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64, u32)>, Vec<(HTLCSource, [u8; 32], HTLCFailReason)>) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
@@ -3489,9 +3489,10 @@ impl Writeable for Channel {
 		}
 
 		(self.monitor_pending_forwards.len() as u64).write(writer)?;
-		for &(ref pending_forward, ref htlc_id) in self.monitor_pending_forwards.iter() {
+		for &(ref pending_forward, ref htlc_id, ref cltv_expiry) in self.monitor_pending_forwards.iter() {
 			pending_forward.write(writer)?;
 			htlc_id.write(writer)?;
+			cltv_expiry.write(writer)?;
 		}
 
 		(self.monitor_pending_failures.len() as u64).write(writer)?;
@@ -3670,7 +3671,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
 		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..monitor_pending_forwards_count {
-			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?));
+			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?));
 		}
 
 		let monitor_pending_failures_count: u64 = Readable::read(reader)?;

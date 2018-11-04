@@ -96,6 +96,8 @@ mod channel_held_info {
 		pub(super) short_channel_id: u64,
 		pub(super) htlc_id: u64,
 		pub(super) incoming_packet_shared_secret: [u8; 32],
+		/// Only used to track expiry of claimable_htlcs and fail them backwards
+		pub(super) cltv_expiry: u32,
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
@@ -240,6 +242,7 @@ const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u32 = 50;
 struct HTLCForwardInfo {
 	prev_short_channel_id: u64,
 	prev_htlc_id: u64,
+	prev_cltv_expiry: u32,
 	forward_info: PendingForwardHTLCInfo,
 }
 
@@ -1326,11 +1329,12 @@ impl ChannelManager {
 						Some(chan_id) => chan_id.clone(),
 						None => {
 							failed_forwards.reserve(pending_forwards.len());
-							for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
+							for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info, prev_cltv_expiry } in pending_forwards.drain(..) {
 								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
 									htlc_id: prev_htlc_id,
 									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+									cltv_expiry: prev_cltv_expiry,
 								});
 								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
 							}
@@ -1340,11 +1344,12 @@ impl ChannelManager {
 					let forward_chan = &mut channel_state.by_id.get_mut(&forward_chan_id).unwrap();
 
 					let mut add_htlc_msgs = Vec::new();
-					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
+					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, prev_cltv_expiry, forward_info } in pending_forwards.drain(..) {
 						let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 							short_channel_id: prev_short_channel_id,
 							htlc_id: prev_htlc_id,
 							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+							cltv_expiry: prev_cltv_expiry,
 						});
 						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
 							Err(_e) => {
@@ -1398,11 +1403,12 @@ impl ChannelManager {
 						});
 					}
 				} else {
-					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
+					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, prev_cltv_expiry, forward_info } in pending_forwards.drain(..) {
 						let prev_hop_data = HTLCPreviousHopData {
 							short_channel_id: prev_short_channel_id,
 							htlc_id: prev_htlc_id,
 							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+							cltv_expiry: prev_cltv_expiry,
 						};
 						match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
 							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
@@ -1471,7 +1477,7 @@ impl ChannelManager {
 					panic!("should have onion error packet here");
 				}
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, .. }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
 						let packet = ChannelManager::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
@@ -2248,7 +2254,7 @@ impl ChannelManager {
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingForwardHTLCInfo, u64)>)]) {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingForwardHTLCInfo, u64, u32)>)]) {
 		for &mut (prev_short_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut forward_event = None;
 			if !pending_forwards.is_empty() {
@@ -2257,13 +2263,13 @@ impl ChannelManager {
 					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
 					channel_state.next_forward = forward_event.unwrap();
 				}
-				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
+				for (forward_info, prev_htlc_id, prev_cltv_expiry) in pending_forwards.drain(..) {
 					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, prev_cltv_expiry, forward_info });
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, prev_cltv_expiry, forward_info }));
 						}
 					}
 				}
@@ -2500,6 +2506,7 @@ impl ChainListener for ChannelManager {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
+		let mut timed_out_htlcs = Vec::new();
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_lock.borrow_parts();
@@ -2567,9 +2574,26 @@ impl ChainListener for ChannelManager {
 				}
 				true
 			});
+			channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
+				htlcs.retain(|htlc| {
+					if htlc.cltv_expiry <= height { // XXX: Or <?
+						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.clone()), payment_hash.clone()));
+						false
+					} else { true }
+				});
+				!htlcs.is_empty()
+			});
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
+		}
+		for (source, payment_hash) in timed_out_htlcs.drain(..) {
+			// Call it preimage_unknown as the issue, ultimately, is that the user failed to
+			// provide us a preimage within the cltv_expiry time window.
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, HTLCFailReason::Reason {
+				failure_code: 0x4000 | 15,
+				data: Vec::new()
+			});
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
@@ -2916,7 +2940,8 @@ impl<R: ::std::io::Read> Readable<R> for PendingHTLCStatus {
 impl_writeable!(HTLCPreviousHopData, 0, {
 	short_channel_id,
 	htlc_id,
-	incoming_packet_shared_secret
+	incoming_packet_shared_secret,
+	cltv_expiry
 });
 
 impl Writeable for HTLCSource {
@@ -2984,6 +3009,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCFailReason {
 impl_writeable!(HTLCForwardInfo, 0, {
 	prev_short_channel_id,
 	prev_htlc_id,
+	prev_cltv_expiry,
 	forward_info
 });
 
@@ -7261,6 +7287,44 @@ mod tests {
 		do_test_monitor_temporary_update_fail(3 | 16);
 		do_test_monitor_temporary_update_fail(2 | 8 | 16);
 		do_test_monitor_temporary_update_fail(3 | 8 | 16);
+	}
+
+	#[test]
+	fn test_htlc_timeout() {
+		// If the user fails to claim/fail an HTLC within the HTLC CLTV timeout we fail it for them
+		// to avoid our counterparty failing the channel.
+		let secp_ctx = Secp256k1::new();
+		let nodes = create_network(2);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 100000);
+
+		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_checked(&header, 101, &[], &[]);
+		nodes[1].chain_monitor.block_connected_checked(&header, 101, &[], &[]);
+		for i in 102..TEST_FINAL_CLTV + 100 + 1 {
+			header.prev_blockhash = header.bitcoin_hash();
+			nodes[0].chain_monitor.block_connected_checked(&header, i, &[], &[]);
+			nodes[1].chain_monitor.block_connected_checked(&header, i, &[], &[]);
+		}
+
+		check_added_monitors!(nodes[1], 1);
+		let htlc_timeout_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(htlc_timeout_updates.update_add_htlcs.is_empty());
+		assert_eq!(htlc_timeout_updates.update_fail_htlcs.len(), 1);
+		assert!(htlc_timeout_updates.update_fail_malformed_htlcs.is_empty());
+		assert!(htlc_timeout_updates.update_fee.is_none());
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::PaymentFailed { payment_hash, rejected_by_dest } => {
+				assert_eq!(payment_hash, our_payment_hash);
+				assert!(rejected_by_dest);
+			},
+			_ => panic!("Unexpected event"),
+		}
 	}
 
 	#[test]
