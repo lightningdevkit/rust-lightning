@@ -1510,23 +1510,55 @@ impl ChannelManager {
 	/// still-available channels.
 	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &[u8; 32], onion_error: HTLCFailReason) {
 		match source {
-			HTLCSource::OutboundRoute { .. } => {
+			HTLCSource::OutboundRoute { ref route, .. } => {
 				mem::drop(channel_state_lock);
-				if let &HTLCFailReason::ErrorPacket { ref err } = &onion_error {
-					let (channel_update, payment_retryable) = self.process_onion_failure(&source, err.data.clone());
-					if let Some(update) = channel_update {
+				match &onion_error {
+					&HTLCFailReason::ErrorPacket { ref err } => {
+#[cfg(test)]
+						let (channel_update, payment_retryable, onion_error_code) = self.process_onion_failure(&source, err.data.clone());
+#[cfg(not(test))]
+						let (channel_update, payment_retryable, _) = self.process_onion_failure(&source, err.data.clone());
+						if let Some(update) = channel_update {
+							self.channel_state.lock().unwrap().pending_msg_events.push(
+								events::MessageSendEvent::PaymentFailureNetworkUpdate {
+									update,
+								}
+							);
+						}
+						self.pending_events.lock().unwrap().push(
+							events::Event::PaymentFailed {
+								payment_hash: payment_hash.clone(),
+								rejected_by_dest: !payment_retryable,
+#[cfg(test)]
+								error_code: onion_error_code
+							}
+						);
+					},
+					&HTLCFailReason::Reason {
+#[cfg(test)]
+						ref failure_code,
+#[cfg(not(test))]
+						failure_code:_,
+						data:_ } => {
+						// we get a fail_malformed_htlc from the first hop
+						// TODO: not bother trying parsing onion for now
 						self.channel_state.lock().unwrap().pending_msg_events.push(
 							events::MessageSendEvent::PaymentFailureNetworkUpdate {
-								update,
+								update: msgs::HTLCFailChannelUpdate::ChannelClosed {
+									short_channel_id: route.hops[0].short_channel_id,
+									is_permanent: true,
+								}
+							}
+						);
+						self.pending_events.lock().unwrap().push(
+							events::Event::PaymentFailed {
+								payment_hash: payment_hash.clone(),
+								rejected_by_dest: route.hops.len() == 1,
+#[cfg(test)]
+								error_code: Some(*failure_code),
 							}
 						);
 					}
-					self.pending_events.lock().unwrap().push(events::Event::PaymentFailed {
-						payment_hash: payment_hash.clone(),
-						rejected_by_dest: !payment_retryable,
-					});
-				} else {
-					panic!("should have onion error packet here");
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
