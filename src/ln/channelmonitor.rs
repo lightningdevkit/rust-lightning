@@ -552,6 +552,15 @@ impl ChannelMonitor {
 		if our_min_secret > other_min_secret {
 			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap())?;
 		}
+		if let Some(ref local_tx) = self.current_local_signed_commitment_tx {
+			if let Some(ref other_local_tx) = other.current_local_signed_commitment_tx {
+				let our_commitment_number = 0xffffffffffff - ((((local_tx.tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+				let other_commitment_number = 0xffffffffffff - ((((other_local_tx.tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (other_local_tx.tx.lock_time as u64 & 0xffffff)) ^ other.commitment_transaction_number_obscure_factor);
+				if our_commitment_number >= other_commitment_number {
+					self.key_storage = other.key_storage;
+				}
+			}
+		}
 		// TODO: We should use current_remote_commitment_number and the commitment number out of
 		// local transactions to decide how to merge
 		if our_min_secret >= other_min_secret {
@@ -567,6 +576,7 @@ impl ChannelMonitor {
 			}
 			self.payment_preimages = other.payment_preimages;
 		}
+
 		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
 		Ok(())
 	}
