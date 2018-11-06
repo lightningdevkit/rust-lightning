@@ -7908,4 +7908,75 @@ mod tests {
 		let spend_tx = check_static_output!(events, nodes, 1, 2, 1, 0);
 		check_spends!(spend_tx, node_txn[3].clone());
 	}
+
+	#[test]
+	fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
+		let local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(local_txn[0].input.len(), 1);
+		check_spends!(local_txn[0], chan_1.3.clone());
+
+		// Give B knowledge of preimage to be able to generate a local HTLC-Success Tx
+		nodes[1].node.claim_funds(payment_preimage);
+		check_added_monitors!(nodes[1], 1);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![local_txn[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 138);
+		check_spends!(node_txn[0], local_txn[0].clone());
+
+		// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
+		let spend_txn = check_dynamic_output_p2wsh!(nodes[1]);
+		assert_eq!(spend_txn.len(), 1);
+		check_spends!(spend_txn[0], node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
+		let local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(local_txn[0].input.len(), 1);
+		check_spends!(local_txn[0], chan_1.3.clone());
+
+		// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![local_txn[0].clone()] }, 200);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 133);
+		check_spends!(node_txn[0], local_txn[0].clone());
+
+		// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
+		let spend_txn = check_dynamic_output_p2wsh!(nodes[0]);
+		assert_eq!(spend_txn.len(), 4);
+		assert_eq!(spend_txn[0], spend_txn[2]);
+		assert_eq!(spend_txn[1], spend_txn[3]);
+		check_spends!(spend_txn[0], local_txn[0].clone());
+		check_spends!(spend_txn[1], node_txn[0].clone());
+	}
 }
