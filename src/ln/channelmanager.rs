@@ -1124,13 +1124,16 @@ impl ChannelManager {
 				}
 				{
 					let mut res = Vec::with_capacity(8 + 128);
-					if code == 0x1000 | 11 || code == 0x1000 | 12 {
-						res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
-					}
-					else if code == 0x1000 | 13 {
-						res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
-					}
 					if let Some(chan_update) = chan_update {
+						if code == 0x1000 | 11 || code == 0x1000 | 12 {
+							res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
+						}
+						else if code == 0x1000 | 13 {
+							res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+						}
+						else if code == 0x1000 | 20 {
+							res.extend_from_slice(&byte_utils::be16_to_array(chan_update.contents.flags));
+						}
 						res.extend_from_slice(&chan_update.encode_with_len()[..]);
 					}
 					return_err!(err, code, &res[..]);
