@@ -1490,6 +1490,12 @@ impl ChannelManager {
 		if let Some(mut sources) = removed_source {
 			for htlc_with_hash in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
+				log_info!(self, "User rejected the incoming HTLC: {}", {
+					match reason {
+						PaymentFailReason::PreimageUnknown => "Preimage is unknown",
+						PaymentFailReason::AmountMismatch => "Amount mismatch",
+					}
+				});
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_hash, HTLCFailReason::Reason { failure_code: if reason == PaymentFailReason::PreimageUnknown {0x4000 | 15} else {0x4000 | 16}, data: Vec::new() });
 			}
 			true
