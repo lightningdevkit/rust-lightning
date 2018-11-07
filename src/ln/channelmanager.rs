@@ -3672,7 +3672,7 @@ mod tests {
 		}
 	}
 
-	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
+	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 		let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 		let (tx_a, tx_b);
@@ -3735,7 +3735,7 @@ mod tests {
 		assert_eq!(tx_a, tx_b);
 		check_spends!(tx_a, funding_tx);
 
-		(as_update, bs_update)
+		(as_update, bs_update, tx_a)
 	}
 
 	struct SendEvent {
@@ -7978,5 +7978,26 @@ mod tests {
 		assert_eq!(spend_txn[1], spend_txn[3]);
 		check_spends!(spend_txn[0], local_txn[0].clone());
 		check_spends!(spend_txn[1], node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_static_output_closing_tx() {
+		let nodes = create_network(2);
+
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+		let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
+		let events = nodes[0].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		let spend_tx = check_static_output!(events, nodes, 0, 0, 2, 0);
+		check_spends!(spend_tx, closing_tx.clone());
+
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
+		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		let spend_tx = check_static_output!(events, nodes, 0, 0, 2, 1);
+		check_spends!(spend_tx, closing_tx);
 	}
 }
