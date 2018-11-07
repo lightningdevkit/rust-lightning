@@ -2143,7 +2143,7 @@ impl ChannelManager {
 							let error_code = byte_utils::slice_to_be16(&err_packet.failuremsg[0..2]);
 							error_code_ret = Some(error_code);
 
-							// eiter from intermediate or final node
+							// either from intermediate or final node
 							if error_code&0xff == 1 || error_code&0xff == 2 || error_code&0xff == 3 {
 								match error_code {
 									_c if _c == PERM|1 => onion_failure_log!("invalid_realm", error_code),
@@ -2266,7 +2266,7 @@ impl ChannelManager {
 													},
 													14 => { // expiry_too_soon
 														onion_failure_log!("expiry_too_soon", error_code);
-														// alwayws valid?
+														// always valid?
 														false
 													},
 													20 => {
@@ -2301,7 +2301,6 @@ impl ChannelManager {
 					}
 				}
 			}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-			//res.unwrap_or((None, true))
 			let (channel_update, payment_retryable) = res.expect("should have been set!");
 			(channel_update, payment_retryable, error_code_ret)
 		} else {
