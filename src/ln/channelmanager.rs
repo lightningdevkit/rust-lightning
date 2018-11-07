@@ -132,7 +132,7 @@ pub struct PaymentHash(pub [u8;32]);
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentPreimage(pub [u8;32]);
 
-type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>);
+type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>, bool);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
@@ -188,6 +188,15 @@ impl MsgHandleErrInternal {
 					action: Some(msgs::ErrorAction::IgnoreError),
 				},
 				ChannelError::Close(msg) => HandleError {
+					err: msg,
+					action: Some(msgs::ErrorAction::SendErrorMessage {
+						msg: msgs::ErrorMessage {
+							channel_id,
+							data: msg.to_string()
+						},
+					}),
+				},
+				ChannelError::CloseNoPublish(msg) => HandleError {
 					err: msg,
 					action: Some(msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
@@ -415,6 +424,14 @@ macro_rules! break_chan_entry {
 				}
 				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
+			Err(ChannelError::CloseNoPublish(msg)) => {
+				log_trace!($self, "Closing channel {} due to Close-No_publish_required error: {}", log_bytes!($entry.key()[..]), msg);
+				let (channel_id, mut chan) = $entry.remove_entry();
+				if let Some(short_id) = chan.get_short_channel_id() {
+					$channel_state.short_to_id.remove(&short_id);
+				}
+				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+			},
 		}
 	}
 }
@@ -428,6 +445,13 @@ macro_rules! try_chan_entry {
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
+				let (channel_id, mut chan) = $entry.remove_entry();
+				if let Some(short_id) = chan.get_short_channel_id() {
+					$channel_state.short_to_id.remove(&short_id);
+				}
+				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+			},
+			Err(ChannelError::CloseNoPublish(msg)) => {
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -529,7 +553,6 @@ impl ChannelManager {
 
 			pending_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
-
 			keys_manager,
 
 			logger,
@@ -551,12 +574,12 @@ impl ChannelManager {
 	///
 	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
 	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, local_feature_flags : &Option<msgs::LocalFeatures>) -> Result<(), APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: "channel_value must be at least 1000 satoshis" });
 		}
 
-		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), &self.default_configuration)?;
+		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), &self.default_configuration, local_feature_flags)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator);
 
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -666,19 +689,23 @@ impl ChannelManager {
 
 	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
-		let (local_txn, mut failed_htlcs) = shutdown_res;
+		let (local_txn, mut failed_htlcs, claim_from_chain) = shutdown_res;
 		log_trace!(self, "Finishing force-closure of channel with {} transactions to broadcast and {} HTLCs to fail", local_txn.len(), failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
-		for tx in local_txn {
-			self.tx_broadcaster.broadcast_transaction(&tx);
-		}
+		if claim_from_chain {
+			for tx in local_txn {
+				self.tx_broadcaster.broadcast_transaction(&tx);
+			}
+		};
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
 	/// the chain and rejecting new HTLCs on the given channel.
-	pub fn force_close_channel(&self, channel_id: &[u8; 32]) {
+	/// delay_tx_broadcast parameter is there to stop the immediate broadcast of the channel TX. This is delayed by one week.
+	/// Look in bolt spec under data loss protect.
+	pub fn force_close_channel(&self, channel_id: &[u8; 32], delay_tx_broadcast : bool) {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		let mut chan = {
@@ -694,7 +721,18 @@ impl ChannelManager {
 			}
 		};
 		log_trace!(self, "Force-closing channel {}", log_bytes!(channel_id[..]));
-		self.finish_force_close_channel(chan.force_shutdown());
+		let mut shutdown_result = chan.force_shutdown();
+		if delay_tx_broadcast{
+			shutdown_result.2 = false;
+			self.finish_force_close_channel(shutdown_result);
+			let mut chan_monitor = chan.get_channel_monitor();
+			let broadcast_height = (self.latest_block_height.load(Ordering::Relaxed))*6*24*7; //6 blocks per hour, 24 hours in a day, 7 days in a week = 1 week later
+			chan_monitor.broadcast_transaction_at_height(broadcast_height as u32);
+			self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor);
+		} else
+		{
+			self.finish_force_close_channel(shutdown_result);
+		}
 		if let Ok(update) = self.get_channel_update(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -707,7 +745,7 @@ impl ChannelManager {
 	/// for each to the chain and rejecting new HTLCs on each.
 	pub fn force_close_all_channels(&self) {
 		for chan in self.list_channels() {
-			self.force_close_channel(&chan.channel_id);
+			self.force_close_channel(&chan.channel_id, false);
 		}
 	}
 
@@ -1609,12 +1647,12 @@ impl ChannelManager {
 		}
 	}
 
-	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
+	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel, local_feature_flags : &Option<msgs::LocalFeatures>) -> Result<(), MsgHandleErrInternal> {
 		if msg.chain_hash != self.genesis_hash {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), msg, 0, Arc::clone(&self.logger), &self.default_configuration)
+		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), msg, 0, Arc::clone(&self.logger), &self.default_configuration, local_feature_flags)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
@@ -2427,9 +2465,9 @@ impl ChainListener for ChannelManager {
 
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel, local_feature_flags: &Option<msgs::LocalFeatures>) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_open_channel(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_open_channel(their_node_id, msg, local_feature_flags), their_node_id)
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
@@ -2598,11 +2636,11 @@ impl ChannelMessageHandler for ChannelManager {
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
 				if chan.remote_network_id == *their_node_id {
-					self.force_close_channel(&chan.channel_id);
+					self.force_close_channel(&chan.channel_id, false);
 				}
 			}
 		} else {
-			self.force_close_channel(&msg.channel_id);
+			self.force_close_channel(&msg.channel_id, false);
 		}
 	}
 }
@@ -2953,7 +2991,7 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 
 		for (ref funding_txo, ref monitor) in args.channel_monitors.iter() {
 			if !funding_txo_set.contains(funding_txo) {
-				closed_channels.push((monitor.get_latest_local_commitment_txn(), Vec::new()));
+				closed_channels.push((monitor.get_latest_local_commitment_txn(), Vec::new(), true));
 			}
 		}
 

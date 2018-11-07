@@ -72,6 +72,13 @@ impl LocalFeatures {
 	pub(crate) fn requires_data_loss_protect(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & 1) != 0
 	}
+	pub(crate) fn set_supports_data_loss_protect(&mut self) {
+		if self.flags.len() == 0 {
+			self.flags.resize(1, 3);
+		} else {
+			self.flags[0] |= 3;
+		}
+	}
 
 	pub(crate) fn initial_routing_sync(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
@@ -467,6 +474,11 @@ pub enum ErrorAction {
 		/// The message to send.
 		msg: ErrorMessage
 	},
+	///We encountered a state where we cannot recover from we should drop the channel without redeeming as we might loose all channel funds.
+	DropChannel {
+		/// The message to log.
+		msg: ErrorMessage
+	},
 }
 
 /// An Err type for failure to process messages.
@@ -525,7 +537,7 @@ pub enum HTLCFailChannelUpdate {
 pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<(), HandleError>;
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel,local_feature_flags: &Option<LocalFeatures>) -> Result<(), HandleError>;
 	/// Handle an incoming accept_channel message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
 	/// Handle an incoming funding_created message from the given peer.

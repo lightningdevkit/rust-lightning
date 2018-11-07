@@ -334,6 +334,8 @@ pub(super) struct Channel {
 
 	channel_monitor: ChannelMonitor,
 
+	local_feature_flags: Option<msgs::LocalFeatures>,
+
 	logger: Arc<Logger>,
 }
 
@@ -369,6 +371,7 @@ pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 pub(super) enum ChannelError {
 	Ignore(&'static str),
 	Close(&'static str),
+	CloseNoPublish(&'static str),
 }
 
 macro_rules! secp_check {
@@ -381,6 +384,15 @@ macro_rules! secp_check {
 }
 
 impl Channel {
+	// get functions
+	pub fn get_channel_monitor(&self) -> ChannelMonitor{
+		self.channel_monitor.clone()
+	}
+
+	pub fn get_channel_id(&self) -> [u8; 32] {
+		self.channel_id
+	}
+
 	// Convert constants + channel value to limits:
 	fn get_our_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
 		channel_value_satoshis * 1000 / 10 //TODO
@@ -410,7 +422,7 @@ impl Channel {
 	}
 
 	// Constructors:
-	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, APIError> {
+	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig, local_feature_flags: &Option<msgs::LocalFeatures>) -> Result<Channel, APIError> {
 		let chan_keys = keys_provider.get_channel_keys(false);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -504,7 +516,7 @@ impl Channel {
 			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
-
+			local_feature_flags: local_feature_flags.clone(),
 			logger,
 		})
 	}
@@ -521,7 +533,7 @@ impl Channel {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig, local_feature_flags: &Option<msgs::LocalFeatures>) -> Result<Channel, ChannelError> {
 		let chan_keys = keys_provider.get_channel_keys(true);
 		let mut local_config = (*config).channel_options.clone();
 
@@ -694,6 +706,7 @@ impl Channel {
 			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
+			local_feature_flags: local_feature_flags.clone(),
 
 			logger,
 		};
@@ -2326,6 +2339,21 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish"));
 		}
 
+		//Check for dataloss fields and fail channel
+		if msg.next_remote_commitment_number > 0 {
+			if let Some(ref data_loss) = msg.data_loss_protect {
+				//check if provided signature is a valid signature from us
+				if chan_utils::build_commitment_secret(self.local_keys.commitment_seed, msg.next_remote_commitment_number-1) != data_loss.your_last_per_commitment_secret{
+					return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the  commitment height provided"));
+				}
+				//check if we have fallen beind
+				//We should not broadcast commitment transaction or continue
+				if msg.next_remote_commitment_number > self.cur_local_commitment_transaction_number{
+					return Err(ChannelError::CloseNoPublish("We have fallen behind and we cannot catch up, need to close channel but not publish commitment"));
+				}
+			}
+		}
+
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
@@ -2407,6 +2435,7 @@ impl Channel {
 				// now!
 				match self.free_holding_cell_htlcs() {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
+					Err(ChannelError::CloseNoPublish(msg)) => return Err(ChannelError::CloseNoPublish(msg)),
 					Err(ChannelError::Ignore(_)) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order, shutdown_msg)),
 					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg)),
@@ -3086,6 +3115,19 @@ impl Channel {
 	pub fn get_channel_reestablish(&self) -> msgs::ChannelReestablish {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
 		assert_ne!(self.cur_remote_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
+		let data_loss_protect = if let Some(ref local_features) = self.local_feature_flags{
+			if local_features.supports_data_loss_protect() && self.their_cur_commitment_point.is_some() && self.channel_monitor.get_secret(self.channel_monitor.get_min_seen_secret()).is_some(){
+				let data_loss = msgs::DataLossProtect{
+					your_last_per_commitment_secret: self.channel_monitor.get_secret(self.channel_monitor.get_min_seen_secret()).unwrap(),
+					my_current_per_commitment_point: self.their_cur_commitment_point.unwrap(),
+				};
+				Some(data_loss)
+			} else {
+				None
+			}
+		} else{
+			None
+		};
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
 			// The protocol has two different commitment number concepts - the "commitment
@@ -3106,7 +3148,7 @@ impl Channel {
 			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
 			// overflow here.
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number - 1,
-			data_loss_protect: None,
+			data_loss_protect: data_loss_protect,
 		}
 	}
 
@@ -3381,7 +3423,8 @@ impl Channel {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>) {
+	/// the returning bool, is to indicate that it must write to channel
+	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>, bool) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
@@ -3406,7 +3449,7 @@ impl Channel {
 		self.channel_update_count += 1;
 		let mut res = Vec::new();
 		mem::swap(&mut res, &mut self.last_local_commitment_txn);
-		(res, dropped_outbound_htlcs)
+		(res, dropped_outbound_htlcs, true)
 	}
 }
 
@@ -3642,7 +3685,7 @@ impl Writeable for Channel {
 		self.their_node_id.write(writer)?;
 
 		write_option!(self.their_shutdown_scriptpubkey);
-
+		write_option!(self.local_feature_flags);
 		self.channel_monitor.write_for_disk(writer)?;
 		Ok(())
 	}
@@ -3816,6 +3859,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let their_node_id = Readable::read(reader)?;
 
 		let their_shutdown_scriptpubkey = read_option!();
+		let local_feature_flags = read_option!();
 		let (monitor_last_block, channel_monitor) = ReadableArgs::read(reader, logger.clone())?;
 		// We drop the ChannelMonitor's last block connected hash cause we don't actually bother
 		// doing full block connection operations on the internal CHannelMonitor copies
@@ -3895,7 +3939,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			their_shutdown_scriptpubkey,
 
 			channel_monitor,
-
+			local_feature_flags,
 			logger,
 		})
 	}
@@ -3987,7 +4031,7 @@ mod tests {
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap());
 		let mut config = UserConfig::new();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config, &None).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 

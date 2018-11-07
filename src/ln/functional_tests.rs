@@ -164,8 +164,8 @@ macro_rules! get_feerate {
 
 
 fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> Transaction {
-	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
-	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id())).unwrap();
+	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, &None).unwrap();
+	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()), &None).unwrap();
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id())).unwrap();
 
 	let chan_id = *node_a.network_chan_count.borrow();
@@ -3210,7 +3210,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
-	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
+	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id, false);
 	check_closed_broadcast!(nodes[0]);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -3265,7 +3265,7 @@ fn test_force_close_fail_back() {
 	// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
 	// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
 
-	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id);
+	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id, false);
 	check_closed_broadcast!(nodes[2]);
 	let tx = {
 		let mut node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -5269,7 +5269,7 @@ fn test_claim_sizeable_push_msat() {
 	let nodes = create_network(2);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
-	nodes[1].node.force_close_channel(&chan.2);
+	nodes[1].node.force_close_channel(&chan.2, false);
 	check_closed_broadcast!(nodes[1]);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 1);
@@ -5291,7 +5291,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	let nodes = create_network(2);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
-	nodes[0].node.force_close_channel(&chan.2);
+	nodes[0].node.force_close_channel(&chan.2, false);
 	check_closed_broadcast!(nodes[0]);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();

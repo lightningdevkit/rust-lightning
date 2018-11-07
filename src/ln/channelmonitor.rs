@@ -392,6 +392,11 @@ pub struct ChannelMonitor {
 	// the full block_connected).
 	pub(crate) last_block_hash: Sha256dHash,
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
+
+	//This is the block height blocks the finishing transactions from being claimed till the chain reaches the mentioned block height.
+	//If this is set to 0, it is not used at that moment.
+	blockheight_block : u32,
+
 	logger: Arc<Logger>,
 }
 
@@ -466,6 +471,7 @@ impl ChannelMonitor {
 
 			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
+			blockheight_block : 0,
 			logger,
 		}
 	}
@@ -950,6 +956,7 @@ impl ChannelMonitor {
 
 		self.last_block_hash.write(writer)?;
 		self.destination_script.write(writer)?;
+		writer.write_all(&byte_utils::be32_to_array(self.blockheight_block))?;
 
 		Ok(())
 	}
@@ -997,7 +1004,6 @@ impl ChannelMonitor {
 		}
 		min
 	}
-
 	pub(super) fn get_cur_remote_commitment_number(&self) -> u64 {
 		self.current_remote_commitment_number
 	}
@@ -1693,7 +1699,24 @@ impl ChannelMonitor {
 		}
 	}
 
+	///this is used by the channel manager to add transactions that should only be broadcasted at a much later height
+	pub fn broadcast_transaction_at_height(&mut self, broadcast_height: u32) {
+		self.blockheight_block = broadcast_height;
+	}
+
 	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
+		if self.blockheight_block >= height //we dont need to check for 0, because if blockheight_block > height, 0 will be too
+		{
+			let transactions = self.get_latest_local_commitment_txn();
+			let mut ref_transactions = Vec::new();
+			for trans in transactions.iter(){ref_transactions.push(trans)};
+			self.block_connected_logic(&ref_transactions[..], height, block_hash, broadcaster);
+			self.blockheight_block = 0;
+		};
+		self.block_connected_logic(txn_matched, height, block_hash, broadcaster)
+	}
+
+	fn block_connected_logic(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
@@ -2173,6 +2196,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 		let last_block_hash: Sha256dHash = Readable::read(reader)?;
 		let destination_script = Readable::read(reader)?;
+		let blockheight_block: u32 = Readable::read(reader)?;
 
 		Ok((last_block_hash.clone(), ChannelMonitor {
 			commitment_transaction_number_obscure_factor,
@@ -2199,6 +2223,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			destination_script,
 			last_block_hash,
 			secp_ctx,
+			blockheight_block,
 			logger,
 		}))
 	}
