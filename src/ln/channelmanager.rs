@@ -5747,6 +5747,42 @@ mod tests {
 			test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone());
 		}
 		get_announce_close_broadcast_events(&nodes, 0, 1);
+
+		// We test justice_tx build by A on B's revoked HTLC-Success tx
+		// Create some new channels:
+		let chan_6 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		// A pending HTLC which will be revoked:
+		let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+		// Get the will-be-revoked local txn from B
+		let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.iter().next().unwrap().1.last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn.len(), 1); // Only commitment tx
+		assert_eq!(revoked_local_txn[0].input.len(), 1);
+		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_6.3.txid());
+		assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to A are present
+		// Revoke the old state
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_4);
+		{
+			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+			{
+				let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+				assert_eq!(node_txn.len(), 3);
+				assert_eq!(node_txn.pop().unwrap(), node_txn[0]); // An outpoint registration will result in a 2nd block_connected
+				assert_eq!(node_txn[0].input.len(), 1); // We claim the received HTLC output
+
+				check_spends!(node_txn[0], revoked_local_txn[0].clone());
+				node_txn.swap_remove(0);
+			}
+			test_txn_broadcast(&nodes[0], &chan_6, None, HTLCType::NONE);
+
+			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+			let node_txn = test_txn_broadcast(&nodes[1], &chan_6, Some(revoked_local_txn[0].clone()), HTLCType::SUCCESS);
+			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
+			test_revoked_htlc_claim_txn_broadcast(&nodes[0], node_txn[1].clone());
+		}
+		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 		assert_eq!(nodes[1].node.list_channels().len(), 0);
 	}
