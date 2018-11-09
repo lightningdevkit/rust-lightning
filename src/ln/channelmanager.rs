@@ -5708,7 +5708,13 @@ mod tests {
 		get_announce_close_broadcast_events(&nodes, 3, 4);
 		assert_eq!(nodes[3].node.list_channels().len(), 0);
 		assert_eq!(nodes[4].node.list_channels().len(), 0);
+	}
 
+	#[test]
+	fn test_justice_tx() {
+		// Test justice txn built on revoked HTLC-Success tx, against both sides
+
+		let nodes = create_network(2);
 		// Create some new channels:
 		let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -5747,6 +5753,9 @@ mod tests {
 			test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone());
 		}
 		get_announce_close_broadcast_events(&nodes, 0, 1);
+
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+		assert_eq!(nodes[1].node.list_channels().len(), 0);
 
 		// We test justice_tx build by A on B's revoked HTLC-Success tx
 		// Create some new channels:
