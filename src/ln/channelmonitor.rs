@@ -1239,7 +1239,8 @@ impl ChannelMonitor {
 								outpoint: BitcoinOutPoint { txid: $father_tx.txid(), vout: $vout },
 								local_delayedkey,
 								witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
-								to_self_delay: self.our_to_self_delay
+								to_self_delay: self.our_to_self_delay,
+								output: $father_tx.output[$vout as usize].clone(),
 							});
 						}
 					}

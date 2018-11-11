@@ -50,6 +50,8 @@ pub enum SpendableOutputDescriptor {
 		witness_script: Script,
 		/// nSequence input must commit to self_delay to satisfy script's OP_CSV
 		to_self_delay: u16,
+		/// The output which is referenced by the given outpoint
+		output: TxOut,
 	}
 }
 
