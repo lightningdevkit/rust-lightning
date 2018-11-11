@@ -15,10 +15,8 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,SigHashType,Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
-use bitcoin::network::serialize;
-use bitcoin::network::serialize::BitcoinHash;
-use bitcoin::network::encodable::{ConsensusDecodable, ConsensusEncodable};
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin::consensus::encode::{self, Decodable, Encodable};
+use bitcoin::util::hash::{BitcoinHash,Sha256dHash};
 use bitcoin::util::bip143;
 
 use crypto::digest::Digest;
@@ -731,9 +729,9 @@ impl ChannelMonitor {
 
 		macro_rules! serialize_local_tx {
 			($local_tx: expr) => {
-				if let Err(e) = $local_tx.tx.consensus_encode(&mut serialize::RawEncoder::new(WriterWriteAdaptor(writer))) {
+				if let Err(e) = $local_tx.tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
 					match e {
-						serialize::Error::Io(e) => return Err(e),
+						encode::Error::Io(e) => return Err(e),
 						_ => panic!("local tx must have been well-formed!"),
 					}
 				}
@@ -1579,10 +1577,10 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 		macro_rules! read_local_tx {
 			() => {
 				{
-					let tx = match Transaction::consensus_decode(&mut serialize::RawDecoder::new(reader.by_ref())) {
+					let tx = match Transaction::consensus_decode(reader.by_ref()) {
 						Ok(tx) => tx,
 						Err(e) => match e {
-							serialize::Error::Io(ioe) => return Err(DecodeError::Io(ioe)),
+							encode::Error::Io(ioe) => return Err(DecodeError::Io(ioe)),
 							_ => return Err(DecodeError::InvalidValue),
 						},
 					};

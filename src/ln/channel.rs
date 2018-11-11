@@ -2,11 +2,9 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::hash::{Sha256dHash, Hash160};
+use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
 use bitcoin::util::bip143;
-use bitcoin::network;
-use bitcoin::network::serialize::{BitcoinHash, RawDecoder, RawEncoder};
-use bitcoin::network::encodable::{ConsensusEncodable, ConsensusDecodable};
+use bitcoin::consensus::encode::{self, Encodable, Decodable};
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Message,Signature};
@@ -3511,9 +3509,9 @@ impl Writeable for Channel {
 
 		(self.last_local_commitment_txn.len() as u64).write(writer)?;
 		for tx in self.last_local_commitment_txn.iter() {
-			if let Err(e) = tx.consensus_encode(&mut RawEncoder::new(WriterWriteAdaptor(writer))) {
+			if let Err(e) = tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
 				match e {
-					network::serialize::Error::Io(e) => return Err(e),
+					encode::Error::Io(e) => return Err(e),
 					_ => panic!("last_local_commitment_txn must have been well-formed!"),
 				}
 			}
@@ -3690,7 +3688,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let last_local_commitment_txn_count: u64 = Readable::read(reader)?;
 		let mut last_local_commitment_txn = Vec::with_capacity(cmp::min(last_local_commitment_txn_count as usize, OUR_MAX_HTLCS as usize*2 + 1));
 		for _ in 0..last_local_commitment_txn_count {
-			last_local_commitment_txn.push(match Transaction::consensus_decode(&mut RawDecoder::new(reader.by_ref())) {
+			last_local_commitment_txn.push(match Transaction::consensus_decode(reader.by_ref()) {
 				Ok(tx) => tx,
 				Err(_) => return Err(DecodeError::InvalidValue),
 			});
@@ -3818,7 +3816,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 mod tests {
 	use bitcoin::util::hash::{Sha256dHash, Hash160};
 	use bitcoin::util::bip143;
-	use bitcoin::network::serialize::serialize;
+	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::transaction::Transaction;
 	use bitcoin::blockdata::opcodes;
@@ -3940,7 +3938,7 @@ mod tests {
 
 				chan.sign_commitment_transaction(&mut unsigned_tx.0, &their_signature);
 
-				assert_eq!(serialize(&unsigned_tx.0).unwrap()[..],
+				assert_eq!(serialize(&unsigned_tx.0)[..],
 						hex::decode($tx_hex).unwrap()[..]);
 			};
 		}
@@ -3973,7 +3971,7 @@ mod tests {
 				}
 
 				chan.sign_htlc_transaction(&mut htlc_tx, &remote_signature, &preimage, &htlc, &keys).unwrap();
-				assert_eq!(serialize(&htlc_tx).unwrap()[..],
+				assert_eq!(serialize(&htlc_tx)[..],
 						hex::decode($tx_hex).unwrap()[..]);
 			};
 		}

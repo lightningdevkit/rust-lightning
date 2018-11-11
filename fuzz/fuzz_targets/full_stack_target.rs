@@ -7,9 +7,9 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
+use bitcoin::consensus::encode::{deserialize, serialize};
 use bitcoin::network::constants::Network;
-use bitcoin::network::serialize::{deserialize, serialize, BitcoinHash};
-use bitcoin::util::hash::{Sha256dHash, Hash160};
+use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
 
 use crypto::digest::Digest;
 
@@ -168,7 +168,7 @@ impl<'a> MoneyLossDetector<'a> {
 		let mut txn = Vec::with_capacity(all_txn.len());
 		let mut txn_idxs = Vec::with_capacity(all_txn.len());
 		for (idx, tx) in all_txn.iter().enumerate() {
-			let txid = Sha256dHash::from_data(&serialize(tx).unwrap()[..]);
+			let txid = tx.txid();
 			match self.txids_confirmed.entry(txid) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(self.height);
@@ -432,7 +432,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 							value: funding_generation.1, script_pubkey: funding_generation.2,
 						}] };
 					let funding_output = 'search_loop: loop {
-						let funding_txid = Sha256dHash::from_data(&serialize(&tx).unwrap()[..]);
+						let funding_txid = tx.txid();
 						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
 							let outpoint = OutPoint::new(funding_txid, 0);
 							for chan in channelmanager.list_channels() {

@@ -12,8 +12,7 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
-use bitcoin::network::serialize::BitcoinHash;
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
 
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::{Secp256k1,Message};
@@ -3224,13 +3223,11 @@ mod tests {
 	use util::ser::{Writeable, Writer, ReadableArgs};
 	use util::config::UserConfig;
 
-	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
-	use bitcoin::network::serialize::serialize;
-	use bitcoin::network::serialize::BitcoinHash;
 
 	use hex;
 
@@ -3520,7 +3517,7 @@ mod tests {
 				tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 					value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 				}]};
-				funding_output = OutPoint::new(Sha256dHash::from_data(&serialize(&tx).unwrap()[..]), 0);
+				funding_output = OutPoint::new(tx.txid(), 0);
 
 				node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
 				let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();

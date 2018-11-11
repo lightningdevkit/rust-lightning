@@ -18,7 +18,7 @@ honggfuzz_fuzz = ["honggfuzz"]
 [dependencies]
 afl = { version = "0.4", optional = true }
 lightning = { path = "..", features = ["fuzztarget"] }
-bitcoin = { version = "0.14", features = ["fuzztarget"] }
+bitcoin = { version = "0.15", features = ["fuzztarget"] }
 hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }
 rust-crypto = "0.2"
