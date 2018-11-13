@@ -2491,22 +2491,26 @@ impl Channel {
 
 	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), HandleError> {
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
-			return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", action: None});
+			//return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", action: None});
+			return Err(HandleError{err: "Remote end sent us a closing_signed before both sides provided a shutdown", action: Some(msgs::ErrorAction::DisconnectPeer{msg: Some(msgs::ErrorMessage{data: "Remote end sent us a closing_signed before both sides provided a shutdown".to_string(), channel_id: msg.channel_id})})});
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(HandleError{err: "Peer sent closing_signed when we needed a channel_reestablish", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Peer sent closing_signed when we needed a channel_reestablish".to_string(), channel_id: msg.channel_id}})});
 		}
 		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
-			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", action: None});
+			//return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", action: None});
+			return Err(HandleError{err: "Remote end sent us a closing_signed while there were still pending HTLCs", action: Some(msgs::ErrorAction::SendErrorMessage{msg: msgs::ErrorMessage{data: "Remote end sent us a closing_signed while there were still pending HTLCs".to_string(), channel_id: msg.channel_id}})});
 		}
 		if msg.fee_satoshis > 21000000 * 10000000 { //this is required to stop potential overflow in build_closing_transaction
-			return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee", action: None});
+			//return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee",  action: None});
+			return Err(HandleError{err: "Remote tried to send us a closing tx with > 21 million BTC fee",  action: Some(msgs::ErrorAction::DisconnectPeer{msg: Some(msgs::ErrorMessage{data: "Remote tried to send us a closing tx with > 21 million BTC fee".to_string(), channel_id: msg.channel_id})})});
 		}
 
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
 		if used_total_fee != msg.fee_satoshis {
-			return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", action: None});
+			//return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", action: None});
+			return Err(HandleError{err: "Remote sent us a closing_signed with a fee greater than the value they can claim", action: Some(msgs::ErrorAction::DisconnectPeer{msg: Some(msgs::ErrorMessage{data: "Remote sent us a closing_signed with a fee greater than the value they can claim".to_string(), channel_id: msg.channel_id})})});
 		}
 		let mut sighash = Message::from_slice(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]).unwrap();
 
@@ -2551,7 +2555,8 @@ impl Channel {
 			if proposed_sat_per_kw > our_max_feerate {
 				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
 					if our_max_feerate <= last_feerate {
-						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", action: None});
+						//return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", action: None});
+						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate", action: Some(msgs::ErrorAction::DisconnectPeer{msg: Some(msgs::ErrorMessage{data: "Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate".to_string(), channel_id: msg.channel_id})})});
 					}
 				}
 				propose_new_feerate!(our_max_feerate);
@@ -2561,7 +2566,8 @@ impl Channel {
 			if proposed_sat_per_kw < our_min_feerate {
 				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
 					if our_min_feerate >= last_feerate {
-						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", action: None});
+						//return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", action: None});
+						return Err(HandleError{err: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate", action: Some(msgs::ErrorAction::DisconnectPeer{msg: Some(msgs::ErrorMessage{data: "Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate".to_string(), channel_id: msg.channel_id})})});
 					}
 				}
 				propose_new_feerate!(our_min_feerate);
