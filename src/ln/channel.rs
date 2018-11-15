@@ -1894,7 +1894,8 @@ impl Channel {
 				return Err(HandleError{err: "Got a revoke commitment secret which didn't correspond to their current pubkey", action: None});
 			}
 		}
-		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)?;
+		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)
+			.map_err(|e| HandleError{err: e.0, action: None})?;
 		self.channel_monitor.provide_their_next_revocation_point(Some((self.cur_remote_commitment_transaction_number - 1, msg.next_per_commitment_point)));
 
 		// Update state now that we've passed all the can-fail calls...
