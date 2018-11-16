@@ -6209,7 +6209,7 @@ mod tests {
 
 	/// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
 	/// for claims/fails they are separated out.
-	fn reconnect_nodes(node_a: &Node, node_b: &Node, pre_all_htlcs: bool, pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool)) {
+	fn reconnect_nodes(node_a: &Node, node_b: &Node, send_funding_locked: (bool, bool), pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool)) {
 		node_a.node.peer_connected(&node_b.node.get_our_node_id());
 		let reestablish_1 = get_chan_reestablish_msgs!(node_a, node_b);
 		node_b.node.peer_connected(&node_a.node.get_our_node_id());
@@ -6242,7 +6242,7 @@ mod tests {
 		        (pending_htlc_adds.1 == 0 && pending_htlc_claims.1 == 0 && pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0));
 
 		for chan_msgs in resp_1.drain(..) {
-			if pre_all_htlcs {
+			if send_funding_locked.0 {
 				node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &chan_msgs.0.unwrap()).unwrap();
 				let announcement_event = node_a.node.get_and_clear_pending_msg_events();
 				if !announcement_event.is_empty() {
@@ -6299,7 +6299,7 @@ mod tests {
 		}
 
 		for chan_msgs in resp_2.drain(..) {
-			if pre_all_htlcs {
+			if send_funding_locked.1 {
 				node_b.node.handle_funding_locked(&node_a.node.get_our_node_id(), &chan_msgs.0.unwrap()).unwrap();
 				let announcement_event = node_b.node.get_and_clear_pending_msg_events();
 				if !announcement_event.is_empty() {
@@ -6363,7 +6363,7 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 		let payment_hash_2 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
@@ -6372,7 +6372,7 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
 		let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
@@ -6385,7 +6385,7 @@ mod tests {
 		claim_payment_along_route(&nodes[0], &vec!(&nodes[1], &nodes[2]), true, payment_preimage_3);
 		fail_payment_along_route(&nodes[0], &[&nodes[1], &nodes[2]], true, payment_hash_5);
 
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
 		{
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 2);
@@ -6466,19 +6466,19 @@ mod tests {
 		if messages_delivered < 3 {
 			// Even if the funding_locked messages get exchanged, as long as nothing further was
 			// received on either side, both sides will need to resend them.
-			reconnect_nodes(&nodes[0], &nodes[1], true, (0, 1), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 1), (0, 0), (0, 0), (0, 0), (false, false));
 		} else if messages_delivered == 3 {
 			// nodes[0] still wants its RAA + commitment_signed
-			reconnect_nodes(&nodes[0], &nodes[1], false, (-1, 0), (0, 0), (0, 0), (0, 0), (true, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (-1, 0), (0, 0), (0, 0), (0, 0), (true, false));
 		} else if messages_delivered == 4 {
 			// nodes[0] still wants its commitment_signed
-			reconnect_nodes(&nodes[0], &nodes[1], false, (-1, 0), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (-1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		} else if messages_delivered == 5 {
 			// nodes[1] still wants its final RAA
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, true));
 		} else if messages_delivered == 6 {
 			// Everything was delivered...
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		}
 
 		let events_1 = nodes[1].node.get_and_clear_pending_events();
@@ -6490,7 +6490,7 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
 		nodes[1].node.process_pending_htlc_forwards();
@@ -6564,7 +6564,7 @@ mod tests {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 		if messages_delivered < 2 {
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
 			//TODO: Deduplicate PaymentSent events, then enable this if:
 			//if messages_delivered < 1 {
 				let events_4 = nodes[0].node.get_and_clear_pending_events();
@@ -6578,21 +6578,21 @@ mod tests {
 			//}
 		} else if messages_delivered == 2 {
 			// nodes[0] still wants its RAA + commitment_signed
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, -1), (0, 0), (0, 0), (0, 0), (false, true));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (false, true));
 		} else if messages_delivered == 3 {
 			// nodes[0] still wants its commitment_signed
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, -1), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (false, false));
 		} else if messages_delivered == 4 {
 			// nodes[1] still wants its final RAA
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (true, false));
 		} else if messages_delivered == 5 {
 			// Everything was delivered...
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		}
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		// Channel should still work fine...
 		let payment_preimage_2 = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
@@ -6633,20 +6633,28 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
+		reconnect_nodes(&nodes[0], &nodes[1], (false, true), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
 		confirm_transaction(&nodes[1].chain_monitor, &tx, tx.version);
 		let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
-		assert_eq!(events_2.len(), 1);
+		assert_eq!(events_2.len(), 2);
 		match events_2[0] {
 			MessageSendEvent::SendFundingLocked { ref node_id, msg: _ } => {
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
 		}
+		match events_2[1] {
+			MessageSendEvent::SendAnnouncementSignatures { ref node_id, msg: _ } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
 
-		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		// TODO: We shouldn't need to manually pass list_usable_chanels here once we support
 		// rebroadcasting announcement_signatures upon reconnect.
@@ -6849,7 +6857,7 @@ mod tests {
 		if disconnect {
 			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-			reconnect_nodes(&nodes[0], &nodes[1], true, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		}
 
 		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
@@ -6890,7 +6898,7 @@ mod tests {
 		if disconnect {
 			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-			reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+			reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		}
 
 		// ...and make sure we can force-close a TemporaryFailure channel with a PermanentFailure
@@ -7450,7 +7458,7 @@ mod tests {
 		nodes[0].node = Arc::new(nodes_0_deserialized);
 		check_added_monitors!(nodes[0], 1);
 
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 		fail_payment(&nodes[0], &[&nodes[1]], our_payment_hash);
 		claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
@@ -7520,8 +7528,8 @@ mod tests {
 		nodes[0].node = Arc::new(nodes_0_deserialized);
 
 		// nodes[1] and nodes[2] have no lost state with nodes[0]...
-		reconnect_nodes(&nodes[0], &nodes[1], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-		reconnect_nodes(&nodes[0], &nodes[2], false, (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+		reconnect_nodes(&nodes[0], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		//... and we can even still claim the payment!
 		claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
 
