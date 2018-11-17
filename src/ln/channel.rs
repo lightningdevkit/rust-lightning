@@ -436,7 +436,7 @@ impl Channel {
 
 		let secp_ctx = Secp256k1::new();
 		let channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key, &chan_keys.delayed_payment_base_key,
-		                                          &chan_keys.htlc_base_key, &chan_keys.payment_base_key, BREAKDOWN_TIMEOUT,
+		                                          &chan_keys.htlc_base_key, &chan_keys.payment_base_key, &keys_provider.get_shutdown_pubkey(), BREAKDOWN_TIMEOUT,
 		                                          keys_provider.get_destination_script(), logger.clone());
 
 		Ok(Channel {
@@ -624,7 +624,7 @@ impl Channel {
 
 		let secp_ctx = Secp256k1::new();
 		let mut channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key, &chan_keys.delayed_payment_base_key,
-		                                              &chan_keys.htlc_base_key, &chan_keys.payment_base_key, BREAKDOWN_TIMEOUT,
+		                                              &chan_keys.htlc_base_key, &chan_keys.payment_base_key, &keys_provider.get_shutdown_pubkey(), BREAKDOWN_TIMEOUT,
 		                                              keys_provider.get_destination_script(), logger.clone());
 		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 		channel_monitor.provide_their_next_revocation_point(Some((INITIAL_COMMITMENT_NUMBER, msg.first_per_commitment_point)));
