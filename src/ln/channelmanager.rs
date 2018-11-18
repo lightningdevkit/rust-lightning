@@ -1942,10 +1942,20 @@ impl ChannelManager {
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
 					if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
+						let chan_update = self.get_channel_update(chan);
 						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
-							reason: ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &self.get_channel_update(chan).unwrap().encode_with_len()[..]),
+							reason: if let Ok(update) = chan_update {
+								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &update.encode_with_len()[..])
+							} else {
+								// This can only happen if the channel isn't in the fully-funded
+								// state yet, implying our counterparty is trying to route payments
+								// over the channel back to themselves (cause no one else should
+								// know the short_id is a lightning channel yet). We should have no
+								// problem just calling this unknown_next_peer
+								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x4000|10, &[])
+							},
 						}));
 					}
 				}
