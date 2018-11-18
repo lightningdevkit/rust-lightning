@@ -31,6 +31,10 @@ cc = "1.0"
 [workspace]
 members = ["."]
 
+[profile.release]
+lto = true
+codegen-units = 1
+
 [[bin]]
 name = "peer_crypt_target"
 path = "fuzz_targets/peer_crypt_target.rs"
