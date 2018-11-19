@@ -461,37 +461,11 @@ impl ChannelMonitor {
 		Ok(())
 	}
 
-	/// Tracks the next revocation point which may be required to claim HTLC outputs which we know
-	/// the preimage of in case the remote end force-closes using their latest state. When called at
-	/// channel opening revocation point is the CURRENT one used for first commitment tx. Needed in case of sizeable push_msat.
-	pub(super) fn provide_their_next_revocation_point(&mut self, their_next_revocation_point: Option<(u64, PublicKey)>) {
-		if let Some(new_revocation_point) = their_next_revocation_point {
-			match self.their_cur_revocation_points {
-				Some(old_points) => {
-					if old_points.0 == new_revocation_point.0 + 1 {
-						self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(new_revocation_point.1)));
-					} else if old_points.0 == new_revocation_point.0 + 2 {
-						if let Some(old_second_point) = old_points.2 {
-							self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(new_revocation_point.1)));
-						} else {
-							self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-						}
-					} else {
-						self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-					}
-				},
-				None => {
-					self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-				}
-			}
-		}
-	}
-
 	/// Informs this monitor of the latest remote (ie non-broadcastable) commitment transaction.
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64) {
+	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64, their_revocation_point: PublicKey) {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
@@ -501,6 +475,25 @@ impl ChannelMonitor {
 		}
 		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), htlc_outputs);
 		self.current_remote_commitment_number = commitment_number;
+		//TODO: Merge this into the other per-remote-transaction output storage stuff
+		match self.their_cur_revocation_points {
+			Some(old_points) => {
+				if old_points.0 == commitment_number + 1 {
+					self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(their_revocation_point)));
+				} else if old_points.0 == commitment_number + 2 {
+					if let Some(old_second_point) = old_points.2 {
+						self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(their_revocation_point)));
+					} else {
+						self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+					}
+				} else {
+					self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+				}
+			},
+			None => {
+				self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+			}
+		}
 	}
 
 	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
@@ -2161,10 +2154,10 @@ mod tests {
 		let logger = Arc::new(TestLogger::new());
 		let dummy_sig = Signature::from_der(&secp_ctx, &hex::decode("3045022100fa86fa9a36a8cd6a7bb8f06a541787d51371d067951a9461d5404de6b928782e02201c8b7c334c10aed8976a3a465be9a28abff4cb23acbf00022295b378ce1fa3cd").unwrap()[..]).unwrap();
 
+		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap());
 		macro_rules! dummy_keys {
 			() => {
 				{
-					let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap());
 					TxCreationKeys {
 						per_commitment_point: dummy_key.clone(),
 						revocation_key: dummy_key.clone(),
@@ -2233,10 +2226,10 @@ mod tests {
 		monitor.set_their_to_self_delay(10);
 
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655);
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654);
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653);
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key);
 		for &(ref preimage, ref hash) in preimages.iter() {
 			monitor.provide_payment_preimage(hash, preimage);
 		}
