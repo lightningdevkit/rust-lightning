@@ -4471,7 +4471,7 @@ mod tests {
 
 	#[test]
 	fn test_update_fee_that_funder_cannot_afford() {
-		let mut nodes = create_network(2);
+		let nodes = create_network(2);
 		let channel_value = 1888;
 		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000);
 		let channel_id = chan.2;
@@ -4506,7 +4506,7 @@ mod tests {
 
 		let update2_msg = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
-		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update2_msg.update_fee.unwrap());
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update2_msg.update_fee.unwrap()).unwrap();
 
 		//While producing the commitment_signed response after handling a received update_fee request the
 		//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
