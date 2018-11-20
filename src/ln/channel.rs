@@ -355,8 +355,9 @@ const UNCONF_THRESHOLD: u32 = 6;
 const BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 7; //TODO?
 /// The amount of time we're willing to wait to claim money back to us
 const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 14;
-const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
-const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+/// Exposing these two constants for use in test in ChannelMonitor
+pub const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
+pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
 /// Maximmum `funding_satoshis` value, according to the BOLT #2 specification
@@ -1663,7 +1664,9 @@ impl Channel {
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 
+		let mut update_fee = false;
 		let feerate_per_kw = if !self.channel_outbound && self.pending_update_fee.is_some() {
+			update_fee = true;
 			self.pending_update_fee.unwrap()
 		} else {
 			self.feerate_per_kw
@@ -1673,6 +1676,16 @@ impl Channel {
 		let local_commitment_txid = local_commitment_tx.0.txid();
 		let local_sighash = Message::from_slice(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]).unwrap();
 		secp_call!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid commitment tx signature from peer", self.channel_id());
+
+		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
+		if update_fee {
+			let num_htlcs = local_commitment_tx.1.len();
+			let total_fee: u64 = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+
+			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + self.their_channel_reserve_satoshis {
+				return Err(HandleError { err: "Funding remote cannot afford proposed new fee", action: Some(ErrorAction::DisconnectPeer { msg: None }) });
+			}
+		}
 
 		if msg.htlc_signatures.len() != local_commitment_tx.1.len() {
 			return Err(HandleError{err: "Got wrong number of HTLC signatures from remote", action: None});
@@ -1687,7 +1700,7 @@ impl Channel {
 			let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, htlc, true, &local_keys, feerate_per_kw);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
-			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx siganture from peer", self.channel_id());
+			secp_call!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx signature from peer", self.channel_id());
 			let htlc_sig = if htlc.offered {
 				let htlc_sig = self.sign_htlc_transaction(&mut htlc_tx, &msg.htlc_signatures[idx], &None, htlc, &local_keys)?;
 				new_local_commitment_txn.push(htlc_tx);
@@ -1715,6 +1728,7 @@ impl Channel {
 				}
 			}
 		}
+
 		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
 			// This is a response to our post-monitor-failed unfreeze messages, so we can clear the
 			// monitor_pending_order requirement as we won't re-send the monitor_pending messages.
@@ -2199,7 +2213,6 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish"));
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
-
 		self.pending_update_fee = Some(msg.feerate_per_kw as u64);
 		self.channel_update_count += 1;
 		Ok(())

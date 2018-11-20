@@ -3211,6 +3211,7 @@ mod tests {
 	use chain::chaininterface::{ChainListener, ChainWatchInterface};
 	use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 	use chain::keysinterface;
+	use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
 	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 	use ln::router::{Route, RouteHop, Router};
@@ -3502,6 +3503,17 @@ mod tests {
 			}
 		}
 	}
+
+	macro_rules! get_feerate {
+		($node: expr, $channel_id: expr) => {
+			{
+				let chan_lock = $node.node.channel_state.lock().unwrap();
+				let chan = chan_lock.by_id.get(&$channel_id).unwrap();
+				chan.get_feerate()
+			}
+		}
+	}
+
 
 	fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> Transaction {
 		node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
@@ -4136,14 +4148,6 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel_id = chan.2;
 
-		macro_rules! get_feerate {
-			($node: expr) => {{
-				let chan_lock = $node.node.channel_state.lock().unwrap();
-				let chan = chan_lock.by_id.get(&channel_id).unwrap();
-				chan.get_feerate()
-			}}
-		}
-
 		// balancing
 		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
@@ -4165,7 +4169,7 @@ mod tests {
 		// (6) RAA is delivered                  ->
 
 		// First nodes[0] generates an update_fee
-		nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0]) + 20).unwrap();
+		nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0], channel_id) + 20).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -4254,19 +4258,11 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel_id = chan.2;
 
-		macro_rules! get_feerate {
-			($node: expr) => {{
-				let chan_lock = $node.node.channel_state.lock().unwrap();
-				let chan = chan_lock.by_id.get(&channel_id).unwrap();
-				chan.get_feerate()
-			}}
-		}
-
 		// balancing
 		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
 		// First nodes[0] generates an update_fee
-		nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0]) + 20).unwrap();
+		nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0], channel_id) + 20).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -4312,14 +4308,6 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel_id = chan.2;
 
-		macro_rules! get_feerate {
-			($node: expr) => {{
-				let chan_lock = $node.node.channel_state.lock().unwrap();
-				let chan = chan_lock.by_id.get(&channel_id).unwrap();
-				chan.get_feerate()
-			}}
-		}
-
 		// A                                        B
 		// update_fee/commitment_signed          ->
 		//                                       .- send (1) RAA and (2) commitment_signed
@@ -4340,7 +4328,7 @@ mod tests {
 		// revoke_and_ack                        ->
 
 		// First nodes[0] generates an update_fee
-		let initial_feerate = get_feerate!(nodes[0]);
+		let initial_feerate = get_feerate!(nodes[0], channel_id);
 		nodes[0].node.update_fee(channel_id, initial_feerate + 20).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
@@ -4424,16 +4412,8 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel_id = chan.2;
 
-		macro_rules! get_feerate {
-			($node: expr) => {{
-				let chan_lock = $node.node.channel_state.lock().unwrap();
-				let chan = chan_lock.by_id.get(&channel_id).unwrap();
-				chan.get_feerate()
-			}}
-		}
-
-		let feerate = get_feerate!(nodes[0]);
-		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+		let feerate = get_feerate!(nodes[0], channel_id);
+		nodes[0].node.update_fee(channel_id, feerate+25).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -4465,23 +4445,68 @@ mod tests {
 	}
 
 	#[test]
+	fn test_update_fee_that_funder_cannot_afford() {
+		let mut nodes = create_network(2);
+		let channel_value = 1888;
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000);
+		let channel_id = chan.2;
+
+		let feerate = 260;
+		nodes[0].node.update_fee(channel_id, feerate).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let update_msg = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_msg.update_fee.unwrap()).unwrap();
+
+		commitment_signed_dance!(nodes[1], nodes[0], update_msg.commitment_signed, false);
+
+		//Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate of 260 set above.
+		//This value results in a fee that is exactly what the funder can afford (277 sat + 1000 sat channel reserve)
+		{
+			let chan_lock = nodes[1].node.channel_state.lock().unwrap();
+			let chan = chan_lock.by_id.get(&channel_id).unwrap();
+
+			//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs
+			let num_htlcs = chan.last_local_commitment_txn[0].output.len() - 2;
+			let total_fee: u64 = feerate * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+			let mut actual_fee = chan.last_local_commitment_txn[0].output.iter().fold(0, |acc, output| acc + output.value);
+			actual_fee = channel_value - actual_fee;
+			assert_eq!(total_fee, actual_fee);
+		} //drop the mutex
+
+		//Add 2 to the previous fee rate to the final fee increases by 1 (with no HTLCs the fee is essentially
+		//fee_rate*(724/1000) so the increment of 1*0.724 is rounded back down)
+		nodes[0].node.update_fee(channel_id, feerate+2).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let update2_msg = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update2_msg.update_fee.unwrap());
+
+		//While producing the commitment_signed response after handling a received update_fee request the
+		//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
+		//Should produce and error.
+		let err = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &update2_msg.commitment_signed).unwrap_err();
+
+		assert!(match err.err {
+			"Funding remote cannot afford proposed new fee" => true,
+			_ => false,
+		});
+
+		//clear the message we could not handle
+		nodes[1].node.get_and_clear_pending_msg_events();
+	}
+
+	#[test]
 	fn test_update_fee_with_fundee_update_add_htlc() {
 		let mut nodes = create_network(2);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel_id = chan.2;
 
-		macro_rules! get_feerate {
-			($node: expr) => {{
-				let chan_lock = $node.node.channel_state.lock().unwrap();
-				let chan = chan_lock.by_id.get(&channel_id).unwrap();
-				chan.get_feerate()
-			}}
-		}
-
 		// balancing
 		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
-		let feerate = get_feerate!(nodes[0]);
+		let feerate = get_feerate!(nodes[0], channel_id);
 		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
@@ -4579,14 +4604,6 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let channel_id = chan.2;
 
-		macro_rules! get_feerate {
-			($node: expr) => {{
-				let chan_lock = $node.node.channel_state.lock().unwrap();
-				let chan = chan_lock.by_id.get(&channel_id).unwrap();
-				chan.get_feerate()
-			}}
-		}
-
 		// A                                        B
 		// (1) update_fee/commitment_signed      ->
 		//                                       <- (2) revoke_and_ack
@@ -4602,7 +4619,7 @@ mod tests {
 		// revoke_and_ack                        ->
 
 		// Create and deliver (1)...
-		let feerate = get_feerate!(nodes[0]);
+		let feerate = get_feerate!(nodes[0], channel_id);
 		nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
@@ -4676,8 +4693,8 @@ mod tests {
 		check_added_monitors!(nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-		assert_eq!(get_feerate!(nodes[0]), feerate + 30);
-		assert_eq!(get_feerate!(nodes[1]), feerate + 30);
+		assert_eq!(get_feerate!(nodes[0], channel_id), feerate + 30);
+		assert_eq!(get_feerate!(nodes[1], channel_id), feerate + 30);
 		close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	}
 
