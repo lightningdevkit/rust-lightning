@@ -889,16 +889,18 @@ impl ChannelMonitor {
 		if commitment_number >= self.get_min_seen_secret() {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&self.secp_ctx, &secret));
-			let (revocation_pubkey, b_htlc_key) = match self.key_storage {
-				KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key, .. } => {
+			let (revocation_pubkey, b_htlc_key, local_payment_key) = match self.key_storage {
+				KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key, ref payment_base_key, .. } => {
 					let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 					(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &revocation_base_key))),
-					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &htlc_base_key))))
+					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &htlc_base_key))),
+					Some(ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &payment_base_key))))
 				},
 				KeyStorage::SigsMode { ref revocation_base_key, ref htlc_base_key, .. } => {
 					let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 					(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &revocation_base_key)),
-					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &htlc_base_key)))
+					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &htlc_base_key)),
+					None)
 				},
 			};
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key.unwrap()));
@@ -909,6 +911,13 @@ impl ChannelMonitor {
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
+
+			let local_payment_p2wpkh = if let Some(payment_key) = local_payment_key {
+				// Note that the Network here is ignored as we immediately drop the address for the
+				// script_pubkey version.
+				let payment_hash160 = Hash160::from_data(&PublicKey::from_secret_key(&self.secp_ctx, &payment_key).serialize());
+				Some(Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script())
+			} else { None };
 
 			let mut total_value = 0;
 			let mut values = Vec::new();
@@ -929,23 +938,12 @@ impl ChannelMonitor {
 					htlc_idxs.push(None);
 					values.push(outp.value);
 					total_value += outp.value;
-				} else if outp.script_pubkey.is_v0_p2wpkh() {
-					match self.key_storage {
-						KeyStorage::PrivMode { ref payment_base_key, .. } => {
-							let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-							if let Ok(local_key) = chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &payment_base_key) {
-								spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
-									outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 },
-									key: local_key,
-									output: outp.clone(),
-								});
-							}
-						}
-						KeyStorage::SigsMode { .. } => {
-							//TODO: we need to ensure an offline client will generate the event when it
-							// cames back online after only the watchtower saw the transaction
-						}
-					}
+				} else if Some(&outp.script_pubkey) == local_payment_p2wpkh.as_ref() {
+					spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+						outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 },
+						key: local_payment_key.unwrap(),
+						output: outp.clone(),
+					});
 				}
 			}
 
@@ -1083,7 +1081,6 @@ impl ChannelMonitor {
 						Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &their_htlc_base_key)),
 					};
 
-
 					for (idx, outp) in tx.output.iter().enumerate() {
 						if outp.script_pubkey.is_v0_p2wpkh() {
 							match self.key_storage {
@@ -1095,11 +1092,8 @@ impl ChannelMonitor {
 											output: outp.clone(),
 										});
 									}
-								}
-								KeyStorage::SigsMode { .. } => {
-									//TODO: we need to ensure an offline client will generate the event when it
-									// cames back online after only the watchtower saw the transaction
-								}
+								},
+								KeyStorage::SigsMode { .. } => {}
 							}
 							break; // Only to_remote ouput is claimable
 						}
