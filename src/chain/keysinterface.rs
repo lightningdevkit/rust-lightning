@@ -37,19 +37,34 @@ pub enum SpendableOutputDescriptor {
 		/// The output which is referenced by the given outpoint
 		output: TxOut,
 	},
-	/// Outpoint commits to a P2WSH, should be spend by the following witness :
+	/// Outpoint commits to a P2WSH
+	/// P2WSH should be spend by the following witness :
 	/// <local_delayedsig> 0 <witnessScript>
 	/// With input nSequence set to_self_delay.
-	/// Outputs from a HTLC-Success/Timeout tx
-	DynamicOutput {
+	/// Outputs from a HTLC-Success/Timeout tx/commitment tx
+	DynamicOutputP2WSH {
 		/// Outpoint spendable by user wallet
 		outpoint: OutPoint,
-		/// local_delayedkey = delayed_payment_basepoint_secret + SHA256(per_commitment_point || delayed_payment_basepoint)
-		local_delayedkey: SecretKey,
-		/// witness redeemScript encumbering output
+		/// local_delayedkey = delayed_payment_basepoint_secret + SHA256(per_commitment_point || delayed_payment_basepoint) OR
+		key: SecretKey,
+		/// witness redeemScript encumbering output.
 		witness_script: Script,
 		/// nSequence input must commit to self_delay to satisfy script's OP_CSV
 		to_self_delay: u16,
+		/// The output which is referenced by the given outpoint
+		output: TxOut,
+	},
+	/// Outpoint commits to a P2WPKH
+	/// P2WPKH should be spend by the following witness :
+	/// <local_sig> <local_pubkey>
+	/// Outputs to_remote from a commitment tx
+	DynamicOutputP2WPKH {
+		/// Outpoint spendable by user wallet
+		outpoint: OutPoint,
+		/// localkey = payment_basepoint_secret + SHA256(per_commitment_point || payment_basepoint
+		key: SecretKey,
+		/// The output which is reference by the given outpoint
+		output: TxOut,
 	}
 }
 

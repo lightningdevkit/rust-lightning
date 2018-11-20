@@ -14,9 +14,10 @@
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,SigHashType,Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
-use bitcoin::util::hash::{BitcoinHash,Sha256dHash};
+use bitcoin::util::hash::{Hash160, BitcoinHash,Sha256dHash};
 use bitcoin::util::bip143;
 
 use crypto::digest::Digest;
@@ -219,6 +220,8 @@ enum KeyStorage {
 		revocation_base_key: SecretKey,
 		htlc_base_key: SecretKey,
 		delayed_payment_base_key: SecretKey,
+		payment_base_key: SecretKey,
+		shutdown_pubkey: PublicKey,
 		prev_latest_per_commitment_point: Option<PublicKey>,
 		latest_per_commitment_point: Option<PublicKey>,
 	},
@@ -338,7 +341,7 @@ impl PartialEq for ChannelMonitor {
 }
 
 impl ChannelMonitor {
-	pub(super) fn new(revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<Logger>) -> ChannelMonitor {
+	pub(super) fn new(revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, payment_base_key: &SecretKey, shutdown_pubkey: &PublicKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<Logger>) -> ChannelMonitor {
 		ChannelMonitor {
 			funding_txo: None,
 			commitment_transaction_number_obscure_factor: 0,
@@ -347,6 +350,8 @@ impl ChannelMonitor {
 				revocation_base_key: revocation_base_key.clone(),
 				htlc_base_key: htlc_base_key.clone(),
 				delayed_payment_base_key: delayed_payment_base_key.clone(),
+				payment_base_key: payment_base_key.clone(),
+				shutdown_pubkey: shutdown_pubkey.clone(),
 				prev_latest_per_commitment_point: None,
 				latest_per_commitment_point: None,
 			},
@@ -400,12 +405,10 @@ impl ChannelMonitor {
 		res
 	}
 
-	/// Inserts a revocation secret into this channel monitor. Also optionally tracks the next
-	/// revocation point which may be required to claim HTLC outputs which we know the preimage of
-	/// in case the remote end force-closes using their latest state. Prunes old preimages if neither
+	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
 	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32], their_next_revocation_point: Option<(u64, PublicKey)>) -> Result<(), HandleError> {
+	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), HandleError> {
 		let pos = ChannelMonitor::place_secret(idx);
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
@@ -414,27 +417,6 @@ impl ChannelMonitor {
 			}
 		}
 		self.old_secrets[pos as usize] = (secret, idx);
-
-		if let Some(new_revocation_point) = their_next_revocation_point {
-			match self.their_cur_revocation_points {
-				Some(old_points) => {
-					if old_points.0 == new_revocation_point.0 + 1 {
-						self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(new_revocation_point.1)));
-					} else if old_points.0 == new_revocation_point.0 + 2 {
-						if let Some(old_second_point) = old_points.2 {
-							self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(new_revocation_point.1)));
-						} else {
-							self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-						}
-					} else {
-						self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-					}
-				},
-				None => {
-					self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
-				}
-			}
-		}
 
 		if !self.payment_preimages.is_empty() {
 			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
@@ -469,6 +451,32 @@ impl ChannelMonitor {
 		}
 
 		Ok(())
+	}
+
+	/// Tracks the next revocation point which may be required to claim HTLC outputs which we know
+	/// the preimage of in case the remote end force-closes using their latest state. When called at
+	/// channel opening revocation point is the CURRENT one used for first commitment tx. Needed in case of sizeable push_msat.
+	pub(super) fn provide_their_next_revocation_point(&mut self, their_next_revocation_point: Option<(u64, PublicKey)>) {
+		if let Some(new_revocation_point) = their_next_revocation_point {
+			match self.their_cur_revocation_points {
+				Some(old_points) => {
+					if old_points.0 == new_revocation_point.0 + 1 {
+						self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(new_revocation_point.1)));
+					} else if old_points.0 == new_revocation_point.0 + 2 {
+						if let Some(old_second_point) = old_points.2 {
+							self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(new_revocation_point.1)));
+						} else {
+							self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
+						}
+					} else {
+						self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
+					}
+				},
+				None => {
+					self.their_cur_revocation_points = Some((new_revocation_point.0, new_revocation_point.1, None));
+				}
+			}
+		}
 	}
 
 	/// Informs this monitor of the latest remote (ie non-broadcastable) commitment transaction.
@@ -507,11 +515,13 @@ impl ChannelMonitor {
 			feerate_per_kw,
 			htlc_outputs,
 		});
-		self.key_storage = if let KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, prev_latest_per_commitment_point: _, ref latest_per_commitment_point } = self.key_storage {
+		self.key_storage = if let KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref latest_per_commitment_point, .. } = self.key_storage {
 			KeyStorage::PrivMode {
 				revocation_base_key: *revocation_base_key,
 				htlc_base_key: *htlc_base_key,
 				delayed_payment_base_key: *delayed_payment_base_key,
+				payment_base_key: *payment_base_key,
+				shutdown_pubkey: *shutdown_pubkey,
 				prev_latest_per_commitment_point: *latest_per_commitment_point,
 				latest_per_commitment_point: Some(local_keys.per_commitment_point),
 			}
@@ -540,7 +550,16 @@ impl ChannelMonitor {
 		let other_min_secret = other.get_min_seen_secret();
 		let our_min_secret = self.get_min_seen_secret();
 		if our_min_secret > other_min_secret {
-			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap(), None)?;
+			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap())?;
+		}
+		if let Some(ref local_tx) = self.current_local_signed_commitment_tx {
+			if let Some(ref other_local_tx) = other.current_local_signed_commitment_tx {
+				let our_commitment_number = 0xffffffffffff - ((((local_tx.tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+				let other_commitment_number = 0xffffffffffff - ((((other_local_tx.tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (other_local_tx.tx.lock_time as u64 & 0xffffff)) ^ other.commitment_transaction_number_obscure_factor);
+				if our_commitment_number >= other_commitment_number {
+					self.key_storage = other.key_storage;
+				}
+			}
 		}
 		// TODO: We should use current_remote_commitment_number and the commitment number out of
 		// local transactions to decide how to merge
@@ -557,6 +576,7 @@ impl ChannelMonitor {
 			}
 			self.payment_preimages = other.payment_preimages;
 		}
+
 		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
 		Ok(())
 	}
@@ -637,11 +657,13 @@ impl ChannelMonitor {
 		U48(self.commitment_transaction_number_obscure_factor).write(writer)?;
 
 		match self.key_storage {
-			KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref prev_latest_per_commitment_point, ref latest_per_commitment_point } => {
+			KeyStorage::PrivMode { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point } => {
 				writer.write_all(&[0; 1])?;
 				writer.write_all(&revocation_base_key[..])?;
 				writer.write_all(&htlc_base_key[..])?;
 				writer.write_all(&delayed_payment_base_key[..])?;
+				writer.write_all(&payment_base_key[..])?;
+				writer.write_all(&shutdown_pubkey.serialize())?;
 				if let Some(ref prev_latest_per_commitment_point) = *prev_latest_per_commitment_point {
 					writer.write_all(&[1; 1])?;
 					writer.write_all(&prev_latest_per_commitment_point.serialize())?;
@@ -906,7 +928,23 @@ impl ChannelMonitor {
 					htlc_idxs.push(None);
 					values.push(outp.value);
 					total_value += outp.value;
-					break; // There can only be one of these
+				} else if outp.script_pubkey.is_v0_p2wpkh() {
+					match self.key_storage {
+						KeyStorage::PrivMode { ref payment_base_key, .. } => {
+							let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
+							if let Ok(local_key) = chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &payment_base_key) {
+								spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+									outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 },
+									key: local_key,
+									output: outp.clone(),
+								});
+							}
+						}
+						KeyStorage::SigsMode { .. } => {
+							//TODO: we need to ensure an offline client will generate the event when it
+							// cames back online after only the watchtower saw the transaction
+						}
+					}
 				}
 			}
 
@@ -1043,6 +1081,28 @@ impl ChannelMonitor {
 						None => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs),
 						Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &their_htlc_base_key)),
 					};
+
+
+					for (idx, outp) in tx.output.iter().enumerate() {
+						if outp.script_pubkey.is_v0_p2wpkh() {
+							match self.key_storage {
+								KeyStorage::PrivMode { ref payment_base_key, .. } => {
+									if let Ok(local_key) = chan_utils::derive_private_key(&self.secp_ctx, &revocation_point, &payment_base_key) {
+										spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+											outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 },
+											key: local_key,
+											output: outp.clone(),
+										});
+									}
+								}
+								KeyStorage::SigsMode { .. } => {
+									//TODO: we need to ensure an offline client will generate the event when it
+									// cames back online after only the watchtower saw the transaction
+								}
+							}
+							break; // Only to_remote ouput is claimable
+						}
+					}
 
 					let mut total_value = 0;
 					let mut values = Vec::new();
@@ -1230,6 +1290,34 @@ impl ChannelMonitor {
 		let mut res = Vec::with_capacity(local_tx.htlc_outputs.len());
 		let mut spendable_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
 
+		macro_rules! add_dynamic_output {
+			($father_tx: expr, $vout: expr) => {
+				if let Some(ref per_commitment_point) = *per_commitment_point {
+					if let Some(ref delayed_payment_base_key) = *delayed_payment_base_key {
+						if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, per_commitment_point, delayed_payment_base_key) {
+							spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WSH {
+								outpoint: BitcoinOutPoint { txid: $father_tx.txid(), vout: $vout },
+								key: local_delayedkey,
+								witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
+								to_self_delay: self.our_to_self_delay,
+								output: $father_tx.output[$vout as usize].clone(),
+							});
+						}
+					}
+				}
+			}
+		}
+
+
+		let redeemscript = chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.their_to_self_delay.unwrap(), &local_tx.delayed_payment_key);
+		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
+		for (idx, output) in local_tx.tx.output.iter().enumerate() {
+			if output.script_pubkey == revokeable_p2wsh {
+				add_dynamic_output!(local_tx.tx, idx as u32);
+				break;
+			}
+		}
+
 		for &(ref htlc, ref their_sig, ref our_sig) in local_tx.htlc_outputs.iter() {
 			if htlc.offered {
 				let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
@@ -1244,18 +1332,7 @@ impl ChannelMonitor {
 				htlc_timeout_tx.input[0].witness.push(Vec::new());
 				htlc_timeout_tx.input[0].witness.push(chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key).into_bytes());
 
-				if let Some(ref per_commitment_point) = *per_commitment_point {
-					if let Some(ref delayed_payment_base_key) = *delayed_payment_base_key {
-						if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, per_commitment_point, delayed_payment_base_key) {
-							spendable_outputs.push(SpendableOutputDescriptor::DynamicOutput {
-								outpoint: BitcoinOutPoint { txid: htlc_timeout_tx.txid(), vout: 0 },
-								local_delayedkey,
-								witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
-								to_self_delay: self.our_to_self_delay
-							});
-						}
-					}
-				}
+				add_dynamic_output!(htlc_timeout_tx, 0);
 				res.push(htlc_timeout_tx);
 			} else {
 				if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
@@ -1271,18 +1348,7 @@ impl ChannelMonitor {
 					htlc_success_tx.input[0].witness.push(payment_preimage.to_vec());
 					htlc_success_tx.input[0].witness.push(chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key).into_bytes());
 
-					if let Some(ref per_commitment_point) = *per_commitment_point {
-						if let Some(ref delayed_payment_base_key) = *delayed_payment_base_key {
-							if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, per_commitment_point, delayed_payment_base_key) {
-								spendable_outputs.push(SpendableOutputDescriptor::DynamicOutput {
-									outpoint: BitcoinOutPoint { txid: htlc_success_tx.txid(), vout: 0 },
-									local_delayedkey,
-									witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
-									to_self_delay: self.our_to_self_delay
-								});
-							}
-						}
-					}
+					add_dynamic_output!(htlc_success_tx, 0);
 					res.push(htlc_success_tx);
 				}
 			}
@@ -1299,7 +1365,7 @@ impl ChannelMonitor {
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
 				match self.key_storage {
-					KeyStorage::PrivMode { revocation_base_key: _, htlc_base_key: _, ref delayed_payment_base_key, prev_latest_per_commitment_point: _, ref latest_per_commitment_point } => {
+					KeyStorage::PrivMode { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
 						return self.broadcast_by_local_state(local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
 					},
 					KeyStorage::SigsMode { .. } => {
@@ -1311,7 +1377,7 @@ impl ChannelMonitor {
 		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
 				match self.key_storage {
-					KeyStorage::PrivMode { revocation_base_key: _, htlc_base_key: _, ref delayed_payment_base_key, ref prev_latest_per_commitment_point, .. } => {
+					KeyStorage::PrivMode { ref delayed_payment_base_key, ref prev_latest_per_commitment_point, .. } => {
 						return self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key));
 					},
 					KeyStorage::SigsMode { .. } => {
@@ -1321,6 +1387,31 @@ impl ChannelMonitor {
 			}
 		}
 		(Vec::new(), Vec::new())
+	}
+
+	/// Generate a spendable output event when closing_transaction get registered onchain.
+	fn check_spend_closing_transaction(&self, tx: &Transaction) -> Option<SpendableOutputDescriptor> {
+		if tx.input[0].sequence == 0xFFFFFFFF && tx.input[0].witness.last().unwrap().len() == 71 {
+			match self.key_storage {
+				KeyStorage::PrivMode { ref shutdown_pubkey, .. } =>  {
+					let our_channel_close_key_hash = Hash160::from_data(&shutdown_pubkey.serialize());
+					let shutdown_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
+					for (idx, output) in tx.output.iter().enumerate() {
+						if shutdown_script == output.script_pubkey {
+							return Some(SpendableOutputDescriptor::StaticOutput {
+								outpoint: BitcoinOutPoint { txid: tx.txid(), vout: idx as u32 },
+								output: output.clone(),
+							});
+						}
+					}
+				}
+				KeyStorage::SigsMode { .. } => {
+					//TODO: we need to ensure an offline client will generate the event when it
+					// cames back online after only the watchtower saw the transaction
+				}
+			}
+		}
+		None
 	}
 
 	/// Used by ChannelManager deserialization to broadcast the latest local state if it's copy of
@@ -1363,6 +1454,11 @@ impl ChannelMonitor {
 						spendable_outputs.append(&mut outputs);
 						txn = remote_txn;
 					}
+					if !self.funding_txo.is_none() && txn.is_empty() {
+						if let Some(spendable_output) = self.check_spend_closing_transaction(tx) {
+							spendable_outputs.push(spendable_output);
+						}
+					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
 						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, commitment_number);
@@ -1383,7 +1479,7 @@ impl ChannelMonitor {
 			if self.would_broadcast_at_height(height) {
 				broadcaster.broadcast_transaction(&cur_local_tx.tx);
 				match self.key_storage {
-					KeyStorage::PrivMode { revocation_base_key: _, htlc_base_key: _, ref delayed_payment_base_key, prev_latest_per_commitment_point: _, ref latest_per_commitment_point } => {
+					KeyStorage::PrivMode { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
 						let (txs, mut outputs) = self.broadcast_by_local_state(&cur_local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
 						spendable_outputs.append(&mut outputs);
 						for tx in txs {
@@ -1471,6 +1567,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 				let revocation_base_key = Readable::read(reader)?;
 				let htlc_base_key = Readable::read(reader)?;
 				let delayed_payment_base_key = Readable::read(reader)?;
+				let payment_base_key = Readable::read(reader)?;
+				let shutdown_pubkey = Readable::read(reader)?;
 				let prev_latest_per_commitment_point = match <u8 as Readable<R>>::read(reader)? {
 					0 => None,
 					1 => Some(Readable::read(reader)?),
@@ -1485,6 +1583,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					revocation_base_key,
 					htlc_base_key,
 					delayed_payment_base_key,
+					payment_base_key,
+					shutdown_pubkey,
 					prev_latest_per_commitment_point,
 					latest_per_commitment_point,
 				}
@@ -1714,335 +1814,335 @@ mod tests {
 
 		{
 			// insert_secret correct sequence
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 		}
 
 		{
 			// insert_secret #1 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #2 incorrect (#1 derived from incorrect)
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #3 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #4 incorrect (1,2,3 derived from incorrect)
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #5 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #6 incorrect (5 derived from incorrect)
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #7 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 
 		{
 			// insert_secret #8 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone(), None).unwrap();
+			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
 			test_secrets!();
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone(), None).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
 					"Previous secret did not match new one");
 		}
 	}
@@ -2121,7 +2221,7 @@ mod tests {
 
 		// Prune with one old state and a local commitment tx holding a few overlaps with the
 		// old state.
-		let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), 0, Script::new(), logger.clone());
+		let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 		monitor.set_their_to_self_delay(10);
 
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
@@ -2136,14 +2236,14 @@ mod tests {
 		// Now provide a secret, pruning preimages 10-15
 		let mut secret = [0; 32];
 		secret[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-		monitor.provide_secret(281474976710655, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710655, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 15);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[15..20], monitor);
 
 		// Now provide a further secret, pruning preimages 15-17
 		secret[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-		monitor.provide_secret(281474976710654, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710654, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 13);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[17..20], monitor);
@@ -2152,7 +2252,7 @@ mod tests {
 		// previous commitment tx's preimages too
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5]));
 		secret[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-		monitor.provide_secret(281474976710653, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 12);
 		test_preimages_exist!(&preimages[0..10], monitor);
 		test_preimages_exist!(&preimages[18..20], monitor);
@@ -2160,7 +2260,7 @@ mod tests {
 		// But if we do it again, we'll prune 5-10
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3]));
 		secret[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-		monitor.provide_secret(281474976710652, secret.clone(), None).unwrap();
+		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 5);
 		test_preimages_exist!(&preimages[0..5], monitor);
 	}

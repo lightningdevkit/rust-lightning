@@ -3209,7 +3209,7 @@ mod tests {
 	use chain::chaininterface;
 	use chain::transaction::OutPoint;
 	use chain::chaininterface::{ChainListener, ChainWatchInterface};
-	use chain::keysinterface::KeysInterface;
+	use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 	use chain::keysinterface;
 	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
 	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
@@ -3224,8 +3224,13 @@ mod tests {
 	use util::config::UserConfig;
 
 	use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
+	use bitcoin::util::bip143;
+	use bitcoin::util::address::Address;
+	use bitcoin::util::bip32::{ChildNumber, ExtendedPubKey, ExtendedPrivKey};
 	use bitcoin::blockdata::block::{Block, BlockHeader};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType};
+	use bitcoin::blockdata::script::{Builder, Script};
+	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 
@@ -3667,7 +3672,7 @@ mod tests {
 		}
 	}
 
-	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate) {
+	fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 		let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 		let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 		let (tx_a, tx_b);
@@ -3730,7 +3735,7 @@ mod tests {
 		assert_eq!(tx_a, tx_b);
 		check_spends!(tx_a, funding_tx);
 
-		(as_update, bs_update)
+		(as_update, bs_update, tx_a)
 	}
 
 	struct SendEvent {
@@ -7539,5 +7544,468 @@ mod tests {
 		if let Err(msgs::HandleError { action: Some(msgs::ErrorAction::SendErrorMessage { msg }), .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
 			assert_eq!(msg.channel_id, channel_id);
 		} else { panic!("Unexpected result"); }
+	}
+
+	macro_rules! check_dynamic_output_p2wsh {
+		($node: expr) => {
+			{
+				let events = $node.chan_monitor.simple_monitor.get_and_clear_pending_events();
+				let mut txn = Vec::new();
+				for event in events {
+					match event {
+						Event::SpendableOutputs { ref outputs } => {
+							for outp in outputs {
+								match *outp {
+									SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref key, ref witness_script, ref to_self_delay, ref output } => {
+										let input = TxIn {
+											previous_output: outpoint.clone(),
+											script_sig: Script::new(),
+											sequence: *to_self_delay as u32,
+											witness: Vec::new(),
+										};
+										let outp = TxOut {
+											script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+											value: output.value,
+										};
+										let mut spend_tx = Transaction {
+											version: 2,
+											lock_time: 0,
+											input: vec![input],
+											output: vec![outp],
+										};
+										let secp_ctx = Secp256k1::new();
+										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], witness_script, output.value)[..]).unwrap();
+										let local_delaysig = secp_ctx.sign(&sighash, key);
+										spend_tx.input[0].witness.push(local_delaysig.serialize_der(&secp_ctx).to_vec());
+										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+										spend_tx.input[0].witness.push(vec!(0));
+										spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
+										txn.push(spend_tx);
+									},
+									_ => panic!("Unexpected event"),
+								}
+							}
+						},
+						_ => panic!("Unexpected event"),
+					};
+				}
+				txn
+			}
+		}
+	}
+
+	macro_rules! check_dynamic_output_p2wpkh {
+		($node: expr) => {
+			{
+				let events = $node.chan_monitor.simple_monitor.get_and_clear_pending_events();
+				let mut txn = Vec::new();
+				for event in events {
+					match event {
+						Event::SpendableOutputs { ref outputs } => {
+							for outp in outputs {
+								match *outp {
+									SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref key, ref output } => {
+										let input = TxIn {
+											previous_output: outpoint.clone(),
+											script_sig: Script::new(),
+											sequence: 0,
+											witness: Vec::new(),
+										};
+										let outp = TxOut {
+											script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+											value: output.value,
+										};
+										let mut spend_tx = Transaction {
+											version: 2,
+											lock_time: 0,
+											input: vec![input],
+											output: vec![outp],
+										};
+										let secp_ctx = Secp256k1::new();
+										let remotepubkey = PublicKey::from_secret_key(&secp_ctx, &key);
+										let witness_script = Address::p2pkh(&remotepubkey, Network::Testnet).script_pubkey();
+										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
+										let remotesig = secp_ctx.sign(&sighash, key);
+										spend_tx.input[0].witness.push(remotesig.serialize_der(&secp_ctx).to_vec());
+										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+										spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
+										txn.push(spend_tx);
+									},
+									_ => panic!("Unexpected event"),
+								}
+							}
+						},
+						_ => panic!("Unexpected event"),
+					};
+				}
+				txn
+			}
+		}
+	}
+
+	macro_rules! check_static_output {
+		($event: expr, $node: expr, $event_idx: expr, $output_idx: expr, $der_idx: expr, $idx_node: expr) => {
+			match $event[$event_idx] {
+				Event::SpendableOutputs { ref outputs } => {
+					match outputs[$output_idx] {
+						SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
+							let secp_ctx = Secp256k1::new();
+							let input = TxIn {
+								previous_output: outpoint.clone(),
+								script_sig: Script::new(),
+								sequence: 0,
+								witness: Vec::new(),
+							};
+							let outp = TxOut {
+								script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+								value: output.value,
+							};
+							let mut spend_tx = Transaction {
+								version: 2,
+								lock_time: 0,
+								input: vec![input],
+								output: vec![outp.clone()],
+							};
+							let secret = {
+								match ExtendedPrivKey::new_master(&secp_ctx, Network::Testnet, &$node[$idx_node].node_seed) {
+									Ok(master_key) => {
+										match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx)) {
+											Ok(key) => key,
+											Err(_) => panic!("Your RNG is busted"),
+										}
+									}
+									Err(_) => panic!("Your rng is busted"),
+								}
+							};
+							let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
+							let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
+							let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
+							let sig = secp_ctx.sign(&sighash, &secret.secret_key);
+							spend_tx.input[0].witness.push(sig.serialize_der(&secp_ctx).to_vec());
+							spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+							spend_tx.input[0].witness.push(pubkey.serialize().to_vec());
+							spend_tx
+						},
+						_ => panic!("Unexpected event !"),
+					}
+				},
+				_ => panic!("Unexpected event !"),
+			};
+		}
+	}
+
+	#[test]
+	fn test_claim_sizeable_push_msat() {
+		// Incidentally test SpendableOutput event generation due to detection of to_local output on commitment tx
+		let nodes = create_network(2);
+
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
+		nodes[1].node.force_close_channel(&chan.2);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], chan.3.clone());
+		assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+		let spend_txn = check_dynamic_output_p2wsh!(nodes[1]);
+		assert_eq!(spend_txn.len(), 1);
+		check_spends!(spend_txn[0], node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_claim_on_remote_sizeable_push_msat() {
+		// Same test as precedent, just test on remote commitment tx, as per_commitment_point registration changes following you're funder/fundee and
+		// to_remote output is encumbered by a P2WPKH
+
+		let nodes = create_network(2);
+
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
+		nodes[0].node.force_close_channel(&chan.2);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], chan.3.clone());
+		assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let spend_txn = check_dynamic_output_p2wpkh!(nodes[1]);
+		assert_eq!(spend_txn.len(), 2);
+		assert_eq!(spend_txn[0], spend_txn[1]);
+		check_spends!(spend_txn[0], node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_static_spendable_outputs_preimage_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+
+		let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(commitment_tx[0].input.len(), 1);
+		assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
+
+		// Settle A's commitment tx on B's chain
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		assert!(nodes[1].node.claim_funds(payment_preimage));
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+
+		// Check B's monitor was able to send back output descriptor event for preimage tx on A's commitment tx
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap(); // ChannelManager : 1 (local commitment tx), ChannelMonitor: 2 (1 preimage tx) * 2 (block-rescan)
+		check_spends!(node_txn[0], commitment_tx[0].clone());
+		assert_eq!(node_txn[0], node_txn[2]);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 133);
+		check_spends!(node_txn[1], chan_1.3.clone());
+
+		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		let spend_tx = check_static_output!(events, nodes, 0, 0, 1, 1);
+		check_spends!(spend_tx, node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.iter().next().unwrap().1.last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn[0].input.len(), 1);
+		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
+
+		let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 3);
+		assert_eq!(node_txn.pop().unwrap(), node_txn[0]);
+		assert_eq!(node_txn[0].input.len(), 2);
+		check_spends!(node_txn[0], revoked_local_txn[0].clone());
+
+		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		let spend_tx = check_static_output!(events, nodes, 0, 0, 1, 1);
+		check_spends!(spend_tx, node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn[0].input.len(), 1);
+		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		// A will generate HTLC-Timeout from revoked commitment tx
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let revoked_htlc_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(revoked_htlc_txn.len(), 2);
+		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
+		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), 133);
+		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0].clone());
+
+		// B will generate justice tx from A's revoked commitment/HTLC tx
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 4);
+		assert_eq!(node_txn[3].input.len(), 1);
+		check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
+
+		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		// Check B's ChannelMonitor was able to generate the right spendable output descriptor
+		let spend_tx = check_static_output!(events, nodes, 1, 1, 1, 1);
+		check_spends!(spend_tx, node_txn[3].clone());
+	}
+
+	#[test]
+	fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+		let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn[0].input.len(), 1);
+		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		// B will generate HTLC-Success from revoked commitment tx
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+
+		assert_eq!(revoked_htlc_txn.len(), 2);
+		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
+		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), 138);
+		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0].clone());
+
+		// A will generate justice tx from B's revoked commitment/HTLC tx
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 4);
+		assert_eq!(node_txn[3].input.len(), 1);
+		check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
+
+		let events = nodes[0].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		// Check A's ChannelMonitor was able to generate the right spendable output descriptor
+		let spend_tx = check_static_output!(events, nodes, 1, 2, 1, 0);
+		check_spends!(spend_tx, node_txn[3].clone());
+	}
+
+	#[test]
+	fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
+		let local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(local_txn[0].input.len(), 1);
+		check_spends!(local_txn[0], chan_1.3.clone());
+
+		// Give B knowledge of preimage to be able to generate a local HTLC-Success Tx
+		nodes[1].node.claim_funds(payment_preimage);
+		check_added_monitors!(nodes[1], 1);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![local_txn[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 138);
+		check_spends!(node_txn[0], local_txn[0].clone());
+
+		// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
+		let spend_txn = check_dynamic_output_p2wsh!(nodes[1]);
+		assert_eq!(spend_txn.len(), 1);
+		check_spends!(spend_txn[0], node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
+		let nodes = create_network(2);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
+		let local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(local_txn[0].input.len(), 1);
+		check_spends!(local_txn[0], chan_1.3.clone());
+
+		// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![local_txn[0].clone()] }, 200);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 133);
+		check_spends!(node_txn[0], local_txn[0].clone());
+
+		// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
+		let spend_txn = check_dynamic_output_p2wsh!(nodes[0]);
+		assert_eq!(spend_txn.len(), 4);
+		assert_eq!(spend_txn[0], spend_txn[2]);
+		assert_eq!(spend_txn[1], spend_txn[3]);
+		check_spends!(spend_txn[0], local_txn[0].clone());
+		check_spends!(spend_txn[1], node_txn[0].clone());
+	}
+
+	#[test]
+	fn test_static_output_closing_tx() {
+		let nodes = create_network(2);
+
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+		let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
+		let events = nodes[0].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		let spend_tx = check_static_output!(events, nodes, 0, 0, 2, 0);
+		check_spends!(spend_tx, closing_tx.clone());
+
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
+		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
+		let spend_tx = check_static_output!(events, nodes, 0, 0, 2, 1);
+		check_spends!(spend_tx, closing_tx);
 	}
 }
