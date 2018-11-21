@@ -279,7 +279,7 @@ impl PeerChannelEncryptor {
 		self.process_act_one_with_ephemeral_key(act_one, our_node_secret, our_ephemeral_key)
 	}
 
-	pub fn process_act_two(&mut self, act_two: &[u8], our_node_secret: &SecretKey) -> Result<[u8; 66], HandleError> {
+	pub fn process_act_two(&mut self, act_two: &[u8], our_node_secret: &SecretKey) -> Result<([u8; 66], PublicKey), HandleError> {
 		assert_eq!(act_two.len(), 50);
 
 		let mut final_hkdf = [0; 64];
@@ -334,7 +334,7 @@ impl PeerChannelEncryptor {
 			rck: ck,
 		};
 
-		Ok(res)
+		Ok((res, self.their_node_id.unwrap().clone()))
 	}
 
 	pub fn process_act_three(&mut self, act_three: &[u8]) -> Result<PublicKey, HandleError> {
@@ -537,7 +537,7 @@ mod tests {
 			let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 
 			let act_two = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
-			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap()[..], hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
+			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap().0[..], hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
 
 			match outbound_peer.noise_state {
 				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
@@ -694,7 +694,7 @@ mod tests {
 			let our_node_id = SecretKey::from_slice(&secp_ctx, &hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap();
 
 			let act_two = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap().to_vec();
-			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap()[..], hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
+			assert_eq!(outbound_peer.process_act_two(&act_two[..], &our_node_id).unwrap().0[..], hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()[..]);
 
 			match outbound_peer.noise_state {
 				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
