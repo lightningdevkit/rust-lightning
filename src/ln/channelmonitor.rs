@@ -26,7 +26,7 @@ use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1;
 
-use ln::msgs::{DecodeError, HandleError};
+use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
@@ -73,6 +73,14 @@ pub enum ChannelMonitorUpdateErr {
 	/// of this channel). This will force-close the channel in question.
 	PermanentFailure,
 }
+
+/// General Err type for ChannelMonitor actions. Generally, this implies that the data provided is
+/// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::insert_combine this
+/// means you tried to merge two monitors for different channels or for a channel which was
+/// restored from a backup and then generated new commitment updates.
+/// Contains a human-readable error message.
+#[derive(Debug)]
+pub struct MonitorUpdateError(pub &'static str);
 
 /// Simple trait indicating ability to track a set of ChannelMonitors and multiplex events between
 /// them. Generally should be implemented by keeping a local SimpleManyChannelMonitor and passing
@@ -158,7 +166,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 	}
 
 	/// Adds or udpates the monitor which monitors the channel referred to by the given key.
-	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor) -> Result<(), HandleError> {
+	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor) -> Result<(), MonitorUpdateError> {
 		let mut monitors = self.monitors.lock().unwrap();
 		match monitors.get_mut(&key) {
 			Some(orig_monitor) => {
@@ -408,12 +416,12 @@ impl ChannelMonitor {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
 	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), HandleError> {
+	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
 		let pos = ChannelMonitor::place_secret(idx);
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
 			if ChannelMonitor::derive_secret(secret, pos, old_idx) != old_secret {
-				return Err(HandleError{err: "Previous secret did not match new one", action: None})
+				return Err(MonitorUpdateError("Previous secret did not match new one"));
 			}
 		}
 		self.old_secrets[pos as usize] = (secret, idx);
@@ -537,12 +545,12 @@ impl ChannelMonitor {
 	/// Combines this ChannelMonitor with the information contained in the other ChannelMonitor.
 	/// After a successful call this ChannelMonitor is up-to-date and is safe to use to monitor the
 	/// chain for new blocks/transactions.
-	pub fn insert_combine(&mut self, mut other: ChannelMonitor) -> Result<(), HandleError> {
+	pub fn insert_combine(&mut self, mut other: ChannelMonitor) -> Result<(), MonitorUpdateError> {
 		if self.funding_txo.is_some() {
 			// We should be able to compare the entire funding_txo, but in fuzztarget its trivially
 			// easy to collide the funding_txo hash and have a different scriptPubKey.
 			if other.funding_txo.is_some() && other.funding_txo.as_ref().unwrap().0 != self.funding_txo.as_ref().unwrap().0 {
-				return Err(HandleError{err: "Funding transaction outputs are not identical!", action: None});
+				return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
 			}
 		} else {
 			self.funding_txo = other.funding_txo.take();
@@ -830,14 +838,14 @@ impl ChannelMonitor {
 	//we want to leave out (eg funding_txo, etc).
 
 	/// Can only fail if idx is < get_min_seen_secret
-	pub(super) fn get_secret(&self, idx: u64) -> Result<[u8; 32], HandleError> {
+	pub(super) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		for i in 0..self.old_secrets.len() {
 			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
-				return Ok(ChannelMonitor::derive_secret(self.old_secrets[i].0, i as u8, idx))
+				return Some(ChannelMonitor::derive_secret(self.old_secrets[i].0, i as u8, idx))
 			}
 		}
 		assert!(idx < self.get_min_seen_secret());
-		Err(HandleError{err: "idx too low", action: None})
+		None
 	}
 
 	pub(super) fn get_min_seen_secret(&self) -> u64 {
@@ -1215,7 +1223,7 @@ impl ChannelMonitor {
 			};
 		}
 
-		let secret = ignore_error!(self.get_secret(commitment_number));
+		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return (None, None); };
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&self.secp_ctx, &secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 		let revocation_pubkey = match self.key_storage {
@@ -1808,7 +1816,7 @@ mod tests {
 					idx -= 1;
 				}
 				assert_eq!(monitor.get_min_seen_secret(), idx + 1);
-				assert!(monitor.get_secret(idx).is_err());
+				assert!(monitor.get_secret(idx).is_none());
 			};
 		}
 
@@ -1870,7 +1878,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -1896,7 +1904,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -1922,7 +1930,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -1968,7 +1976,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -2004,7 +2012,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -2050,7 +2058,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -2096,7 +2104,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 
@@ -2142,7 +2150,7 @@ mod tests {
 
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().err,
+			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
 					"Previous secret did not match new one");
 		}
 	}
