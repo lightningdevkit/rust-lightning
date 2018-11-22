@@ -1604,7 +1604,7 @@ impl Channel {
 		Err(ChannelError::Close("Remote tried to fulfill/fail an HTLC we couldn't find"))
 	}
 
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<&HTLCSource, ChannelError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<HTLCSource, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got fulfill HTLC message when channel was not in an operational state"));
 		}
@@ -1617,10 +1617,10 @@ impl Channel {
 		let mut payment_hash = [0; 32];
 		sha.result(&mut payment_hash);
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None)
+		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None).map(|source| source.clone())
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<&HTLCSource, ChannelError> {
+	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got fail HTLC message when channel was not in an operational state"));
 		}
@@ -1628,10 +1628,11 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent update_fail_htlc when we needed a channel_reestablish"));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
+		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
+		Ok(())
 	}
 
-	pub fn update_fail_malformed_htlc<'a>(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<&HTLCSource, ChannelError> {
+	pub fn update_fail_malformed_htlc<'a>(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got fail malformed HTLC message when channel was not in an operational state"));
 		}
@@ -1639,7 +1640,8 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish"));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))
+		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
+		Ok(())
 	}
 
 	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &FeeEstimator) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitor), ChannelError> {
