@@ -464,6 +464,24 @@ macro_rules! handle_error {
 	}
 }
 
+macro_rules! break_chan_entry {
+	($self: ident, $res: expr, $channel_state: expr, $entry: expr) => {
+		match $res {
+			Ok(res) => res,
+			Err(ChannelError::Ignore(msg)) => {
+				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
+			},
+			Err(ChannelError::Close(msg)) => {
+				let (channel_id, mut chan) = $entry.remove_entry();
+				if let Some(short_id) = chan.get_short_channel_id() {
+					$channel_state.short_to_id.remove(&short_id);
+				}
+				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+			},
+		}
+	}
+}
+
 macro_rules! try_chan_entry {
 	($self: ident, $res: expr, $channel_state: expr, $entry: expr) => {
 		match $res {
@@ -1259,63 +1277,72 @@ impl ChannelManager {
 		let onion_packet = ChannelManager::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
 
 		let _ = self.total_consistency_lock.read().unwrap();
-		let mut channel_state = self.channel_state.lock().unwrap();
 
-		let id = match channel_state.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
-			None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
-			Some(id) => id.clone(),
+		let err: Result<(), _> = loop {
+			let mut channel_lock = self.channel_state.lock().unwrap();
+
+			let id = match channel_lock.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
+				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
+				Some(id) => id.clone(),
+			};
+
+			match {
+				let channel_state = channel_lock.borrow_parts();
+				if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
+					if chan.get().get_their_node_id() != route.hops.first().unwrap().pubkey {
+						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
+					}
+					if chan.get().is_awaiting_monitor_update() {
+						return Err(APIError::MonitorUpdateFailed);
+					}
+					if !chan.get().is_live() {
+						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected!"});
+					}
+					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
+						route: route.clone(),
+						session_priv: session_priv.clone(),
+						first_hop_htlc_msat: htlc_msat,
+					}, onion_packet), channel_state, chan)
+				} else { unreachable!(); }
+			} {
+				Some((update_add, commitment_signed, chan_monitor)) => {
+					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						self.handle_monitor_update_fail(channel_lock, &id, e, RAACommitmentOrder::CommitmentFirst);
+						return Err(APIError::MonitorUpdateFailed);
+					}
+
+					channel_lock.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id: route.hops.first().unwrap().pubkey,
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: vec![update_add],
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs: Vec::new(),
+							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: None,
+							commitment_signed,
+						},
+					});
+				},
+				None => {},
+			}
+			return Ok(());
 		};
 
-		let res = {
-			let chan = channel_state.by_id.get_mut(&id).unwrap();
-			if chan.get_their_node_id() != route.hops.first().unwrap().pubkey {
-				return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
-			}
-			if chan.is_awaiting_monitor_update() {
-				return Err(APIError::MonitorUpdateFailed);
-			}
-			if !chan.is_live() {
-				return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected!"});
-			}
-			chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-				route: route.clone(),
-				session_priv: session_priv.clone(),
-				first_hop_htlc_msat: htlc_msat,
-			}, onion_packet).map_err(|he|
-				match he {
-					ChannelError::Close(err) => {
-						// TODO: We need to close the channel here, but for that to be safe we have
-						// to do all channel closure inside the channel_state lock which is a
-						// somewhat-larger refactor, so we leave that for later.
-						APIError::ChannelUnavailable { err }
-					},
-					ChannelError::Ignore(err) => APIError::ChannelUnavailable { err },
+		match handle_error!(self, err, route.hops.first().unwrap().pubkey) {
+			Ok(_) => unreachable!(),
+			Err(e) => {
+				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				} else {
+					log_error!(self, "Got bad keys: {}!", e.err);
+					let mut channel_state = self.channel_state.lock().unwrap();
+					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+						node_id: route.hops.first().unwrap().pubkey,
+						action: e.action,
+					});
 				}
-			)?
-		};
-		match res {
-			Some((update_add, commitment_signed, chan_monitor)) => {
-				if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-					self.handle_monitor_update_fail(channel_state, &id, e, RAACommitmentOrder::CommitmentFirst);
-					return Err(APIError::MonitorUpdateFailed);
-				}
-
-				channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-					node_id: route.hops.first().unwrap().pubkey,
-					updates: msgs::CommitmentUpdate {
-						update_add_htlcs: vec![update_add],
-						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs: Vec::new(),
-						update_fail_malformed_htlcs: Vec::new(),
-						update_fee: None,
-						commitment_signed,
-					},
-				});
+				Err(APIError::ChannelUnavailable { err: e.err })
 			},
-			None => {},
 		}
-
-		Ok(())
 	}
 
 	/// Call this upon creation of a funding transaction for the given channel.
