@@ -2570,49 +2570,62 @@ impl ChannelManager {
 	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = channel_state_lock.borrow_parts();
+		let their_node_id;
+		let err: Result<(), _> = loop {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = channel_state_lock.borrow_parts();
 
-		match channel_state.by_id.get_mut(&channel_id) {
-			None => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
-			Some(chan) => {
-				if !chan.is_outbound() {
-					return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
-				}
-				if chan.is_awaiting_monitor_update() {
-					return Err(APIError::MonitorUpdateFailed);
-				}
-				if !chan.is_live() {
-					return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
-				}
-				if let Some((update_fee, commitment_signed, chan_monitor)) = chan.send_update_fee_and_commit(feerate_per_kw)
-						.map_err(|e| match e {
-							ChannelError::Ignore(err) => APIError::APIMisuseError{err},
-							ChannelError::Close(err) => {
-								// TODO: We need to close the channel here, but for that to be safe we have
-								// to do all channel closure inside the channel_state lock which is a
-								// somewhat-larger refactor, so we leave that for later.
-								APIError::APIMisuseError{err}
-							},
-						})? {
-					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						unimplemented!();
+			match channel_state.by_id.entry(channel_id) {
+				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
+				hash_map::Entry::Occupied(mut chan) => {
+					if !chan.get().is_outbound() {
+						return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
 					}
-					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: chan.get_their_node_id(),
-						updates: msgs::CommitmentUpdate {
-							update_add_htlcs: Vec::new(),
-							update_fulfill_htlcs: Vec::new(),
-							update_fail_htlcs: Vec::new(),
-							update_fail_malformed_htlcs: Vec::new(),
-							update_fee: Some(update_fee),
-							commitment_signed,
-						},
+					if chan.get().is_awaiting_monitor_update() {
+						return Err(APIError::MonitorUpdateFailed);
+					}
+					if !chan.get().is_live() {
+						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
+					}
+					their_node_id = chan.get().get_their_node_id();
+					if let Some((update_fee, commitment_signed, chan_monitor)) =
+							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw), channel_state, chan)
+					{
+						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+							unimplemented!();
+						}
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							node_id: chan.get().get_their_node_id(),
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: Vec::new(),
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: Vec::new(),
+								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: Some(update_fee),
+								commitment_signed,
+							},
+						});
+					}
+				},
+			}
+			return Ok(())
+		};
+
+		match handle_error!(self, err, their_node_id) {
+			Ok(_) => unreachable!(),
+			Err(e) => {
+				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				} else {
+					log_error!(self, "Got bad keys: {}!", e.err);
+					let mut channel_state = self.channel_state.lock().unwrap();
+					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+						node_id: their_node_id,
+						action: e.action,
 					});
 				}
+				Err(APIError::APIMisuseError { err: e.err })
 			},
 		}
-		Ok(())
 	}
 }
 
