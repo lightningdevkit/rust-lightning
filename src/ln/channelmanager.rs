@@ -2039,7 +2039,12 @@ impl ChannelManager {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
 							reason: if let Ok(update) = chan_update {
-								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &update.encode_with_len()[..])
+								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &{
+								  let mut res = Vec::with_capacity(8 + 128);
+								  res.extend_from_slice(&byte_utils::be16_to_array(update.contents.flags));
+								  res.extend_from_slice(&update.encode_with_len()[..]);
+								  res
+								}[..])
 							} else {
 								// This can only happen if the channel isn't in the fully-funded
 								// state yet, implying our counterparty is trying to route payments
