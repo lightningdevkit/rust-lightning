@@ -4874,10 +4874,7 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 		match msg_events[1] {
-			MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, ref is_permanent }} => {
-				assert!(is_permanent);
-				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			},
+			MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { .. }} => {},
 			_ => panic!("Unexpected event"),
 		}
 
