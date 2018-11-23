@@ -5369,8 +5369,7 @@ mod tests {
 		}}
 	}
 
-	#[test]
-	fn channel_reserve_test() {
+	fn do_channel_reserve_test(test_recv: bool) {
 		use util::rng;
 		use std::sync::atomic::Ordering;
 		use ln::msgs::HandleError;
@@ -5527,9 +5526,23 @@ mod tests {
 				onion_routing_packet: onion_packet,
 			};
 
-			let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg).err().unwrap();
-			match err {
-				HandleError{err, .. } => assert_eq!(err, "Remote HTLC add would put them over their reserve value"),
+			if test_recv {
+				let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg).err().unwrap();
+				match err {
+					HandleError{err, .. } => assert_eq!(err, "Remote HTLC add would put them over their reserve value"),
+				}
+				// If we send a garbage message, the channel should get closed, making the rest of this test case fail.
+				/*assert_eq!(nodes[1].node.list_channels().len(), 1);
+				assert_eq!(nodes[1].node.list_channels().len(), 1);
+				let channel_close_broadcast = nodes[1].node.get_and_clear_pending_msg_events();
+				assert_eq!(channel_close_broadcast.len(), 1);
+				match channel_close_broadcast[0] {
+					MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+						assert_eq!(msg.contents.flags & 2, 2);
+					},
+					_ => panic!("Unexpected event"),
+				}*/
+				return;
 			}
 		}
 
@@ -5635,6 +5648,12 @@ mod tests {
 
 		let stat2 = get_channel_value_stat!(nodes[2], chan_2.2);
 		assert_eq!(stat2.value_to_self_msat, stat22.value_to_self_msat + recv_value_1 + recv_value_21 + recv_value_22);
+	}
+
+	#[test]
+	fn channel_reserve_test() {
+		do_channel_reserve_test(false);
+		do_channel_reserve_test(true);
 	}
 
 	#[test]
