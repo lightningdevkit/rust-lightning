@@ -3,6 +3,8 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
 use bitcoin::util::hash::{Hash160,Sha256dHash};
 
+use ln::channelmanager::PaymentHash;
+
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 use secp256k1;
@@ -156,7 +158,7 @@ pub struct HTLCOutputInCommitment {
 	pub offered: bool,
 	pub amount_msat: u64,
 	pub cltv_expiry: u32,
-	pub payment_hash: [u8; 32],
+	pub payment_hash: PaymentHash,
 	pub transaction_output_index: u32,
 }
 
@@ -164,7 +166,7 @@ pub struct HTLCOutputInCommitment {
 pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
 	let payment_hash160 = {
 		let mut ripemd = Ripemd160::new();
-		ripemd.input(&htlc.payment_hash);
+		ripemd.input(&htlc.payment_hash.0[..]);
 		let mut res = [0; 20];
 		ripemd.result(&mut res);
 		res

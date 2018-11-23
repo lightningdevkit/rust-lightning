@@ -63,6 +63,7 @@ use std::time::{Instant,Duration};
 mod channel_held_info {
 	use ln::msgs;
 	use ln::router::Route;
+	use ln::channelmanager::PaymentHash;
 	use secp256k1::key::SecretKey;
 
 	/// Stores the info we will need to send when we want to forward an HTLC onwards
@@ -70,7 +71,7 @@ mod channel_held_info {
 	pub struct PendingForwardHTLCInfo {
 		pub(super) onion_packet: Option<msgs::OnionPacket>,
 		pub(super) incoming_shared_secret: [u8; 32],
-		pub(super) payment_hash: [u8; 32],
+		pub(super) payment_hash: PaymentHash,
 		pub(super) short_channel_id: u64,
 		pub(super) amt_to_forward: u64,
 		pub(super) outgoing_cltv_value: u32,
@@ -133,13 +134,21 @@ mod channel_held_info {
 }
 pub(super) use self::channel_held_info::*;
 
-type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, [u8; 32])>);
+/// payment_hash type, use to cross-lock hop
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct PaymentHash(pub [u8;32]);
+/// payment_preimage type, use to route payment between hop
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct PaymentPreimage(pub [u8;32]);
+
+type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
 /// immediately (ie with no further calls on it made). Thus, this step happens inside a
 /// channel_state lock. We then return the set of things that need to be done outside the lock in
 /// this struct and call handle_error!() on it.
+
 struct MsgHandleErrInternal {
 	err: msgs::HandleError,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
@@ -248,7 +257,7 @@ struct ChannelHolder {
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	claimable_htlcs: HashMap<[u8; 32], Vec<HTLCPreviousHopData>>,
+	claimable_htlcs: HashMap<PaymentHash, Vec<HTLCPreviousHopData>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pending_msg_events: Vec<events::MessageSendEvent>,
@@ -258,7 +267,7 @@ struct MutChannelHolder<'a> {
 	short_to_id: &'a mut HashMap<u64, [u8; 32]>,
 	next_forward: &'a mut Instant,
 	forward_htlcs: &'a mut HashMap<u64, Vec<HTLCForwardInfo>>,
-	claimable_htlcs: &'a mut HashMap<[u8; 32], Vec<HTLCPreviousHopData>>,
+	claimable_htlcs: &'a mut HashMap<PaymentHash, Vec<HTLCPreviousHopData>>,
 	pending_msg_events: &'a mut Vec<events::MessageSendEvent>,
 }
 impl ChannelHolder {
@@ -858,7 +867,7 @@ impl ChannelManager {
 	}
 
 	const ZERO:[u8; 21*65] = [0; 21*65];
-	fn construct_onion_packet(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, associated_data: &[u8; 32]) -> msgs::OnionPacket {
+	fn construct_onion_packet(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, associated_data: &PaymentHash) -> msgs::OnionPacket {
 		let mut buf = Vec::with_capacity(21*65);
 		buf.resize(21*65, 0);
 
@@ -895,7 +904,7 @@ impl ChannelManager {
 
 			let mut hmac = Hmac::new(Sha256::new(), &keys.mu);
 			hmac.input(&packet_data);
-			hmac.input(&associated_data[..]);
+			hmac.input(&associated_data.0[..]);
 			hmac.raw_result(&mut hmac_res);
 		}
 
@@ -1017,7 +1026,7 @@ impl ChannelManager {
 
 		let mut hmac = Hmac::new(Sha256::new(), &mu);
 		hmac.input(&msg.onion_routing_packet.hop_data);
-		hmac.input(&msg.payment_hash);
+		hmac.input(&msg.payment_hash.0[..]);
 		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
 			return_err!("HMAC Check failed", 0x8000 | 0x4000 | 5, &get_onion_hash!());
 		}
@@ -1225,7 +1234,7 @@ impl ChannelManager {
 	/// In case of APIError::MonitorUpdateFailed, the commitment update has been irrevocably
 	/// committed on our end and we're just waiting for a monitor update to send it. Do NOT retry
 	/// the payment via a different route unless you intend to pay twice!
-	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), APIError> {
+	pub fn send_payment(&self, route: Route, payment_hash: PaymentHash) -> Result<(), APIError> {
 		if route.hops.len() < 1 || route.hops.len() > 20 {
 			return Err(APIError::RouteError{err: "Route didn't go anywhere/had bogus size"});
 		}
@@ -1520,7 +1529,7 @@ impl ChannelManager {
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect after a PaymentReceived event.
-	pub fn fail_htlc_backwards(&self, payment_hash: &[u8; 32], reason: PaymentFailReason) -> bool {
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, reason: PaymentFailReason) -> bool {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
@@ -1540,7 +1549,7 @@ impl ChannelManager {
 	/// to fail and take the channel_state lock for each iteration (as we take ownership and may
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
-	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &[u8; 32], onion_error: HTLCFailReason) {
+	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
 		match source {
 			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state_lock);
@@ -1616,11 +1625,11 @@ impl ChannelManager {
 	/// should probably kick the net layer to go send messages if this returns true!
 	///
 	/// May panic if called except in response to a PaymentReceived event.
-	pub fn claim_funds(&self, payment_preimage: [u8; 32]) -> bool {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
 		let mut sha = Sha256::new();
-		sha.input(&payment_preimage);
-		let mut payment_hash = [0; 32];
-		sha.result(&mut payment_hash);
+		sha.input(&payment_preimage.0[..]);
+		let mut payment_hash = PaymentHash([0; 32]);
+		sha.result(&mut payment_hash.0[..]);
 
 		let _ = self.total_consistency_lock.read().unwrap();
 
@@ -1634,7 +1643,7 @@ impl ChannelManager {
 			true
 		} else { false }
 	}
-	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_preimage: [u8; 32]) {
+	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_preimage: PaymentPreimage) {
 		match source {
 			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state_lock);
@@ -3353,7 +3362,7 @@ mod tests {
 	use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 	use chain::keysinterface;
 	use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
-	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder};
+	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 	use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 	use ln::router::{Route, RouteHop, Router};
@@ -3516,7 +3525,7 @@ mod tests {
 			},
 		);
 
-		let packet = ChannelManager::construct_onion_packet(payloads, onion_keys, &[0x42; 32]);
+		let packet = ChannelManager::construct_onion_packet(payloads, onion_keys, &PaymentHash([0x42; 32]));
 		// Just check the final packet encoding, as it includes all the per-hop vectors in it
 		// anyway...
 		assert_eq!(packet.encode(), hex::decode("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619e5f14350c2a76fc232b5e46d421e9615471ab9e0bc887beff8c95fdb878f7b3a716a996c7845c93d90e4ecbb9bde4ece2f69425c99e4bc820e44485455f135edc0d10f7d61ab590531cf08000179a333a347f8b4072f216400406bdf3bf038659793d4a1fd7b246979e3150a0a4cb052c9ec69acf0f48c3d39cd55675fe717cb7d80ce721caad69320c3a469a202f1e468c67eaf7a7cd8226d0fd32f7b48084dca885d56047694762b67021713ca673929c163ec36e04e40ca8e1c6d17569419d3039d9a1ec866abe044a9ad635778b961fc0776dc832b3a451bd5d35072d2269cf9b040f6b7a7dad84fb114ed413b1426cb96ceaf83825665ed5a1d002c1687f92465b49ed4c7f0218ff8c6c7dd7221d589c65b3b9aaa71a41484b122846c7c7b57e02e679ea8469b70e14fe4f70fee4d87b910cf144be6fe48eef24da475c0b0bcc6565ae82cd3f4e3b24c76eaa5616c6111343306ab35c1fe5ca4a77c0e314ed7dba39d6f1e0de791719c241a939cc493bea2bae1c1e932679ea94d29084278513c77b899cc98059d06a27d171b0dbdf6bee13ddc4fc17a0c4d2827d488436b57baa167544138ca2e64a11b43ac8a06cd0c2fba2d4d900ed2d9205305e2d7383cc98dacb078133de5f6fb6bed2ef26ba92cea28aafc3b9948dd9ae5559e8bd6920b8cea462aa445ca6a95e0e7ba52961b181c79e73bd581821df2b10173727a810c92b83b5ba4a0403eb710d2ca10689a35bec6c3a708e9e92f7d78ff3c5d9989574b00c6736f84c199256e76e19e78f0c98a9d580b4a658c84fc8f2096c2fbea8f5f8c59d0fdacb3be2802ef802abbecb3aba4acaac69a0e965abd8981e9896b1f6ef9d60f7a164b371af869fd0e48073742825e9434fc54da837e120266d53302954843538ea7c6c3dbfb4ff3b2fdbe244437f2a153ccf7bdb4c92aa08102d4f3cff2ae5ef86fab4653595e6a5837fa2f3e29f27a9cde5966843fb847a4a61f1e76c281fe8bb2b0a181d096100db5a1a5ce7a910238251a43ca556712eaadea167fb4d7d75825e440f3ecd782036d7574df8bceacb397abefc5f5254d2722215c53ff54af8299aaaad642c6d72a14d27882d9bbd539e1cc7a527526ba89b8c037ad09120e98ab042d3e8652b31ae0e478516bfaf88efca9f3676ffe99d2819dcaeb7610a626695f53117665d267d3f7abebd6bbd6733f645c72c389f03855bdf1e4b8075b516569b118233a0f0971d24b83113c0b096f5216a207ca99a7cddc81c130923fe3d91e7508c9ac5f2e914ff5dccab9e558566fa14efb34ac98d878580814b94b73acbfde9072f30b881f7f0fff42d4045d1ace6322d86a97d164aa84d93a60498065cc7c20e636f5862dc81531a88c60305a2e59a985be327a6902e4bed986dbf4a0b50c217af0ea7fdf9ab37f9ea1a1aaa72f54cf40154ea9b269f1a7c09f9f43245109431a175d50e2db0132337baa0ef97eed0fcf20489da36b79a1172faccc2f7ded7c60e00694282d93359c4682135642bc81f433574aa8ef0c97b4ade7ca372c5ffc23c7eddd839bab4e0f14d6df15c9dbeab176bec8b5701cf054eb3072f6dadc98f88819042bf10c407516ee58bce33fbe3b3d86a54255e577db4598e30a135361528c101683a5fcde7e8ba53f3456254be8f45fe3a56120ae96ea3773631fcb3873aa3abd91bcff00bd38bd43697a2e789e00da6077482e7b1b1a677b5afae4c54e6cbdf7377b694eb7d7a5b913476a5be923322d3de06060fd5e819635232a2cf4f0731da13b8546d1d6d4f8d75b9fce6c2341a71b0ea6f780df54bfdb0dd5cd9855179f602f9172307c7268724c3618e6817abd793adc214a0dc0bc616816632f27ea336fb56dfd").unwrap());
@@ -4020,18 +4029,18 @@ mod tests {
 	macro_rules! get_payment_preimage_hash {
 		($node: expr) => {
 			{
-				let payment_preimage = [*$node.network_payment_count.borrow(); 32];
+				let payment_preimage = PaymentPreimage([*$node.network_payment_count.borrow(); 32]);
 				*$node.network_payment_count.borrow_mut() += 1;
-				let mut payment_hash = [0; 32];
+				let mut payment_hash = PaymentHash([0; 32]);
 				let mut sha = Sha256::new();
-				sha.input(&payment_preimage[..]);
-				sha.result(&mut payment_hash);
+				sha.input(&payment_preimage.0[..]);
+				sha.result(&mut payment_hash.0[..]);
 				(payment_preimage, payment_hash)
 			}
 		}
 	}
 
-	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
+	fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 		let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
 
 		let mut payment_event = {
@@ -4085,7 +4094,7 @@ mod tests {
 		(our_payment_preimage, our_payment_hash)
 	}
 
-	fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_preimage: [u8; 32]) {
+	fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_preimage: PaymentPreimage) {
 		assert!(expected_route.last().unwrap().node.claim_funds(our_payment_preimage));
 		check_added_monitors!(expected_route.last().unwrap(), 1);
 
@@ -4170,13 +4179,13 @@ mod tests {
 		}
 	}
 
-	fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: [u8; 32]) {
+	fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: PaymentPreimage) {
 		claim_payment_along_route(origin_node, expected_route, false, our_payment_preimage);
 	}
 
 	const TEST_FINAL_CLTV: u32 = 32;
 
-	fn route_payment(origin_node: &Node, expected_route: &[&Node], recv_value: u64) -> ([u8; 32], [u8; 32]) {
+	fn route_payment(origin_node: &Node, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 		let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
 		assert_eq!(route.hops.len(), expected_route.len());
 		for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
@@ -4207,7 +4216,7 @@ mod tests {
 		claim_payment(&origin, expected_route, our_payment_preimage);
 	}
 
-	fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: [u8; 32]) {
+	fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: PaymentHash) {
 		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, PaymentFailReason::PreimageUnknown));
 		check_added_monitors!(expected_route.last().unwrap(), 1);
 
@@ -4272,7 +4281,7 @@ mod tests {
 		}
 	}
 
-	fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_hash: [u8; 32]) {
+	fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_hash: PaymentHash) {
 		fail_payment_along_route(origin_node, expected_route, false, our_payment_hash);
 	}
 
@@ -6641,7 +6650,7 @@ mod tests {
 				assert_eq!(events.len(), 1);
 				match events[0] {
 					Event::PaymentFailed { ref payment_hash, .. } => {
-						assert!(failed_htlcs.insert(*payment_hash));
+						assert!(failed_htlcs.insert(payment_hash.0));
 					},
 					_ => panic!("Unexpected event"),
 				}
@@ -6672,20 +6681,20 @@ mod tests {
 		assert_eq!(events.len(), 2);
 		match events[0] {
 			Event::PaymentFailed { ref payment_hash, .. } => {
-				assert!(failed_htlcs.insert(*payment_hash));
+				assert!(failed_htlcs.insert(payment_hash.0));
 			},
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
 			Event::PaymentFailed { ref payment_hash, .. } => {
-				assert!(failed_htlcs.insert(*payment_hash));
+				assert!(failed_htlcs.insert(payment_hash.0));
 			},
 			_ => panic!("Unexpected event"),
 		}
 
-		assert!(failed_htlcs.contains(&first_payment_hash));
-		assert!(failed_htlcs.contains(&second_payment_hash));
-		assert!(failed_htlcs.contains(&third_payment_hash));
+		assert!(failed_htlcs.contains(&first_payment_hash.0));
+		assert!(failed_htlcs.contains(&second_payment_hash.0));
+		assert!(failed_htlcs.contains(&third_payment_hash.0));
 	}
 
 	#[test]

@@ -29,6 +29,8 @@ use std::result::Result;
 use util::{byte_utils, events};
 use util::ser::{Readable, Writeable, Writer};
 
+use ln::channelmanager::{PaymentPreimage, PaymentHash};
+
 /// An error in decoding a message or struct.
 #[derive(Debug)]
 pub enum DecodeError {
@@ -256,7 +258,7 @@ pub struct UpdateAddHTLC {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) htlc_id: u64,
 	pub(crate) amount_msat: u64,
-	pub(crate) payment_hash: [u8; 32],
+	pub(crate) payment_hash: PaymentHash,
 	pub(crate) cltv_expiry: u32,
 	pub(crate) onion_routing_packet: OnionPacket,
 }
@@ -266,7 +268,7 @@ pub struct UpdateAddHTLC {
 pub struct UpdateFulfillHTLC {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) htlc_id: u64,
-	pub(crate) payment_preimage: [u8; 32],
+	pub(crate) payment_preimage: PaymentPreimage,
 }
 
 /// An update_fail_htlc message to be sent or received from a peer

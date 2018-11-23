@@ -13,6 +13,7 @@
 //TODO: We need better separation of event types ^
 
 use ln::msgs;
+use ln::channelmanager::{PaymentPreimage, PaymentHash};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 
@@ -59,7 +60,7 @@ pub enum Event {
 	/// the amount expected.
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
-		payment_hash: [u8; 32],
+		payment_hash: PaymentHash,
 		/// The value, in thousandths of a satoshi, that this payment is for.
 		amt: u64,
 	},
@@ -71,7 +72,7 @@ pub enum Event {
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
 		/// store it somehow!
-		payment_preimage: [u8; 32],
+		payment_preimage: PaymentPreimage,
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
@@ -79,7 +80,7 @@ pub enum Event {
 	/// deduplicate them by payment_hash (which MUST be unique)!
 	PaymentFailed {
 		/// The hash which was given to ChannelManager::send_payment.
-		payment_hash: [u8; 32],
+		payment_hash: PaymentHash,
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
