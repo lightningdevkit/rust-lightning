@@ -215,28 +215,6 @@ impl MsgHandleErrInternal {
 			shutdown_finish: None,
 		}
 	}
-	#[inline]
-	fn from_chan_maybe_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
-		Self {
-			err: match err {
-				ChannelError::Ignore(msg) => HandleError {
-					err: msg,
-					action: Some(msgs::ErrorAction::IgnoreError),
-				},
-				ChannelError::Close(msg) => HandleError {
-					err: msg,
-					action: Some(msgs::ErrorAction::SendErrorMessage {
-						msg: msgs::ErrorMessage {
-							channel_id,
-							data: msg.to_string()
-						},
-					}),
-				},
-			},
-			needs_channel_force_close: true,
-			shutdown_finish: None,
-		}
-	}
 }
 
 /// Pass to fail_htlc_backwwards to indicate the reason to fail the payment
@@ -1363,7 +1341,9 @@ impl ChannelManager {
 				match channel_state.by_id.remove(temporary_channel_id) {
 					Some(mut chan) => {
 						(chan.get_outbound_funding_created(funding_txo)
-							.map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, chan.channel_id()))
+							.map_err(|e| if let ChannelError::Close(msg) = e {
+								MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(), None)
+							} else { unreachable!(); })
 						, chan)
 					},
 					None => return
