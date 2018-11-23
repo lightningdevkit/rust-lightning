@@ -4167,6 +4167,27 @@ mod tests {
 		nodes
 	}
 
+	macro_rules! display_txn {
+		($txn: expr, $in: expr, $out: expr) => {
+			println!("[{}]", stringify!($txn));
+			for (idx, tx) in $txn.iter().enumerate() {
+				println!("tx[{}] : {} inputs {} outputs {}", idx, tx.txid(), tx.input.len(), tx.output.len());
+				if $in == true {
+					for (idx, inp) in tx.input.iter().enumerate() {
+						println!("	input[{}] : spending output {} from tx {} with witness size {}", idx, inp.previous_output.vout, inp.previous_output.txid, inp.witness.last().unwrap().len());
+					}
+				}
+				if $out == true {
+					for (idx, out) in tx.output.iter().enumerate() {
+						println!("	output[{}] : output encumbered by {} with amount {}", idx, out.script_pubkey, out.value);
+					}
+				}
+				println!("");
+			}
+			println!("");
+		}
+	}
+
 	#[test]
 	fn test_async_inbound_update_fee() {
 		let mut nodes = create_network(2);
