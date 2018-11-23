@@ -135,9 +135,13 @@ pub(super) use self::channel_held_info::*;
 
 type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, [u8; 32])>);
 
+/// Error type returned across the channel_state mutex boundary. When an Err is generated for a
+/// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
+/// immediately (ie with no further calls on it made). Thus, this step happens inside a
+/// channel_state lock. We then return the set of things that need to be done outside the lock in
+/// this struct and call handle_error!() on it.
 struct MsgHandleErrInternal {
 	err: msgs::HandleError,
-	needs_channel_force_close: bool,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
@@ -153,29 +157,12 @@ impl MsgHandleErrInternal {
 					},
 				}),
 			},
-			needs_channel_force_close: false,
-			shutdown_finish: None,
-		}
-	}
-	#[inline]
-	fn send_err_msg_close_chan(err: &'static str, channel_id: [u8; 32]) -> Self {
-		Self {
-			err: HandleError {
-				err,
-				action: Some(msgs::ErrorAction::SendErrorMessage {
-					msg: msgs::ErrorMessage {
-						channel_id,
-						data: err.to_string()
-					},
-				}),
-			},
-			needs_channel_force_close: true,
 			shutdown_finish: None,
 		}
 	}
 	#[inline]
 	fn from_no_close(err: msgs::HandleError) -> Self {
-		Self { err, needs_channel_force_close: false, shutdown_finish: None }
+		Self { err, shutdown_finish: None }
 	}
 	#[inline]
 	fn from_finish_shutdown(err: &'static str, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
@@ -189,7 +176,6 @@ impl MsgHandleErrInternal {
 					},
 				}),
 			},
-			needs_channel_force_close: false,
 			shutdown_finish: Some((shutdown_res, channel_update)),
 		}
 	}
@@ -211,7 +197,6 @@ impl MsgHandleErrInternal {
 					}),
 				},
 			},
-			needs_channel_force_close: false,
 			shutdown_finish: None,
 		}
 	}
@@ -405,28 +390,7 @@ macro_rules! handle_error {
 	($self: ident, $internal: expr, $their_node_id: expr) => {
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, needs_channel_force_close, shutdown_finish }) => {
-				if needs_channel_force_close {
-					match &err.action {
-						&Some(msgs::ErrorAction::DisconnectPeer { msg: Some(ref msg) }) => {
-							if msg.channel_id == [0; 32] {
-								$self.peer_disconnected(&$their_node_id, true);
-							} else {
-								$self.force_close_channel(&msg.channel_id);
-							}
-						},
-						&Some(msgs::ErrorAction::DisconnectPeer { msg: None }) => {},
-						&Some(msgs::ErrorAction::IgnoreError) => {},
-						&Some(msgs::ErrorAction::SendErrorMessage { ref msg }) => {
-							if msg.channel_id == [0; 32] {
-								$self.peer_disconnected(&$their_node_id, true);
-							} else {
-								$self.force_close_channel(&msg.channel_id);
-							}
-						},
-						&None => {},
-					}
-				}
+			Err(MsgHandleErrInternal { err, shutdown_finish }) => {
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
 					$self.finish_force_close_channel(shutdown_res);
 					if let Some(update) = update_option {
@@ -2301,7 +2265,7 @@ impl ChannelManager {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
-					return Err(MsgHandleErrInternal::send_err_msg_close_chan("Got update_fail_malformed_htlc with BADONION not set", msg.channel_id));
+					try_chan_entry!(self, Err(ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set")), channel_state, chan);
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
 				Ok(())
@@ -2461,9 +2425,10 @@ impl ChannelManager {
 
 				let were_node_one = announcement.node_id_1 == our_node_id;
 				let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
-				let bad_sig_action = MsgHandleErrInternal::send_err_msg_close_chan("Bad announcement_signatures node_signature", msg.channel_id);
-				secp_call!(self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }), bad_sig_action);
-				secp_call!(self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }), bad_sig_action);
+				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
+						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
+					try_chan_entry!(self, Err(ChannelError::Close("Bad announcement_signatures node_signature")), channel_state, chan);
+				}
 
 				let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
