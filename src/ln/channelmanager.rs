@@ -7588,56 +7588,8 @@ mod tests {
 		} else { panic!("Unexpected result"); }
 	}
 
-	macro_rules! check_dynamic_output_p2wsh {
-		($node: expr) => {
-			{
-				let events = $node.chan_monitor.simple_monitor.get_and_clear_pending_events();
-				let mut txn = Vec::new();
-				for event in events {
-					match event {
-						Event::SpendableOutputs { ref outputs } => {
-							for outp in outputs {
-								match *outp {
-									SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref key, ref witness_script, ref to_self_delay, ref output } => {
-										let input = TxIn {
-											previous_output: outpoint.clone(),
-											script_sig: Script::new(),
-											sequence: *to_self_delay as u32,
-											witness: Vec::new(),
-										};
-										let outp = TxOut {
-											script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
-											value: output.value,
-										};
-										let mut spend_tx = Transaction {
-											version: 2,
-											lock_time: 0,
-											input: vec![input],
-											output: vec![outp],
-										};
-										let secp_ctx = Secp256k1::new();
-										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], witness_script, output.value)[..]).unwrap();
-										let local_delaysig = secp_ctx.sign(&sighash, key);
-										spend_tx.input[0].witness.push(local_delaysig.serialize_der(&secp_ctx).to_vec());
-										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-										spend_tx.input[0].witness.push(vec!(0));
-										spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
-										txn.push(spend_tx);
-									},
-									_ => panic!("Unexpected event"),
-								}
-							}
-						},
-						_ => panic!("Unexpected event"),
-					};
-				}
-				txn
-			}
-		}
-	}
-
-	macro_rules! check_dynamic_output_p2wpkh {
-		($node: expr) => {
+	macro_rules! check_spendable_outputs {
+		($node: expr, $der_idx: expr) => {
 			{
 				let events = $node.chan_monitor.simple_monitor.get_and_clear_pending_events();
 				let mut txn = Vec::new();
@@ -7673,7 +7625,70 @@ mod tests {
 										spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
 										txn.push(spend_tx);
 									},
-									_ => panic!("Unexpected event"),
+									SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref key, ref witness_script, ref to_self_delay, ref output } => {
+										let input = TxIn {
+											previous_output: outpoint.clone(),
+											script_sig: Script::new(),
+											sequence: *to_self_delay as u32,
+											witness: Vec::new(),
+										};
+										let outp = TxOut {
+											script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+											value: output.value,
+										};
+										let mut spend_tx = Transaction {
+											version: 2,
+											lock_time: 0,
+											input: vec![input],
+											output: vec![outp],
+										};
+										let secp_ctx = Secp256k1::new();
+										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], witness_script, output.value)[..]).unwrap();
+										let local_delaysig = secp_ctx.sign(&sighash, key);
+										spend_tx.input[0].witness.push(local_delaysig.serialize_der(&secp_ctx).to_vec());
+										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+										spend_tx.input[0].witness.push(vec!(0));
+										spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
+										txn.push(spend_tx);
+									},
+									SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
+										let secp_ctx = Secp256k1::new();
+										let input = TxIn {
+											previous_output: outpoint.clone(),
+											script_sig: Script::new(),
+											sequence: 0,
+											witness: Vec::new(),
+										};
+										let outp = TxOut {
+											script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+											value: output.value,
+										};
+										let mut spend_tx = Transaction {
+											version: 2,
+											lock_time: 0,
+											input: vec![input],
+											output: vec![outp.clone()],
+										};
+										let secret = {
+											match ExtendedPrivKey::new_master(&secp_ctx, Network::Testnet, &$node.node_seed) {
+												Ok(master_key) => {
+													match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx)) {
+														Ok(key) => key,
+														Err(_) => panic!("Your RNG is busted"),
+													}
+												}
+												Err(_) => panic!("Your rng is busted"),
+											}
+										};
+										let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
+										let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
+										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
+										let sig = secp_ctx.sign(&sighash, &secret.secret_key);
+										spend_tx.input[0].witness.push(sig.serialize_der(&secp_ctx).to_vec());
+										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+										spend_tx.input[0].witness.push(pubkey.serialize().to_vec());
+										txn.push(spend_tx);
+									},
 								}
 							}
 						},
@@ -7682,57 +7697,6 @@ mod tests {
 				}
 				txn
 			}
-		}
-	}
-
-	macro_rules! check_static_output {
-		($event: expr, $node: expr, $event_idx: expr, $output_idx: expr, $der_idx: expr, $idx_node: expr) => {
-			match $event[$event_idx] {
-				Event::SpendableOutputs { ref outputs } => {
-					match outputs[$output_idx] {
-						SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
-							let secp_ctx = Secp256k1::new();
-							let input = TxIn {
-								previous_output: outpoint.clone(),
-								script_sig: Script::new(),
-								sequence: 0,
-								witness: Vec::new(),
-							};
-							let outp = TxOut {
-								script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
-								value: output.value,
-							};
-							let mut spend_tx = Transaction {
-								version: 2,
-								lock_time: 0,
-								input: vec![input],
-								output: vec![outp.clone()],
-							};
-							let secret = {
-								match ExtendedPrivKey::new_master(&secp_ctx, Network::Testnet, &$node[$idx_node].node_seed) {
-									Ok(master_key) => {
-										match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx)) {
-											Ok(key) => key,
-											Err(_) => panic!("Your RNG is busted"),
-										}
-									}
-									Err(_) => panic!("Your rng is busted"),
-								}
-							};
-							let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
-							let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
-							let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
-							let sig = secp_ctx.sign(&sighash, &secret.secret_key);
-							spend_tx.input[0].witness.push(sig.serialize_der(&secp_ctx).to_vec());
-							spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-							spend_tx.input[0].witness.push(pubkey.serialize().to_vec());
-							spend_tx
-						},
-						_ => panic!("Unexpected event !"),
-					}
-				},
-				_ => panic!("Unexpected event !"),
-			};
 		}
 	}
 
@@ -7755,14 +7719,14 @@ mod tests {
 
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
-		let spend_txn = check_dynamic_output_p2wsh!(nodes[1]);
+		let spend_txn = check_spendable_outputs!(nodes[1], 1);
 		assert_eq!(spend_txn.len(), 1);
 		check_spends!(spend_txn[0], node_txn[0].clone());
 	}
 
 	#[test]
 	fn test_claim_on_remote_sizeable_push_msat() {
-		// Same test as precedent, just test on remote commitment tx, as per_commitment_point registration changes following you're funder/fundee and
+		// Same test as previous, just test on remote commitment tx, as per_commitment_point registration changes following you're funder/fundee and
 		// to_remote output is encumbered by a P2WPKH
 
 		let nodes = create_network(2);
@@ -7786,7 +7750,7 @@ mod tests {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
-		let spend_txn = check_dynamic_output_p2wpkh!(nodes[1]);
+		let spend_txn = check_spendable_outputs!(nodes[1], 1);
 		assert_eq!(spend_txn.len(), 2);
 		assert_eq!(spend_txn[0], spend_txn[1]);
 		check_spends!(spend_txn[0], node_txn[0].clone());
@@ -7827,9 +7791,10 @@ mod tests {
 		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 133);
 		check_spends!(node_txn[1], chan_1.3.clone());
 
-		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
-		let spend_tx = check_static_output!(events, nodes, 0, 0, 1, 1);
-		check_spends!(spend_tx, node_txn[0].clone());
+		let spend_txn = check_spendable_outputs!(nodes[1], 1); // , 0, 0, 1, 1);
+		assert_eq!(spend_txn.len(), 2);
+		assert_eq!(spend_txn[0], spend_txn[1]);
+		check_spends!(spend_txn[0], node_txn[0].clone());
 	}
 
 	#[test]
@@ -7859,9 +7824,10 @@ mod tests {
 		assert_eq!(node_txn[0].input.len(), 2);
 		check_spends!(node_txn[0], revoked_local_txn[0].clone());
 
-		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
-		let spend_tx = check_static_output!(events, nodes, 0, 0, 1, 1);
-		check_spends!(spend_tx, node_txn[0].clone());
+		let spend_txn = check_spendable_outputs!(nodes[1], 1);
+		assert_eq!(spend_txn.len(), 2);
+		assert_eq!(spend_txn[0], spend_txn[1]);
+		check_spends!(spend_txn[0], node_txn[0].clone());
 	}
 
 	#[test]
@@ -7905,10 +7871,12 @@ mod tests {
 		assert_eq!(node_txn[3].input.len(), 1);
 		check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
 
-		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
 		// Check B's ChannelMonitor was able to generate the right spendable output descriptor
-		let spend_tx = check_static_output!(events, nodes, 1, 1, 1, 1);
-		check_spends!(spend_tx, node_txn[3].clone());
+		let spend_txn = check_spendable_outputs!(nodes[1], 1);
+		assert_eq!(spend_txn.len(), 3);
+		assert_eq!(spend_txn[0], spend_txn[1]);
+		check_spends!(spend_txn[0], node_txn[0].clone());
+		check_spends!(spend_txn[2], node_txn[3].clone());
 	}
 
 	#[test]
@@ -7953,10 +7921,14 @@ mod tests {
 		assert_eq!(node_txn[3].input.len(), 1);
 		check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
 
-		let events = nodes[0].chan_monitor.simple_monitor.get_and_clear_pending_events();
 		// Check A's ChannelMonitor was able to generate the right spendable output descriptor
-		let spend_tx = check_static_output!(events, nodes, 1, 2, 1, 0);
-		check_spends!(spend_tx, node_txn[3].clone());
+		let spend_txn = check_spendable_outputs!(nodes[0], 1);
+		assert_eq!(spend_txn.len(), 5);
+		assert_eq!(spend_txn[0], spend_txn[2]);
+		assert_eq!(spend_txn[1], spend_txn[3]);
+		check_spends!(spend_txn[0], revoked_local_txn[0].clone()); // spending to_remote output from revoked local tx
+		check_spends!(spend_txn[1], node_txn[2].clone()); // spending justice tx output from revoked local tx htlc received output
+		check_spends!(spend_txn[4], node_txn[3].clone()); // spending justice tx output on htlc success tx
 	}
 
 	#[test]
@@ -7991,7 +7963,7 @@ mod tests {
 		check_spends!(node_txn[0], local_txn[0].clone());
 
 		// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
-		let spend_txn = check_dynamic_output_p2wsh!(nodes[1]);
+		let spend_txn = check_spendable_outputs!(nodes[1], 1);
 		assert_eq!(spend_txn.len(), 1);
 		check_spends!(spend_txn[0], node_txn[0].clone());
 	}
@@ -8022,7 +7994,7 @@ mod tests {
 		check_spends!(node_txn[0], local_txn[0].clone());
 
 		// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
-		let spend_txn = check_dynamic_output_p2wsh!(nodes[0]);
+		let spend_txn = check_spendable_outputs!(nodes[0], 1);
 		assert_eq!(spend_txn.len(), 4);
 		assert_eq!(spend_txn[0], spend_txn[2]);
 		assert_eq!(spend_txn[1], spend_txn[3]);
@@ -8041,13 +8013,13 @@ mod tests {
 
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
-		let events = nodes[0].chan_monitor.simple_monitor.get_and_clear_pending_events();
-		let spend_tx = check_static_output!(events, nodes, 0, 0, 2, 0);
-		check_spends!(spend_tx, closing_tx.clone());
+		let spend_txn = check_spendable_outputs!(nodes[0], 2);
+		assert_eq!(spend_txn.len(), 1);
+		check_spends!(spend_txn[0], closing_tx.clone());
 
 		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
-		let events = nodes[1].chan_monitor.simple_monitor.get_and_clear_pending_events();
-		let spend_tx = check_static_output!(events, nodes, 0, 0, 2, 1);
-		check_spends!(spend_tx, closing_tx);
+		let spend_txn = check_spendable_outputs!(nodes[1], 2);
+		assert_eq!(spend_txn.len(), 1);
+		check_spends!(spend_txn[0], closing_tx);
 	}
 }
