@@ -17,7 +17,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,C
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
-use lightning::ln::channelmanager::{ChannelManager, PaymentFailReason};
+use lightning::ln::channelmanager::{ChannelManager, PaymentFailReason, PaymentHash, PaymentPreimage};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
@@ -328,7 +328,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	}, our_network_key, Arc::clone(&logger)));
 
 	let mut should_forward = false;
-	let mut payments_received: Vec<[u8; 32]> = Vec::new();
+	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
 	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
@@ -380,11 +380,11 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
-				let mut payment_hash = [0; 32];
-				payment_hash[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				let mut payment_hash = PaymentHash([0; 32]);
+				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				let mut sha = Sha256::new();
-				sha.input(&payment_hash);
-				sha.result(&mut payment_hash);
+				sha.input(&payment_hash.0[..]);
+				sha.result(&mut payment_hash.0[..]);
 				payments_sent += 1;
 				match channelmanager.send_payment(route, payment_hash) {
 					Ok(_) => {},
@@ -418,11 +418,11 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 					// for the remaining bytes. Thus, if not all remaining bytes are 0s we cannot
 					// fulfill this HTLC, but if they are, we can just take the first byte and
 					// place that anywhere in our preimage.
-					if &payment[1..] != &[0; 31] {
+					if &payment.0[1..] != &[0; 31] {
 						channelmanager.fail_htlc_backwards(&payment, PaymentFailReason::PreimageUnknown);
 					} else {
-						let mut payment_preimage = [0; 32];
-						payment_preimage[0] = payment[0];
+						let mut payment_preimage = PaymentPreimage([0; 32]);
+						payment_preimage.0[0] = payment.0[0];
 						channelmanager.claim_funds(payment_preimage);
 					}
 				}
