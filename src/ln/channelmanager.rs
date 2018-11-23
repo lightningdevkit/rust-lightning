@@ -7757,6 +7757,36 @@ mod tests {
 	}
 
 	#[test]
+	fn test_claim_on_remote_revoked_sizeable_push_msat() {
+		// Same test as previous, just test on remote revoked commitment tx, as per_commitment_point registration changes following you're funder/fundee and
+		// to_remote output is encumbered by a P2WPKH
+
+		let nodes = create_network(2);
+
+		let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 59000000);
+		let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(revoked_local_txn[0].input.len(), 1);
+		assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
+
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
+		let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let spend_txn = check_spendable_outputs!(nodes[1], 1);
+		assert_eq!(spend_txn.len(), 4);
+		assert_eq!(spend_txn[0], spend_txn[2]); // to_remote output on revoked remote commitment_tx
+		check_spends!(spend_txn[0], revoked_local_txn[0].clone());
+		assert_eq!(spend_txn[1], spend_txn[3]); // to_local output on local commitment tx
+		check_spends!(spend_txn[1], node_txn[0].clone());
+	}
+
+	#[test]
 	fn test_static_spendable_outputs_preimage_tx() {
 		let nodes = create_network(2);
 
