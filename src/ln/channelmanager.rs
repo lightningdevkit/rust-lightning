@@ -169,10 +169,6 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn from_maybe_close(err: msgs::HandleError) -> Self {
-		Self { err, needs_channel_force_close: true }
-	}
-	#[inline]
 	fn from_no_close(err: msgs::HandleError) -> Self {
 		Self { err, needs_channel_force_close: false }
 	}
@@ -1928,7 +1924,7 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (closing_signed, tx) = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))?;
+					let (closing_signed, tx) = chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg).map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))?;
 					if let Some(msg) = closing_signed {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 							node_id: their_node_id.clone(),
@@ -2005,7 +2001,7 @@ impl ChannelManager {
 						}));
 					}
 				}
-				chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_maybe_close(e))
+				chan.update_add_htlc(&msg, pending_forward_info).map_err(|e| MsgHandleErrInternal::from_chan_maybe_close(e, msg.channel_id))
 			},
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}
@@ -2588,11 +2584,9 @@ impl ChainListener for ChannelManager {
 				} else if let Err(e) = chan_res {
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_their_node_id(),
-						action: e.action,
+						action: Some(msgs::ErrorAction::SendErrorMessage { msg: e }),
 					});
-					if channel.is_shutdown() {
-						return false;
-					}
+					return false;
 				}
 				if let Some(funding_txo) = channel.get_funding_txo() {
 					for tx in txn_matched {
@@ -5532,7 +5526,7 @@ mod tests {
 					HandleError{err, .. } => assert_eq!(err, "Remote HTLC add would put them over their reserve value"),
 				}
 				// If we send a garbage message, the channel should get closed, making the rest of this test case fail.
-				/*assert_eq!(nodes[1].node.list_channels().len(), 1);
+				assert_eq!(nodes[1].node.list_channels().len(), 1);
 				assert_eq!(nodes[1].node.list_channels().len(), 1);
 				let channel_close_broadcast = nodes[1].node.get_and_clear_pending_msg_events();
 				assert_eq!(channel_close_broadcast.len(), 1);
@@ -5541,7 +5535,7 @@ mod tests {
 						assert_eq!(msg.contents.flags & 2, 2);
 					},
 					_ => panic!("Unexpected event"),
-				}*/
+				}
 				return;
 			}
 		}
