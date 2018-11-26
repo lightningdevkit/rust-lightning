@@ -442,6 +442,24 @@ macro_rules! try_chan_entry {
 	}
 }
 
+// Does not break in case of TemporaryFailure!
+macro_rules! maybe_break_monitor_err {
+	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
+		match $err {
+			ChannelMonitorUpdateErr::PermanentFailure => {
+				let (channel_id, mut chan) = $entry.remove_entry();
+				if let Some(short_id) = chan.get_short_channel_id() {
+					$channel_state.short_to_id.remove(&short_id);
+				}
+				break Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+			},
+			ChannelMonitorUpdateErr::TemporaryFailure => {
+				$entry.get_mut().monitor_update_failed($action_type);
+			},
+		}
+	}
+}
+
 impl ChannelManager {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -664,33 +682,6 @@ impl ChannelManager {
 	pub fn force_close_all_channels(&self) {
 		for chan in self.list_channels() {
 			self.force_close_channel(&chan.channel_id);
-		}
-	}
-
-	fn handle_monitor_update_fail(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, channel_id: &[u8; 32], err: ChannelMonitorUpdateErr, reason: RAACommitmentOrder) {
-		match err {
-			ChannelMonitorUpdateErr::PermanentFailure => {
-				let mut chan = {
-					let channel_state = channel_state_lock.borrow_parts();
-					let chan = channel_state.by_id.remove(channel_id).expect("monitor_update_failed must be called within the same lock as the channel get!");
-					if let Some(short_id) = chan.get_short_channel_id() {
-						channel_state.short_to_id.remove(&short_id);
-					}
-					chan
-				};
-				mem::drop(channel_state_lock);
-				self.finish_force_close_channel(chan.force_shutdown());
-				if let Ok(update) = self.get_channel_update(&chan) {
-					let mut channel_state = self.channel_state.lock().unwrap();
-					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-						msg: update
-					});
-				}
-			},
-			ChannelMonitorUpdateErr::TemporaryFailure => {
-				let channel = channel_state_lock.by_id.get_mut(channel_id).expect("monitor_update_failed must be called within the same lock as the channel get!");
-				channel.monitor_update_failed(reason);
-			},
 		}
 	}
 
@@ -1193,7 +1184,17 @@ impl ChannelManager {
 	/// May generate a SendHTLCs message event on success, which should be relayed.
 	///
 	/// Raises APIError::RoutError when invalid route or forward parameter
-	/// (cltv_delta, fee, node public key) is specified
+	/// (cltv_delta, fee, node public key) is specified.
+	/// Raises APIError::ChannelUnavailable if the next-hop channel is not available for updates
+	/// (including due to previous monitor update failure or new permanent monitor update failure).
+	/// Raised APIError::MonitorUpdateFailed if a new monitor update failure prevented sending the
+	/// relevant updates.
+	///
+	/// In case of APIError::RouteError/APIError::ChannelUnavailable, the payment send has failed
+	/// and you may wish to retry via a different route immediately.
+	/// In case of APIError::MonitorUpdateFailed, the commitment update has been irrevocably
+	/// committed on our end and we're just waiting for a monitor update to send it. Do NOT retry
+	/// the payment via a different route unless you intend to pay twice!
 	pub fn send_payment(&self, route: Route, payment_hash: [u8; 32]) -> Result<(), APIError> {
 		if route.hops.len() < 1 || route.hops.len() > 20 {
 			return Err(APIError::RouteError{err: "Route didn't go anywhere/had bogus size"});
@@ -1224,45 +1225,46 @@ impl ChannelManager {
 				Some(id) => id.clone(),
 			};
 
-			match {
-				let channel_state = channel_lock.borrow_parts();
-				if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
+			let channel_state = channel_lock.borrow_parts();
+			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
+				match {
 					if chan.get().get_their_node_id() != route.hops.first().unwrap().pubkey {
 						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
 					}
-					if chan.get().is_awaiting_monitor_update() {
-						return Err(APIError::MonitorUpdateFailed);
-					}
 					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected!"});
+						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!"});
 					}
 					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 						route: route.clone(),
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 					}, onion_packet), channel_state, chan)
-				} else { unreachable!(); }
-			} {
-				Some((update_add, commitment_signed, chan_monitor)) => {
-					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						self.handle_monitor_update_fail(channel_lock, &id, e, RAACommitmentOrder::CommitmentFirst);
-						return Err(APIError::MonitorUpdateFailed);
-					}
+				} {
+					Some((update_add, commitment_signed, chan_monitor)) => {
+						if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst);
+							// Note that MonitorUpdateFailed here indicates (per function docs)
+							// that we will resent the commitment update once we unfree monitor
+							// updating, so we have to take special care that we don't return
+							// something else in case we will resend later!
+							return Err(APIError::MonitorUpdateFailed);
+						}
 
-					channel_lock.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: route.hops.first().unwrap().pubkey,
-						updates: msgs::CommitmentUpdate {
-							update_add_htlcs: vec![update_add],
-							update_fulfill_htlcs: Vec::new(),
-							update_fail_htlcs: Vec::new(),
-							update_fail_malformed_htlcs: Vec::new(),
-							update_fee: None,
-							commitment_signed,
-						},
-					});
-				},
-				None => {},
-			}
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							node_id: route.hops.first().unwrap().pubkey,
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: vec![update_add],
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: Vec::new(),
+								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
+								commitment_signed,
+							},
+						});
+					},
+					None => {},
+				}
+			} else { unreachable!(); }
 			return Ok(());
 		};
 
@@ -1441,7 +1443,7 @@ impl ChannelManager {
 							},
 						};
 						if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-							unimplemented!();// but def dont push the event...
+							unimplemented!();
 						}
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: forward_chan.get_their_node_id(),
@@ -6946,13 +6948,17 @@ mod tests {
 		let (_, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 
 		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
-		if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
+		if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
 		check_added_monitors!(nodes[0], 1);
 
 		let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events_1.len(), 1);
+		assert_eq!(events_1.len(), 2);
 		match events_1[0] {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		};
+		match events_1[1] {
+			MessageSendEvent::HandleError { node_id, .. } => assert_eq!(node_id, nodes[1].node.get_our_node_id()),
 			_ => panic!("Unexpected event"),
 		};
 
