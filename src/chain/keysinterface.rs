@@ -79,6 +79,8 @@ pub trait KeysInterface: Send + Sync {
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
 	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys;
+	/// Get a secret for construting an onion packet
+	fn get_session_key(&self) -> SecretKey;
 }
 
 /// Set of lightning keys needed to operate a channel as described in BOLT 3
@@ -158,6 +160,8 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
+	session_master_key: ExtendedPrivKey,
+	session_child_index: AtomicUsize,
 
 	logger: Arc<Logger>,
 }
@@ -184,6 +188,7 @@ impl KeysManager {
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3)).expect("Your RNG is busted");
+				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4)).expect("Your RNG is busted");
 				KeysManager {
 					secp_ctx,
 					node_secret,
@@ -191,6 +196,8 @@ impl KeysManager {
 					shutdown_pubkey,
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
+					session_master_key,
+					session_child_index: AtomicUsize::new(0),
 
 					logger,
 				}
@@ -234,5 +241,20 @@ impl KeysInterface for KeysManager {
 
 		sha.result(&mut seed);
 		ChannelKeys::new_from_seed(&seed)
+	}
+
+	fn get_session_key(&self) -> SecretKey {
+		let mut sha = Sha256::new();
+		let mut res = [0u8; 32];
+
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
+		sha.input(&byte_utils::be32_to_array(now.subsec_nanos()));
+		sha.input(&byte_utils::be64_to_array(now.as_secs()));
+
+		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
+		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
+		sha.input(&child_privkey.secret_key[..]);
+		sha.result(&mut res);
+		SecretKey::from_slice(&self.secp_ctx, &res).expect("Your RNG is busted")
 	}
 }

@@ -1199,11 +1199,7 @@ impl ChannelManager {
 			}
 		}
 
-		let session_priv = SecretKey::from_slice(&self.secp_ctx, &{
-			let mut session_key = [0; 32];
-			rng::fill_bytes(&mut session_key);
-			session_key
-		}).expect("RNG is bad!");
+		let session_priv = self.keys_manager.get_session_key();
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
