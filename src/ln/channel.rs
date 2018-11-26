@@ -2289,7 +2289,8 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent a loose channel_reestablish not after reconnect"));
 		}
 
-		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER {
+		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
+			msg.next_local_commitment_number == 0 {
 			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish"));
 		}
 
@@ -2304,15 +2305,15 @@ impl Channel {
 			})
 		} else { None };
 
-		if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) == ChannelState::FundingSent as u32 {
-			// Short circuit the whole handler as there is nothing we can resend them
-			return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
-		}
-
-		if msg.next_local_commitment_number == 0 || msg.next_remote_commitment_number == 0 {
-			if self.channel_state & (ChannelState::FundingSent as u32) != ChannelState::FundingSent as u32 {
-				return Err(ChannelError::Close("Peer sent a pre-funding channel_reestablish after we exchanged funding_locked"));
+		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
+			if self.channel_state & ChannelState::OurFundingLocked as u32 == 0 {
+				if msg.next_remote_commitment_number != 0 {
+					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet"));
+				}
+				// Short circuit the whole handler as there is nothing we can resend them
+				return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 			}
+
 			// We have OurFundingLocked set!
 			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
@@ -2322,11 +2323,11 @@ impl Channel {
 			}), None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 		}
 
-		let required_revoke = if msg.next_remote_commitment_number == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
+		let required_revoke = if msg.next_remote_commitment_number + 1 == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our FundingLocked we'll do that in the next if block.
 			None
-		} else if msg.next_remote_commitment_number == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_local_commitment_transaction_number {
+		} else if msg.next_remote_commitment_number + 1 == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_local_commitment_transaction_number {
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_revoke_and_ack = true;
 				None
@@ -3053,11 +3054,27 @@ impl Channel {
 	/// self.remove_uncommitted_htlcs_and_mark_paused()'d
 	pub fn get_channel_reestablish(&self) -> msgs::ChannelReestablish {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
+		assert_ne!(self.cur_remote_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
+			// The protocol has two different commitment number concepts - the "commitment
+			// transaction number", which starts from 0 and counts up, and the "revocation key
+			// index" which starts at INITIAL_COMMITMENT_NUMBER and counts down. We track
+			// commitment transaction numbers by the index which will be used to reveal the
+			// revocation key for that commitment transaction, which means we have to convert them
+			// to protocol-level commitment numbers here...
+
+			// next_local_commitment_number is the next commitment_signed number we expect to
+			// receive (indicating if they need to resend one that we missed).
 			next_local_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number,
-			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number -
-				if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) == (ChannelState::FundingSent as u32) { 1 } else { 0 },
+			// We have to set next_remote_commitment_number to the next revoke_and_ack we expect to
+			// receive, however we track it by the next commitment number for a remote transaction
+			// (which is one further, as they always revoke previous commitment transaction, not
+			// the one we send) so we have to decrement by 1. Note that if
+			// cur_remote_commitment_transaction_number is INITIAL_COMMITMENT_NUMBER we will have
+			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
+			// overflow here.
+			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number - 1,
 			data_loss_protect: None,
 		}
 	}

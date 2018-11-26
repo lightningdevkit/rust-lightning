@@ -6315,6 +6315,31 @@ mod tests {
 		node_b.node.peer_connected(&node_a.node.get_our_node_id());
 		let reestablish_2 = get_chan_reestablish_msgs!(node_b, node_a);
 
+		if send_funding_locked.0 {
+			// If a expects a funding_locked, it better not think it has received a revoke_and_ack
+			// from b
+			for reestablish in reestablish_1.iter() {
+				assert_eq!(reestablish.next_remote_commitment_number, 0);
+			}
+		}
+		if send_funding_locked.1 {
+			// If b expects a funding_locked, it better not think it has received a revoke_and_ack
+			// from a
+			for reestablish in reestablish_2.iter() {
+				assert_eq!(reestablish.next_remote_commitment_number, 0);
+			}
+		}
+		if send_funding_locked.0 || send_funding_locked.1 {
+			// If we expect any funding_locked's, both sides better have set
+			// next_local_commitment_number to 1
+			for reestablish in reestablish_1.iter() {
+				assert_eq!(reestablish.next_local_commitment_number, 1);
+			}
+			for reestablish in reestablish_2.iter() {
+				assert_eq!(reestablish.next_local_commitment_number, 1);
+			}
+		}
+
 		let mut resp_1 = Vec::new();
 		for msg in reestablish_1 {
 			node_b.node.handle_channel_reestablish(&node_a.node.get_our_node_id(), &msg).unwrap();
