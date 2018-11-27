@@ -2406,8 +2406,7 @@ impl Channel {
 	fn maybe_propose_first_closing_signed(&mut self, fee_estimator: &FeeEstimator) -> Option<msgs::ClosingSigned> {
 		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
 				self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32) != BOTH_SIDES_SHUTDOWN_MASK ||
-				self.last_sent_closing_fee.is_some() ||
-				self.cur_remote_commitment_transaction_number != self.cur_local_commitment_transaction_number{
+				self.last_sent_closing_fee.is_some() || self.pending_update_fee.is_some() {
 			return None;
 		}
 
