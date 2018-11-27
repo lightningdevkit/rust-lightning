@@ -52,8 +52,8 @@ macro_rules! log_funding_channel_id {
 	}
 }
 
-pub(crate) struct DebugFundingOption<'a, T: 'a>(pub &'a Option<(OutPoint, T)>);
-impl<'a, T> std::fmt::Display for DebugFundingOption<'a, T> {
+pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a Option<(OutPoint, T)>);
+impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		match self.0.as_ref() {
 			Some(&(ref funding_output, _)) => DebugBytes(&funding_output.to_channel_id()[..]).fmt(f),
@@ -61,9 +61,16 @@ impl<'a, T> std::fmt::Display for DebugFundingOption<'a, T> {
 		}
 	}
 }
-macro_rules! log_funding_option {
-	($funding_option: expr) => {
-		::util::macro_logger::DebugFundingOption(&$funding_option)
+macro_rules! log_funding_info {
+	($key_storage: expr) => {
+		match $key_storage {
+			Storage::Local { ref funding_info, .. } => {
+				::util::macro_logger::DebugFundingInfo(&funding_info)
+			},
+			Storage::Watchtower { .. } => {
+				::util::macro_logger::DebugFundingInfo(&None)
+			}
+		}
 	}
 }
 
