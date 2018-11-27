@@ -442,6 +442,43 @@ macro_rules! try_chan_entry {
 	}
 }
 
+macro_rules! return_monitor_err {
+	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
+		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, Vec::new(), Vec::new())
+	};
+	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $raa_first_dropped_cs: expr) => {
+		if $action_type != RAACommitmentOrder::RevokeAndACKFirst { panic!("Bad return_monitor_err call!"); }
+		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, Vec::new(), Vec::new(), $raa_first_dropped_cs)
+	};
+	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $failed_forwards: expr, $failed_fails: expr) => {
+		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, $failed_forwards, $failed_fails, false)
+	};
+	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $failed_forwards: expr, $failed_fails: expr, $raa_first_dropped_cs: expr) => {
+		match $err {
+			ChannelMonitorUpdateErr::PermanentFailure => {
+				let (channel_id, mut chan) = $entry.remove_entry();
+				if let Some(short_id) = chan.get_short_channel_id() {
+					$channel_state.short_to_id.remove(&short_id);
+				}
+				// TODO: $failed_fails is dropped here, which will cause other channels to hit the
+				// chain in a confused state! We need to move them into the ChannelMonitor which
+				// will be responsible for failing backwards once things confirm on-chain.
+				// It's ok that we drop $failed_forwards here - at this point we'd rather they
+				// broadcast HTLC-Timeout and pay the associated fees to get their funds back than
+				// us bother trying to claim it just to forward on to another peer. If we're
+				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
+				// given up the preimage yet, so might as well just wait until the payment is
+				// retried, avoiding the on-chain fees.
+				return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+			},
+			ChannelMonitorUpdateErr::TemporaryFailure => {
+				$entry.get_mut().monitor_update_failed($action_type, $failed_forwards, $failed_fails, $raa_first_dropped_cs);
+				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()));
+			},
+		}
+	}
+}
+
 // Does not break in case of TemporaryFailure!
 macro_rules! maybe_break_monitor_err {
 	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
@@ -454,7 +491,7 @@ macro_rules! maybe_break_monitor_err {
 				break Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
-				$entry.get_mut().monitor_update_failed($action_type);
+				$entry.get_mut().monitor_update_failed($action_type, Vec::new(), Vec::new(), false);
 			},
 		}
 	}
@@ -1681,6 +1718,13 @@ impl ChannelManager {
 					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						match e {
 							ChannelMonitorUpdateErr::PermanentFailure => {
+								// TODO: There may be some pending HTLCs that we intended to fail
+								// backwards when a monitor update failed. We should make sure
+								// knowledge of those gets moved into the appropriate in-memory
+								// ChannelMonitor and they get failed backwards once we get
+								// on-chain confirmations.
+								// Note I think #198 addresses this, so once its merged a test
+								// should be written.
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_id.remove(&short_id);
 								}
@@ -2283,8 +2327,9 @@ impl ChannelManager {
 				}
 				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) =
 					try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &*self.fee_estimator), channel_state, chan);
-				if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-					unimplemented!();
+				if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, commitment_signed.is_some());
+					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
 					node_id: their_node_id.clone(),
@@ -2360,8 +2405,8 @@ impl ChannelManager {
 					}
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) =
 						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
-					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						unimplemented!();
+					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, pending_forwards, pending_failures);
 					}
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -2455,11 +2500,21 @@ impl ChannelManager {
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, order, shutdown) =
+				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg), channel_state, chan);
 				if let Some(monitor) = channel_monitor {
-					if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-						unimplemented!();
+					if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+						// channel_reestablish doesn't guarantee the order it returns is sensical
+						// for the messages it returns, but if we're setting what messages to
+						// re-transmit on monitor update success, we need to make sure it is sane.
+						if revoke_and_ack.is_none() {
+							order = RAACommitmentOrder::CommitmentFirst;
+						}
+						if commitment_update.is_none() {
+							order = RAACommitmentOrder::RevokeAndACKFirst;
+						}
+						return_monitor_err!(self, e, channel_state, chan, order);
+						//TODO: Resend the funding_locked if needed once we get the monitor running again
 					}
 				}
 				if let Some(msg) = funding_locked {
