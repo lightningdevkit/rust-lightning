@@ -25,7 +25,7 @@ pub mod sha2;
 pub(crate) mod sha2;
 
 #[cfg(feature = "fuzztarget")]
-pub use self::rng::reset_rng_state;
+pub use self::rng::{reset_rng_state, fill_bytes};
 
 #[cfg(test)]
 pub(crate) mod test_utils;

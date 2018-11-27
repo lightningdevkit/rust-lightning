@@ -21,7 +21,7 @@ use lightning::ln::channelmanager::{ChannelManager, PaymentFailReason};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
-use lightning::util::reset_rng_state;
+use lightning::util::{reset_rng_state, fill_bytes};
 use lightning::util::logger::Logger;
 use lightning::util::sha2::Sha256;
 use lightning::util::config::UserConfig;
@@ -264,6 +264,12 @@ impl KeysInterface for KeyProvider {
 				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 			}
 		}
+	}
+
+	fn get_session_key(&self) -> SecretKey {
+		let mut session_key = [0; 32];
+		fill_bytes(&mut session_key);
+		SecretKey::from_slice(&Secp256k1::without_caps(), &session_key).unwrap()
 	}
 }
 

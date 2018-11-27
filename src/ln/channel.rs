@@ -3901,6 +3901,7 @@ mod tests {
 		}
 
 		fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys { self.chan_keys.clone() }
+		fn get_session_key(&self) -> SecretKey { panic!(); }
 	}
 
 	#[test]
