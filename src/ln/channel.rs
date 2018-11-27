@@ -2852,8 +2852,8 @@ impl Channel {
 						}
 						self.funding_tx_confirmations = 1;
 						self.short_channel_id = Some(((height as u64)          << (5*8)) |
-						                             ((*index_in_block as u64) << (2*8)) |
-						                             ((txo_idx as u64)         << (0*8)));
+								       ((*index_in_block as u64) << (2*8)) |
+								       ((txo_idx as u64)         << (0*8)));
 					}
 				}
 			}
