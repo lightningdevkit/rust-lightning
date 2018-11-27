@@ -5344,7 +5344,10 @@ mod tests {
 					false
 				} else { true }
 			});
-			assert_eq!(res.len(), 2);
+			assert!(res.len() == 2 || res.len() == 3);
+			if res.len() == 3 {
+				assert_eq!(res[1], res[2]);
+			}
 		}
 
 		assert!(node_txn.is_empty());
@@ -8429,10 +8432,12 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 		let revoked_htlc_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(revoked_htlc_txn.len(), 2);
+		assert_eq!(revoked_htlc_txn.len(), 3);
+		assert_eq!(revoked_htlc_txn[0], revoked_htlc_txn[2]);
 		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
 		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), 133);
 		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0].clone());
+		check_spends!(revoked_htlc_txn[1], chan_1.3.clone());
 
 		// B will generate justice tx from A's revoked commitment/HTLC tx
 		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
@@ -8479,7 +8484,8 @@ mod tests {
 		}
 		let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 
-		assert_eq!(revoked_htlc_txn.len(), 2);
+		assert_eq!(revoked_htlc_txn.len(), 3);
+		assert_eq!(revoked_htlc_txn[0], revoked_htlc_txn[2]);
 		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
 		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), 138);
 		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0].clone());
@@ -8540,8 +8546,9 @@ mod tests {
 
 		// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 		let spend_txn = check_spendable_outputs!(nodes[1], 1);
-		assert_eq!(spend_txn.len(), 1);
+		assert_eq!(spend_txn.len(), 2);
 		check_spends!(spend_txn[0], node_txn[0].clone());
+		check_spends!(spend_txn[1], node_txn[2].clone());
 	}
 
 	#[test]
@@ -8571,9 +8578,13 @@ mod tests {
 
 		// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 		let spend_txn = check_spendable_outputs!(nodes[0], 1);
-		assert_eq!(spend_txn.len(), 4);
+		assert_eq!(spend_txn.len(), 8);
 		assert_eq!(spend_txn[0], spend_txn[2]);
+		assert_eq!(spend_txn[0], spend_txn[4]);
+		assert_eq!(spend_txn[0], spend_txn[6]);
 		assert_eq!(spend_txn[1], spend_txn[3]);
+		assert_eq!(spend_txn[1], spend_txn[5]);
+		assert_eq!(spend_txn[1], spend_txn[7]);
 		check_spends!(spend_txn[0], local_txn[0].clone());
 		check_spends!(spend_txn[1], node_txn[0].clone());
 	}

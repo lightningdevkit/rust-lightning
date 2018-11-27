@@ -1319,9 +1319,10 @@ impl ChannelMonitor {
 		} else { (None, None) }
 	}
 
-	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx, per_commitment_point: &Option<PublicKey>, delayed_payment_base_key: &Option<SecretKey>) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>) {
+	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx, per_commitment_point: &Option<PublicKey>, delayed_payment_base_key: &Option<SecretKey>) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, Vec<TxOut>) {
 		let mut res = Vec::with_capacity(local_tx.htlc_outputs.len());
 		let mut spendable_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
+		let mut watch_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
 
 		macro_rules! add_dynamic_output {
 			($father_tx: expr, $vout: expr) => {
@@ -1385,24 +1386,27 @@ impl ChannelMonitor {
 					res.push(htlc_success_tx);
 				}
 			}
+			watch_outputs.push(local_tx.tx.output[htlc.transaction_output_index as usize].clone());
 		}
 
-		(res, spendable_outputs)
+		(res, spendable_outputs, watch_outputs)
 	}
 
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in local_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_local_transaction(&self, tx: &Transaction, _height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>) {
+	fn check_spend_local_transaction(&self, tx: &Transaction, _height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, (Sha256dHash, Vec<TxOut>)) {
 		let commitment_txid = tx.txid();
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
-						return self.broadcast_by_local_state(local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
+						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
+						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
 					},
 					Storage::Watchtower { .. } => {
-						return self.broadcast_by_local_state(local_tx, &None, &None);
+						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, &None, &None);
+						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
 					}
 				}
 			}
@@ -1411,15 +1415,17 @@ impl ChannelMonitor {
 			if local_tx.txid == commitment_txid {
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref prev_latest_per_commitment_point, .. } => {
-						return self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key));
+						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key));
+						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
 					},
 					Storage::Watchtower { .. } => {
-						return self.broadcast_by_local_state(local_tx, &None, &None);
+						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, &None, &None);
+						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
 					}
 				}
 			}
 		}
-		(Vec::new(), Vec::new())
+		(Vec::new(), Vec::new(), (commitment_txid, Vec::new()))
 	}
 
 	/// Generate a spendable output event when closing_transaction get registered onchain.
@@ -1491,9 +1497,12 @@ impl ChannelMonitor {
 						watch_outputs.push(new_outputs);
 					}
 					if txn.is_empty() {
-						let (remote_txn, mut outputs) = self.check_spend_local_transaction(tx, height);
-						spendable_outputs.append(&mut outputs);
-						txn = remote_txn;
+						let (local_txn, mut spendable_output, new_outputs) = self.check_spend_local_transaction(tx, height);
+						spendable_outputs.append(&mut spendable_output);
+						txn = local_txn;
+						if !new_outputs.1.is_empty() {
+							watch_outputs.push(new_outputs);
+						}
 					}
 					if !funding_txo.is_none() && txn.is_empty() {
 						if let Some(spendable_output) = self.check_spend_closing_transaction(tx) {
@@ -1521,15 +1530,21 @@ impl ChannelMonitor {
 				broadcaster.broadcast_transaction(&cur_local_tx.tx);
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
-						let (txs, mut outputs) = self.broadcast_by_local_state(&cur_local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
-						spendable_outputs.append(&mut outputs);
+						let (txs, mut spendable_output, new_outputs) = self.broadcast_by_local_state(&cur_local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
+						spendable_outputs.append(&mut spendable_output);
+						if !new_outputs.is_empty() {
+							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
+						}
 						for tx in txs {
 							broadcaster.broadcast_transaction(&tx);
 						}
 					},
 					Storage::Watchtower { .. } => {
-						let (txs, mut outputs) = self.broadcast_by_local_state(&cur_local_tx, &None, &None);
-						spendable_outputs.append(&mut outputs);
+						let (txs, mut spendable_output, new_outputs) = self.broadcast_by_local_state(&cur_local_tx, &None, &None);
+						spendable_outputs.append(&mut spendable_output);
+						if !new_outputs.is_empty() {
+							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
+						}
 						for tx in txs {
 							broadcaster.broadcast_transaction(&tx);
 						}
