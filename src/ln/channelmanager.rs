@@ -3886,6 +3886,12 @@ mod tests {
 				_ => panic!("Unexpected event type!"),
 			}
 		}
+
+		fn from_node(node: &Node) -> SendEvent {
+			let mut events = node.node.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.pop().unwrap())
+		}
 	}
 
 	macro_rules! check_added_monitors {
@@ -3908,7 +3914,7 @@ mod tests {
 				commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, false);
 			}
 		};
-		($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */) => {
+		($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */, true /* return last RAA */) => {
 			{
 				let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!($node_a, $node_b.node.get_our_node_id());
 				check_added_monitors!($node_b, 0);
@@ -3933,6 +3939,23 @@ mod tests {
 					assert!($node_a.node.get_and_clear_pending_events().is_empty());
 					assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 				}
+				(extra_msg_option, bs_revoke_and_ack)
+			}
+		};
+		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {
+			{
+				check_added_monitors!($node_a, 0);
+				assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
+				$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed).unwrap();
+				check_added_monitors!($node_a, 1);
+				let (extra_msg_option, bs_revoke_and_ack) = commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true, true);
+				assert!(extra_msg_option.is_none());
+				bs_revoke_and_ack
+			}
+		};
+		($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */) => {
+			{
+				let (extra_msg_option, bs_revoke_and_ack) = commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true, true);
 				$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
 				{
 					let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
@@ -7452,6 +7475,436 @@ mod tests {
 		do_test_monitor_temporary_update_fail(3 | 16);
 		do_test_monitor_temporary_update_fail(2 | 8 | 16);
 		do_test_monitor_temporary_update_fail(3 | 8 | 16);
+	}
+
+	#[test]
+	fn test_monitor_update_fail_cs() {
+		// Tests handling of a monitor update failure when processing an incoming commitment_signed
+		let mut nodes = create_network(2);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
+
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_event.commitment_msg).unwrap_err() {
+			assert_eq!(err, "Failed to update ChannelMonitor");
+		} else { panic!(); }
+		check_added_monitors!(nodes[1], 1);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[1].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[1], 1);
+		let responses = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(responses.len(), 2);
+
+		match responses[0] {
+			MessageSendEvent::SendRevokeAndACK { ref msg, ref node_id } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &msg).unwrap();
+				check_added_monitors!(nodes[0], 1);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match responses[1] {
+			MessageSendEvent::UpdateHTLCs { ref updates, ref node_id } => {
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert!(updates.update_fail_htlcs.is_empty());
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+
+				*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+				if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed).unwrap_err() {
+					assert_eq!(err, "Failed to update ChannelMonitor");
+				} else { panic!(); }
+				check_added_monitors!(nodes[0], 1);
+				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[0].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[0], 1);
+
+		let final_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &final_raa).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		let mut events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
+		nodes[1].node.process_pending_htlc_forwards();
+
+		events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentReceived { payment_hash, amt } => {
+				assert_eq!(payment_hash, our_payment_hash);
+				assert_eq!(amt, 1000000);
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	}
+
+	fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
+		// Tests handling of a monitor update failure when processing an incoming RAA
+		let mut nodes = create_network(3);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		// Rebalance a bit so that we can send backwards from 2 to 1.
+		send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
+
+		// Route a first payment that we'll fail backwards
+		let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+
+		// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
+		assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, PaymentFailReason::PreimageUnknown));
+		check_added_monitors!(nodes[2], 1);
+
+		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+
+		let bs_revoke_and_ack = commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true, false, true);
+		check_added_monitors!(nodes[0], 0);
+
+		// While the second channel is AwaitingRAA, forward a second payment to get it into the
+		// holding cell.
+		let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false);
+
+		let events_1 = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+
+		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
+		nodes[1].node.process_pending_htlc_forwards();
+		check_added_monitors!(nodes[1], 0);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		// Now fail monitor updating.
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack).unwrap_err() {
+			assert_eq!(err, "Failed to update ChannelMonitor");
+		} else { panic!(); }
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		check_added_monitors!(nodes[1], 1);
+
+		// Attempt to forward a third payment but fail due to the second channel being unavailable
+		// for forwarding.
+
+		let (_, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
+		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		nodes[0].node.send_payment(route, payment_hash_3).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(()); // We succeed in updating the monitor for the first channel
+		send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
+		commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false, true);
+		check_added_monitors!(nodes[1], 0);
+
+		let mut events_2 = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events_2.len(), 1);
+		match events_2.remove(0) {
+			MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert_eq!(updates.update_fail_htlcs.len(), 1);
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+
+				nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+				commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+
+				let events = nodes[0].node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				if let Event::PaymentFailed { payment_hash, rejected_by_dest } = events[0] {
+					assert_eq!(payment_hash, payment_hash_3);
+					assert!(!rejected_by_dest);
+				} else { panic!("Unexpected event!"); }
+			},
+			_ => panic!("Unexpected event type!"),
+		};
+
+		let (payment_preimage_4, payment_hash_4) = if test_ignore_second_cs {
+			// Try to route another payment backwards from 2 to make sure 1 holds off on responding
+			let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[0]);
+			let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+			nodes[2].node.send_payment(route, payment_hash_4).unwrap();
+			check_added_monitors!(nodes[2], 1);
+
+			send_event = SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
+			nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
+			if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::IgnoreError) }) = nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &send_event.commitment_msg) {
+				assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
+			} else { panic!(); }
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+			assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+			(Some(payment_preimage_4), Some(payment_hash_4))
+		} else { (None, None) };
+
+		// Restore monitor updating, ensuring we immediately get a fail-back update and a
+		// update_add update.
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[1].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[1], 2);
+
+		let mut events_3 = nodes[1].node.get_and_clear_pending_msg_events();
+		if test_ignore_second_cs {
+			assert_eq!(events_3.len(), 3);
+		} else {
+			assert_eq!(events_3.len(), 2);
+		}
+
+		// Note that the ordering of the events for different nodes is non-prescriptive, though the
+		// ordering of the two events that both go to nodes[2] have to stay in the same order.
+		let messages_a = match events_3.pop().unwrap() {
+			MessageSendEvent::UpdateHTLCs { node_id, mut updates } => {
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert_eq!(updates.update_fail_htlcs.len(), 1);
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+				(updates.update_fail_htlcs.remove(0), updates.commitment_signed)
+			},
+			_ => panic!("Unexpected event type!"),
+		};
+		let raa = if test_ignore_second_cs {
+			match events_3.remove(1) {
+				MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+					assert_eq!(node_id, nodes[2].node.get_our_node_id());
+					Some(msg.clone())
+				},
+				_ => panic!("Unexpected event"),
+			}
+		} else { None };
+		let send_event_b = SendEvent::from_event(events_3.remove(0));
+		assert_eq!(send_event_b.node_id, nodes[2].node.get_our_node_id());
+
+		// Now deliver the new messages...
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &messages_a.0).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], messages_a.1, false);
+		let events_4 = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events_4.len(), 1);
+		if let Event::PaymentFailed { payment_hash, rejected_by_dest } = events_4[0] {
+			assert_eq!(payment_hash, payment_hash_1);
+			assert!(rejected_by_dest);
+		} else { panic!("Unexpected event!"); }
+
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event_b.msgs[0]).unwrap();
+		if test_ignore_second_cs {
+			nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_event_b.commitment_msg).unwrap();
+			check_added_monitors!(nodes[2], 1);
+			let bs_revoke_and_ack = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+			nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa.unwrap()).unwrap();
+			check_added_monitors!(nodes[2], 1);
+			let bs_cs = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+			assert!(bs_cs.update_add_htlcs.is_empty());
+			assert!(bs_cs.update_fail_htlcs.is_empty());
+			assert!(bs_cs.update_fail_malformed_htlcs.is_empty());
+			assert!(bs_cs.update_fulfill_htlcs.is_empty());
+			assert!(bs_cs.update_fee.is_none());
+
+			nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
+			check_added_monitors!(nodes[1], 1);
+			let as_cs = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+			assert!(as_cs.update_add_htlcs.is_empty());
+			assert!(as_cs.update_fail_htlcs.is_empty());
+			assert!(as_cs.update_fail_malformed_htlcs.is_empty());
+			assert!(as_cs.update_fulfill_htlcs.is_empty());
+			assert!(as_cs.update_fee.is_none());
+
+			nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &bs_cs.commitment_signed).unwrap();
+			check_added_monitors!(nodes[1], 1);
+			let as_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
+
+			nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &as_cs.commitment_signed).unwrap();
+			check_added_monitors!(nodes[2], 1);
+			let bs_second_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+			nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa).unwrap();
+			check_added_monitors!(nodes[2], 1);
+			assert!(nodes[2].node.get_and_clear_pending_msg_events().is_empty());
+
+			nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_second_raa).unwrap();
+			check_added_monitors!(nodes[1], 1);
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		} else {
+			commitment_signed_dance!(nodes[2], nodes[1], send_event_b.commitment_msg, false);
+		}
+
+		let events_5 = nodes[2].node.get_and_clear_pending_events();
+		assert_eq!(events_5.len(), 1);
+		match events_5[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+
+		nodes[2].node.channel_state.lock().unwrap().next_forward = Instant::now();
+		nodes[2].node.process_pending_htlc_forwards();
+
+		let events_6 = nodes[2].node.get_and_clear_pending_events();
+		assert_eq!(events_6.len(), 1);
+		match events_6[0] {
+			Event::PaymentReceived { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_2); },
+			_ => panic!("Unexpected event"),
+		};
+
+		if test_ignore_second_cs {
+			let events_7 = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events_7.len(), 1);
+			match events_7[0] {
+				Event::PendingHTLCsForwardable { .. } => { },
+				_ => panic!("Unexpected event"),
+			};
+
+			nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
+			nodes[1].node.process_pending_htlc_forwards();
+			check_added_monitors!(nodes[1], 1);
+
+			send_event = SendEvent::from_node(&nodes[1]);
+			assert_eq!(send_event.node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(send_event.msgs.len(), 1);
+			nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
+			commitment_signed_dance!(nodes[0], nodes[1], send_event.commitment_msg, false);
+
+			let events_8 = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events_8.len(), 1);
+			match events_8[0] {
+				Event::PendingHTLCsForwardable { .. } => { },
+				_ => panic!("Unexpected event"),
+			};
+
+			nodes[0].node.channel_state.lock().unwrap().next_forward = Instant::now();
+			nodes[0].node.process_pending_htlc_forwards();
+
+			let events_9 = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events_9.len(), 1);
+			match events_9[0] {
+				Event::PaymentReceived { payment_hash, .. } => assert_eq!(payment_hash, payment_hash_4.unwrap()),
+				_ => panic!("Unexpected event"),
+			};
+			claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_4.unwrap());
+		}
+
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
+	}
+
+	#[test]
+	fn test_monitor_update_fail_raa() {
+		do_test_monitor_update_fail_raa(false);
+		do_test_monitor_update_fail_raa(true);
+	}
+
+	#[test]
+	fn test_monitor_update_fail_reestablish() {
+		// Simple test for message retransmission after monitor update failure on
+		// channel_reestablish generating a monitor update (which comes from freeing holding cell
+		// HTLCs).
+		let mut nodes = create_network(3);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+
+		assert!(nodes[2].node.claim_funds(our_payment_preimage));
+		check_added_monitors!(nodes[2], 1);
+		let mut updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+
+		let as_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+		let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish).unwrap();
+
+		if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish).unwrap_err() {
+			assert_eq!(err, "Failed to update ChannelMonitor");
+		} else { panic!(); }
+		check_added_monitors!(nodes[1], 1);
+
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+
+		assert!(as_reestablish == get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id()));
+		assert!(bs_reestablish == get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id()));
+
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish).unwrap();
+
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish).unwrap();
+		check_added_monitors!(nodes[1], 0);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+		nodes[1].node.test_restore_channel_monitor();
+		check_added_monitors!(nodes[1], 1);
+
+		updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentSent { payment_preimage, .. } => assert_eq!(payment_preimage, our_payment_preimage),
+			_ => panic!("Unexpected event"),
+		}
 	}
 
 	#[test]
