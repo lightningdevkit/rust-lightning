@@ -281,6 +281,12 @@ impl KeysInterface for KeyProvider {
 		fill_bytes(&mut session_key);
 		SecretKey::from_slice(&session_key).unwrap()
 	}
+
+	fn get_channel_id(&self) -> [u8; 32] {
+		let mut channel_id = [0; 32];
+		fill_bytes(&mut channel_id);
+		channel_id
+	}
 }
 
 #[inline]

@@ -215,6 +215,7 @@ impl Logger for TestLogger {
 pub struct TestKeysInterface {
 	backing: keysinterface::KeysManager,
 	pub override_session_priv: Mutex<Option<SecretKey>>,
+	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 }
 
 impl keysinterface::KeysInterface for TestKeysInterface {
@@ -229,6 +230,13 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 			None => self.backing.get_session_key()
 		}
 	}
+
+	fn get_channel_id(&self) -> [u8; 32] {
+		match *self.override_channel_id_priv.lock().unwrap() {
+			Some(key) => key.clone(),
+			None => self.backing.get_channel_id()
+		}
+	}
 }
 
 impl TestKeysInterface {
@@ -236,6 +244,7 @@ impl TestKeysInterface {
 		Self {
 			backing: keysinterface::KeysManager::new(seed, network, logger),
 			override_session_priv: Mutex::new(None),
+			override_channel_id_priv: Mutex::new(None),
 		}
 	}
 }
