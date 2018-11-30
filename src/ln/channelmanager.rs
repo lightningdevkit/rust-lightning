@@ -3925,6 +3925,19 @@ mod tests {
 					assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 				}
 			}
+		};
+		($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backward: expr, $extra_message: expr, $origin_failure: expr) => {
+			{
+				commitment_signed_dance!($node_a, $node_b, $commitment_signed, $fail_backward, true);
+				let events = $node_a.node.get_and_clear_pending_msg_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelClosed { .. }  } => {
+						//TODO: check when fail_htlc_backward_internal after fecth_pending_htlcs have consistent error code
+					},
+					_ => { panic!("Unexpected event"); }
+				}
+			}
 		}
 	}
 
@@ -8474,6 +8487,112 @@ mod tests {
 		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		match msg_events[0] {
 			MessageSendEvent::BroadcastChannelUpdate {  .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	#[test]
+	fn test_duplicate_payment_hash_one_failure_one_success() {
+		// Topology : A --> B --> C
+		// We route 2 payments with same hash between B and C, one will be timeout, the other successfully claim
+		let mut nodes = create_network(3);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		let (payment_preimage, duplicate_payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
+		*nodes[0].network_payment_count.borrow_mut() -= 1;
+		route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
+
+		let commitment_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
+		assert_eq!(commitment_txn[0].input.len(), 1);
+		check_spends!(commitment_txn[0], chan_2.3.clone());
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
+		let htlc_timeout_tx;
+		{
+			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			assert_eq!(node_txn[0], node_txn[5]);
+			assert_eq!(node_txn[1], node_txn[6]);
+			check_spends!(node_txn[0], commitment_txn[0].clone());
+			check_spends!(node_txn[1], commitment_txn[0].clone());
+			check_spends!(node_txn[2], chan_2.3.clone());
+			check_spends!(node_txn[3], node_txn[2].clone());
+			check_spends!(node_txn[4], node_txn[2].clone());
+			htlc_timeout_tx = node_txn[1].clone();
+		}
+
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+
+		nodes[2].node.claim_funds(payment_preimage);
+		nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
+		check_added_monitors!(nodes[2], 2);
+		let events = nodes[2].node.get_and_clear_pending_msg_events();
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexepected event"),
+		}
+		let htlc_success_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		check_spends!(htlc_success_txn[2], chan_2.3.clone());
+		assert_eq!(htlc_success_txn[0], htlc_success_txn[3]);
+		assert_eq!(htlc_success_txn[0].input.len(), 1);
+		assert_eq!(htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		assert_eq!(htlc_success_txn[1], htlc_success_txn[4]);
+		assert_eq!(htlc_success_txn[1].input.len(), 1);
+		assert_eq!(htlc_success_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(htlc_success_txn[0], commitment_txn[0].clone());
+		check_spends!(htlc_success_txn[1], commitment_txn[0].clone());
+
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![htlc_timeout_tx] }, 200);
+		check_added_monitors!(nodes[1], 1);
+		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		let htlc_updates = match msg_events[0] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert!(updates.update_add_htlcs.is_empty());
+				assert_eq!(updates.update_fail_htlcs.len(), 1);
+				assert_eq!(updates.update_fail_htlcs[0].htlc_id, 1);
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
+				(*updates).clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]).unwrap();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 0);
+		commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, false, nodes[2].node.get_our_node_id());
+		let events = nodes[0].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, .. } => {
+				assert_eq!(*payment_hash, duplicate_payment_hash);
+			}
+			_ => panic!("Unexpected event"),
+		}
+
+		// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![htlc_success_txn[0].clone()] }, 200);
+		check_added_monitors!(nodes[1], 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fail_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert_eq!(update_fulfill_htlcs[0].htlc_id, 0);
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
+			},
 			_ => panic!("Unexpected event"),
 		}
 	}
