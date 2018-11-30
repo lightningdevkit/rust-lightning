@@ -90,15 +90,15 @@ mod channel_held_info {
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
-	#[derive(Clone)]
+	#[derive(Clone, PartialEq)]
 	pub struct HTLCPreviousHopData {
-		pub(super) short_channel_id: u64,
+		pub(crate) short_channel_id: u64,
 		pub(super) htlc_id: u64,
 		pub(super) incoming_packet_shared_secret: [u8; 32],
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
-	#[derive(Clone)]
+	#[derive(Clone, PartialEq)]
 	pub enum HTLCSource {
 		PreviousHopData(HTLCPreviousHopData),
 		OutboundRoute {
@@ -131,7 +131,7 @@ mod channel_held_info {
 		}
 	}
 }
-pub(super) use self::channel_held_info::*;
+pub(crate) use self::channel_held_info::*;
 
 type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, [u8; 32])>);
 

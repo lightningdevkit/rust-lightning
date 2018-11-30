@@ -29,6 +29,7 @@ use secp256k1;
 use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
+use ln::channelmanager::HTLCSource;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
@@ -256,7 +257,7 @@ struct LocalSignedTx {
 	b_htlc_key: PublicKey,
 	delayed_payment_key: PublicKey,
 	feerate_per_kw: u64,
-	htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>,
+	htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature, Option<HTLCSource>)>,
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
@@ -281,7 +282,7 @@ pub struct ChannelMonitor {
 	their_to_self_delay: Option<u16>,
 
 	old_secrets: [([u8; 32], u64); 49],
-	remote_claimable_outpoints: HashMap<Sha256dHash, Vec<HTLCOutputInCommitment>>,
+	remote_claimable_outpoints: HashMap<Sha256dHash, Vec<(HTLCOutputInCommitment, Option<HTLCSource>)>>,
 	/// We cannot identify HTLC-Success or HTLC-Timeout transactions by themselves on the chain.
 	/// Nor can we figure out their commitment numbers without the commitment transaction they are
 	/// spending. Thus, in order to claim them via revocation key, we track all the remote
@@ -437,13 +438,13 @@ impl ChannelMonitor {
 			let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
 
 			self.payment_preimages.retain(|&k, _| {
-				for &(ref htlc, _, _) in &local_signed_commitment_tx.htlc_outputs {
+				for &(ref htlc, _, _, _) in &local_signed_commitment_tx.htlc_outputs {
 					if k == htlc.payment_hash {
 						return true
 					}
 				}
 				if let Some(prev_local_commitment_tx) = prev_local_signed_commitment_tx {
-					for &(ref htlc, _, _) in prev_local_commitment_tx.htlc_outputs.iter() {
+					for &(ref htlc, _, _, _) in prev_local_commitment_tx.htlc_outputs.iter() {
 						if k == htlc.payment_hash {
 							return true
 						}
@@ -469,13 +470,20 @@ impl ChannelMonitor {
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64, their_revocation_point: PublicKey) {
+	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<HTLCSource>)>, commitment_number: u64, their_revocation_point: PublicKey) {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
 		// timeouts)
-		for htlc in &htlc_outputs {
+		for &(ref htlc, _) in &htlc_outputs {
 			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
+		}
+		// We prune old claimable outpoints, useless to pass backward state when remote commitment
+		// tx get revoked, optimize for storage
+		for (_, htlc_data) in self.remote_claimable_outpoints.iter_mut() {
+			for &mut(_, ref mut source) in htlc_data.iter_mut() {
+				source.take();
+			}
 		}
 		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), htlc_outputs);
 		self.current_remote_commitment_number = commitment_number;
@@ -507,7 +515,7 @@ impl ChannelMonitor {
 	/// Panics if set_their_to_self_delay has never been called.
 	/// Also update Storage with latest local per_commitment_point to derive local_delayedkey in
 	/// case of onchain HTLC tx
-	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>) {
+	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature, Option<HTLCSource>)>) {
 		assert!(self.their_to_self_delay.is_some());
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
@@ -751,12 +759,25 @@ impl ChannelMonitor {
 			}
 		}
 
+		macro_rules! serialize_htlc_source {
+			($htlc_source: expr) => {
+				if let &Some(ref source) = $htlc_source {
+					writer.write_all(&[1; 1])?;
+					source.write(writer)?;
+				} else {
+					writer.write_all(&[0; 1])?;
+				}
+			}
+		}
+
+
 		writer.write_all(&byte_utils::be64_to_array(self.remote_claimable_outpoints.len() as u64))?;
-		for (ref txid, ref htlc_outputs) in self.remote_claimable_outpoints.iter() {
+		for (ref txid, ref htlc_infos) in self.remote_claimable_outpoints.iter() {
 			writer.write_all(&txid[..])?;
-			writer.write_all(&byte_utils::be64_to_array(htlc_outputs.len() as u64))?;
-			for htlc_output in htlc_outputs.iter() {
+			writer.write_all(&byte_utils::be64_to_array(htlc_infos.len() as u64))?;
+			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
 				serialize_htlc_in_commitment!(htlc_output);
+				serialize_htlc_source!(htlc_source);
 			}
 		}
 
@@ -796,10 +817,11 @@ impl ChannelMonitor {
 
 				writer.write_all(&byte_utils::be64_to_array($local_tx.feerate_per_kw))?;
 				writer.write_all(&byte_utils::be64_to_array($local_tx.htlc_outputs.len() as u64))?;
-				for &(ref htlc_output, ref their_sig, ref our_sig) in $local_tx.htlc_outputs.iter() {
+				for &(ref htlc_output, ref their_sig, ref our_sig, ref htlc_source) in $local_tx.htlc_outputs.iter() {
 					serialize_htlc_in_commitment!(htlc_output);
 					writer.write_all(&their_sig.serialize_compact(&self.secp_ctx))?;
 					writer.write_all(&our_sig.serialize_compact(&self.secp_ctx))?;
+					serialize_htlc_source!(htlc_source);
 				}
 			}
 		}
@@ -983,7 +1005,7 @@ impl ChannelMonitor {
 						let (sig, redeemscript) = match self.key_storage {
 							Storage::Local { ref revocation_base_key, .. } => {
 								let redeemscript = if $htlc_idx.is_none() { revokeable_redeemscript.clone() } else {
-									let htlc = &per_commitment_option.unwrap()[$htlc_idx.unwrap()];
+									let htlc = &per_commitment_option.unwrap()[$htlc_idx.unwrap()].0;
 									chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey)
 								};
 								let sighash = ignore_error!(Message::from_slice(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]));
@@ -1009,7 +1031,7 @@ impl ChannelMonitor {
 			if let Some(per_commitment_data) = per_commitment_option {
 				inputs.reserve_exact(per_commitment_data.len());
 
-				for (idx, htlc) in per_commitment_data.iter().enumerate() {
+				for (idx, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
 					let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 					if htlc.transaction_output_index as usize >= tx.output.len() ||
 							tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
@@ -1138,7 +1160,7 @@ impl ChannelMonitor {
 							{
 								let (sig, redeemscript) = match self.key_storage {
 									Storage::Local { ref htlc_base_key, .. } => {
-										let htlc = &per_commitment_option.unwrap()[$input.sequence as usize];
+										let htlc = &per_commitment_option.unwrap()[$input.sequence as usize].0;
 										let redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 										let sighash = ignore_error!(Message::from_slice(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]));
 										let htlc_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &htlc_base_key));
@@ -1156,7 +1178,7 @@ impl ChannelMonitor {
 						}
 					}
 
-					for (idx, htlc) in per_commitment_data.iter().enumerate() {
+					for (idx, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
 						if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 							let input = TxIn {
 								previous_output: BitcoinOutPoint {
@@ -1344,7 +1366,7 @@ impl ChannelMonitor {
 			}
 		}
 
-		for &(ref htlc, ref their_sig, ref our_sig) in local_tx.htlc_outputs.iter() {
+		for &(ref htlc, ref their_sig, ref our_sig, _) in local_tx.htlc_outputs.iter() {
 			if htlc.offered {
 				let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
 
@@ -1550,7 +1572,7 @@ impl ChannelMonitor {
 
 	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
+			for &(ref htlc, _, _, _) in cur_local_tx.htlc_outputs.iter() {
 				// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
 				// chain with enough room to claim the HTLC without our counterparty being able to
 				// time out the HTLC first.
@@ -1684,6 +1706,21 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			}
 		}
 
+		macro_rules! read_htlc_source {
+			() => {
+				{
+					match <u8 as Readable<R>>::read(reader)? {
+						0 => None,
+						1 => {
+							let htlc_source: HTLCSource = Readable::read(reader)?;	
+							Some(htlc_source)
+						},
+						_ => return Err(DecodeError::InvalidValue),
+					}
+				}
+			}
+		}
+
 		let remote_claimable_outpoints_len: u64 = Readable::read(reader)?;
 		let mut remote_claimable_outpoints = HashMap::with_capacity(cmp::min(remote_claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 64));
 		for _ in 0..remote_claimable_outpoints_len {
@@ -1691,7 +1728,9 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			let outputs_count: u64 = Readable::read(reader)?;
 			let mut outputs = Vec::with_capacity(cmp::min(outputs_count as usize, MAX_ALLOC_SIZE / 32));
 			for _ in 0..outputs_count {
-				outputs.push(read_htlc_in_commitment!());
+				let out = read_htlc_in_commitment!();
+				let source = read_htlc_source!();
+				outputs.push((out, source));
 			}
 			if let Some(_) = remote_claimable_outpoints.insert(txid, outputs) {
 				return Err(DecodeError::InvalidValue);
@@ -1748,7 +1787,10 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					let htlc_outputs_len: u64 = Readable::read(reader)?;
 					let mut htlc_outputs = Vec::with_capacity(cmp::min(htlc_outputs_len as usize, MAX_ALLOC_SIZE / 128));
 					for _ in 0..htlc_outputs_len {
-						htlc_outputs.push((read_htlc_in_commitment!(), Readable::read(reader)?, Readable::read(reader)?));
+						let out = read_htlc_in_commitment!();
+						let sigs = (Readable::read(reader)?, Readable::read(reader)?);
+						let source = read_htlc_source!();
+						htlc_outputs.push((out, sigs.0, sigs.1, source));
 					}
 
 					LocalSignedTx {
@@ -2237,13 +2279,13 @@ mod tests {
 				{
 					let mut res = Vec::new();
 					for (idx, preimage) in $preimages_slice.iter().enumerate() {
-						res.push(HTLCOutputInCommitment {
+						res.push((HTLCOutputInCommitment {
 							offered: true,
 							amount_msat: 0,
 							cltv_expiry: 0,
 							payment_hash: preimage.1.clone(),
 							transaction_output_index: idx as u32,
-						});
+						}, None));
 					}
 					res
 				}
@@ -2253,7 +2295,7 @@ mod tests {
 			($preimages_slice: expr) => {
 				{
 					let mut inp = preimages_slice_to_htlc_outputs!($preimages_slice);
-					let res: Vec<_> = inp.drain(..).map(|e| { (e, dummy_sig.clone(), dummy_sig.clone()) }).collect();
+					let res: Vec<_> = inp.drain(..).map(|e| { (e.0, dummy_sig.clone(), dummy_sig.clone(), e.1) }).collect();
 					res
 				}
 			}
