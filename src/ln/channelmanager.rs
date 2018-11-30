@@ -624,13 +624,7 @@ impl ChannelManager {
 		for tx in local_txn {
 			self.tx_broadcaster.broadcast_transaction(&tx);
 		}
-		//TODO: We need to have a way where outbound HTLC claims can result in us claiming the
-		//now-on-chain HTLC output for ourselves (and, thereafter, passing the HTLC backwards).
-		//TODO: We need to handle monitoring of pending offered HTLCs which just hit the chain and
-		//may be claimed, resulting in us claiming the inbound HTLCs (and back-failing after
-		//timeouts are hit and our claims confirm).
-		//TODO: In any case, we need to make sure we remove any pending htlc tracking (via
-		//fail_backwards or claim_funds) eventually for all HTLCs that were in the channel
+
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
@@ -2660,6 +2654,15 @@ impl ChainListener for ChannelManager {
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
+		}
+		{
+			let mut channel_state = Some(self.channel_state.lock().unwrap());
+			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
+				if let Some(preimage) = htlc_update.payment_preimage {
+					if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap());}
+					self.claim_funds_internal(channel_state.take().unwrap(), htlc_update.source, preimage);
+				}
+			}
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
@@ -6062,6 +6065,105 @@ mod tests {
 		get_announce_close_broadcast_events(&nodes, 0, 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 		assert_eq!(nodes[1].node.list_channels().len(), 0);
+	}
+
+	#[test]
+	fn test_htlc_on_chain_success() {
+		// Test that in case of an unilateral close onchain, we detect the state of output thanks to
+		// ChainWatchInterface and pass the preimage backward accordingly. So here we test that ChannelManager is
+		// broadcasting the right event to other nodes in payment path.
+		// A --------------------> B ----------------------> C (preimage)
+		//    A's commitment tx			C's commitment tx
+		// 	       \				   \
+		// 	   B's preimage tx		 	C's HTLC Success tx
+
+		let nodes = create_network(3);
+
+		// Create some initial channels
+		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		// Rebalance the network a bit by relaying one payment through all the channels...
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
+		send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
+
+		let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+
+		// Broadcast legit commitment tx from C on B's chain
+		// Broadcast HTLC Success transation by C on received output from C's commitment tx on B's chain
+		let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
+		nodes[2].node.claim_funds(payment_preimage);
+		{
+			let mut added_monitors = nodes[2].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fail_htlcs.is_empty());
+				assert!(!update_fulfill_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+			},
+			_ => panic!("Unexpected event"),
+		};
+		nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+		let events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+
+		// Verify that B's ChannelManager is able to extract preimage from HTLC Success tx and pass it backward
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: node_txn}, 1);
+		{
+			let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fail_htlcs.is_empty());
+				assert!(!update_fulfill_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		// Broadcast legit commitment tx from A on B's chain
+		// Broadcast preimage tx by B on offered output from A commitment tx  on A's chain
+		let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+
+		// Verify that A's ChannelManager is able to extract preimage from preimage tx and pass it backward
+		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: node_txn }, 1);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
 	}
 
 	#[test]
