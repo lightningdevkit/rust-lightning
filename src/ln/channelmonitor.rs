@@ -29,6 +29,7 @@ use secp256k1;
 use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
+use ln::channelmanager::HTLCSource;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
@@ -259,6 +260,7 @@ struct LocalSignedTx {
 	delayed_payment_key: PublicKey,
 	feerate_per_kw: u64,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>,
+	htlc_sources: Vec<([u8; 32], HTLCSource, Option<u32>)>,
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
@@ -283,7 +285,7 @@ pub struct ChannelMonitor {
 	their_to_self_delay: Option<u16>,
 
 	old_secrets: [([u8; 32], u64); 49],
-	remote_claimable_outpoints: HashMap<Sha256dHash, Vec<HTLCOutputInCommitment>>,
+	remote_claimable_outpoints: HashMap<Sha256dHash, (Vec<HTLCOutputInCommitment>, Vec<([u8; 32], HTLCSource, Option<u32>)>)>,
 	/// We cannot identify HTLC-Success or HTLC-Timeout transactions by themselves on the chain.
 	/// Nor can we figure out their commitment numbers without the commitment transaction they are
 	/// spending. Thus, in order to claim them via revocation key, we track all the remote
@@ -471,15 +473,20 @@ impl ChannelMonitor {
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, commitment_number: u64, their_revocation_point: PublicKey) {
+	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<HTLCOutputInCommitment>, htlc_sources: Vec<([u8; 32], HTLCSource, Option<u32>)>, commitment_number: u64, their_revocation_point: PublicKey) {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
 		// timeouts)
-		for htlc in &htlc_outputs {
+		for ref htlc in &htlc_outputs {
 			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
 		}
-		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), htlc_outputs);
+		// We prune old claimable outpoints, useless to pass backward state when remote commitment
+		// tx get revoked, optimize for storage
+		for (_, htlc_data) in self.remote_claimable_outpoints.iter_mut() {
+			htlc_data.1 = Vec::new();
+		}
+		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), (htlc_outputs, htlc_sources));
 		self.current_remote_commitment_number = commitment_number;
 		//TODO: Merge this into the other per-remote-transaction output storage stuff
 		match self.their_cur_revocation_points {
@@ -509,7 +516,7 @@ impl ChannelMonitor {
 	/// Panics if set_their_to_self_delay has never been called.
 	/// Also update Storage with latest local per_commitment_point to derive local_delayedkey in
 	/// case of onchain HTLC tx
-	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>) {
+	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Signature, Signature)>, htlc_sources: Vec<([u8; 32], HTLCSource, Option<u32>)>) {
 		assert!(self.their_to_self_delay.is_some());
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
@@ -521,6 +528,7 @@ impl ChannelMonitor {
 			delayed_payment_key: local_keys.a_delayed_payment_key,
 			feerate_per_kw,
 			htlc_outputs,
+			htlc_sources,
 		});
 
 		if let Storage::Local { ref mut latest_per_commitment_point, .. } = self.key_storage {
@@ -753,12 +761,30 @@ impl ChannelMonitor {
 			}
 		}
 
+		macro_rules! serialize_htlc_source {
+			($htlc_source: expr) => {
+				$htlc_source.0.write(writer)?;
+				$htlc_source.1.write(writer)?;
+				if let &Some(ref txo) = &$htlc_source.2 {
+					writer.write_all(&[1; 1])?;
+					txo.write(writer)?;
+				} else {
+					writer.write_all(&[0; 1])?;
+				}
+			}
+		}
+
+
 		writer.write_all(&byte_utils::be64_to_array(self.remote_claimable_outpoints.len() as u64))?;
-		for (ref txid, ref htlc_outputs) in self.remote_claimable_outpoints.iter() {
+		for (ref txid, &(ref htlc_infos, ref htlc_sources)) in self.remote_claimable_outpoints.iter() {
 			writer.write_all(&txid[..])?;
-			writer.write_all(&byte_utils::be64_to_array(htlc_outputs.len() as u64))?;
-			for htlc_output in htlc_outputs.iter() {
+			writer.write_all(&byte_utils::be64_to_array(htlc_infos.len() as u64))?;
+			for ref htlc_output in htlc_infos.iter() {
 				serialize_htlc_in_commitment!(htlc_output);
+			}
+			writer.write_all(&byte_utils::be64_to_array(htlc_sources.len() as u64))?;
+			for ref htlc_source in htlc_sources.iter() {
+				serialize_htlc_source!(htlc_source);
 			}
 		}
 
@@ -802,6 +828,10 @@ impl ChannelMonitor {
 					serialize_htlc_in_commitment!(htlc_output);
 					writer.write_all(&their_sig.serialize_compact(&self.secp_ctx))?;
 					writer.write_all(&our_sig.serialize_compact(&self.secp_ctx))?;
+				}
+				writer.write_all(&byte_utils::be64_to_array($local_tx.htlc_sources.len() as u64))?;
+				for ref htlc_source in $local_tx.htlc_sources.iter() {
+					serialize_htlc_source!(htlc_source);
 				}
 			}
 		}
@@ -985,7 +1015,7 @@ impl ChannelMonitor {
 						let (sig, redeemscript) = match self.key_storage {
 							Storage::Local { ref revocation_base_key, .. } => {
 								let redeemscript = if $htlc_idx.is_none() { revokeable_redeemscript.clone() } else {
-									let htlc = &per_commitment_option.unwrap()[$htlc_idx.unwrap()];
+									let htlc = &per_commitment_option.unwrap().0[$htlc_idx.unwrap()];
 									chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey)
 								};
 								let sighash = ignore_error!(Message::from_slice(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]));
@@ -1008,10 +1038,10 @@ impl ChannelMonitor {
 				}
 			}
 
-			if let Some(per_commitment_data) = per_commitment_option {
+			if let Some(&(ref per_commitment_data, _)) = per_commitment_option {
 				inputs.reserve_exact(per_commitment_data.len());
 
-				for (idx, htlc) in per_commitment_data.iter().enumerate() {
+				for (idx, ref htlc) in per_commitment_data.iter().enumerate() {
 					let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 					if htlc.transaction_output_index as usize >= tx.output.len() ||
 							tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
@@ -1140,7 +1170,7 @@ impl ChannelMonitor {
 							{
 								let (sig, redeemscript) = match self.key_storage {
 									Storage::Local { ref htlc_base_key, .. } => {
-										let htlc = &per_commitment_option.unwrap()[$input.sequence as usize];
+										let htlc = &per_commitment_option.unwrap().0[$input.sequence as usize];
 										let redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 										let sighash = ignore_error!(Message::from_slice(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]));
 										let htlc_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &htlc_base_key));
@@ -1158,7 +1188,7 @@ impl ChannelMonitor {
 						}
 					}
 
-					for (idx, htlc) in per_commitment_data.iter().enumerate() {
+					for (idx, ref htlc) in per_commitment_data.0.iter().enumerate() {
 						let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 						if htlc.transaction_output_index as usize >= tx.output.len() ||
 								tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
@@ -1692,6 +1722,20 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			}
 		}
 
+		macro_rules! read_htlc_source {
+			() => {
+				{
+					(Readable::read(reader)?, Readable::read(reader)?,
+						match <u8 as Readable<R>>::read(reader)? {
+							0 => None,
+							1 => Some(Readable::read(reader)?),
+							_ => return Err(DecodeError::InvalidValue),
+						}
+					)
+				}
+			}
+		}
+
 		let remote_claimable_outpoints_len: u64 = Readable::read(reader)?;
 		let mut remote_claimable_outpoints = HashMap::with_capacity(cmp::min(remote_claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 64));
 		for _ in 0..remote_claimable_outpoints_len {
@@ -1701,7 +1745,12 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			for _ in 0..outputs_count {
 				outputs.push(read_htlc_in_commitment!());
 			}
-			if let Some(_) = remote_claimable_outpoints.insert(txid, outputs) {
+			let sources_count: u64 = Readable::read(reader)?;
+			let mut sources = Vec::with_capacity(cmp::min(sources_count as usize, MAX_ALLOC_SIZE / 32));
+			for _ in 0..sources_count {
+				sources.push(read_htlc_source!());
+			}
+			if let Some(_) = remote_claimable_outpoints.insert(txid, (outputs, sources)) {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -1756,12 +1805,20 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					let htlc_outputs_len: u64 = Readable::read(reader)?;
 					let mut htlc_outputs = Vec::with_capacity(cmp::min(htlc_outputs_len as usize, MAX_ALLOC_SIZE / 128));
 					for _ in 0..htlc_outputs_len {
-						htlc_outputs.push((read_htlc_in_commitment!(), Readable::read(reader)?, Readable::read(reader)?));
+						let out = read_htlc_in_commitment!();
+						let sigs = (Readable::read(reader)?, Readable::read(reader)?);
+						htlc_outputs.push((out, sigs.0, sigs.1));
+					}
+
+					let htlc_sources_len: u64 = Readable::read(reader)?;
+					let mut htlc_sources = Vec::with_capacity(cmp::min(htlc_outputs_len as usize, MAX_ALLOC_SIZE / 128));
+					for _ in 0..htlc_sources_len {
+						htlc_sources.push(read_htlc_source!());
 					}
 
 					LocalSignedTx {
 						txid: tx.txid(),
-						tx, revocation_key, a_htlc_key, b_htlc_key, delayed_payment_key, feerate_per_kw, htlc_outputs
+						tx, revocation_key, a_htlc_key, b_htlc_key, delayed_payment_key, feerate_per_kw, htlc_outputs, htlc_sources
 					}
 				}
 			}
@@ -2280,11 +2337,11 @@ mod tests {
 		let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&secp_ctx, &[42; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[43; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &SecretKey::from_slice(&secp_ctx, &[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 		monitor.set_their_to_self_delay(10);
 
-		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key);
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key);
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key);
-		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key);
+		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]), Vec::new());
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), Vec::new(), 281474976710655, dummy_key);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), Vec::new(), 281474976710654, dummy_key);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), Vec::new(), 281474976710653, dummy_key);
+		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), Vec::new(), 281474976710652, dummy_key);
 		for &(ref preimage, ref hash) in preimages.iter() {
 			monitor.provide_payment_preimage(hash, preimage);
 		}
@@ -2306,7 +2363,7 @@ mod tests {
 
 		// Now update local commitment tx info, pruning only element 18 as we still care about the
 		// previous commitment tx's preimages too
-		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5]));
+		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5]), Vec::new());
 		secret[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 12);
@@ -2314,7 +2371,7 @@ mod tests {
 		test_preimages_exist!(&preimages[18..20], monitor);
 
 		// But if we do it again, we'll prune 5-10
-		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3]));
+		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3]), Vec::new());
 		secret[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 5);

@@ -90,7 +90,7 @@ mod channel_held_info {
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
-	#[derive(Clone)]
+	#[derive(Clone, PartialEq)]
 	pub struct HTLCPreviousHopData {
 		pub(super) short_channel_id: u64,
 		pub(super) htlc_id: u64,
@@ -98,7 +98,7 @@ mod channel_held_info {
 	}
 
 	/// Tracks the inbound corresponding to an outbound HTLC
-	#[derive(Clone)]
+	#[derive(Clone, PartialEq)]
 	pub enum HTLCSource {
 		PreviousHopData(HTLCPreviousHopData),
 		OutboundRoute {
