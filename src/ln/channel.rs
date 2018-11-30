@@ -23,7 +23,7 @@ use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface};
-use util::{transaction_utils,rng};
+use util::transaction_utils;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, WriterWriteAdaptor};
 use util::logger::Logger;
 use util::errors::APIError;
@@ -350,7 +350,10 @@ pub const OUR_MAX_HTLCS: u16 = 50; //TODO
 const UNCONF_THRESHOLD: u32 = 6;
 /// The amount of time we require our counterparty wait to claim their money (ie time between when
 /// we, or our watchtower, must check for them having broadcast a theft transaction).
+#[cfg(not(test))]
 const BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 7; //TODO?
+#[cfg(test)]
+pub const BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 7; //TODO?
 /// The amount of time we're willing to wait to claim money back to us
 const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 14;
 /// Exposing these two constants for use in test in ChannelMonitor
@@ -444,7 +447,7 @@ impl Channel {
 			user_id: user_id,
 			config: config.channel_options.clone(),
 
-			channel_id: rng::rand_u832(),
+			channel_id: keys_provider.get_channel_id(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: secp_ctx,
@@ -3950,6 +3953,7 @@ mod tests {
 
 		fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys { self.chan_keys.clone() }
 		fn get_session_key(&self) -> SecretKey { panic!(); }
+		fn get_channel_id(&self) -> [u8; 32] { [0; 32] }
 	}
 
 	#[test]
