@@ -520,18 +520,12 @@ impl ChannelMonitor {
 			feerate_per_kw,
 			htlc_outputs,
 		});
-		self.key_storage = if let Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref latest_per_commitment_point, ref mut funding_info, .. } = self.key_storage {
-			Storage::Local {
-				revocation_base_key: *revocation_base_key,
-				htlc_base_key: *htlc_base_key,
-				delayed_payment_base_key: *delayed_payment_base_key,
-				payment_base_key: *payment_base_key,
-				shutdown_pubkey: *shutdown_pubkey,
-				prev_latest_per_commitment_point: *latest_per_commitment_point,
-				latest_per_commitment_point: Some(local_keys.per_commitment_point),
-				funding_info: funding_info.take(),
-			}
-		} else { unimplemented!(); };
+
+		if let Storage::Local { ref mut latest_per_commitment_point, .. } = self.key_storage {
+			*latest_per_commitment_point = Some(local_keys.per_commitment_point);
+		} else {
+			panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
+		}
 	}
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
