@@ -243,7 +243,6 @@ enum Storage {
 	Watchtower {
 		revocation_base_key: PublicKey,
 		htlc_base_key: PublicKey,
-		sigs: HashMap<Sha256dHash, Signature>,
 	}
 }
 
@@ -545,54 +544,29 @@ impl ChannelMonitor {
 	/// After a successful call this ChannelMonitor is up-to-date and is safe to use to monitor the
 	/// chain for new blocks/transactions.
 	pub fn insert_combine(&mut self, mut other: ChannelMonitor) -> Result<(), MonitorUpdateError> {
-
-		self.key_storage = match self.key_storage {
-			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, ref mut funding_info, .. } => {
-
-				macro_rules! new_storage_local {
-					($funding_info: expr) => {
-						Storage::Local {
-							revocation_base_key: *revocation_base_key,
-							htlc_base_key: *htlc_base_key,
-							delayed_payment_base_key: *delayed_payment_base_key,
-							payment_base_key: *payment_base_key,
-							shutdown_pubkey: *shutdown_pubkey,
-							prev_latest_per_commitment_point: *prev_latest_per_commitment_point,
-							latest_per_commitment_point: *latest_per_commitment_point,
-							funding_info: $funding_info,
-						}
-					}
-				}
-
+		match self.key_storage {
+			Storage::Local { ref funding_info, .. } => {
+				if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
 				let our_funding_info = funding_info;
-				if let Storage::Local { ref mut funding_info, .. } = other.key_storage {
-					if our_funding_info.is_some() {
+				if let Storage::Local { ref funding_info, .. } = other.key_storage {
+					if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
 					// We should be able to compare the entire funding_txo, but in fuzztarget its trivially
 					// easy to collide the funding_txo hash and have a different scriptPubKey.
-						if funding_info.is_some() && our_funding_info.is_some() && funding_info.as_ref().unwrap().0 != our_funding_info.as_ref().unwrap().0 {
-							return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
-						} else {
-							new_storage_local!(our_funding_info.take())
-						}
-					} else {
-						return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info"));
+					if funding_info.as_ref().unwrap().0 != our_funding_info.as_ref().unwrap().0 {
+						return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
 					}
 				} else {
 					return Err(MonitorUpdateError("Try to combine a Local monitor with a Watchtower one !"));
 				}
 			},
 			Storage::Watchtower { .. } => {
-				if let Storage::Watchtower { ref revocation_base_key, ref htlc_base_key, ref mut sigs } = other.key_storage {
-					Storage::Watchtower {
-						revocation_base_key: *revocation_base_key,
-						htlc_base_key: *htlc_base_key,
-						sigs: sigs.drain().collect(),
-					}
+				if let Storage::Watchtower { .. } = other.key_storage {
+					unimplemented!();
 				} else {
 					return Err(MonitorUpdateError("Try to combine a Watchtower monitor with a Local one !"));
 				}
 			},
-		};
+		}
 		let other_min_secret = other.get_min_seen_secret();
 		let our_min_secret = self.get_min_seen_secret();
 		if our_min_secret > other_min_secret {
