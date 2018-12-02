@@ -613,24 +613,15 @@ impl ChannelMonitor {
 	/// provides slightly better privacy.
 	/// It's the responsibility of the caller to register outpoint and script with passing the former
 	/// value as key to add_update_monitor.
-	pub(super) fn set_funding_info(&mut self, funding_info: (OutPoint, Script)) {
-		self.key_storage = match self.key_storage {
-			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, .. } => {
-				Storage::Local {
-					revocation_base_key: *revocation_base_key,
-					htlc_base_key: *htlc_base_key,
-					delayed_payment_base_key: *delayed_payment_base_key,
-					payment_base_key: *payment_base_key,
-					shutdown_pubkey: *shutdown_pubkey,
-					prev_latest_per_commitment_point: *prev_latest_per_commitment_point,
-					latest_per_commitment_point: *latest_per_commitment_point,
-					funding_info: Some(funding_info.clone()),
-				}
+	pub(super) fn set_funding_info(&mut self, new_funding_info: (OutPoint, Script)) {
+		match self.key_storage {
+			Storage::Local { ref mut funding_info, .. } => {
+				*funding_info = Some(new_funding_info);
 			},
 			Storage::Watchtower { .. } => {
-				unimplemented!();
+				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
 			}
-		};
+		}
 	}
 
 	/// We log these base keys at channel opening to being able to rebuild redeemscript in case of leaked revoked commit tx
@@ -644,21 +635,12 @@ impl ChannelMonitor {
 	}
 
 	pub(super) fn unset_funding_info(&mut self) {
-		self.key_storage = match self.key_storage {
-			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, .. } => {
-				Storage::Local {
-					revocation_base_key: *revocation_base_key,
-					htlc_base_key: *htlc_base_key,
-					delayed_payment_base_key: *delayed_payment_base_key,
-					payment_base_key: *payment_base_key,
-					shutdown_pubkey: *shutdown_pubkey,
-					prev_latest_per_commitment_point: *prev_latest_per_commitment_point,
-					latest_per_commitment_point: *latest_per_commitment_point,
-					funding_info: None,
-				}
+		match self.key_storage {
+			Storage::Local { ref mut funding_info, .. } => {
+				*funding_info = None;
 			},
 			Storage::Watchtower { .. } => {
-				unimplemented!();
+				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
 			},
 		}
 	}
