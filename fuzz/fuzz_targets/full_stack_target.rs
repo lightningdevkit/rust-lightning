@@ -7,7 +7,7 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
-use bitcoin::consensus::encode::{deserialize, serialize};
+use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
 
