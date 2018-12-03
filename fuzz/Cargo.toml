@@ -13,6 +13,7 @@ cargo-fuzz = true
 [features]
 afl_fuzz = ["afl"]
 honggfuzz_fuzz = ["honggfuzz"]
+libfuzzer_fuzz = ["libfuzzer-sys"]
 
 [dependencies]
 afl = { version = "0.4", optional = true }
@@ -22,6 +23,7 @@ bitcoin_hashes = { git = "https://github.com/TheBlueMatt/bitcoin_hashes", branch
 hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }
 secp256k1 = { version = "0.11", features=["fuzztarget"] }
+libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git", optional = true }
 
 [build-dependencies]
 cc = "1.0"

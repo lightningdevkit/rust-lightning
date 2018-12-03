@@ -1,3 +1,6 @@
+//Uncomment this for libfuzzer builds:
+//#![no_main]
+
 extern crate bitcoin;
 extern crate bitcoin_hashes;
 extern crate lightning;
@@ -539,6 +542,14 @@ fn main() {
 		});
 	}
 }
+
+#[cfg(feature = "libfuzzer_fuzz")]
+#[macro_use] extern crate libfuzzer_sys;
+#[cfg(feature = "libfuzzer_fuzz")]
+fuzz_target!(|data: &[u8]| {
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+	do_test(data, &logger);
+});
 
 extern crate hex;
 #[cfg(test)]
