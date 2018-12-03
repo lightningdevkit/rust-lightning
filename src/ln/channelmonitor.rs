@@ -1386,7 +1386,7 @@ impl ChannelMonitor {
 
 	/// Generate a spendable output event when closing_transaction get registered onchain.
 	fn check_spend_closing_transaction(&self, tx: &Transaction) -> Option<SpendableOutputDescriptor> {
-		if tx.input[0].sequence == 0xFFFFFFFF && tx.input[0].witness.last().unwrap().len() == 71 {
+		if tx.input[0].sequence == 0xFFFFFFFF && !tx.input[0].witness.is_empty() && tx.input[0].witness.last().unwrap().len() == 71 {
 			match self.key_storage {
 				KeyStorage::PrivMode { ref shutdown_pubkey, .. } =>  {
 					let our_channel_close_key_hash = Hash160::from_data(&shutdown_pubkey.serialize());
