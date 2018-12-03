@@ -1770,7 +1770,10 @@ impl ChannelMonitor {
 			// to broadcast solving backward
 			if payment_data.0.is_some() && payment_data.1.is_some() {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
-				if input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
+				if (input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33)
+					|| (input.witness.len() == 3 && input.witness[2].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33) {
+					log_debug!(self, "Remote used revocation sig to take a {} HTLC output at index {} from commitment_tx {}", if input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT { "offered" } else { "accepted" }, input.previous_output.vout, input.previous_output.txid);
+				} else if input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
 					payment_preimage.0.copy_from_slice(&tx.input[0].witness[3]);
 					htlc_updated.push((payment_data.0.unwrap(), Some(payment_preimage), payment_data.1.unwrap()));
 				} else if input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT {
