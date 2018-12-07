@@ -133,6 +133,9 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
+	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) -> Result<(), HandleError> {
+		Err(HandleError { err: "", action: None })
+	}
 	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}

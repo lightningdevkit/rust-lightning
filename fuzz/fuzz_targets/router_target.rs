@@ -206,6 +206,10 @@ pub fn do_test(data: &[u8]) {
 								remote_network_id: get_pubkey!(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
+								their_cltv_expiry_delta: 0,
+								their_htlc_minimum_msat: 0,
+								their_fee_base_msat: 0,
+								their_fee_proportional_millionths: 0,
 							});
 						}
 						Some(&first_hops_vec[..])

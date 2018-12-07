@@ -384,6 +384,14 @@ pub struct ChannelDetails {
 	pub channel_value_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
 	pub user_id: u64,
+	/// The CLTV delta subtracted by the remote peer as a forwarding node to any incoming HTLC's cltv_expiry
+	pub their_cltv_expiry_delta: u16,
+	/// The minimum HTLC amount for which the remote peer as a forwarding node is ready to relay
+	pub their_htlc_minimum_msat: u64,
+	/// The base fee the remote peer as a forwarding node will take to relay any HTLC.
+	pub their_fee_base_msat: u32,
+	/// The proportional fee on amount forwarded by a HTLC the remote peer will take to relay.
+	pub their_fee_proportional_millionths: u32,
 }
 
 macro_rules! handle_error {
@@ -539,6 +547,10 @@ impl ChannelManager {
 				remote_network_id: channel.get_their_node_id(),
 				channel_value_satoshis: channel.get_value_satoshis(),
 				user_id: channel.get_user_id(),
+				their_cltv_expiry_delta: channel.get_their_cltv_expiry_delta(),
+				their_htlc_minimum_msat: channel.get_their_htlc_minimum_msat(),
+				their_fee_base_msat: channel.get_their_fee_base_msat(),
+				their_fee_proportional_millionths: channel.get_their_fee_proportional_millionths(),
 			});
 		}
 		res
@@ -560,6 +572,10 @@ impl ChannelManager {
 					remote_network_id: channel.get_their_node_id(),
 					channel_value_satoshis: channel.get_value_satoshis(),
 					user_id: channel.get_user_id(),
+					their_cltv_expiry_delta: channel.get_their_cltv_expiry_delta(),
+					their_htlc_minimum_msat: channel.get_their_htlc_minimum_msat(),
+					their_fee_base_msat: channel.get_their_fee_base_msat(),
+					their_fee_proportional_millionths: channel.get_their_fee_proportional_millionths(),
 				});
 			}
 		}
@@ -2444,6 +2460,29 @@ impl ChannelManager {
 		Ok(())
 	}
 
+	fn internal_channel_update(&self, their_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
+		let chan_id = match channel_state.short_to_id.get(&msg.contents.short_channel_id) {
+			Some(chan_id) => chan_id.clone(),
+			None => {
+				// It's not a local channel
+				return Ok(())
+			}
+		};
+		match channel_state.by_id.entry(chan_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				if chan.get().get_their_node_id() != *their_node_id {
+					//TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", chan_id));
+				}
+				try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", chan_id))
+		}
+		Ok(())
+	}
+
 	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
@@ -2774,6 +2813,11 @@ impl ChannelMessageHandler for ChannelManager {
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
+	}
+
+	fn handle_channel_update(&self, their_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<(), HandleError> {
+		let _ = self.total_consistency_lock.read().unwrap();
+		handle_error!(self, self.internal_channel_update(their_node_id, msg), their_node_id)
 	}
 
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {

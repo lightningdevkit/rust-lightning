@@ -559,6 +559,8 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	// Channel-to-announce:
 	/// Handle an incoming announcement_signatures message from the given peer.
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), HandleError>;
+	/// Handle an incoming channel_update message from the given peer.
+	fn handle_channel_update(&self, their_node_id: &PublicKey, msg: &ChannelUpdate) -> Result<(), HandleError>;
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection

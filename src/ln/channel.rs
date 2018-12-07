@@ -325,6 +325,9 @@ pub(super) struct Channel {
 	their_to_self_delay: u16,
 	//implied by BREAKDOWN_TIMEOUT: our_to_self_delay: u16,
 	their_max_accepted_htlcs: u16,
+	their_cltv_expiry_delta: u16,
+	their_fee_base_msat: u32,
+	their_fee_proportional_millionths: u32,
 	//implied by OUR_MAX_HTLCS: our_max_accepted_htlcs: u16,
 	minimum_depth: u32,
 
@@ -491,6 +494,9 @@ impl Channel {
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(feerate),
 			their_to_self_delay: 0,
 			their_max_accepted_htlcs: 0,
+			their_cltv_expiry_delta: 0,
+			their_fee_base_msat: 0,
+			their_fee_proportional_millionths: 0,
 			minimum_depth: 0, // Filled in in accept_channel
 
 			their_funding_pubkey: None,
@@ -681,6 +687,9 @@ impl Channel {
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(msg.feerate_per_kw as u64),
 			their_to_self_delay: msg.to_self_delay,
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
+			their_cltv_expiry_delta: 0,
+			their_fee_base_msat: 0,
+			their_fee_proportional_millionths: 0,
 			minimum_depth: Channel::derive_minimum_depth(msg.funding_satoshis*1000, msg.push_msat),
 
 			their_funding_pubkey: Some(msg.funding_pubkey),
@@ -2040,6 +2049,20 @@ impl Channel {
 
 	}
 
+	/// Set channel fields with remote peer forwarding parameters, used mainly by ChannelDetails to feed the Router
+	/// If remote peer set htlc_minimum_msat to full channel value, we reject the whole update and close channel
+	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
+		if msg.contents.htlc_minimum_msat >= (self.channel_value_satoshis - self.their_channel_reserve_satoshis) * 1000 {
+			return Err(ChannelError::Close("Minimum htlc value is full channel value"));
+		}
+		self.their_cltv_expiry_delta = msg.contents.cltv_expiry_delta;
+		self.their_htlc_minimum_msat = msg.contents.htlc_minimum_msat;
+		self.their_fee_base_msat = msg.contents.fee_base_msat;
+		self.their_fee_proportional_millionths = msg.contents.fee_proportional_millionths;
+
+		Ok(())
+	}
+
 	/// Adds a pending update to this channel. See the doc for send_htlc for
 	/// further details on the optionness of the return value.
 	/// You MUST call send_commitment prior to any other calls on this Channel
@@ -2639,6 +2662,18 @@ impl Channel {
 	/// Allowed in any state (including after shutdown)
 	pub fn get_their_htlc_minimum_msat(&self) -> u64 {
 		self.our_htlc_minimum_msat
+	}
+
+	pub fn get_their_cltv_expiry_delta(&self) -> u16 {
+		self.their_cltv_expiry_delta
+	}
+
+	pub fn get_their_fee_base_msat(&self) -> u32 {
+		self.their_fee_base_msat
+	}
+
+	pub fn get_their_fee_proportional_millionths(&self) -> u32 {
+		self.their_fee_proportional_millionths
 	}
 
 	pub fn get_value_satoshis(&self) -> u64 {
@@ -3587,6 +3622,9 @@ impl Writeable for Channel {
 		self.our_htlc_minimum_msat.write(writer)?;
 		self.their_to_self_delay.write(writer)?;
 		self.their_max_accepted_htlcs.write(writer)?;
+		self.their_cltv_expiry_delta.write(writer)?;
+		self.their_fee_base_msat.write(writer)?;
+		self.their_fee_proportional_millionths.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
 		write_option!(self.their_funding_pubkey);
@@ -3761,6 +3799,9 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let our_htlc_minimum_msat = Readable::read(reader)?;
 		let their_to_self_delay = Readable::read(reader)?;
 		let their_max_accepted_htlcs = Readable::read(reader)?;
+		let their_cltv_expiry_delta = Readable::read(reader)?;
+		let their_fee_base_msat = Readable::read(reader)?;
+		let their_fee_proportional_millionths = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
 		let their_funding_pubkey = read_option!();
@@ -3838,6 +3879,9 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			our_htlc_minimum_msat,
 			their_to_self_delay,
 			their_max_accepted_htlcs,
+			their_cltv_expiry_delta,
+			their_fee_base_msat,
+			their_fee_proportional_millionths,
 			minimum_depth,
 
 			their_funding_pubkey,

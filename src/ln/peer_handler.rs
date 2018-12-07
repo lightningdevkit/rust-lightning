@@ -739,6 +739,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											},
 											258 => {
 												let msg = try_potential_decodeerror!(msgs::ChannelUpdate::read(&mut reader));
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_channel_update(&peer.their_node_id.unwrap(), &msg));
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
 
 												if should_forward {

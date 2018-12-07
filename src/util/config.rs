@@ -31,7 +31,9 @@ pub struct ChannelHandshakeLimits {
 	/// only applies to inbound channels.
 	pub min_funding_satoshis: u64,
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
-	/// you to limit the maximum minimum-size they can require.
+	/// you to limit the maximum minimum-size they can require. Remote node may increase its
+	/// htlc_minimum_msat beyond limits with a channel_update msg, as it's equivalent to them
+	/// just rejecting all HTLCs we can't enforce it.
 	pub max_htlc_minimum_msat: u64,
 	/// The remote node sets a limit on the maximum value of pending HTLCs to them at any given
 	/// time to limit their funds exposure to HTLCs. This allows you to set a minimum such value.

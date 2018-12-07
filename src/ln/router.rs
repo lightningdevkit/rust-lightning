@@ -1292,6 +1292,10 @@ mod tests {
 				remote_network_id: node8.clone(),
 				channel_value_satoshis: 0,
 				user_id: 0,
+				their_cltv_expiry_delta: 0,
+				their_htlc_minimum_msat: 0,
+				their_fee_base_msat: 0,
+				their_fee_proportional_millionths: 0,
 			}];
 			let route = router.get_route(&node3, Some(&our_chans), &Vec::new(), 100, 42).unwrap();
 			assert_eq!(route.hops.len(), 2);
@@ -1367,6 +1371,10 @@ mod tests {
 				remote_network_id: node4.clone(),
 				channel_value_satoshis: 0,
 				user_id: 0,
+				their_cltv_expiry_delta: 0,
+				their_htlc_minimum_msat: 0,
+				their_fee_base_msat: 0,
+				their_fee_proportional_millionths: 0,
 			}];
 			let route = router.get_route(&node7, Some(&our_chans), &last_hops, 100, 42).unwrap();
 			assert_eq!(route.hops.len(), 2);
