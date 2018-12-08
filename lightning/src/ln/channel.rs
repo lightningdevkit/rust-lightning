@@ -2964,12 +2964,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Called by channelmanager based on chain blocks being connected.
-	/// Note that we only need to use this to detect funding_signed, anything else is handled by
-	/// the channel_monitor.
+	/// We need to use this to detect funding_signed and outgoing HTLC timed out before we were able 
+	/// to commit them on remote commitment tx, anything else is handled by the channel_monitor.
 	/// In case of Err, the channel may have been closed, at which point the standard requirements
 	/// apply - no calls may be made except those explicitly stated to be allowed post-shutdown.
 	/// Only returns an ErrorAction of DisconnectPeer, if Err.
-	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Result<Option<msgs::FundingLocked>, msgs::ErrorMessage> {
+	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash, u64)>), msgs::ErrorMessage> {
+		let mut timed_out_htlcs = Vec::new();
+		self.holding_cell_htlc_updates.retain(|htlc_update| {
+			match htlc_update {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, ref amount_msat, .. } => {
+					if cltv_expiry <= &height { // XXX follow 0a4821b
+						timed_out_htlcs.push((source.clone(), payment_hash.clone(), *amount_msat));
+						false
+					} else { true }
+				},
+				_ => true
+			}
+		});
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if header.bitcoin_hash() != self.last_block_connected {
 			self.last_block_connected = header.bitcoin_hash();
@@ -3005,13 +3017,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
 							let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 							let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-							return Ok(Some(msgs::FundingLocked {
+							return Ok((Some(msgs::FundingLocked {
 								channel_id: self.channel_id,
 								next_per_commitment_point: next_per_commitment_point,
-							}));
+							}), timed_out_htlcs));
 						} else {
 							self.monitor_pending_funding_locked = true;
-							return Ok(None);
+							return Ok((None, timed_out_htlcs));
 						}
 					}
 				}
@@ -3057,7 +3069,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				}
 			}
 		}
-		Ok(None)
+		Ok((None, timed_out_htlcs))
 	}
 
 	/// Called by channelmanager based on chain blocks being disconnected.
