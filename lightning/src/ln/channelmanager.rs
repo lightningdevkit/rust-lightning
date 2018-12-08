@@ -2962,23 +2962,32 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
-				let chan_res = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched);
-				if let Ok(Some(funding_locked)) = chan_res {
-					pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-						node_id: channel.get_their_node_id(),
-						msg: funding_locked,
-					});
-					if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
-						log_trace!(self, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
-						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-							node_id: channel.get_their_node_id(),
-							msg: announcement_sigs,
-						});
-					} else {
-						log_trace!(self, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
+				let res = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched);
+				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
+					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
+						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
+						timed_out_htlcs.push((source, payment_hash,  HTLCFailReason::Reason {
+							failure_code: 0x1000 | 14, // expiry_too_soon, or at least it is now
+							data: chan_update,
+						}));
 					}
-					short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
-				} else if let Err(e) = chan_res {
+					if let Some(funding_locked) = chan_res {
+						pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+							node_id: channel.get_their_node_id(),
+							msg: funding_locked,
+						});
+						if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
+							log_trace!(self, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
+							pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+								node_id: channel.get_their_node_id(),
+								msg: announcement_sigs,
+							});
+						} else {
+							log_trace!(self, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
+						}
+						short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
+					}
+				} else if let Err(e) = res {
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_their_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
@@ -3049,8 +3058,6 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		}
 
 		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
-			// Call it incorrect_or_unknown_payment_details as the issue, ultimately, is that the
-			// user failed to provide us a preimage within the cltv_expiry time window.
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
