@@ -423,6 +423,7 @@ macro_rules! break_chan_entry {
 				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
+				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -441,6 +442,7 @@ macro_rules! try_chan_entry {
 				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
+				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -681,6 +683,7 @@ impl ChannelManager {
 	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
 		let (local_txn, mut failed_htlcs) = shutdown_res;
+		log_trace!(self, "Finishing force-closure of channel with {} transactions to broadcast and {} HTLCs to fail", local_txn.len(), failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			// unknown_next_peer...I dunno who that is anymore....
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
@@ -707,6 +710,7 @@ impl ChannelManager {
 				return;
 			}
 		};
+		log_trace!(self, "Force-closing channel {}", log_bytes!(channel_id[..]));
 		self.finish_force_close_channel(chan.force_shutdown());
 		if let Ok(update) = self.get_channel_update(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1552,6 +1556,7 @@ impl ChannelManager {
 	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
 		match source {
 			HTLCSource::OutboundRoute { .. } => {
+				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				mem::drop(channel_state_lock);
 				if let &HTLCFailReason::ErrorPacket { ref err } = &onion_error {
 					let (channel_update, payment_retryable) = self.process_onion_failure(&source, err.data.clone());
@@ -1577,10 +1582,12 @@ impl ChannelManager {
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
+						log_trace!(self, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
 						let packet = ChannelManager::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
 						ChannelManager::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
 					},
 					HTLCFailReason::ErrorPacket { err } => {
+						log_trace!(self, "Failing HTLC with payment_hash {} backwards with pre-built ErrorPacket", log_bytes!(payment_hash.0));
 						ChannelManager::encrypt_failure_packet(&incoming_packet_shared_secret, &err.data)
 					}
 				};
@@ -2642,8 +2649,10 @@ impl events::MessageSendEventsProvider for ChannelManager {
 			//TODO: This behavior should be documented.
 			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
+					log_trace!(self, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
+					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
 					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 				}
 			}
@@ -2665,8 +2674,10 @@ impl events::EventsProvider for ChannelManager {
 			//TODO: This behavior should be documented.
 			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
+					log_trace!(self, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
+					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
 					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 				}
 			}
@@ -2681,6 +2692,8 @@ impl events::EventsProvider for ChannelManager {
 
 impl ChainListener for ChannelManager {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
+		let header_hash = header.bitcoin_hash();
+		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{
@@ -2713,6 +2726,7 @@ impl ChainListener for ChannelManager {
 					for tx in txn_matched {
 						for inp in tx.input.iter() {
 							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
+								log_trace!(self, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_id.remove(&short_id);
 								}
@@ -2753,7 +2767,7 @@ impl ChainListener for ChannelManager {
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
-		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header_hash;
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown

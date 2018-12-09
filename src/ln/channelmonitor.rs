@@ -1178,6 +1178,7 @@ impl ChannelMonitor {
 
 			if !inputs.is_empty() || !txn_to_broadcast.is_empty() { // ie we're confident this is actually ours
 				// We're definitely a remote commitment transaction!
+				log_trace!(self, "Got broadcast of revoked remote commitment transaction, generating general spend tx with {} inputs and {} other txn to broadcast", inputs.len(), txn_to_broadcast.len());
 				watch_outputs.append(&mut tx.output.clone());
 				self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 			}
@@ -1215,6 +1216,7 @@ impl ChannelMonitor {
 				if let &Some(ref txid) = current_remote_commitment_txid {
 					if let Some(&(_, ref latest_outpoints)) = self.remote_claimable_outpoints.get(&txid) {
 						for &(ref payment_hash, ref source, _) in latest_outpoints.iter() {
+							log_trace!(self, "Failing HTLC with payment_hash {} from current remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
 							htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
 						}
 					}
@@ -1222,6 +1224,7 @@ impl ChannelMonitor {
 				if let &Some(ref txid) = prev_remote_commitment_txid {
 					if let Some(&(_, ref prev_outpoint)) = self.remote_claimable_outpoints.get(&txid) {
 						for &(ref payment_hash, ref source, _) in prev_outpoint.iter() {
+							log_trace!(self, "Failing HTLC with payment_hash {} from previous remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
 							htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
 						}
 					}
@@ -1778,16 +1781,17 @@ impl ChannelMonitor {
 			let mut payment_data = None;
 
 			macro_rules! scan_commitment {
-				($htlc_outputs: expr, $htlc_sources: expr) => {
+				($htlc_outputs: expr, $htlc_sources: expr, $source: expr) => {
 					for &(ref payment_hash, ref source, ref vout) in $htlc_sources.iter() {
 						if &Some(input.previous_output.vout) == vout {
+							log_trace!(self, "Input spending {}:{} resolves HTLC with payment hash {} from {}", input.previous_output.txid, input.previous_output.vout, log_bytes!(payment_hash.0), $source);
 							payment_data = Some((source.clone(), *payment_hash));
 						}
 					}
 					if payment_data.is_none() {
 						for htlc_output in $htlc_outputs {
 							if input.previous_output.vout == htlc_output.transaction_output_index {
-								log_info!(self, "Inbound HTLC timeout at {} from {} resolved by {}", input.previous_output.vout, input.previous_output.txid, tx.txid());
+								log_info!(self, "Input spending {}:{} in {} resolves inbound HTLC with timeout from {}", input.previous_output.txid, input.previous_output.vout, tx.txid(), $source);
 								continue 'outer_loop;
 							}
 						}
@@ -1797,16 +1801,20 @@ impl ChannelMonitor {
 
 			if let Some(ref current_local_signed_commitment_tx) = self.current_local_signed_commitment_tx {
 				if input.previous_output.txid == current_local_signed_commitment_tx.txid {
-					scan_commitment!(current_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), current_local_signed_commitment_tx.htlc_sources);
+					scan_commitment!(current_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a),
+						current_local_signed_commitment_tx.htlc_sources,
+						"our latest local commitment tx");
 				}
 			}
 			if let Some(ref prev_local_signed_commitment_tx) = self.prev_local_signed_commitment_tx {
 				if input.previous_output.txid == prev_local_signed_commitment_tx.txid {
-					scan_commitment!(prev_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), prev_local_signed_commitment_tx.htlc_sources);
+					scan_commitment!(prev_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a),
+						prev_local_signed_commitment_tx.htlc_sources,
+						"our latest local commitment tx");
 				}
 			}
 			if let Some(&(ref htlc_outputs, ref htlc_sources)) = self.remote_claimable_outpoints.get(&input.previous_output.txid) {
-				scan_commitment!(htlc_outputs, htlc_sources);
+				scan_commitment!(htlc_outputs, htlc_sources, "remote commitment tx");
 			}
 
 			// If tx isn't solving htlc output from local/remote commitment tx and htlc isn't outbound we don't need
