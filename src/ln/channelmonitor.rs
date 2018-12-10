@@ -1157,6 +1157,12 @@ impl ChannelMonitor {
 					}
 
 					for (idx, htlc) in per_commitment_data.iter().enumerate() {
+						let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
+						if htlc.transaction_output_index as usize >= tx.output.len() ||
+								tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
+								tx.output[htlc.transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
+							return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); // Corrupted per_commitment_data, fuck this user
+						}
 						if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 							let input = TxIn {
 								previous_output: BitcoinOutPoint {
