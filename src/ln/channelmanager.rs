@@ -1558,7 +1558,7 @@ impl ChannelManager {
 						rejected_by_dest: !payment_retryable,
 					});
 				} else {
-					panic!("should have onion error packet here");
+					//TODO: Pass this back (see GH #243)
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
@@ -2715,6 +2715,8 @@ impl ChainListener for ChannelManager {
 			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+				} else {
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
 				}
 			}
 		}

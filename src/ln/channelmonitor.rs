@@ -1295,6 +1295,31 @@ impl ChannelMonitor {
 								txn_to_broadcast.push(single_htlc_tx);
 							}
 						}
+						if !htlc.offered {
+							// TODO: If the HTLC has already expired, potentially merge it with the
+							// rest of the claim transaction, as above.
+							let input = TxIn {
+								previous_output: BitcoinOutPoint {
+									txid: commitment_txid,
+									vout: htlc.transaction_output_index,
+								},
+								script_sig: Script::new(),
+								sequence: idx as u32,
+								witness: Vec::new(),
+							};
+							let mut timeout_tx = Transaction {
+								version: 2,
+								lock_time: htlc.cltv_expiry,
+								input: vec![input],
+								output: vec!(TxOut {
+									script_pubkey: self.destination_script.clone(),
+									value: htlc.amount_msat / 1000,
+								}),
+							};
+							let sighash_parts = bip143::SighashComponents::new(&timeout_tx);
+							sign_input!(sighash_parts, timeout_tx.input[0], htlc.amount_msat / 1000, vec![0]);
+							txn_to_broadcast.push(timeout_tx);
+						}
 					}
 
 					if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); } // Nothing to be done...probably a false positive/local tx
