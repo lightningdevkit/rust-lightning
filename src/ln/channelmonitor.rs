@@ -306,6 +306,8 @@ enum Storage {
 		prev_latest_per_commitment_point: Option<PublicKey>,
 		latest_per_commitment_point: Option<PublicKey>,
 		funding_info: Option<(OutPoint, Script)>,
+		current_remote_commitment_txid: Option<Sha256dHash>,
+		prev_remote_commitment_txid: Option<Sha256dHash>,
 	},
 	Watchtower {
 		revocation_base_key: PublicKey,
@@ -434,6 +436,8 @@ impl ChannelMonitor {
 				prev_latest_per_commitment_point: None,
 				latest_per_commitment_point: None,
 				funding_info: None,
+				current_remote_commitment_txid: None,
+				prev_remote_commitment_txid: None,
 			},
 			their_htlc_base_key: None,
 			their_delayed_payment_base_key: None,
@@ -496,7 +500,19 @@ impl ChannelMonitor {
 				return Err(MonitorUpdateError("Previous secret did not match new one"));
 			}
 		}
+		if self.get_min_seen_secret() <= idx {
+			return Ok(());
+		}
 		self.old_secrets[pos as usize] = (secret, idx);
+
+		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
+		// events for now-revoked/fulfilled HTLCs.
+		// TODO: We should probably consider whether we're really getting the next secret here.
+		if let Storage::Local { ref mut prev_remote_commitment_txid, .. } = self.key_storage {
+			if let Some(txid) = prev_remote_commitment_txid.take() {
+				self.remote_claimable_outpoints.get_mut(&txid).unwrap().1 = Vec::new();
+			}
+		}
 
 		if !self.payment_preimages.is_empty() {
 			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
@@ -545,12 +561,13 @@ impl ChannelMonitor {
 		for ref htlc in &htlc_outputs {
 			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
 		}
-		// We prune old claimable outpoints, useless to pass backward state when remote commitment
-		// tx get revoked, optimize for storage
-		for (_, htlc_data) in self.remote_claimable_outpoints.iter_mut() {
-			htlc_data.1 = Vec::new();
+
+		let new_txid = unsigned_commitment_tx.txid();
+		if let Storage::Local { ref mut current_remote_commitment_txid, ref mut prev_remote_commitment_txid, .. } = self.key_storage {
+			*prev_remote_commitment_txid = current_remote_commitment_txid.take();
+			*current_remote_commitment_txid = Some(new_txid);
 		}
-		self.remote_claimable_outpoints.insert(unsigned_commitment_tx.txid(), (htlc_outputs, htlc_sources));
+		self.remote_claimable_outpoints.insert(new_txid, (htlc_outputs, htlc_sources));
 		self.current_remote_commitment_number = commitment_number;
 		//TODO: Merge this into the other per-remote-transaction output storage stuff
 		match self.their_cur_revocation_points {
@@ -753,7 +770,7 @@ impl ChannelMonitor {
 		U48(self.commitment_transaction_number_obscure_factor).write(writer)?;
 
 		match self.key_storage {
-			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, ref funding_info } => {
+			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, ref funding_info, current_remote_commitment_txid, prev_remote_commitment_txid } => {
 				writer.write_all(&[0; 1])?;
 				writer.write_all(&revocation_base_key[..])?;
 				writer.write_all(&htlc_base_key[..])?;
@@ -781,6 +798,18 @@ impl ChannelMonitor {
 					&None => {
 						debug_assert!(false, "Try to serialize a useless Local monitor !");
 					},
+				}
+				if let Some(ref txid) = current_remote_commitment_txid {
+					writer.write_all(&[1; 1])?;
+					writer.write_all(&txid[..])?;
+				} else {
+					writer.write_all(&[0; 1])?;
+				}
+				if let Some(ref txid) = prev_remote_commitment_txid {
+					writer.write_all(&[1; 1])?;
+					writer.write_all(&txid[..])?;
+				} else {
+					writer.write_all(&[0; 1])?;
 				}
 			},
 			Storage::Watchtower { .. } => unimplemented!(),
@@ -1177,6 +1206,27 @@ impl ChannelMonitor {
 				output: spend_tx.output[0].clone(),
 			});
 			txn_to_broadcast.push(spend_tx);
+
+			// TODO: We really should only fail backwards after our revocation claims have been
+			// confirmed, but we also need to do more other tracking of in-flight pre-confirm
+			// on-chain claims, so we can do that at the same time.
+			if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
+				if let &Some(ref txid) = current_remote_commitment_txid {
+					if let Some(&(_, ref latest_outpoints)) = self.remote_claimable_outpoints.get(&txid) {
+						for &(ref payment_hash, ref source, _) in latest_outpoints.iter() {
+							htlc_updated.push(((*source).clone(), None, *payment_hash));
+						}
+					}
+				}
+				if let &Some(ref txid) = prev_remote_commitment_txid {
+					if let Some(&(_, ref prev_outpoint)) = self.remote_claimable_outpoints.get(&txid) {
+						for &(ref payment_hash, ref source, _) in prev_outpoint.iter() {
+							htlc_updated.push(((*source).clone(), None, *payment_hash));
+						}
+					}
+				}
+			}
+			// No need to check local commitment txn, symmetric HTLCSource must be present as per-htlc data on remote commitment tx
 		} else if let Some(per_commitment_data) = per_commitment_option {
 			// While this isn't useful yet, there is a potential race where if a counterparty
 			// revokes a state at the same time as the commitment transaction for that state is
@@ -1823,6 +1873,16 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					index: Readable::read(reader)?,
 				};
 				let funding_info = Some((outpoint, Readable::read(reader)?));
+				let current_remote_commitment_txid = match <u8 as Readable<R>>::read(reader)? {
+					0 => None,
+					1 => Some(Readable::read(reader)?),
+					_ => return Err(DecodeError::InvalidValue),
+				};
+				let prev_remote_commitment_txid = match <u8 as Readable<R>>::read(reader)? {
+					0 => None,
+					1 => Some(Readable::read(reader)?),
+					_ => return Err(DecodeError::InvalidValue),
+				};
 				Storage::Local {
 					revocation_base_key,
 					htlc_base_key,
@@ -1832,6 +1892,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					prev_latest_per_commitment_point,
 					latest_per_commitment_point,
 					funding_info,
+					current_remote_commitment_txid,
+					prev_remote_commitment_txid,
 				}
 			},
 			_ => return Err(DecodeError::InvalidValue),
