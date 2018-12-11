@@ -1559,6 +1559,10 @@ impl ChannelManager {
 					});
 				} else {
 					//TODO: Pass this back (see GH #243)
+					self.pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+						payment_hash: payment_hash.clone(),
+						rejected_by_dest: false, // We failed it ourselves, can't blame them
+					});
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
@@ -5993,7 +5997,7 @@ mod tests {
 		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 		// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx
 		let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-		let _payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
+		let (_payment_preimage_2, payment_hash_2) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000);
 
 		// Get the will-be-revoked local txn from node[0]
 		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
@@ -6010,10 +6014,18 @@ mod tests {
 
 		{
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-
 			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-
 			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+
+			let events = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { payment_hash, .. } => {
+					assert_eq!(payment_hash, payment_hash_2);
+				},
+				_ => panic!("Unexpected event"),
+			}
+
 			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 4);
 
@@ -6059,7 +6071,7 @@ mod tests {
 		// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx, but this
 		// time as two different claim transactions as we're gonna to timeout htlc with given a high current height
 		let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-		let _payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
+		let (_payment_preimage_2, payment_hash_2) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000);
 
 		// Get the will-be-revoked local txn from node[0]
 		let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
@@ -6069,10 +6081,18 @@ mod tests {
 
 		{
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-
 			nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
-
 			nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
+
+			let events = nodes[1].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { payment_hash, .. } => {
+					assert_eq!(payment_hash, payment_hash_2);
+				},
+				_ => panic!("Unexpected event"),
+			}
+
 			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 12); // ChannelManager : 2, ChannelMontitor: 8 (1 standard revoked output, 2 revocation htlc tx, 1 local commitment tx + 1 htlc timeout tx) * 2 (block-rescan)
 
