@@ -183,12 +183,17 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 pub struct TestLogger {
 	level: Level,
+	id: String,
 }
 
 impl TestLogger {
 	pub fn new() -> TestLogger {
+		Self::with_id("".to_owned())
+	}
+	pub fn with_id(id: String) -> TestLogger {
 		TestLogger {
 			level: Level::Trace,
+			id,
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
@@ -199,7 +204,7 @@ impl TestLogger {
 impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
 		if self.level >= record.level {
-			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
 		}
 	}
 }

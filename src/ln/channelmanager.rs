@@ -4303,12 +4303,12 @@ mod tests {
 		let mut nodes = Vec::new();
 		let mut rng = thread_rng();
 		let secp_ctx = Secp256k1::new();
-		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 
 		let chan_count = Rc::new(RefCell::new(0));
 		let payment_count = Rc::new(RefCell::new(0));
 
-		for _ in 0..node_count {
+		for i in 0..node_count {
+			let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 			let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
