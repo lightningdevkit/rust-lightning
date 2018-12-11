@@ -679,13 +679,6 @@ impl ChannelManager {
 		for tx in local_txn {
 			self.tx_broadcaster.broadcast_transaction(&tx);
 		}
-		//TODO: We need to have a way where outbound HTLC claims can result in us claiming the
-		//now-on-chain HTLC output for ourselves (and, thereafter, passing the HTLC backwards).
-		//TODO: We need to handle monitoring of pending offered HTLCs which just hit the chain and
-		//may be claimed, resulting in us claiming the inbound HTLCs (and back-failing after
-		//timeouts are hit and our claims confirm).
-		//TODO: In any case, we need to make sure we remove any pending htlc tracking (via
-		//fail_backwards or claim_funds) eventually for all HTLCs that were in the channel
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
@@ -2717,6 +2710,13 @@ impl ChainListener for ChannelManager {
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
+		}
+		{
+			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
+				if let Some(preimage) = htlc_update.payment_preimage {
+					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+				}
+			}
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();

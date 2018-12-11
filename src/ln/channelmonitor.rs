@@ -38,7 +38,7 @@ use util::ser::{ReadableArgs, Readable, Writer, Writeable, WriterWriteAdaptor, U
 use util::sha2::Sha256;
 use util::{byte_utils, events};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map};
 use std::sync::{Arc,Mutex};
 use std::{hash,cmp, mem};
 
@@ -85,6 +85,14 @@ pub enum ChannelMonitorUpdateErr {
 #[derive(Debug)]
 pub struct MonitorUpdateError(pub &'static str);
 
+/// Simple structure send back by ManyChannelMonitor in case of HTLC detected onchain from a
+/// forward channel and from which info are needed to update HTLC in a backward channel.
+pub struct HTLCUpdate {
+	pub(super) payment_hash: [u8; 32],
+	pub(super) payment_preimage: Option<[u8; 32]>,
+	pub(super) source: HTLCSource
+}
+
 /// Simple trait indicating ability to track a set of ChannelMonitors and multiplex events between
 /// them. Generally should be implemented by keeping a local SimpleManyChannelMonitor and passing
 /// events to it, while also taking any add_update_monitor events and passing them to some remote
@@ -101,6 +109,10 @@ pub trait ManyChannelMonitor: Send + Sync {
 	/// ChainWatchInterfaces such that the provided monitor receives block_connected callbacks with
 	/// any spends of it.
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr>;
+
+	/// Used by ChannelManager to get list of HTLC resolved onchain and which needed to be updated
+	/// with success or failure backward
+	fn fetch_pending_htlc_updated(&self) -> Vec<HTLCUpdate>;
 }
 
 /// A simple implementation of a ManyChannelMonitor and ChainListener. Can be used to create a
@@ -122,6 +134,7 @@ pub struct SimpleManyChannelMonitor<Key> {
 	chain_monitor: Arc<ChainWatchInterface>,
 	broadcaster: Arc<BroadcasterInterface>,
 	pending_events: Mutex<Vec<events::Event>>,
+	pending_htlc_updated: Mutex<HashMap<[u8; 32], Vec<(HTLCSource, Option<[u8; 32]>)>>>,
 	logger: Arc<Logger>,
 }
 
@@ -129,18 +142,53 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
 		let mut new_events: Vec<events::Event> = Vec::with_capacity(0);
+		let mut htlc_updated_infos = Vec::new();
 		{
 			let mut monitors = self.monitors.lock().unwrap();
 			for monitor in monitors.values_mut() {
-				let (txn_outputs, spendable_outputs) = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster);
+				let (txn_outputs, spendable_outputs, mut htlc_updated) = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster);
 				if spendable_outputs.len() > 0 {
 					new_events.push(events::Event::SpendableOutputs {
 						outputs: spendable_outputs,
 					});
 				}
+
 				for (ref txid, ref outputs) in txn_outputs {
 					for (idx, output) in outputs.iter().enumerate() {
 						self.chain_monitor.install_watch_outpoint((txid.clone(), idx as u32), &output.script_pubkey);
+					}
+				}
+				htlc_updated_infos.append(&mut htlc_updated);
+			}
+		}
+		{
+			// ChannelManager will just need to fetch pending_htlc_updated and pass state backward
+			let mut pending_htlc_updated = self.pending_htlc_updated.lock().unwrap();
+			for htlc in htlc_updated_infos.drain(..) {
+				match pending_htlc_updated.entry(htlc.2) {
+					hash_map::Entry::Occupied(mut e) => {
+						// In case of reorg we may have htlc outputs solved in a different way so
+						// we prefer to keep claims but don't store duplicate updates for a given
+						// (payment_hash, HTLCSource) pair.
+						// TODO: Note that we currently don't really use this as ChannelManager
+						// will fail/claim backwards after the first block. We really should delay
+						// a few blocks before failing backwards (but can claim backwards
+						// immediately) as long as we have a few blocks of headroom.
+						let mut existing_claim = false;
+						e.get_mut().retain(|htlc_data| {
+							if htlc.0 == htlc_data.0 {
+								if htlc_data.1.is_some() {
+									existing_claim = true;
+									true
+								} else { false }
+							} else { true }
+						});
+						if !existing_claim {
+							e.get_mut().push((htlc.0, htlc.1));
+						}
+					}
+					hash_map::Entry::Vacant(e) => {
+						e.insert(vec![(htlc.0, htlc.1)]);
 					}
 				}
 			}
@@ -161,6 +209,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 			chain_monitor,
 			broadcaster,
 			pending_events: Mutex::new(Vec::new()),
+			pending_htlc_updated: Mutex::new(HashMap::new()),
 			logger,
 		});
 		let weak_res = Arc::downgrade(&res);
@@ -206,6 +255,21 @@ impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
 		}
+	}
+
+	fn fetch_pending_htlc_updated(&self) -> Vec<HTLCUpdate> {
+		let mut updated = self.pending_htlc_updated.lock().unwrap();
+		let mut pending_htlcs_updated = Vec::with_capacity(updated.len());
+		for (k, v) in updated.drain() {
+			for htlc_data in v {
+				pending_htlcs_updated.push(HTLCUpdate {
+					payment_hash: k,
+					payment_preimage: htlc_data.1,
+					source: htlc_data.0,
+				});
+			}
+		}
+		pending_htlcs_updated
 	}
 }
 
@@ -928,12 +992,15 @@ impl ChannelMonitor {
 	/// data in remote_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions.
-	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>) {
+	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
+	/// revoked remote commitment tx
+	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<[u8;32]>, [u8;32])>)  {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
+		let mut htlc_updated = Vec::new();
 
 		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.remote_claimable_outpoints.get(&commitment_txid);
@@ -942,7 +1009,7 @@ impl ChannelMonitor {
 			( $thing : expr ) => {
 				match $thing {
 					Ok(a) => a,
-					Err(_) => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs)
+					Err(_) => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated)
 				}
 			};
 		}
@@ -967,7 +1034,7 @@ impl ChannelMonitor {
 			};
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key.unwrap()));
 			let a_htlc_key = match self.their_htlc_base_key {
-				None => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs),
+				None => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated),
 				Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &their_htlc_base_key)),
 			};
 
@@ -1046,7 +1113,7 @@ impl ChannelMonitor {
 					if htlc.transaction_output_index as usize >= tx.output.len() ||
 							tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
 							tx.output[htlc.transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
-						return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); // Corrupted per_commitment_data, fuck this user
+						return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); // Corrupted per_commitment_data, fuck this user
 					}
 					let input = TxIn {
 						previous_output: BitcoinOutPoint {
@@ -1084,7 +1151,7 @@ impl ChannelMonitor {
 				watch_outputs.append(&mut tx.output.clone());
 				self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 			}
-			if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); } // Nothing to be done...probably a false positive/local tx
+			if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); } // Nothing to be done...probably a false positive/local tx
 
 			let outputs = vec!(TxOut {
 				script_pubkey: self.destination_script.clone(),
@@ -1139,7 +1206,7 @@ impl ChannelMonitor {
 						},
 					};
 					let a_htlc_key = match self.their_htlc_base_key {
-						None => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs),
+						None => return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated),
 						Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &their_htlc_base_key)),
 					};
 
@@ -1193,7 +1260,7 @@ impl ChannelMonitor {
 						if htlc.transaction_output_index as usize >= tx.output.len() ||
 								tx.output[htlc.transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
 								tx.output[htlc.transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
-							return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); // Corrupted per_commitment_data, fuck this user
+							return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); // Corrupted per_commitment_data, fuck this user
 						}
 						if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 							let input = TxIn {
@@ -1230,7 +1297,7 @@ impl ChannelMonitor {
 						}
 					}
 
-					if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); } // Nothing to be done...probably a false positive/local tx
+					if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); } // Nothing to be done...probably a false positive/local tx
 
 					let outputs = vec!(TxOut {
 						script_pubkey: self.destination_script.clone(),
@@ -1260,7 +1327,7 @@ impl ChannelMonitor {
 			}
 		}
 
-		(txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs)
+		(txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated)
 	}
 
 	/// Attempst to claim a remote HTLC-Success/HTLC-Timeout s outputs using the revocation key
@@ -1500,9 +1567,10 @@ impl ChannelMonitor {
 		}
 	}
 
-	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>) {
+	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<[u8 ; 32]>, [u8; 32])>) {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
+		let mut htlc_updated = Vec::new();
 		for tx in txn_matched {
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
@@ -1520,7 +1588,7 @@ impl ChannelMonitor {
 					}
 				};
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
-					let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(tx, height);
+					let (remote_txn, new_outputs, mut spendable_output, mut updated) = self.check_spend_remote_transaction(tx, height);
 					txn = remote_txn;
 					spendable_outputs.append(&mut spendable_output);
 					if !new_outputs.1.is_empty() {
@@ -1539,6 +1607,9 @@ impl ChannelMonitor {
 							spendable_outputs.push(spendable_output);
 						}
 					}
+					if updated.len() > 0 {
+						htlc_updated.append(&mut updated);
+					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
 						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, commitment_number);
@@ -1552,6 +1623,10 @@ impl ChannelMonitor {
 				}
 				for tx in txn.iter() {
 					broadcaster.broadcast_transaction(tx);
+				}
+				let mut updated = self.is_resolving_htlc_output(tx);
+				if updated.len() > 0 {
+					htlc_updated.append(&mut updated);
 				}
 			}
 		}
@@ -1583,7 +1658,7 @@ impl ChannelMonitor {
 			}
 		}
 		self.last_block_hash = block_hash.clone();
-		(watch_outputs, spendable_outputs)
+		(watch_outputs, spendable_outputs, htlc_updated)
 	}
 
 	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {
@@ -1616,6 +1691,64 @@ impl ChannelMonitor {
 			}
 		}
 		false
+	}
+
+	/// Check if any transaction broadcasted is resolving HTLC output by a success or timeout on a local
+	/// or remote commitment tx, if so send back the source, preimage if found and payment_hash of resolved HTLC
+	fn is_resolving_htlc_output(&mut self, tx: &Transaction) -> Vec<(HTLCSource, Option<[u8;32]>, [u8;32])> {
+		let mut htlc_updated = Vec::new();
+
+		'outer_loop: for input in &tx.input {
+			let mut payment_data = None;
+
+			macro_rules! scan_commitment {
+				($htlc_outputs: expr, $htlc_sources: expr) => {
+					for &(ref payment_hash, ref source, ref vout) in $htlc_sources.iter() {
+						if &Some(input.previous_output.vout) == vout {
+							payment_data = Some((source.clone(), *payment_hash));
+						}
+					}
+					if payment_data.is_none() {
+						for htlc_output in $htlc_outputs {
+							if input.previous_output.vout == htlc_output.transaction_output_index {
+								log_info!(self, "Inbound HTLC timeout at {} from {} resolved by {}", input.previous_output.vout, input.previous_output.txid, tx.txid());
+								continue 'outer_loop;
+							}
+						}
+					}
+				}
+			}
+
+			if let Some(ref current_local_signed_commitment_tx) = self.current_local_signed_commitment_tx {
+				if input.previous_output.txid == current_local_signed_commitment_tx.txid {
+					scan_commitment!(current_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), current_local_signed_commitment_tx.htlc_sources);
+				}
+			}
+			if let Some(ref prev_local_signed_commitment_tx) = self.prev_local_signed_commitment_tx {
+				if input.previous_output.txid == prev_local_signed_commitment_tx.txid {
+					scan_commitment!(prev_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), prev_local_signed_commitment_tx.htlc_sources);
+				}
+			}
+			if let Some(&(ref htlc_outputs, ref htlc_sources)) = self.remote_claimable_outpoints.get(&input.previous_output.txid) {
+				scan_commitment!(htlc_outputs, htlc_sources);
+			}
+
+			// If tx isn't solving htlc output from local/remote commitment tx and htlc isn't outbound we don't need
+			// to broadcast solving backward
+			if let Some((source, payment_hash)) = payment_data {
+				let mut payment_preimage = [0; 32];
+				if input.witness.len() == 5 && input.witness[4].len() == 138 {
+					payment_preimage.copy_from_slice(&tx.input[0].witness[3]);
+					htlc_updated.push((source, Some(payment_preimage), payment_hash));
+				} else if input.witness.len() == 3 && input.witness[2].len() == 133 {
+					payment_preimage.copy_from_slice(&tx.input[0].witness[1]);
+					htlc_updated.push((source, Some(payment_preimage), payment_hash));
+				} else {
+					htlc_updated.push((source, None, payment_hash));
+				}
+			}
+		}
+		htlc_updated
 	}
 }
 

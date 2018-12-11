@@ -1150,21 +1150,33 @@ impl Channel {
 		let mut payment_hash_calc = [0; 32];
 		sha.result(&mut payment_hash_calc);
 
+		// ChannelManager may generate duplicate claims/fails due to HTLC update events from
+		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
+		// these, but for now we just have to treat them as normal.
+
 		let mut pending_idx = std::usize::MAX;
 		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				assert_eq!(htlc.payment_hash, payment_hash_calc);
-				if let InboundHTLCState::Committed = htlc.state {
-				} else {
-					debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
-					// Don't return in release mode here so that we can update channel_monitor
+				match htlc.state {
+					InboundHTLCState::Committed => {},
+					InboundHTLCState::LocalRemoved(ref reason) => {
+						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+						} else {
+							log_warn!(self, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", log_bytes!(htlc.payment_hash), log_bytes!(self.channel_id()));
+						}
+						return Ok((None, None));
+					},
+					_ => {
+						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
+						// Don't return in release mode here so that we can update channel_monitor
+					}
 				}
 				pending_idx = idx;
 				break;
 			}
 		}
 		if pending_idx == std::usize::MAX {
-			debug_assert!(false, "Unable to find a pending HTLC which matched the given HTLC ID");
 			return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 		}
 
@@ -1179,15 +1191,14 @@ impl Channel {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							debug_assert!(false, "Tried to fulfill an HTLC we already had a pending fulfill for");
 							return Ok((None, None));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							debug_assert!(false, "Tried to fulfill an HTLC we already had a holding-cell failure on");
-							// Return the new channel monitor in a last-ditch effort to hit the
-							// chain and claim the funds
+							log_warn!(self, "Have preimage and want to fulfill HTLC with pending failure against channel {}", log_bytes!(self.channel_id()));
+							// TODO: We may actually be able to switch to a fulfill here, though its
+							// rare enough it may not be worth the complexity burden.
 							return Ok((None, Some(self.channel_monitor.clone())));
 						}
 					},
@@ -1237,19 +1248,27 @@ impl Channel {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
+		// ChannelManager may generate duplicate claims/fails due to HTLC update events from
+		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
+		// these, but for now we just have to treat them as normal.
+
 		let mut pending_idx = std::usize::MAX;
 		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
-				if let InboundHTLCState::Committed = htlc.state {
-				} else {
-					debug_assert!(false, "Have an inbound HTLC we tried to fail before it was fully committed to");
-					return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
+				match htlc.state {
+					InboundHTLCState::Committed => {},
+					InboundHTLCState::LocalRemoved(_) => {
+						return Ok(None);
+					},
+					_ => {
+						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
+						return Err(ChannelError::Ignore("Unable to find a pending HTLC which matchd the given HTLC ID"));
+					}
 				}
 				pending_idx = idx;
 			}
 		}
 		if pending_idx == std::usize::MAX {
-			debug_assert!(false, "Unable to find a pending HTLC which matched the given HTLC ID");
 			return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 		}
 
@@ -1259,14 +1278,12 @@ impl Channel {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							debug_assert!(false, "Unable to find a pending HTLC which matched the given HTLC ID");
 							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							debug_assert!(false, "Tried to fail an HTLC that we already had a pending failure for");
-							return Ok(None);
+							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 						}
 					},
 					_ => {}
