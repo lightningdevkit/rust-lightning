@@ -3388,7 +3388,7 @@ mod tests {
 	use rand::{thread_rng,Rng};
 
 	use std::cell::RefCell;
-	use std::collections::{BTreeSet, HashMap};
+	use std::collections::{BTreeSet, HashMap, HashSet};
 	use std::default::Default;
 	use std::rc::Rc;
 	use std::sync::{Arc, Mutex};
@@ -6471,6 +6471,227 @@ mod tests {
 			},
 			_ => panic!("Unexpected event"),
 		}
+	}
+
+	fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
+		// Test that if our counterparty broadcasts a revoked commitment transaction we fail all
+		// pending HTLCs on that channel backwards even if the HTLCs aren't present in our latest
+		// commitment transaction anymore.
+		// To do this, we have the peer which will broadcast a revoked commitment transaction send
+		// a number of update_fail/commitment_signed updates without ever sending the RAA in
+		// response to our commitment_signed. This is somewhat misbehavior-y, though not
+		// technically disallowed and we should probably handle it reasonably.
+		// Note that this is pretty exhaustive as an outbound HTLC which we haven't yet
+		// failed/fulfilled backwards must be in at least one of the latest two remote commitment
+		// transactions:
+		// * Once we move it out of our holding cell/add it, we will immediately include it in a
+		//   commitment_signed (implying it will be in the latest remote commitment transaction).
+		// * Once they remove it, we will send a (the first) commitment_signed without the HTLC,
+		//   and once they revoke the previous commitment transaction (allowing us to send a new
+		//   commitment_signed) we will be free to fail/fulfill the HTLC backwards.
+		let mut nodes = create_network(3);
+
+		// Create some initial channels
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+		// Get the will-be-revoked local txn from nodes[2]
+		let revoked_local_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
+		// Revoke the old state
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+		let (_, first_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+		let (_, second_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+		let (_, third_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+
+		assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash, PaymentFailReason::PreimageUnknown));
+		check_added_monitors!(nodes[2], 1);
+		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+		let bs_raa = commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true, false, true);
+		// Drop the last RAA from 3 -> 2
+
+		assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash, PaymentFailReason::PreimageUnknown));
+		check_added_monitors!(nodes[2], 1);
+		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+		nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &updates.commitment_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		// Note that nodes[1] is in AwaitingRAA, so won't send a CS
+		let as_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
+		nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa).unwrap();
+		check_added_monitors!(nodes[2], 1);
+
+		assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash, PaymentFailReason::PreimageUnknown));
+		check_added_monitors!(nodes[2], 1);
+		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+		// At this point first_payment_hash has dropped out of the latest two commitment
+		// transactions that nodes[1] is tracking...
+		nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &updates.commitment_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		// Note that nodes[1] is (still) in AwaitingRAA, so won't send a CS
+		let as_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
+		nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa).unwrap();
+		check_added_monitors!(nodes[2], 1);
+
+		// Add a fourth HTLC, this one will get sequestered away in nodes[1]'s holding cell waiting
+		// on nodes[2]'s RAA.
+		let route = nodes[1].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let (_, fourth_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		nodes[1].node.send_payment(route, fourth_payment_hash).unwrap();
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors!(nodes[1], 0);
+
+		if deliver_bs_raa {
+			nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_raa).unwrap();
+			// One monitor for the new revocation preimage, one as we generate a commitment for
+			// nodes[0] to fail first_payment_hash backwards.
+			check_added_monitors!(nodes[1], 2);
+		}
+
+		let mut failed_htlcs = HashSet::new();
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, .. } => {
+				assert_eq!(*payment_hash, fourth_payment_hash);
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		if !deliver_bs_raa {
+			// If we delivered the RAA already then we already failed first_payment_hash backwards.
+			check_added_monitors!(nodes[1], 1);
+		}
+
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), if deliver_bs_raa { 3 } else { 2 });
+		match events[if deliver_bs_raa { 2 } else { 0 }] {
+			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
+			_ => panic!("Unexpected event"),
+		}
+		if deliver_bs_raa {
+			match events[0] {
+				MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+					assert_eq!(nodes[2].node.get_our_node_id(), *node_id);
+					assert_eq!(update_add_htlcs.len(), 1);
+					assert!(update_fulfill_htlcs.is_empty());
+					assert!(update_fail_htlcs.is_empty());
+					assert!(update_fail_malformed_htlcs.is_empty());
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+		// Due to the way backwards-failing occurs we do the updates in two steps.
+		let updates = match events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert_eq!(update_fail_htlcs.len(), 1);
+				assert!(update_fulfill_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
+
+				nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]).unwrap();
+				nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed).unwrap();
+				check_added_monitors!(nodes[0], 1);
+				let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+				nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap();
+				check_added_monitors!(nodes[1], 1);
+				let bs_second_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+				nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_signed).unwrap();
+				check_added_monitors!(nodes[1], 1);
+				let bs_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+				nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
+				check_added_monitors!(nodes[0], 1);
+
+				if !deliver_bs_raa {
+					// If we delievered B's RAA we got an unknown preimage error, not something
+					// that we should update our routing table for.
+					let events = nodes[0].node.get_and_clear_pending_msg_events();
+					assert_eq!(events.len(), 1);
+					match events[0] {
+						MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+						_ => panic!("Unexpected event"),
+					}
+				}
+				let events = nodes[0].node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PaymentFailed { ref payment_hash, .. } => {
+						assert!(failed_htlcs.insert(*payment_hash));
+					},
+					_ => panic!("Unexpected event"),
+				}
+
+				bs_second_update
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		assert!(updates.update_add_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 2);
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[1]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
+
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2);
+		for event in events {
+			match event {
+				MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+				_ => panic!("Unexpected event"),
+			}
+		}
+
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, .. } => {
+				assert!(failed_htlcs.insert(*payment_hash));
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			Event::PaymentFailed { ref payment_hash, .. } => {
+				assert!(failed_htlcs.insert(*payment_hash));
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		assert!(failed_htlcs.contains(&first_payment_hash));
+		assert!(failed_htlcs.contains(&second_payment_hash));
+		assert!(failed_htlcs.contains(&third_payment_hash));
+	}
+
+	#[test]
+	fn test_commitment_revoked_fail_backward_exhaustive() {
+		do_test_commitment_revoked_fail_backward_exhaustive(false);
+		do_test_commitment_revoked_fail_backward_exhaustive(true);
 	}
 
 	#[test]
