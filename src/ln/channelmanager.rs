@@ -2622,6 +2622,20 @@ impl ChannelManager {
 
 impl events::MessageSendEventsProvider for ChannelManager {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+		// TODO: Event release to users and serialization is currently race-y: its very easy for a
+		// user to serialize a ChannelManager with pending events in it and lose those events on
+		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
+		{
+			//TODO: This behavior should be documented.
+			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
+				if let Some(preimage) = htlc_update.payment_preimage {
+					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+				} else {
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+				}
+			}
+		}
+
 		let mut ret = Vec::new();
 		let mut channel_state = self.channel_state.lock().unwrap();
 		mem::swap(&mut ret, &mut channel_state.pending_msg_events);
@@ -2631,6 +2645,20 @@ impl events::MessageSendEventsProvider for ChannelManager {
 
 impl events::EventsProvider for ChannelManager {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+		// TODO: Event release to users and serialization is currently race-y: its very easy for a
+		// user to serialize a ChannelManager with pending events in it and lose those events on
+		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
+		{
+			//TODO: This behavior should be documented.
+			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
+				if let Some(preimage) = htlc_update.payment_preimage {
+					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+				} else {
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+				}
+			}
+		}
+
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		mem::swap(&mut ret, &mut *pending_events);
@@ -2710,15 +2738,6 @@ impl ChainListener for ChannelManager {
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
-		}
-		{
-			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
-				if let Some(preimage) = htlc_update.payment_preimage {
-					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
-				} else {
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
-				}
-			}
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
