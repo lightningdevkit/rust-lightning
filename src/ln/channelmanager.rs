@@ -5001,52 +5001,6 @@ mod tests {
 		assert!(nodes[2].node.list_channels().is_empty());
 	}
 
-	#[test]
-	fn update_fee_async_shutdown() {
-		// Test update_fee works after shutdown start if messages are delivered out-of-order
-		let nodes = create_network(2);
-		let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
-
-		let starting_feerate = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().get_feerate();
-		nodes[0].node.update_fee(chan_1.2.clone(), starting_feerate + 20).unwrap();
-		check_added_monitors!(nodes[0], 1);
-		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-		assert!(updates.update_add_htlcs.is_empty());
-		assert!(updates.update_fulfill_htlcs.is_empty());
-		assert!(updates.update_fail_htlcs.is_empty());
-		assert!(updates.update_fail_malformed_htlcs.is_empty());
-		assert!(updates.update_fee.is_some());
-
-		nodes[1].node.close_channel(&chan_1.2).unwrap();
-		let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
-		// Note that we don't actually test normative behavior here. The spec indicates we could
-		// actually send a closing_signed here, but is kinda unclear and could possibly be amended
-		// to require waiting on the full commitment dance before doing so (see
-		// https://github.com/lightningnetwork/lightning-rfc/issues/499). In any case, to avoid
-		// ambiguity, we should wait until after the full commitment dance to send closing_signed.
-		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-
-		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &updates.update_fee.unwrap()).unwrap();
-		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed).unwrap();
-		check_added_monitors!(nodes[1], 1);
-		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
-		let node_0_closing_signed = commitment_signed_dance!(nodes[1], nodes[0], (), false, true, true);
-
-		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), match node_0_closing_signed.unwrap() {
-			MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
-				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-				msg
-			},
-			_ => panic!("Unexpected event"),
-		}).unwrap();
-		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
-		let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-		assert!(node_0_none.is_none());
-	}
-
 	fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// Test that shutdown/closing_signed is re-sent on reconnect with a variable number of
 		// messages delivered prior to disconnect
