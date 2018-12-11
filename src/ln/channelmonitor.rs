@@ -71,6 +71,8 @@ pub enum ChannelMonitorUpdateErr {
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed
 	/// of this channel). This will force-close the channel in question.
+	///
+	/// Should also be used to indicate a failure to update the local copy of the channel monitor.
 	PermanentFailure,
 }
 
