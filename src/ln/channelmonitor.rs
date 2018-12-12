@@ -1407,6 +1407,10 @@ impl ChannelMonitor {
 						output: spend_tx.output[0].clone(),
 					});
 					txn_to_broadcast.push(spend_tx);
+
+					// TODO: We need to fail back HTLCs that were't included in the broadcast
+					// commitment transaction, either because they didn't meet dust or because a
+					// stale (but not yet revoked) commitment transaction was broadcast!
 				}
 			}
 		}
@@ -1578,6 +1582,9 @@ impl ChannelMonitor {
 	/// Should not be used if check_spend_revoked_transaction succeeds.
 	fn check_spend_local_transaction(&self, tx: &Transaction, _height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, (Sha256dHash, Vec<TxOut>)) {
 		let commitment_txid = tx.txid();
+		// TODO: If we find a match here we need to fail back HTLCs that were't included in the
+		// broadcast commitment transaction, either because they didn't meet dust or because they
+		// weren't yet included in our commitment transaction(s).
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
 				match self.key_storage {
@@ -1746,6 +1753,16 @@ impl ChannelMonitor {
 	}
 
 	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {
+		// TODO: We need to consider HTLCs which weren't included in latest local commitment
+		// transaction (or in any of the latest two local commitment transactions). This probably
+		// needs to use the same logic as the revoked-tx-announe logic - checking the last two
+		// remote commitment transactions. This probably has implications for what data we need to
+		// store in local commitment transactions.
+		// TODO: We need to consider HTLCs which were below dust threshold here - while they don't
+		// strictly imply that we need to fail the channel, we need to go ahead and fail them back
+		// to the source, and if we don't fail the channel we will have to ensure that the next
+		// updates that peer sends us are update_fails, failing the channel if not. It's probably
+		// easier to just fail the channel as this case should be rare enough anyway.
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
 				// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
