@@ -295,6 +295,11 @@ pub(crate) const CLTV_CLAIM_BUFFER: u32 = 6;
 /// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
 /// copies of ChannelMonitors, including watchtowers).
 pub(crate) const HTLC_FAIL_TIMEOUT_BLOCKS: u32 = 3;
+/// Number of blocks we wait on seeing a confirmed HTLC-Timeout or previous revoked commitment
+/// transaction before we fail corresponding inbound HTLCs. This prevents us from failing backwards
+/// and then getting a reorg resulting in us losing money.
+//TODO: We currently dont actually use this...we should
+pub(crate) const HTLC_FAIL_ANTI_REORG_DELAY: u32 = 6;
 
 #[derive(Clone, PartialEq)]
 enum Storage {

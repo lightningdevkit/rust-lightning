@@ -22,7 +22,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, HTLC_FAIL_ANTI_REORG_DELAY};
 use ln::router::{Route,RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
@@ -341,16 +341,17 @@ pub struct ChannelManager {
 /// ie the node we forwarded the payment on to should always have enough room to reliably time out
 /// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
 /// CLTV_CLAIM_BUFFER point (we static assert that its at least 3 blocks more).
-const CLTV_EXPIRY_DELTA: u16 = 6 * 24 * 2; //TODO?
+const CLTV_EXPIRY_DELTA: u16 = 6 * 12; //TODO?
 const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
-// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + 2*HTLC_FAIL_TIMEOUT_BLOCKS, ie that
-// if the next-hop peer fails the HTLC within HTLC_FAIL_TIMEOUT_BLOCKS then we'll still have
-// HTLC_FAIL_TIMEOUT_BLOCKS left to fail it backwards ourselves before hitting the
-// CLTV_CLAIM_BUFFER point and failing the channel on-chain to time out the HTLC.
+// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + 2*HTLC_FAIL_TIMEOUT_BLOCKS +
+// HTLC_FAIL_ANTI_REORG_DELAY, ie that if the next-hop peer fails the HTLC within
+// HTLC_FAIL_TIMEOUT_BLOCKS then we'll still have HTLC_FAIL_TIMEOUT_BLOCKS left to fail it
+// backwards ourselves before hitting the CLTV_CLAIM_BUFFER point and failing the channel
+// on-chain to time out the HTLC.
 #[deny(const_err)]
 #[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIMEOUT_BLOCKS - CLTV_CLAIM_BUFFER;
+const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIMEOUT_BLOCKS - CLTV_CLAIM_BUFFER - HTLC_FAIL_ANTI_REORG_DELAY;
 
 // Check for ability of an attacker to make us fail on-chain by delaying inbound claim. See
 // ChannelMontior::would_broadcast_at_height for a description of why this is needed.
