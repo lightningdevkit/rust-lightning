@@ -5,6 +5,7 @@ pub mod errors;
 pub mod ser;
 
 pub(crate) mod byte_utils;
+pub(crate) mod chacha20;
 pub(crate) mod chacha20poly1305rfc;
 pub(crate) mod internal_traits;
 pub(crate) mod rng;

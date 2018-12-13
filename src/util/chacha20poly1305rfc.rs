@@ -12,19 +12,19 @@
 
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chachapoly {
+	use util::chacha20::ChaCha20;
+
 	use crypto::aead::{AeadEncryptor,AeadDecryptor};
 	use crypto::symmetriccipher::SynchronousStreamCipher;
-	use crypto::poly1305::Poly1305;
 	use crypto::mac::Mac;
 	use crypto::util::fixed_time_eq;
-
-	pub use crypto::chacha20::ChaCha20;
+	use crypto::poly1305::Poly1305;
 
 	use util::byte_utils;
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
-		cipher  : ChaCha20,
+		cipher: ChaCha20,
 		mac: Poly1305,
 		finished: bool,
 		data_len: usize,
@@ -105,12 +105,11 @@ mod real_chachapoly {
 	}
 }
 #[cfg(not(feature = "fuzztarget"))]
-pub use self::real_chachapoly::{ChaCha20Poly1305RFC, ChaCha20};
+pub use self::real_chachapoly::ChaCha20Poly1305RFC;
 
 #[cfg(feature = "fuzztarget")]
 mod fuzzy_chachapoly {
 	use crypto::aead::{AeadEncryptor,AeadDecryptor};
-	use crypto::symmetriccipher::SynchronousStreamCipher;
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
@@ -157,22 +156,6 @@ mod fuzzy_chachapoly {
 			true
 		}
 	}
-
-	pub struct ChaCha20 {}
-
-	impl ChaCha20 {
-		pub fn new(key: &[u8], nonce: &[u8]) -> ChaCha20 {
-			assert!(key.len() == 16 || key.len() == 32);
-			assert!(nonce.len() == 8 || nonce.len() == 12);
-			Self {}
-		}
-	}
-
-	impl SynchronousStreamCipher for ChaCha20 {
-		fn process(&mut self, input: &[u8], output: &mut [u8]) {
-			output.copy_from_slice(input);
-		}
-	}
 }
 #[cfg(feature = "fuzztarget")]
-pub use self::fuzzy_chachapoly::{ChaCha20Poly1305RFC, ChaCha20};
+pub use self::fuzzy_chachapoly::ChaCha20Poly1305RFC;

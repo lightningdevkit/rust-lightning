@@ -34,7 +34,7 @@ use chain::keysinterface::KeysInterface;
 use util::config::UserConfig;
 use util::{byte_utils, events, internal_traits, rng};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use util::chacha20poly1305rfc::ChaCha20;
+use util::chacha20::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
 use util::errors;
