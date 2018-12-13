@@ -17,11 +17,12 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
-use bitcoin::util::hash::{Hash160, BitcoinHash,Sha256dHash};
+use bitcoin::util::hash::{BitcoinHash,Sha256dHash};
 use bitcoin::util::bip143;
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
@@ -1077,7 +1078,7 @@ impl ChannelMonitor {
 			let local_payment_p2wpkh = if let Some(payment_key) = local_payment_key {
 				// Note that the Network here is ignored as we immediately drop the address for the
 				// script_pubkey version.
-				let payment_hash160 = Hash160::from_data(&PublicKey::from_secret_key(&self.secp_ctx, &payment_key).serialize());
+				let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &payment_key).serialize());
 				Some(Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script())
 			} else { None };
 
@@ -1619,7 +1620,7 @@ impl ChannelMonitor {
 		if tx.input[0].sequence == 0xFFFFFFFF && !tx.input[0].witness.is_empty() && tx.input[0].witness.last().unwrap().len() == 71 {
 			match self.key_storage {
 				Storage::Local { ref shutdown_pubkey, .. } =>  {
-					let our_channel_close_key_hash = Hash160::from_data(&shutdown_pubkey.serialize());
+					let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
 					let shutdown_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
 					for (idx, output) in tx.output.iter().enumerate() {
 						if shutdown_script == output.script_pubkey {

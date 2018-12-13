@@ -2,12 +2,13 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
+use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode::{self, Encodable, Decodable};
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Message,Signature};
@@ -906,7 +907,7 @@ impl Channel {
 		if value_to_b >= (dust_limit_satoshis as i64) {
 			txouts.push((TxOut {
 				script_pubkey: Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0)
-				                             .push_slice(&Hash160::from_data(&keys.b_payment_key.serialize())[..])
+				                             .push_slice(&Hash160::hash(&keys.b_payment_key.serialize())[..])
 				                             .into_script(),
 				value: value_to_b as u64
 			}, None));
@@ -939,7 +940,7 @@ impl Channel {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let our_channel_close_key_hash = Hash160::from_data(&self.shutdown_pubkey.serialize());
+		let our_channel_close_key_hash = Hash160::hash(&self.shutdown_pubkey.serialize());
 		Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
 	}
 

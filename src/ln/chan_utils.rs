@@ -1,19 +1,18 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
-use bitcoin::util::hash::{Hash160,Sha256dHash};
+use bitcoin::util::hash::{Sha256dHash};
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::ripemd160::Hash as Ripemd160;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use ln::channelmanager::PaymentHash;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 use secp256k1;
-
-use crypto::digest::Digest;
-use crypto::ripemd160::Ripemd160;
 
 pub const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 pub const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
@@ -153,17 +152,11 @@ pub struct HTLCOutputInCommitment {
 
 #[inline]
 pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
-	let payment_hash160 = {
-		let mut ripemd = Ripemd160::new();
-		ripemd.input(&htlc.payment_hash.0[..]);
-		let mut res = [0; 20];
-		ripemd.result(&mut res);
-		res
-	};
+	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
 	if htlc.offered {
 		Builder::new().push_opcode(opcodes::All::OP_DUP)
 		              .push_opcode(opcodes::All::OP_HASH160)
-		              .push_slice(&Hash160::from_data(&revocation_key.serialize())[..])
+		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::All::OP_EQUAL)
 		              .push_opcode(opcodes::All::OP_IF)
 		              .push_opcode(opcodes::All::OP_CHECKSIG)
@@ -191,7 +184,7 @@ pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a
 	} else {
 		Builder::new().push_opcode(opcodes::All::OP_DUP)
 		              .push_opcode(opcodes::All::OP_HASH160)
-		              .push_slice(&Hash160::from_data(&revocation_key.serialize())[..])
+		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::All::OP_EQUAL)
 		              .push_opcode(opcodes::All::OP_IF)
 		              .push_opcode(opcodes::All::OP_CHECKSIG)

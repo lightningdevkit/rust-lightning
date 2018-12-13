@@ -6,11 +6,11 @@ use bitcoin::blockdata::transaction::{OutPoint, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::Hash160;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::Secp256k1;
@@ -138,9 +138,9 @@ impl KeysManager {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)).expect("Your RNG is busted").secret_key;
 				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1)) {
 					Ok(destination_key) => {
-						let pubkey_hash160 = Hash160::from_data(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..]);
+						let pubkey_hash160 = Hash160::hash(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..]);
 						Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0)
-						              .push_slice(pubkey_hash160.as_bytes())
+						              .push_slice(&pubkey_hash160.into_inner())
 						              .into_script()
 					},
 					Err(_) => panic!("Your RNG is busted"),
