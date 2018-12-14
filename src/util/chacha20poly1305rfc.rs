@@ -13,12 +13,12 @@
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chachapoly {
 	use util::chacha20::ChaCha20;
+	use util::poly1305::Poly1305;
 
 	use crypto::aead::{AeadEncryptor,AeadDecryptor};
 	use crypto::symmetriccipher::SynchronousStreamCipher;
 	use crypto::mac::Mac;
 	use crypto::util::fixed_time_eq;
-	use crypto::poly1305::Poly1305;
 
 	use util::byte_utils;
 
