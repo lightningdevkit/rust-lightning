@@ -13,7 +13,6 @@ use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::Secp256k1;
 use secp256k1;
 
-use crypto::hkdf::{hkdf_extract,hkdf_expand};
 use crypto::digest::Digest;
 
 use util::sha2::Sha256;
@@ -109,43 +108,6 @@ impl_writeable!(ChannelKeys, 0, {
 	commitment_seed
 });
 
-impl ChannelKeys {
-	/// Generate a set of lightning keys needed to operate a channel by HKDF-expanding a given
-	/// random 32-byte seed
-	pub fn new_from_seed(seed: &[u8; 32]) -> ChannelKeys {
-		let mut prk = [0; 32];
-		hkdf_extract(Sha256::new(), b"rust-lightning key gen salt", seed, &mut prk);
-		let secp_ctx = Secp256k1::without_caps();
-
-		let mut okm = [0; 32];
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning funding key info", &mut okm);
-		let funding_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning revocation base key info", &mut okm);
-		let revocation_base_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning payment base key info", &mut okm);
-		let payment_base_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning delayed payment base key info", &mut okm);
-		let delayed_payment_base_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning htlc base key info", &mut okm);
-		let htlc_base_key = SecretKey::from_slice(&secp_ctx, &okm).expect("Sha256 is broken");
-
-		hkdf_expand(Sha256::new(), &prk, b"rust-lightning local commitment seed info", &mut okm);
-
-		ChannelKeys {
-			funding_key: funding_key,
-			revocation_base_key: revocation_base_key,
-			payment_base_key: payment_base_key,
-			delayed_payment_base_key: delayed_payment_base_key,
-			htlc_base_key: htlc_base_key,
-			commitment_seed: okm
-		}
-	}
-}
-
 /// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
 /// and derives keys from that.
 ///
@@ -240,7 +202,40 @@ impl KeysInterface for KeysManager {
 		sha.input(&child_privkey.secret_key[..]);
 
 		sha.result(&mut seed);
-		ChannelKeys::new_from_seed(&seed)
+
+		let commitment_seed = {
+			let mut sha = Sha256::new();
+			sha.input(&seed);
+			sha.input(&b"commitment seed"[..]);
+			let mut res = [0; 32];
+			sha.result(&mut res);
+			res
+		};
+		macro_rules! key_step {
+			($info: expr, $prev_key: expr) => {{
+				let mut sha = Sha256::new();
+				sha.input(&seed);
+				sha.input(&$prev_key[..]);
+				sha.input(&$info[..]);
+				let mut res = [0; 32];
+				sha.result(&mut res);
+				SecretKey::from_slice(&self.secp_ctx, &res).expect("SHA-256 is busted")
+			}}
+		}
+		let funding_key = key_step!(b"funding key", commitment_seed);
+		let revocation_base_key = key_step!(b"revocation base key", funding_key);
+		let payment_base_key = key_step!(b"payment base key", revocation_base_key);
+		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_base_key);
+		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+
+		ChannelKeys {
+			funding_key,
+			revocation_base_key,
+			payment_base_key,
+			delayed_payment_base_key,
+			htlc_base_key,
+			commitment_seed,
+		}
 	}
 
 	fn get_session_key(&self) -> SecretKey {
