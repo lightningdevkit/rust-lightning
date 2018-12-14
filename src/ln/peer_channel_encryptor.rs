@@ -9,8 +9,6 @@ use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use crypto::aead::{AeadEncryptor, AeadDecryptor};
-
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::{byte_utils,rng};
 

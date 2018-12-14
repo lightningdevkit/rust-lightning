@@ -10,8 +10,6 @@
 use std::cmp::min;
 use util::byte_utils::{slice_to_le32, le32_to_array};
 
-use crypto::mac::{Mac, MacResult};
-
 #[derive(Clone, Copy)]
 pub struct Poly1305 {
 	r         : [u32; 5],
@@ -93,7 +91,7 @@ impl Poly1305 {
 		self.h[4] = h4;
 	}
 
-	fn finish(&mut self) {
+	pub fn finish(&mut self) {
 		if self.leftover > 0 {
 			self.buffer[self.leftover] = 1;
 			for i in self.leftover+1..16 {
@@ -158,10 +156,8 @@ impl Poly1305 {
 		self.h[2] = h2;
 		self.h[3] = h3;
 	}
-}
 
-impl Mac for Poly1305 {
-	fn input(&mut self, data: &[u8]) {
+	pub fn input(&mut self, data: &[u8]) {
 		assert!(!self.finalized);
 		let mut m = data;
 
@@ -195,19 +191,7 @@ impl Mac for Poly1305 {
 		self.leftover = m.len();
 	}
 
-	fn reset(&mut self) {
-		self.h = [0u32; 5];
-		self.leftover = 0;
-		self.finalized = false;
-	}
-
-	fn result(&mut self) -> MacResult {
-		let mut mac = [0u8; 16];
-		self.raw_result(&mut mac);
-		MacResult::new(&mac[..])
-	}
-
-	fn raw_result(&mut self, output: &mut [u8]) {
+	pub fn raw_result(&mut self, output: &mut [u8]) {
 		assert!(output.len() >= 16);
 		if !self.finalized{
 			self.finish();
@@ -217,8 +201,6 @@ impl Mac for Poly1305 {
 		output[8..12].copy_from_slice(&le32_to_array(self.h[2]));
 		output[12..16].copy_from_slice(&le32_to_array(self.h[3]));
 	}
-
-	fn output_bytes(&self) -> usize { 16 }
 }
 
 #[cfg(test)]
@@ -226,7 +208,6 @@ mod test {
 	use std::iter::repeat;
 
 	use util::poly1305::Poly1305;
-	use crypto::mac::Mac;
 
 	fn poly1305(key: &[u8], msg: &[u8], mac: &mut [u8]) {
 		let mut poly = Poly1305::new(key);

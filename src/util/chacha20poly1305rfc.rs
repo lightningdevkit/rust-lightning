@@ -15,9 +15,6 @@ mod real_chachapoly {
 	use util::chacha20::ChaCha20;
 	use util::poly1305::Poly1305;
 
-	use crypto::aead::{AeadEncryptor,AeadDecryptor};
-	use crypto::symmetriccipher::SynchronousStreamCipher;
-	use crypto::mac::Mac;
 	use crypto::util::fixed_time_eq;
 
 	use util::byte_utils;
@@ -62,10 +59,8 @@ mod real_chachapoly {
 				aad_len: aad.len() as u64,
 			}
 		}
-	}
 
-	impl AeadEncryptor for ChaCha20Poly1305RFC {
-		fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
+		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 			self.cipher.process(input, output);
@@ -77,10 +72,8 @@ mod real_chachapoly {
 			self.mac.input(&byte_utils::le64_to_array(self.data_len as u64));
 			self.mac.raw_result(out_tag);
 		}
-	}
 
-	impl AeadDecryptor for ChaCha20Poly1305RFC {
-		fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
+		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 
@@ -109,8 +102,6 @@ pub use self::real_chachapoly::ChaCha20Poly1305RFC;
 
 #[cfg(feature = "fuzztarget")]
 mod fuzzy_chachapoly {
-	use crypto::aead::{AeadEncryptor,AeadDecryptor};
-
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
 		tag: [u8; 16],
@@ -132,10 +123,8 @@ mod fuzzy_chachapoly {
 				finished: false,
 			}
 		}
-	}
 
-	impl AeadEncryptor for ChaCha20Poly1305RFC {
-		fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
+		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 
@@ -143,10 +132,8 @@ mod fuzzy_chachapoly {
 			out_tag.copy_from_slice(&self.tag);
 			self.finished = true;
 		}
-	}
 
-	impl AeadDecryptor for ChaCha20Poly1305RFC {
-		fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
+		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 

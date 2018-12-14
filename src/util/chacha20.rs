@@ -13,7 +13,6 @@
 mod real_chacha {
 	use std::cmp;
 	use util::byte_utils::{slice_to_le32, le32_to_array};
-	use crypto::symmetriccipher::SynchronousStreamCipher;
 
 	#[derive(Clone, Copy, PartialEq, Eq)]
 	#[allow(non_camel_case_types)]
@@ -224,10 +223,8 @@ mod real_chacha {
 
 			self.offset = 0;
 		}
-	}
 
-	impl SynchronousStreamCipher for ChaCha20 {
-		fn process(&mut self, input: &[u8], output: &mut [u8]) {
+		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
 			assert!(input.len() == output.len());
 			let len = input.len();
 			let mut i = 0;
@@ -258,8 +255,6 @@ pub use self::real_chacha::ChaCha20;
 
 #[cfg(feature = "fuzztarget")]
 mod fuzzy_chacha {
-	use crypto::symmetriccipher::SynchronousStreamCipher;
-
 	pub struct ChaCha20 {}
 
 	impl ChaCha20 {
@@ -268,10 +263,8 @@ mod fuzzy_chacha {
 			assert!(nonce.len() == 8 || nonce.len() == 12);
 			Self {}
 		}
-	}
 
-	impl SynchronousStreamCipher for ChaCha20 {
-		fn process(&mut self, input: &[u8], output: &mut [u8]) {
+		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
 			output.copy_from_slice(input);
 		}
 	}
@@ -284,7 +277,6 @@ mod test {
 	use std::iter::repeat;
 
 	use super::ChaCha20;
-	use crypto::symmetriccipher::SynchronousStreamCipher;
 
 	#[test]
 	fn test_chacha20_256_tls_vectors() {

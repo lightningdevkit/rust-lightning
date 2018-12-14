@@ -40,7 +40,6 @@ use util::errors::APIError;
 use util::errors;
 
 use crypto;
-use crypto::symmetriccipher::SynchronousStreamCipher;
 
 use std::{cmp, ptr, mem};
 use std::collections::{HashMap, hash_map, HashSet};
