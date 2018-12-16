@@ -478,8 +478,14 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to udpate!");
 													continue;
 												},
-												msgs::DecodeError::InvalidValue => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::ShortRead => return Err(PeerHandleError{ no_connection_possible: false }),
+												msgs::DecodeError::InvalidValue => {
+													log_debug!(self, "Got an invalid value while deserializing message");
+													return Err(PeerHandleError{ no_connection_possible: false });
+												},
+												msgs::DecodeError::ShortRead => {
+													log_debug!(self, "Deserialization failed due to shortness of message");
+													return Err(PeerHandleError{ no_connection_possible: false });
+												},
 												msgs::DecodeError::ExtraAddressesPerType => {
 													log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
 													continue;

@@ -20,8 +20,8 @@ use secp256k1::{SecretKey, PublicKey};
 use std::sync::{Arc,Mutex};
 use std::{mem};
 
-struct VecWriter(Vec<u8>);
-impl Writer for VecWriter {
+pub struct TestVecWriter(pub Vec<u8>);
+impl Writer for TestVecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
@@ -58,7 +58,7 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		let mut w = VecWriter(Vec::new());
+		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
 		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == monitor);

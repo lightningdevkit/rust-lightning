@@ -203,6 +203,10 @@ macro_rules! impl_array {
 }
 
 //TODO: performance issue with [u8; size] with impl_array!()
+impl_array!(3); // for rgb
+impl_array!(4); // for IPv4
+impl_array!(10); // for OnionV2
+impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
 impl_array!(33); // for PublicKey
 impl_array!(64); // for Signature
