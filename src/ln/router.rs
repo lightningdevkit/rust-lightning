@@ -15,7 +15,7 @@ use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
 use ln::msgs::{DecodeError,ErrorAction,HandleError,RoutingMessageHandler,NetAddress,GlobalFeatures};
 use ln::msgs;
-use util::ser::{Writeable, Readable};
+use util::ser::{Writeable, Readable, Writer, ReadableArgs};
 use util::logger::Logger;
 
 use std::cmp;
@@ -78,6 +78,7 @@ impl<R: ::std::io::Read> Readable<R> for Route {
 	}
 }
 
+#[derive(PartialEq)]
 struct DirectionalChannelInfo {
 	src_node_id: PublicKey,
 	last_update: u32,
@@ -96,6 +97,18 @@ impl std::fmt::Display for DirectionalChannelInfo {
 	}
 }
 
+impl_writeable!(DirectionalChannelInfo, 0, {
+	src_node_id,
+	last_update,
+	enabled,
+	cltv_expiry_delta,
+	htlc_minimum_msat,
+	fee_base_msat,
+	fee_proportional_millionths,
+	last_update_message
+});
+
+#[derive(PartialEq)]
 struct ChannelInfo {
 	features: GlobalFeatures,
 	one_to_two: DirectionalChannelInfo,
@@ -112,6 +125,14 @@ impl std::fmt::Display for ChannelInfo {
 	}
 }
 
+impl_writeable!(ChannelInfo, 0, {
+	features,
+	one_to_two,
+	two_to_one,
+	announcement_message
+});
+
+#[derive(PartialEq)]
 struct NodeInfo {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: Vec<(u64, Sha256dHash)>,
@@ -138,6 +159,68 @@ impl std::fmt::Display for NodeInfo {
 	}
 }
 
+impl Writeable for NodeInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		(self.channels.len() as u64).write(writer)?;
+		for ref chan in self.channels.iter() {
+			chan.write(writer)?;
+		}
+		self.lowest_inbound_channel_fee_base_msat.write(writer)?;
+		self.lowest_inbound_channel_fee_proportional_millionths.write(writer)?;
+		self.features.write(writer)?;
+		self.last_update.write(writer)?;
+		self.rgb.write(writer)?;
+		self.alias.write(writer)?;
+		(self.addresses.len() as u64).write(writer)?;
+		for ref addr in &self.addresses {
+			addr.write(writer)?;
+		}
+		self.announcement_message.write(writer)?;
+		Ok(())
+	}
+}
+
+const MAX_ALLOC_SIZE: u64 = 64*1024;
+
+impl<R: ::std::io::Read> Readable<R> for NodeInfo {
+	fn read(reader: &mut R) -> Result<NodeInfo, DecodeError> {
+		let channels_count: u64 = Readable::read(reader)?;
+		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
+		for _ in 0..channels_count {
+			channels.push(Readable::read(reader)?);
+		}
+		let lowest_inbound_channel_fee_base_msat = Readable::read(reader)?;
+		let lowest_inbound_channel_fee_proportional_millionths = Readable::read(reader)?;
+		let features = Readable::read(reader)?;
+		let last_update = Readable::read(reader)?;
+		let rgb = Readable::read(reader)?;
+		let alias = Readable::read(reader)?;
+		let addresses_count: u64 = Readable::read(reader)?;
+		let mut addresses = Vec::with_capacity(cmp::min(addresses_count, MAX_ALLOC_SIZE / 40) as usize);
+		for _ in 0..addresses_count {
+			match Readable::read(reader) {
+				Ok(Ok(addr)) => { addresses.push(addr); },
+				Ok(Err(_)) => return Err(DecodeError::InvalidValue),
+				Err(DecodeError::ShortRead) => return Err(DecodeError::BadLengthDescriptor),
+				_ => unreachable!(),
+			}
+		}
+		let announcement_message = Readable::read(reader)?;
+		Ok(NodeInfo {
+			channels,
+			lowest_inbound_channel_fee_base_msat,
+			lowest_inbound_channel_fee_proportional_millionths,
+			features,
+			last_update,
+			rgb,
+			alias,
+			addresses,
+			announcement_message
+		})
+	}
+}
+
+#[derive(PartialEq)]
 struct NetworkMap {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: BTreeMap<(u64, Sha256dHash), ChannelInfo>,
@@ -147,6 +230,49 @@ struct NetworkMap {
 	our_node_id: PublicKey,
 	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
+
+impl Writeable for NetworkMap {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		(self.channels.len() as u64).write(writer)?;
+		for (ref chan_id, ref chan_info) in self.channels.iter() {
+			(*chan_id).write(writer)?;
+			chan_info.write(writer)?;
+		}
+		self.our_node_id.write(writer)?;
+		(self.nodes.len() as u64).write(writer)?;
+		for (ref node_id, ref node_info) in self.nodes.iter() {
+			node_id.write(writer)?;
+			node_info.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for NetworkMap {
+	fn read(reader: &mut R) -> Result<NetworkMap, DecodeError> {
+		let channels_count: u64 = Readable::read(reader)?;
+		let mut channels = BTreeMap::new();
+		for _ in 0..channels_count {
+			let chan_id: u64 = Readable::read(reader)?;
+			let chan_info = Readable::read(reader)?;
+			channels.insert(chan_id, chan_info);
+		}
+		let our_node_id = Readable::read(reader)?;
+		let nodes_count: u64 = Readable::read(reader)?;
+		let mut nodes = BTreeMap::new();
+		for _ in 0..nodes_count {
+			let node_id = Readable::read(reader)?;
+			let node_info = Readable::read(reader)?;
+			nodes.insert(node_id, node_info);
+		}
+		Ok(NetworkMap {
+			channels,
+			our_node_id,
+			nodes,
+		})
+	}
+}
+
 struct MutNetworkMap<'a> {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: &'a mut BTreeMap<(u64, Sha256dHash), ChannelInfo>,
@@ -226,6 +352,51 @@ pub struct Router {
 	network_map: RwLock<NetworkMap>,
 	chain_monitor: Arc<ChainWatchInterface>,
 	logger: Arc<Logger>,
+}
+
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
+impl Writeable for Router {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
+		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
+
+		let network = self.network_map.read().unwrap();
+		network.write(writer)?;
+		Ok(())
+	}
+}
+
+/// Arguments for the creation of a Router that are not deserialized.
+/// At a high-level, the process for deserializing a Router and resuming normal operation is:
+/// 1) Deserialize the Router by filling in this struct and calling <Router>::read(reaser, args).
+/// 2) Register the new Router with your ChainWatchInterface
+pub struct RouterReadArgs {
+	/// The ChainWatchInterface for use in the Router in the future.
+	///
+	/// No calls to the ChainWatchInterface will be made during deserialization.
+	pub chain_monitor: Arc<ChainWatchInterface>,
+	/// The Logger for use in the ChannelManager and which may be used to log information during
+	/// deserialization.
+	pub logger: Arc<Logger>,
+}
+
+impl<R: ::std::io::Read> ReadableArgs<R, RouterReadArgs> for Router {
+	fn read(reader: &mut R, args: RouterReadArgs) -> Result<Router, DecodeError> {
+		let _ver: u8 = Readable::read(reader)?;
+		let min_ver: u8 = Readable::read(reader)?;
+		if min_ver > SERIALIZATION_VERSION {
+			return Err(DecodeError::UnknownVersion);
+		}
+		let network_map = Readable::read(reader)?;
+		Ok(Router {
+			secp_ctx: Secp256k1::verification_only(),
+			network_map: RwLock::new(network_map),
+			chain_monitor: args.chain_monitor,
+			logger: args.logger,
+		})
+	}
 }
 
 macro_rules! secp_verify_sig {
@@ -845,7 +1016,9 @@ mod tests {
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::msgs::GlobalFeatures;
 	use util::test_utils;
+	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
+	use util::ser::{Writeable, Readable};
 
 	use bitcoin::util::hash::Sha256dHash;
 	use bitcoin::network::constants::Network;
@@ -1438,6 +1611,15 @@ mod tests {
 			assert_eq!(route.hops[4].short_channel_id, 8);
 			assert_eq!(route.hops[4].fee_msat, 2000);
 			assert_eq!(route.hops[4].cltv_expiry_delta, 42);
+		}
+
+		{ // Test Router serialization/deserialization
+			let mut w = TestVecWriter(Vec::new());
+			let network = router.network_map.read().unwrap();
+			assert!(!network.channels.is_empty());
+			assert!(!network.nodes.is_empty());
+			network.write(&mut w).unwrap();
+			assert!(<NetworkMap>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == *network);
 		}
 	}
 }
