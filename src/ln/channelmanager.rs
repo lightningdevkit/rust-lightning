@@ -3777,6 +3777,8 @@ mod tests {
 		let as_update = match events_8[0] {
 			MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 				assert!(*announcement == *msg);
+				assert_eq!(update_msg.contents.short_channel_id, announcement.contents.short_channel_id);
+				assert_eq!(update_msg.contents.short_channel_id, bs_update.contents.short_channel_id);
 				update_msg
 			},
 			_ => panic!("Unexpected event"),
