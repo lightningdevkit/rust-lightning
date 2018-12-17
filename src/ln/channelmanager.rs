@@ -2087,6 +2087,11 @@ impl ChannelManager {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
 							reason: if let Ok(update) = chan_update {
+								// TODO: Note that |20 is defined as "channel FROM the processing
+								// node has been disabled" (emphasis mine), which seems to imply
+								// that we can't return |20 for an inbound channel being disabled.
+								// This probably needs a spec update but should definitely be
+								// allowed.
 								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &{
 									let mut res = Vec::with_capacity(8 + 128);
 									res.extend_from_slice(&byte_utils::be16_to_array(update.contents.flags));
