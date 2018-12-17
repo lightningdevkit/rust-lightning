@@ -1554,28 +1554,41 @@ impl ChannelManager {
 	/// still-available channels.
 	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
 		match source {
-			HTLCSource::OutboundRoute { .. } => {
+			HTLCSource::OutboundRoute { ref route, .. } => {
 				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				mem::drop(channel_state_lock);
-				if let &HTLCFailReason::ErrorPacket { ref err } = &onion_error {
-					let (channel_update, payment_retryable) = self.process_onion_failure(&source, err.data.clone());
-					if let Some(update) = channel_update {
-						self.channel_state.lock().unwrap().pending_msg_events.push(
-							events::MessageSendEvent::PaymentFailureNetworkUpdate {
-								update,
+				match &onion_error {
+					&HTLCFailReason::ErrorPacket { ref err } => {
+						let (channel_update, payment_retryable) = self.process_onion_failure(&source, err.data.clone());
+						if let Some(update) = channel_update {
+							self.channel_state.lock().unwrap().pending_msg_events.push(
+								events::MessageSendEvent::PaymentFailureNetworkUpdate {
+									update,
+								}
+							);
+						}
+						self.pending_events.lock().unwrap().push(
+							events::Event::PaymentFailed {
+								payment_hash: payment_hash.clone(),
+								rejected_by_dest: !payment_retryable,
+							}
+						);
+					},
+					&HTLCFailReason::Reason { .. } => {
+						// we get a fail_malformed_htlc from the first hop
+						// TODO: We'd like to generate a PaymentFailureNetworkUpdate for temporary
+						// failures here, but that would be insufficient as Router::get_route
+						// generally ignores its view of our own channels as we provide them via
+						// ChannelDetails.
+						// TODO: For non-temporary failures, we really should be closing the
+						// channel here as we apparently can't relay through them anyway.
+						self.pending_events.lock().unwrap().push(
+							events::Event::PaymentFailed {
+								payment_hash: payment_hash.clone(),
+								rejected_by_dest: route.hops.len() == 1,
 							}
 						);
 					}
-					self.pending_events.lock().unwrap().push(events::Event::PaymentFailed {
-						payment_hash: payment_hash.clone(),
-						rejected_by_dest: !payment_retryable,
-					});
-				} else {
-					//TODO: Pass this back (see GH #243)
-					self.pending_events.lock().unwrap().push(events::Event::PaymentFailed {
-						payment_hash: payment_hash.clone(),
-						rejected_by_dest: false, // We failed it ourselves, can't blame them
-					});
 				}
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
