@@ -1,6 +1,7 @@
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
 use chain::transaction::OutPoint;
+use chain::keysinterface;
 use ln::channelmonitor;
 use ln::msgs;
 use ln::msgs::{HandleError};
@@ -10,9 +11,11 @@ use util::logger::{Logger, Level, Record};
 use util::ser::{ReadableArgs, Writer};
 
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::script::Script;
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::network::constants::Network;
 
-use secp256k1::PublicKey;
+use secp256k1::{SecretKey, PublicKey};
 
 use std::sync::{Arc,Mutex};
 use std::{mem};
@@ -205,6 +208,34 @@ impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
 		if self.level >= record.level {
 			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
+		}
+	}
+}
+
+pub struct TestKeysInterface {
+	backing: keysinterface::KeysManager,
+	pub override_session_priv: Mutex<Option<SecretKey>>,
+}
+
+impl keysinterface::KeysInterface for TestKeysInterface {
+	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
+	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
+	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
+	fn get_channel_keys(&self, inbound: bool) -> keysinterface::ChannelKeys { self.backing.get_channel_keys(inbound) }
+
+	fn get_session_key(&self) -> SecretKey {
+		match *self.override_session_priv.lock().unwrap() {
+			Some(key) => key.clone(),
+			None => self.backing.get_session_key()
+		}
+	}
+}
+
+impl TestKeysInterface {
+	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> Self {
+		Self {
+			backing: keysinterface::KeysManager::new(seed, network, logger),
+			override_session_priv: Mutex::new(None),
 		}
 	}
 }

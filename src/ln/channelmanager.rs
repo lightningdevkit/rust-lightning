@@ -3570,6 +3570,7 @@ mod tests {
 		chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 		chan_monitor: Arc<test_utils::TestChannelMonitor>,
+		keys_manager: Arc<test_utils::TestKeysInterface>,
 		node: Arc<ChannelManager>,
 		router: Router,
 		node_seed: [u8; 32],
@@ -4303,14 +4304,14 @@ mod tests {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 			let mut seed = [0; 32];
 			rng.fill_bytes(&mut seed);
-			let keys_manager = Arc::new(keysinterface::KeysManager::new(&seed, Network::Testnet, Arc::clone(&logger)));
+			let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet, Arc::clone(&logger)));
 			let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone()));
 			let mut config = UserConfig::new();
 			config.channel_options.announced_channel = true;
 			config.channel_limits.force_announced_channel_preference = false;
 			let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), config).unwrap();
 			let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
-			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, node_seed: seed,
+			nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, keys_manager, node_seed: seed,
 				network_payment_count: payment_count.clone(),
 				network_chan_count: chan_count.clone(),
 			});
