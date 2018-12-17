@@ -972,26 +972,26 @@ impl ChannelManager {
 	}
 
 	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder>) {
-		macro_rules! get_onion_hash {
-			() => {
+		macro_rules! return_malformed_err {
+			($msg: expr, $err_code: expr) => {
 				{
+					log_info!(self, "Failed to accept/forward incoming HTLC: {}", $msg);
+					let mut sha256_of_onion = [0; 32];
 					let mut sha = Sha256::new();
 					sha.input(&msg.onion_routing_packet.hop_data);
-					let mut onion_hash = [0; 32];
-					sha.result(&mut onion_hash);
-					onion_hash
+					sha.result(&mut sha256_of_onion);
+					return (PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+						channel_id: msg.channel_id,
+						htlc_id: msg.htlc_id,
+						sha256_of_onion,
+						failure_code: $err_code,
+					})), self.channel_state.lock().unwrap());
 				}
 			}
 		}
 
 		if let Err(_) = msg.onion_routing_packet.public_key {
-			log_info!(self, "Failed to accept/forward incoming HTLC with invalid ephemeral pubkey");
-			return (PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
-				channel_id: msg.channel_id,
-				htlc_id: msg.htlc_id,
-				sha256_of_onion: get_onion_hash!(),
-				failure_code: 0x8000 | 0x4000 | 6,
-			})), self.channel_state.lock().unwrap());
+			return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 		}
 
 		let shared_secret = {
@@ -1000,6 +1000,23 @@ impl ChannelManager {
 			arr
 		};
 		let (rho, mu) = ChannelManager::gen_rho_mu_from_shared_secret(&shared_secret);
+
+		if msg.onion_routing_packet.version != 0 {
+			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
+			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
+			//the hash doesn't really serve any purpuse - in the case of hashing all data, the
+			//receiving node would have to brute force to figure out which version was put in the
+			//packet by the node that send us the message, in the case of hashing the hop_data, the
+			//node knows the HMAC matched, so they already know what is there...
+			return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
+		}
+
+		let mut hmac = Hmac::new(Sha256::new(), &mu);
+		hmac.input(&msg.onion_routing_packet.hop_data);
+		hmac.input(&msg.payment_hash.0[..]);
+		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
+			return_malformed_err!("HMAC Check failed", 0x8000 | 0x4000 | 5);
+		}
 
 		let mut channel_state = None;
 		macro_rules! return_err {
@@ -1016,23 +1033,6 @@ impl ChannelManager {
 					})), channel_state.unwrap());
 				}
 			}
-		}
-
-		if msg.onion_routing_packet.version != 0 {
-			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
-			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
-			//the hash doesn't really serve any purpuse - in the case of hashing all data, the
-			//receiving node would have to brute force to figure out which version was put in the
-			//packet by the node that send us the message, in the case of hashing the hop_data, the
-			//node knows the HMAC matched, so they already know what is there...
-			return_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4, &get_onion_hash!());
-		}
-
-		let mut hmac = Hmac::new(Sha256::new(), &mu);
-		hmac.input(&msg.onion_routing_packet.hop_data);
-		hmac.input(&msg.payment_hash.0[..]);
-		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
-			return_err!("HMAC Check failed", 0x8000 | 0x4000 | 5, &get_onion_hash!());
 		}
 
 		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
@@ -1092,21 +1092,16 @@ impl ChannelManager {
 					sha.input(&shared_secret);
 					let mut res = [0u8; 32];
 					sha.result(&mut res);
-					match SecretKey::from_slice(&self.secp_ctx, &res) {
-						Err(_) => {
-							return_err!("Blinding factor is an invalid private key", 0x8000 | 0x4000 | 6, &get_onion_hash!());
-						},
-						Ok(key) => key
-					}
+					SecretKey::from_slice(&self.secp_ctx, &res).expect("SHA-256 is broken?")
 				};
 
-				if let Err(_) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
-					return_err!("New blinding factor is an invalid private key", 0x8000 | 0x4000 | 6, &get_onion_hash!());
-				}
+				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
+					Err(e)
+				} else { Ok(new_pubkey) };
 
 				let outgoing_packet = msgs::OnionPacket {
 					version: 0,
-					public_key: Ok(new_pubkey),
+					public_key,
 					hop_data: new_packet_data,
 					hmac: next_hop_data.hmac.clone(),
 				};
