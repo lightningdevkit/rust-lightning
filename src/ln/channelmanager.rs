@@ -1164,13 +1164,16 @@ impl ChannelManager {
 				}
 				{
 					let mut res = Vec::with_capacity(8 + 128);
-					if code == 0x1000 | 11 || code == 0x1000 | 12 {
-						res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
-					}
-					else if code == 0x1000 | 13 {
-						res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
-					}
 					if let Some(chan_update) = chan_update {
+						if code == 0x1000 | 11 || code == 0x1000 | 12 {
+							res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
+						}
+						else if code == 0x1000 | 13 {
+							res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+						}
+						else if code == 0x1000 | 20 {
+							res.extend_from_slice(&byte_utils::be16_to_array(chan_update.contents.flags));
+						}
 						res.extend_from_slice(&chan_update.encode_with_len()[..]);
 					}
 					return_err!(err, code, &res[..]);
@@ -2084,7 +2087,12 @@ impl ChannelManager {
 							channel_id: msg.channel_id,
 							htlc_id: msg.htlc_id,
 							reason: if let Ok(update) = chan_update {
-								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &update.encode_with_len()[..])
+								ChannelManager::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &{
+									let mut res = Vec::with_capacity(8 + 128);
+									res.extend_from_slice(&byte_utils::be16_to_array(update.contents.flags));
+									res.extend_from_slice(&update.encode_with_len()[..]);
+									res
+								}[..])
 							} else {
 								// This can only happen if the channel isn't in the fully-funded
 								// state yet, implying our counterparty is trying to route payments
@@ -5022,7 +5030,8 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		};
 		match msg_events[1] {
-			MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {
+			MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
+				assert_eq!(msg.contents.short_channel_id, chan_1.0.contents.short_channel_id);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -8135,7 +8144,7 @@ mod tests {
 		// Tests handling of a monitor update failure when processing an incoming RAA
 		let mut nodes = create_network(3);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-		create_announced_chan_between_nodes(&nodes, 1, 2);
+		let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 		// Rebalance a bit so that we can send backwards from 2 to 1.
 		send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
@@ -8221,7 +8230,9 @@ mod tests {
 				let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 				assert_eq!(msg_events.len(), 1);
 				match msg_events[0] {
-					MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {
+					MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
+						assert_eq!(msg.contents.short_channel_id, chan_2.0.contents.short_channel_id);
+						assert_eq!(msg.contents.flags & 2, 2); // temp disabled
 					},
 					_ => panic!("Unexpected event"),
 				}
