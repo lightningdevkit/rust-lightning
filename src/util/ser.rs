@@ -12,6 +12,7 @@ use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
+use ln::channelmanager::{PaymentPreimage, PaymentHash};
 use util::byte_utils;
 
 use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
@@ -384,5 +385,31 @@ impl<R: Read> Readable<R> for Signature {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
+	}
+}
+
+impl Writeable for PaymentPreimage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl<R: Read> Readable<R> for PaymentPreimage {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(PaymentPreimage(buf))
+	}
+}
+
+impl Writeable for PaymentHash {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl<R: Read> Readable<R> for PaymentHash {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(PaymentHash(buf))
 	}
 }

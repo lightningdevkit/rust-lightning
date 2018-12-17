@@ -25,7 +25,7 @@ use std::collections::btree_map::Entry as BtreeEntry;
 use std;
 
 /// A hop in a route
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
@@ -39,7 +39,7 @@ pub struct RouteHop {
 }
 
 /// A route from us through the network to a destination
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Route {
 	/// The list of hops, NOT INCLUDING our own, where the last hop is the destination. Thus, this
 	/// must always be at least length one. By protocol rules, this may not currently exceed 20 in

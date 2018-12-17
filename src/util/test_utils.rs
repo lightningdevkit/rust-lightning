@@ -4,6 +4,7 @@ use chain::transaction::OutPoint;
 use ln::channelmonitor;
 use ln::msgs;
 use ln::msgs::{HandleError};
+use ln::channelmonitor::HTLCUpdate;
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{ReadableArgs, Writer};
@@ -63,6 +64,10 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		assert!(self.simple_monitor.add_update_monitor(funding_txo, monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
+	}
+
+	fn fetch_pending_htlc_updated(&self) -> Vec<HTLCUpdate> {
+		return self.simple_monitor.fetch_pending_htlc_updated();
 	}
 }
 
@@ -178,12 +183,17 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 pub struct TestLogger {
 	level: Level,
+	id: String,
 }
 
 impl TestLogger {
 	pub fn new() -> TestLogger {
+		Self::with_id("".to_owned())
+	}
+	pub fn with_id(id: String) -> TestLogger {
 		TestLogger {
 			level: Level::Trace,
+			id,
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
@@ -194,7 +204,7 @@ impl TestLogger {
 impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
 		if self.level >= record.level {
-			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
 		}
 	}
 }
