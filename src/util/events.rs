@@ -85,6 +85,8 @@ pub enum Event {
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
 		rejected_by_dest: bool,
+#[cfg(test)]
+		error_code: Option<u16>,
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
