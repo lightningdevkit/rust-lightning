@@ -662,8 +662,7 @@ impl ChannelManager {
 			}
 		};
 		for htlc_source in failed_htlcs.drain(..) {
-			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		let chan_update = if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
@@ -686,8 +685,7 @@ impl ChannelManager {
 		let (local_txn, mut failed_htlcs) = shutdown_res;
 		log_trace!(self, "Finishing force-closure of channel with {} transactions to broadcast and {} HTLCs to fail", local_txn.len(), failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
-			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		for tx in local_txn {
 			self.tx_broadcaster.broadcast_transaction(&tx);
@@ -1971,8 +1969,7 @@ impl ChannelManager {
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
-			// unknown_next_peer...I dunno who that is anymore....
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
@@ -2654,7 +2651,7 @@ impl events::MessageSendEventsProvider for ChannelManager {
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
 					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 				}
 			}
 		}
@@ -2679,7 +2676,7 @@ impl events::EventsProvider for ChannelManager {
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
 					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() });
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 				}
 			}
 		}
