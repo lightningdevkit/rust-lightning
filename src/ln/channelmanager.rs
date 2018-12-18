@@ -212,16 +212,6 @@ impl MsgHandleErrInternal {
 	}
 }
 
-/// Pass to fail_htlc_backwwards to indicate the reason to fail the payment
-/// after a PaymentReceived event.
-#[derive(PartialEq)]
-pub enum PaymentFailReason {
-	/// Indicate the preimage for payment_hash is not known after a PaymentReceived event
-	PreimageUnknown,
-	/// Indicate the payment amount is incorrect ( received is < expected or > 2*expected ) after a PaymentReceived event
-	AmountMismatch,
-}
-
 /// We hold back HTLCs we intend to relay for a random interval in the range (this, 5*this). This
 /// provides some limited amount of privacy. Ideally this would range from somewhere like 1 second
 /// to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly. We could
@@ -1530,8 +1520,11 @@ impl ChannelManager {
 		events.append(&mut new_events);
 	}
 
-	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect after a PaymentReceived event.
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, reason: PaymentFailReason) -> bool {
+	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
+	/// after a PaymentReceived event.
+	/// expected_value is the value you expected the payment to be for (not the amount it actually
+	/// was for from the PaymentReceived event).
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, expected_value: u64) -> bool {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
@@ -1539,7 +1532,9 @@ impl ChannelManager {
 		if let Some(mut sources) = removed_source {
 			for htlc_with_hash in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				self.fail_htlc_backwards_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_hash, HTLCFailReason::Reason { failure_code: if reason == PaymentFailReason::PreimageUnknown {0x4000 | 15} else {0x4000 | 16}, data: Vec::new() });
+				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
+						HTLCSource::PreviousHopData(htlc_with_hash), payment_hash,
+						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(expected_value).to_vec() });
 			}
 			true
 		} else { false }
@@ -3363,7 +3358,7 @@ mod tests {
 	use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 	use chain::keysinterface;
 	use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
-	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,PaymentFailReason,RAACommitmentOrder, PaymentPreimage, PaymentHash};
+	use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,OnionKeys,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 	use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 	use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 	use ln::router::{Route, RouteHop, Router};
@@ -4221,7 +4216,7 @@ mod tests {
 	}
 
 	fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: PaymentHash) {
-		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, PaymentFailReason::PreimageUnknown));
+		assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, 0));
 		check_added_monitors!(expected_route.last().unwrap(), 1);
 
 		let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
@@ -6348,7 +6343,7 @@ mod tests {
 		// Brodacast legit commitment tx from C on B's chain
 		let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
 		check_spends!(commitment_tx[0], chan_2.3.clone());
-		nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+		nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
 		{
 			let mut added_monitors = nodes[2].chan_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
@@ -6533,7 +6528,7 @@ mod tests {
 		let (_, second_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 		let (_, third_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 
-		assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash, PaymentFailReason::PreimageUnknown));
+		assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash, 0));
 		check_added_monitors!(nodes[2], 1);
 		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -6545,7 +6540,7 @@ mod tests {
 		let bs_raa = commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true, false, true);
 		// Drop the last RAA from 3 -> 2
 
-		assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash, PaymentFailReason::PreimageUnknown));
+		assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash, 0));
 		check_added_monitors!(nodes[2], 1);
 		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -6561,7 +6556,7 @@ mod tests {
 		nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa).unwrap();
 		check_added_monitors!(nodes[2], 1);
 
-		assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash, PaymentFailReason::PreimageUnknown));
+		assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash, 0));
 		check_added_monitors!(nodes[2], 1);
 		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -8156,7 +8151,7 @@ mod tests {
 		let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 		// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
-		assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, PaymentFailReason::PreimageUnknown));
+		assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, 0));
 		check_added_monitors!(nodes[2], 1);
 
 		let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -9721,7 +9716,7 @@ mod tests {
 			let onion_keys = ChannelManager::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 			msg.reason = ChannelManager::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], NODE|2, &[0;0]);
 		}, ||{
-			nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+			nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
 		}, true, Some(NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[1].pubkey, is_permanent: false}));
 
 		// intermediate node failure
@@ -9739,7 +9734,7 @@ mod tests {
 			let onion_keys = ChannelManager::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 			msg.reason = ChannelManager::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|2, &[0;0]);
 		}, ||{
-			nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+			nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
 		}, false, Some(PERM|NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[1].pubkey, is_permanent: true}));
 
 		// intermediate node failure
@@ -9750,7 +9745,7 @@ mod tests {
 			let onion_keys = ChannelManager::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 			msg.reason = ChannelManager::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|NODE|3, &[0;0]);
 		}, ||{
-			nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+			nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
 		}, true, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[0].pubkey, is_permanent: true}));
 
 		// final node failure
@@ -9759,7 +9754,7 @@ mod tests {
 			let onion_keys = ChannelManager::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 			msg.reason = ChannelManager::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|3, &[0;0]);
 		}, ||{
-			nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+			nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
 		}, false, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[1].pubkey, is_permanent: true}));
 
 		run_onion_failure_test("invalid_onion_version", 0, &nodes, &route, &payment_hash, |msg| { msg.onion_routing_packet.version = 1; }, ||{}, true,
@@ -9826,12 +9821,8 @@ mod tests {
 		}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 		run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, |_| {}, || {
-			nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::PreimageUnknown);
+			nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
 		}, false, Some(PERM|15), None);
-
-		run_onion_failure_test("incorrect_payment_amount", 2, &nodes, &route, &payment_hash, |_| {}, || {
-			nodes[2].node.fail_htlc_backwards(&payment_hash, PaymentFailReason::AmountMismatch);
-		}, false, Some(PERM|16), None);
 
 		run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, |msg| {
 			let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - HTLC_FAIL_TIMEOUT_BLOCKS + 1;
