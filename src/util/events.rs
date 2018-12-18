@@ -54,14 +54,15 @@ pub enum Event {
 	/// Indicates we've received money! Just gotta dig out that payment preimage and feed it to
 	/// ChannelManager::claim_funds to get it....
 	/// Note that if the preimage is not known or the amount paid is incorrect, you must call
-	/// ChannelManager::fail_htlc_backwards with PaymentFailReason::PreimageUnknown or
-	/// PaymentFailReason::AmountMismatch, respectively, to free up resources for this HTLC.
+	/// ChannelManager::fail_htlc_backwards to free up resources for this HTLC.
 	/// The amount paid should be considered 'incorrect' when it is less than or more than twice
 	/// the amount expected.
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
-		/// The value, in thousandths of a satoshi, that this payment is for.
+		/// The value, in thousandths of a satoshi, that this payment is for. Note that you must
+		/// compare this to the expected value before accepting the payment (as otherwise you are
+		/// providing proof-of-payment for less than the value you expected!).
 		amt: u64,
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
@@ -85,6 +86,8 @@ pub enum Event {
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
 		rejected_by_dest: bool,
+#[cfg(test)]
+		error_code: Option<u16>,
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
