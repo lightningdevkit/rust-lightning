@@ -6,7 +6,6 @@ publish = false
 # Because the function is unused it gets dropped before we link lightning, so
 # we have to duplicate build.rs here. Note that this is only required for
 # fuzztarget mode.
-build = "../build.rs"
 
 [package.metadata]
 cargo-fuzz = true

@@ -17,6 +17,7 @@ use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::hmac::{Hmac, HmacEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::cmp::fixed_time_eq;
 
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::{Secp256k1,Message};
@@ -38,8 +39,6 @@ use util::chacha20::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
 use util::errors;
-
-use crypto;
 
 use std::{cmp, ptr, mem};
 use std::collections::{HashMap, hash_map, HashSet};
@@ -991,7 +990,7 @@ impl ChannelManager {
 		let mut hmac = HmacEngine::<Sha256>::new(&mu);
 		hmac.input(&msg.onion_routing_packet.hop_data);
 		hmac.input(&msg.payment_hash.0[..]);
-		if !crypto::util::fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &msg.onion_routing_packet.hmac) {
+		if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &msg.onion_routing_packet.hmac) {
 			return_malformed_err!("HMAC Check failed", 0x8000 | 0x4000 | 5);
 		}
 
@@ -2141,7 +2140,7 @@ impl ChannelManager {
 					let mut hmac = HmacEngine::<Sha256>::new(&um);
 					hmac.input(&err_packet.encode()[32..]);
 
-					if crypto::util::fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
+					if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
 						if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
 							const PERM: u16 = 0x4000;
 							const NODE: u16 = 0x2000;

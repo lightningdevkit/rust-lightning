@@ -14,8 +14,7 @@
 mod real_chachapoly {
 	use util::chacha20::ChaCha20;
 	use util::poly1305::Poly1305;
-
-	use crypto::util::fixed_time_eq;
+	use bitcoin_hashes::cmp::fixed_time_eq;
 
 	use util::byte_utils;
 

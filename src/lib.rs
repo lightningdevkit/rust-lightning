@@ -13,7 +13,6 @@
 
 extern crate bitcoin;
 extern crate bitcoin_hashes;
-extern crate crypto;
 extern crate rand;
 extern crate secp256k1;
 #[cfg(test)] extern crate hex;
