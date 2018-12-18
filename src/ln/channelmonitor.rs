@@ -20,7 +20,8 @@ use bitcoin::consensus::encode::{self, Decodable, Encodable};
 use bitcoin::util::hash::{Hash160, BitcoinHash,Sha256dHash};
 use bitcoin::util::bip143;
 
-use crypto::digest::Digest;
+use bitcoin_hashes::Hash;
+use bitcoin_hashes::sha256::Hash as Sha256;
 
 use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
@@ -36,7 +37,6 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable, WriterWriteAdaptor, U48};
-use util::sha2::Sha256;
 use util::{byte_utils, events};
 
 use std::collections::{HashMap, hash_map};
@@ -487,9 +487,7 @@ impl ChannelMonitor {
 			let bitpos = bits - 1 - i;
 			if idx & (1 << bitpos) == (1 << bitpos) {
 				res[(bitpos / 8) as usize] ^= 1 << (bitpos & 7);
-				let mut sha = Sha256::new();
-				sha.input(&res);
-				sha.result(&mut res);
+				res = Sha256::hash(&res).into_inner();
 			}
 		}
 		res
@@ -2098,13 +2096,9 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 		let payment_preimages_len: u64 = Readable::read(reader)?;
 		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
-		let mut sha = Sha256::new();
 		for _ in 0..payment_preimages_len {
 			let preimage: PaymentPreimage = Readable::read(reader)?;
-			sha.reset();
-			sha.input(&preimage.0[..]);
-			let mut hash = PaymentHash([0; 32]);
-			sha.result(&mut hash.0[..]);
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
 			if let Some(_) = payment_preimages.insert(hash, preimage) {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -2148,12 +2142,12 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 mod tests {
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::blockdata::transaction::Transaction;
-	use crypto::digest::Digest;
+	use bitcoin_hashes::Hash;
+	use bitcoin_hashes::sha256::Hash as Sha256;
 	use hex;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use ln::channelmonitor::ChannelMonitor;
 	use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys};
-	use util::sha2::Sha256;
 	use util::test_utils::TestLogger;
 	use secp256k1::key::{SecretKey,PublicKey};
 	use secp256k1::{Secp256k1, Signature};
@@ -2544,10 +2538,7 @@ mod tests {
 			for _ in 0..20 {
 				let mut preimage = PaymentPreimage([0; 32]);
 				rng.fill_bytes(&mut preimage.0[..]);
-				let mut sha = Sha256::new();
-				sha.input(&preimage.0[..]);
-				let mut hash = PaymentHash([0; 32]);
-				sha.result(&mut hash.0[..]);
+				let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
 				preimages.push((preimage, hash));
 			}
 		}

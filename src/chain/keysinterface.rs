@@ -9,13 +9,13 @@ use bitcoin::network::constants::Network;
 use bitcoin::util::hash::Hash160;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 
+use bitcoin_hashes::{Hash, HashEngine};
+use bitcoin_hashes::sha256::Hash as Sha256;
+
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::Secp256k1;
 use secp256k1;
 
-use crypto::digest::Digest;
-
-use util::sha2::Sha256;
 use util::logger::Logger;
 use util::rng;
 use util::byte_utils;
@@ -187,7 +187,7 @@ impl KeysInterface for KeysManager {
 		// entropy, everything else just ensures uniqueness. We generally don't expect
 		// all clients to have non-broken RNGs here, so we also include the current
 		// time as a fallback to get uniqueness.
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 
 		let mut seed = [0u8; 32];
 		rng::fill_bytes(&mut seed[..]);
@@ -201,25 +201,21 @@ impl KeysInterface for KeysManager {
 		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
 		sha.input(&child_privkey.secret_key[..]);
 
-		sha.result(&mut seed);
+		seed = Sha256::from_engine(sha).into_inner();
 
 		let commitment_seed = {
-			let mut sha = Sha256::new();
+			let mut sha = Sha256::engine();
 			sha.input(&seed);
 			sha.input(&b"commitment seed"[..]);
-			let mut res = [0; 32];
-			sha.result(&mut res);
-			res
+			Sha256::from_engine(sha).into_inner()
 		};
 		macro_rules! key_step {
 			($info: expr, $prev_key: expr) => {{
-				let mut sha = Sha256::new();
+				let mut sha = Sha256::engine();
 				sha.input(&seed);
 				sha.input(&$prev_key[..]);
 				sha.input(&$info[..]);
-				let mut res = [0; 32];
-				sha.result(&mut res);
-				SecretKey::from_slice(&self.secp_ctx, &res).expect("SHA-256 is busted")
+				SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("SHA-256 is busted")
 			}}
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
@@ -239,8 +235,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_session_key(&self) -> SecretKey {
-		let mut sha = Sha256::new();
-		let mut res = [0u8; 32];
+		let mut sha = Sha256::engine();
 
 		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
 		sha.input(&byte_utils::be32_to_array(now.subsec_nanos()));
@@ -249,7 +244,6 @@ impl KeysInterface for KeysManager {
 		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
 		sha.input(&child_privkey.secret_key[..]);
-		sha.result(&mut res);
-		SecretKey::from_slice(&self.secp_ctx, &res).expect("Your RNG is busted")
+		SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted")
 	}
 }

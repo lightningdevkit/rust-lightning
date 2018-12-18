@@ -1,5 +1,5 @@
 extern crate bitcoin;
-extern crate crypto;
+extern crate bitcoin_hashes;
 extern crate lightning;
 extern crate secp256k1;
 
@@ -11,7 +11,9 @@ use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
 
-use crypto::digest::Digest;
+use bitcoin_hashes::Hash as TraitImport;
+use bitcoin_hashes::HashEngine as TraitImportEngine;
+use bitcoin_hashes::sha256::Hash as Sha256;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
@@ -23,7 +25,6 @@ use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
 use lightning::util::{reset_rng_state, fill_bytes};
 use lightning::util::logger::Logger;
-use lightning::util::sha2::Sha256;
 use lightning::util::config::UserConfig;
 
 mod utils;
@@ -382,9 +383,9 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 				};
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
-				let mut sha = Sha256::new();
+				let mut sha = Sha256::engine();
 				sha.input(&payment_hash.0[..]);
-				sha.result(&mut payment_hash.0[..]);
+				payment_hash.0 = Sha256::from_engine(sha).into_inner();
 				payments_sent += 1;
 				match channelmanager.send_payment(route, payment_hash) {
 					Ok(_) => {},

@@ -20,11 +20,6 @@ pub mod logger;
 pub mod config;
 
 #[cfg(feature = "fuzztarget")]
-pub mod sha2;
-#[cfg(not(feature = "fuzztarget"))]
-pub(crate) mod sha2;
-
-#[cfg(feature = "fuzztarget")]
 pub use self::rng::{reset_rng_state, fill_bytes};
 
 #[cfg(test)]

@@ -19,9 +19,9 @@ honggfuzz_fuzz = ["honggfuzz"]
 afl = { version = "0.4", optional = true }
 lightning = { path = "..", features = ["fuzztarget"] }
 bitcoin = { version = "0.15", features = ["fuzztarget"] }
+bitcoin_hashes = { git = "https://github.com/TheBlueMatt/bitcoin_hashes", branch = "rust-lightning-dep", features=["fuzztarget"] }
 hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }
-rust-crypto = "0.2"
 secp256k1 = { version = "0.11", features=["fuzztarget"] }
 
 [build-dependencies]

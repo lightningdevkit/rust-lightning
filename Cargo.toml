@@ -14,7 +14,7 @@ build = "build.rs"
 [features]
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
 non_bitcoin_chain_hash_routing = []
-fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget"]
+fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget", "bitcoin_hashes/fuzztarget"]
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
@@ -24,6 +24,7 @@ max_level_debug = []
 
 [dependencies]
 bitcoin = "0.15"
+bitcoin_hashes = { git = "https://github.com/TheBlueMatt/bitcoin_hashes", branch = "rust-lightning-dep" }
 rust-crypto = "0.2"
 rand = "0.4"
 secp256k1 = "0.11"

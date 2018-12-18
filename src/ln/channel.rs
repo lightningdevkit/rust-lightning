@@ -6,11 +6,12 @@ use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode::{self, Encodable, Decodable};
 
+use bitcoin_hashes::{Hash, HashEngine};
+use bitcoin_hashes::sha256::Hash as Sha256;
+
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1;
-
-use crypto::digest::Digest;
 
 use ln::msgs;
 use ln::msgs::DecodeError;
@@ -23,7 +24,6 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::{transaction_utils,rng};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, WriterWriteAdaptor};
-use util::sha2::Sha256;
 use util::logger::Logger;
 use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
@@ -722,7 +722,7 @@ impl Channel {
 	// Utilities to build transactions:
 
 	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		let our_payment_basepoint = PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.payment_base_key);
 
 		if self.channel_outbound {
@@ -732,8 +732,7 @@ impl Channel {
 			sha.input(&self.their_payment_basepoint.unwrap().serialize());
 			sha.input(&our_payment_basepoint.serialize());
 		}
-		let mut res = [0; 32];
-		sha.result(&mut res);
+		let res = Sha256::from_engine(sha).into_inner();
 
 		((res[26] as u64) << 5*8) |
 		((res[27] as u64) << 4*8) |
@@ -1151,10 +1150,7 @@ impl Channel {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		let mut sha = Sha256::new();
-		sha.input(&payment_preimage_arg.0[..]);
-		let mut payment_hash_calc = PaymentHash([0; 32]);
-		sha.result(&mut payment_hash_calc.0[..]);
+		let payment_hash_calc = PaymentHash(Sha256::hash(&payment_preimage_arg.0[..]).into_inner());
 
 		// ChannelManager may generate duplicate claims/fails due to HTLC update events from
 		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
@@ -1650,11 +1646,7 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent update_fulfill_htlc when we needed a channel_reestablish"));
 		}
 
-		let mut sha = Sha256::new();
-		sha.input(&msg.payment_preimage.0[..]);
-		let mut payment_hash = PaymentHash([0; 32]);
-		sha.result(&mut payment_hash.0[..]);
-
+		let payment_hash = PaymentHash(Sha256::hash(&msg.payment_preimage.0[..]).into_inner());
 		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None).map(|source| source.clone())
 	}
 
@@ -3927,8 +3919,8 @@ mod tests {
 	use util::logger::Logger;
 	use secp256k1::{Secp256k1,Message,Signature};
 	use secp256k1::key::{SecretKey,PublicKey};
-	use crypto::sha2::Sha256;
-	use crypto::digest::Digest;
+	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin_hashes::Hash;
 	use std::sync::Arc;
 
 	struct TestFeeEstimator {
@@ -4054,12 +4046,7 @@ mod tests {
 				let mut preimage: Option<PaymentPreimage> = None;
 				if !htlc.offered {
 					for i in 0..5 {
-						let mut sha = Sha256::new();
-						sha.input(&[i; 32]);
-
-						let mut out = PaymentHash([0; 32]);
-						sha.result(&mut out.0[..]);
-
+						let out = PaymentHash(Sha256::hash(&[i; 32]).into_inner());
 						if out == htlc.payment_hash {
 							preimage = Some(PaymentPreimage([i; 32]));
 						}
@@ -4091,9 +4078,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			let mut sha = Sha256::new();
-			sha.input(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap());
-			sha.result(&mut out.payment_hash.0[..]);
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).into_inner();
 			out
 		});
 		chan.pending_inbound_htlcs.push({
@@ -4104,9 +4089,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			let mut sha = Sha256::new();
-			sha.input(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap());
-			sha.result(&mut out.payment_hash.0[..]);
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).into_inner();
 			out
 		});
 		chan.pending_outbound_htlcs.push({
@@ -4119,9 +4102,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				fail_reason: None,
 			};
-			let mut sha = Sha256::new();
-			sha.input(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap());
-			sha.result(&mut out.payment_hash.0[..]);
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).into_inner();
 			out
 		});
 		chan.pending_outbound_htlcs.push({
@@ -4134,9 +4115,7 @@ mod tests {
 				source: HTLCSource::dummy(),
 				fail_reason: None,
 			};
-			let mut sha = Sha256::new();
-			sha.input(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap());
-			sha.result(&mut out.payment_hash.0[..]);
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).into_inner();
 			out
 		});
 		chan.pending_inbound_htlcs.push({
@@ -4147,9 +4126,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			let mut sha = Sha256::new();
-			sha.input(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap());
-			sha.result(&mut out.payment_hash.0[..]);
+			out.payment_hash.0 = Sha256::hash(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).into_inner();
 			out
 		});
 
