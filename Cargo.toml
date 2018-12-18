@@ -40,3 +40,4 @@ hex = "0.3"
 
 [profile.dev]
 opt-level = 1
+overflow-checks=true
