@@ -47,91 +47,83 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant,Duration};
 
-/// We hold various information about HTLC relay in the HTLC objects in Channel itself:
-///
-/// Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
-/// forward the HTLC with information it will give back to us when it does so, or if it should Fail
-/// the HTLC with the relevant message for the Channel to handle giving to the remote peer.
-///
-/// When a Channel forwards an HTLC to its peer, it will give us back the PendingForwardHTLCInfo
-/// which we will use to construct an outbound HTLC, with a relevant HTLCSource::PreviousHopData
-/// filled in to indicate where it came from (which we can use to either fail-backwards or fulfill
-/// the HTLC backwards along the relevant path).
-/// Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
-/// our payment, which we can use to decode errors or inform the user that the payment was sent.
-mod channel_held_info {
-	use ln::msgs;
-	use ln::router::Route;
-	use ln::channelmanager::PaymentHash;
-	use secp256k1::key::SecretKey;
+// We hold various information about HTLC relay in the HTLC objects in Channel itself:
+//
+// Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
+// forward the HTLC with information it will give back to us when it does so, or if it should Fail
+// the HTLC with the relevant message for the Channel to handle giving to the remote peer.
+//
+// When a Channel forwards an HTLC to its peer, it will give us back the PendingForwardHTLCInfo
+// which we will use to construct an outbound HTLC, with a relevant HTLCSource::PreviousHopData
+// filled in to indicate where it came from (which we can use to either fail-backwards or fulfill
+// the HTLC backwards along the relevant path).
+// Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
+// our payment, which we can use to decode errors or inform the user that the payment was sent.
+/// Stores the info we will need to send when we want to forward an HTLC onwards
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+pub(super) struct PendingForwardHTLCInfo {
+	onion_packet: Option<msgs::OnionPacket>,
+	incoming_shared_secret: [u8; 32],
+	payment_hash: PaymentHash,
+	short_channel_id: u64,
+	amt_to_forward: u64,
+	outgoing_cltv_value: u32,
+}
 
-	/// Stores the info we will need to send when we want to forward an HTLC onwards
-	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-	pub struct PendingForwardHTLCInfo {
-		pub(super) onion_packet: Option<msgs::OnionPacket>,
-		pub(super) incoming_shared_secret: [u8; 32],
-		pub(super) payment_hash: PaymentHash,
-		pub(super) short_channel_id: u64,
-		pub(super) amt_to_forward: u64,
-		pub(super) outgoing_cltv_value: u32,
-	}
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+pub(super) enum HTLCFailureMsg {
+	Relay(msgs::UpdateFailHTLC),
+	Malformed(msgs::UpdateFailMalformedHTLC),
+}
 
-	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-	pub enum HTLCFailureMsg {
-		Relay(msgs::UpdateFailHTLC),
-		Malformed(msgs::UpdateFailMalformedHTLC),
-	}
+/// Stores whether we can't forward an HTLC or relevant forwarding info
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+pub(super) enum PendingHTLCStatus {
+	Forward(PendingForwardHTLCInfo),
+	Fail(HTLCFailureMsg),
+}
 
-	/// Stores whether we can't forward an HTLC or relevant forwarding info
-	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-	pub enum PendingHTLCStatus {
-		Forward(PendingForwardHTLCInfo),
-		Fail(HTLCFailureMsg),
-	}
+/// Tracks the inbound corresponding to an outbound HTLC
+#[derive(Clone, PartialEq)]
+pub(super) struct HTLCPreviousHopData {
+	short_channel_id: u64,
+	htlc_id: u64,
+	incoming_packet_shared_secret: [u8; 32],
+}
 
-	/// Tracks the inbound corresponding to an outbound HTLC
-	#[derive(Clone, PartialEq)]
-	pub struct HTLCPreviousHopData {
-		pub(super) short_channel_id: u64,
-		pub(super) htlc_id: u64,
-		pub(super) incoming_packet_shared_secret: [u8; 32],
-	}
-
-	/// Tracks the inbound corresponding to an outbound HTLC
-	#[derive(Clone, PartialEq)]
-	pub enum HTLCSource {
-		PreviousHopData(HTLCPreviousHopData),
-		OutboundRoute {
-			route: Route,
-			session_priv: SecretKey,
-			/// Technically we can recalculate this from the route, but we cache it here to avoid
-			/// doing a double-pass on route when we get a failure back
-			first_hop_htlc_msat: u64,
-		},
-	}
-	#[cfg(test)]
-	impl HTLCSource {
-		pub fn dummy() -> Self {
-			HTLCSource::OutboundRoute {
-				route: Route { hops: Vec::new() },
-				session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
-				first_hop_htlc_msat: 0,
-			}
-		}
-	}
-
-	#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-	pub(crate) enum HTLCFailReason {
-		ErrorPacket {
-			err: msgs::OnionErrorPacket,
-		},
-		Reason {
-			failure_code: u16,
-			data: Vec<u8>,
+/// Tracks the inbound corresponding to an outbound HTLC
+#[derive(Clone, PartialEq)]
+pub(super) enum HTLCSource {
+	PreviousHopData(HTLCPreviousHopData),
+	OutboundRoute {
+		route: Route,
+		session_priv: SecretKey,
+		/// Technically we can recalculate this from the route, but we cache it here to avoid
+		/// doing a double-pass on route when we get a failure back
+		first_hop_htlc_msat: u64,
+	},
+}
+#[cfg(test)]
+impl HTLCSource {
+	pub fn dummy() -> Self {
+		HTLCSource::OutboundRoute {
+			route: Route { hops: Vec::new() },
+			session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
+			first_hop_htlc_msat: 0,
 		}
 	}
 }
-pub(super) use self::channel_held_info::*;
+
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+pub(super) enum HTLCFailReason {
+	ErrorPacket {
+		err: msgs::OnionErrorPacket,
+	},
+	Reason {
+		failure_code: u16,
+		data: Vec<u8>,
+	}
+}
 
 /// payment_hash type, use to cross-lock hop
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
