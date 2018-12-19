@@ -6327,7 +6327,7 @@ fn test_onion_failure() {
 	}, || {}, true, Some(17), None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, |_| {}, || {
-		for (_, mut pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
+		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
 			for f in pending_forwards.iter_mut() {
 				f.forward_info.outgoing_cltv_value += 1;
 			}
@@ -6336,7 +6336,7 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("final_incorrect_htlc_amount", 1, &nodes, &route, &payment_hash, |_| {}, || {
 		// violate amt_to_forward > msg.amount_msat
-		for (_, mut pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
+		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
 			for f in pending_forwards.iter_mut() {
 				f.forward_info.amt_to_forward -= 1;
 			}
