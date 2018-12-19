@@ -22,3 +22,4 @@ pub(crate) mod peer_channel_encryptor;
 
 mod channel;
 mod chan_utils;
+mod onion_utils;
