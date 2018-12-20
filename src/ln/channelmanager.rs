@@ -208,13 +208,12 @@ impl MsgHandleErrInternal {
 /// probably increase this significantly.
 const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u32 = 50;
 
-pub(super) struct HTLCForwardInfo {
-	prev_short_channel_id: u64,
-	prev_htlc_id: u64,
-	#[cfg(test)]
-	pub(super) forward_info: PendingForwardHTLCInfo,
-	#[cfg(not(test))]
-	forward_info: PendingForwardHTLCInfo,
+pub(super) enum HTLCForwardInfo {
+	AddHTLC {
+		prev_short_channel_id: u64,
+		prev_htlc_id: u64,
+		forward_info: PendingForwardHTLCInfo,
+	},
 }
 
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
@@ -1161,13 +1160,17 @@ impl ChannelManager {
 						Some(chan_id) => chan_id.clone(),
 						None => {
 							failed_forwards.reserve(pending_forwards.len());
-							for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
-								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-									short_channel_id: prev_short_channel_id,
-									htlc_id: prev_htlc_id,
-									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-								});
-								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
+							for forward_info in pending_forwards.drain(..) {
+								match forward_info {
+									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+											short_channel_id: prev_short_channel_id,
+											htlc_id: prev_htlc_id,
+											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+										});
+										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
+									},
+								}
 							}
 							continue;
 						}
@@ -1175,32 +1178,36 @@ impl ChannelManager {
 					let forward_chan = &mut channel_state.by_id.get_mut(&forward_chan_id).unwrap();
 
 					let mut add_htlc_msgs = Vec::new();
-					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
-						let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-							short_channel_id: prev_short_channel_id,
-							htlc_id: prev_htlc_id,
-							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-						});
-						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
-							Err(_e) => {
-								let chan_update = self.get_channel_update(forward_chan).unwrap();
-								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
-								continue;
-							},
-							Ok(update_add) => {
-								match update_add {
-									Some(msg) => { add_htlc_msgs.push(msg); },
-									None => {
-										// Nothing to do here...we're waiting on a remote
-										// revoke_and_ack before we can add anymore HTLCs. The Channel
-										// will automatically handle building the update_add_htlc and
-										// commitment_signed messages when we can.
-										// TODO: Do some kind of timer to set the channel as !is_live()
-										// as we don't really want others relying on us relaying through
-										// this channel currently :/.
+					for forward_info in pending_forwards.drain(..) {
+						match forward_info {
+							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+									short_channel_id: prev_short_channel_id,
+									htlc_id: prev_htlc_id,
+									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+								});
+								match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
+									Err(_e) => {
+										let chan_update = self.get_channel_update(forward_chan).unwrap();
+										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
+										continue;
+									},
+									Ok(update_add) => {
+										match update_add {
+											Some(msg) => { add_htlc_msgs.push(msg); },
+											None => {
+												// Nothing to do here...we're waiting on a remote
+												// revoke_and_ack before we can add anymore HTLCs. The Channel
+												// will automatically handle building the update_add_htlc and
+												// commitment_signed messages when we can.
+												// TODO: Do some kind of timer to set the channel as !is_live()
+												// as we don't really want others relying on us relaying through
+												// this channel currently :/.
+											}
+										}
 									}
 								}
-							}
+							},
 						}
 					}
 
@@ -1231,20 +1238,24 @@ impl ChannelManager {
 						});
 					}
 				} else {
-					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
-						let prev_hop_data = HTLCPreviousHopData {
-							short_channel_id: prev_short_channel_id,
-							htlc_id: prev_htlc_id,
-							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-						};
-						match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
-							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
-							hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
-						};
-						new_events.push(events::Event::PaymentReceived {
-							payment_hash: forward_info.payment_hash,
-							amt: forward_info.amt_to_forward,
-						});
+					for forward_info in pending_forwards.drain(..) {
+						match forward_info {
+							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+								let prev_hop_data = HTLCPreviousHopData {
+									short_channel_id: prev_short_channel_id,
+									htlc_id: prev_htlc_id,
+									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+								};
+								match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
+									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
+									hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
+								};
+								new_events.push(events::Event::PaymentReceived {
+									payment_hash: forward_info.payment_hash,
+									amt: forward_info.amt_to_forward,
+								});
+							},
+						}
 					}
 				}
 			}
@@ -1956,10 +1967,10 @@ impl ChannelManager {
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info });
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info }));
 						}
 					}
 				}
@@ -2714,11 +2725,32 @@ impl<R: ::std::io::Read> Readable<R> for HTLCFailReason {
 	}
 }
 
-impl_writeable!(HTLCForwardInfo, 0, {
-	prev_short_channel_id,
-	prev_htlc_id,
-	forward_info
-});
+impl Writeable for HTLCForwardInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCForwardInfo::AddHTLC { ref prev_short_channel_id, ref prev_htlc_id, ref forward_info } => {
+				0u8.write(writer)?;
+				prev_short_channel_id.write(writer)?;
+				prev_htlc_id.write(writer)?;
+				forward_info.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
+	fn read(reader: &mut R) -> Result<HTLCForwardInfo, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCForwardInfo::AddHTLC {
+				prev_short_channel_id: Readable::read(reader)?,
+				prev_htlc_id: Readable::read(reader)?,
+				forward_info: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
 
 impl Writeable for ChannelManager {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {

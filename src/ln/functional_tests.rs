@@ -8,7 +8,7 @@ use chain::chaininterface::{ChainListener, ChainWatchInterface};
 use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 use chain::keysinterface;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
-use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,RAACommitmentOrder, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use ln::onion_utils;
@@ -6260,7 +6260,10 @@ fn test_onion_failure() {
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, |_| {}, || {
 		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
 			for f in pending_forwards.iter_mut() {
-				f.forward_info.outgoing_cltv_value += 1;
+				match f {
+					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
+						forward_info.outgoing_cltv_value += 1,
+				}
 			}
 		}
 	}, true, Some(18), None);
@@ -6269,7 +6272,10 @@ fn test_onion_failure() {
 		// violate amt_to_forward > msg.amount_msat
 		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
 			for f in pending_forwards.iter_mut() {
-				f.forward_info.amt_to_forward -= 1;
+				match f {
+					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
+						forward_info.amt_to_forward -= 1,
+				}
 			}
 		}
 	}, true, Some(19), None);
