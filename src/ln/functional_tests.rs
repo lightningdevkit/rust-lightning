@@ -6362,3 +6362,29 @@ fn test_onion_failure() {
 		msg.onion_routing_packet = onion_packet;
 	}, ||{}, true, Some(21), None);
 }
+
+#[test]
+fn test_invalid_funding_tx() {
+	// Test that in case of waiting broadcast of a funding tx, in case an invalid one we don't react at all.
+	let nodes = create_network(2);
+
+	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 99000000);
+	let mut invalid_funding_tx = funding_tx.clone();
+	// We tweak version number which should change the txid of funding tx, and in faact should get ignored by chain layer
+	invalid_funding_tx.version = 3;
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&invalid_funding_tx; 1], &[invalid_funding_tx.version; 1]);
+	for i in 2..100 {
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].chain_monitor.block_connected_checked(&header, i, &[&invalid_funding_tx; 0], &[0; 0]);
+	}
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 0);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 0);
+	{
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txn.len(), 0);
+	}
+	create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &funding_tx);
+}

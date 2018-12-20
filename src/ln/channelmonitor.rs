@@ -1530,7 +1530,6 @@ impl ChannelMonitor {
 			}
 		}
 
-
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.their_to_self_delay.unwrap(), &local_tx.delayed_payment_key);
 		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
 		for (idx, output) in local_tx.tx.output.iter().enumerate() {
