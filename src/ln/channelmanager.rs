@@ -214,6 +214,10 @@ pub(super) enum HTLCForwardInfo {
 		prev_htlc_id: u64,
 		forward_info: PendingForwardHTLCInfo,
 	},
+	FailHTLC {
+		htlc_id: u64,
+		err_packet: msgs::OnionErrorPacket,
+	},
 }
 
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
@@ -1170,6 +1174,12 @@ impl ChannelManager {
 										});
 										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
 									},
+									HTLCForwardInfo::FailHTLC { .. } => {
+										// Channel went away before we could fail it. This implies
+										// the channel is now on chain and our counterparty is
+										// trying to broadcast the HTLC-Timeout, but that's their
+										// problem, not ours.
+									}
 								}
 							}
 							continue;
@@ -1178,6 +1188,7 @@ impl ChannelManager {
 					let forward_chan = &mut channel_state.by_id.get_mut(&forward_chan_id).unwrap();
 
 					let mut add_htlc_msgs = Vec::new();
+					let mut fail_htlc_msgs = Vec::new();
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
@@ -1187,7 +1198,10 @@ impl ChannelManager {
 									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 								});
 								match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
-									Err(_e) => {
+									Err(e) => {
+										if let ChannelError::Ignore(_) = e {} else {
+											panic!("Stated return value requirements in send_htlc() were not met");
+										}
 										let chan_update = self.get_channel_update(forward_chan).unwrap();
 										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
 										continue;
@@ -1205,6 +1219,30 @@ impl ChannelManager {
 												// this channel currently :/.
 											}
 										}
+									}
+								}
+							},
+							HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
+								match forward_chan.get_update_fail_htlc(htlc_id, err_packet) {
+									Err(e) => {
+										if let ChannelError::Ignore(_) = e {} else {
+											panic!("Stated return value requirements in get_update_fail_htlc() were not met");
+										}
+										// fail-backs are best-effort, we probably already have one
+										// pending, and if not that's OK, if not, the channel is on
+										// the chain and sending the HTLC-Timeout is their problem.
+										continue;
+									},
+									Ok(Some(msg)) => { fail_htlc_msgs.push(msg); },
+									Ok(None) => {
+										// Nothing to do here...we're waiting on a remote
+										// revoke_and_ack before we can update the commitment
+										// transaction. The Channel will automatically handle
+										// building the update_fail_htlc and commitment_signed
+										// messages when we can.
+										// We don't need any kind of timer here as they should fail
+										// the channel onto the chain if they can't get our
+										// update_fail_htlc in time, its not our problem.
 									}
 								}
 							},
@@ -1230,7 +1268,7 @@ impl ChannelManager {
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: add_htlc_msgs,
 								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: Vec::new(),
+								update_fail_htlcs: fail_htlc_msgs,
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: None,
 								commitment_signed: commitment_msg,
@@ -1255,6 +1293,9 @@ impl ChannelManager {
 									amt: forward_info.amt_to_forward,
 								});
 							},
+							HTLCForwardInfo::FailHTLC { .. } => {
+								panic!("Got pending fail of our own HTLC");
+							}
 						}
 					}
 				}
@@ -2734,6 +2775,11 @@ impl Writeable for HTLCForwardInfo {
 				prev_htlc_id.write(writer)?;
 				forward_info.write(writer)?;
 			},
+			&HTLCForwardInfo::FailHTLC { ref htlc_id, ref err_packet } => {
+				1u8.write(writer)?;
+				htlc_id.write(writer)?;
+				err_packet.write(writer)?;
+			},
 		}
 		Ok(())
 	}
@@ -2746,6 +2792,10 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 				prev_short_channel_id: Readable::read(reader)?,
 				prev_htlc_id: Readable::read(reader)?,
 				forward_info: Readable::read(reader)?,
+			}),
+			1 => Ok(HTLCForwardInfo::FailHTLC {
+				htlc_id: Readable::read(reader)?,
+				err_packet: Readable::read(reader)?,
 			}),
 			_ => Err(DecodeError::InvalidValue),
 		}

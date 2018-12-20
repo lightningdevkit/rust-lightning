@@ -6263,6 +6263,7 @@ fn test_onion_failure() {
 				match f {
 					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
 						forward_info.outgoing_cltv_value += 1,
+					_ => {},
 				}
 			}
 		}
@@ -6275,6 +6276,7 @@ fn test_onion_failure() {
 				match f {
 					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
 						forward_info.amt_to_forward -= 1,
+					_ => {},
 				}
 			}
 		}

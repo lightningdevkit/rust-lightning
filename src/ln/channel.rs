@@ -3125,6 +3125,7 @@ impl Channel {
 	/// waiting on the remote peer to send us a revoke_and_ack during which time we cannot add new
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
 	/// You MUST call send_commitment prior to any other calls on this Channel
+	/// If an Err is returned, its a ChannelError::Ignore!
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down"));
