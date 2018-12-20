@@ -568,6 +568,8 @@ impl ChannelMonitor {
 		}
 
 		let new_txid = unsigned_commitment_tx.txid();
+		log_trace!(self, "Tracking new remote commitment transaction with txid {} at commitment number {} with {} HTLC outputs", new_txid, commitment_number, htlc_outputs.len());
+		log_trace!(self, "New potential remote commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
 		if let Storage::Local { ref mut current_remote_commitment_txid, ref mut prev_remote_commitment_txid, .. } = self.key_storage {
 			*prev_remote_commitment_txid = current_remote_commitment_txid.take();
 			*current_remote_commitment_txid = Some(new_txid);
@@ -1245,6 +1247,8 @@ impl ChannelMonitor {
 			// insert it here.
 			watch_outputs.append(&mut tx.output.clone());
 			self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
+
+			log_trace!(self, "Got broadcast of non-revoked remote commitment transaction {}", commitment_txid);
 
 			if let Some(revocation_points) = self.their_cur_revocation_points {
 				let revocation_point_option =
