@@ -9,12 +9,11 @@ A Bitcoin Lightning library in Rust.
 Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
 Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
 """
-build = "build.rs"
 
 [features]
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
 non_bitcoin_chain_hash_routing = []
-fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget"]
+fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget", "bitcoin_hashes/fuzztarget"]
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
@@ -24,12 +23,9 @@ max_level_debug = []
 
 [dependencies]
 bitcoin = "0.15"
-rust-crypto = "0.2"
+bitcoin_hashes = { git = "https://github.com/TheBlueMatt/bitcoin_hashes", branch = "rust-lightning-dep" }
 rand = "0.4"
 secp256k1 = "0.11"
-
-[build-dependencies]
-cc = "1.0"
 
 [dev-dependencies.bitcoin]
 version = "0.15"

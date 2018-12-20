@@ -17,10 +17,12 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
-use bitcoin::util::hash::{Hash160, BitcoinHash,Sha256dHash};
+use bitcoin::util::hash::{BitcoinHash,Sha256dHash};
 use bitcoin::util::bip143;
 
-use crypto::digest::Digest;
+use bitcoin_hashes::Hash;
+use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::{Secp256k1,Message,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
@@ -36,7 +38,6 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable, WriterWriteAdaptor, U48};
-use util::sha2::Sha256;
 use util::{byte_utils, events};
 
 use std::collections::{HashMap, hash_map};
@@ -487,9 +488,7 @@ impl ChannelMonitor {
 			let bitpos = bits - 1 - i;
 			if idx & (1 << bitpos) == (1 << bitpos) {
 				res[(bitpos / 8) as usize] ^= 1 << (bitpos & 7);
-				let mut sha = Sha256::new();
-				sha.input(&res);
-				sha.result(&mut res);
+				res = Sha256::hash(&res).into_inner();
 			}
 		}
 		res
@@ -569,6 +568,8 @@ impl ChannelMonitor {
 		}
 
 		let new_txid = unsigned_commitment_tx.txid();
+		log_trace!(self, "Tracking new remote commitment transaction with txid {} at commitment number {} with {} HTLC outputs", new_txid, commitment_number, htlc_outputs.len());
+		log_trace!(self, "New potential remote commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
 		if let Storage::Local { ref mut current_remote_commitment_txid, ref mut prev_remote_commitment_txid, .. } = self.key_storage {
 			*prev_remote_commitment_txid = current_remote_commitment_txid.take();
 			*current_remote_commitment_txid = Some(new_txid);
@@ -1079,7 +1080,7 @@ impl ChannelMonitor {
 			let local_payment_p2wpkh = if let Some(payment_key) = local_payment_key {
 				// Note that the Network here is ignored as we immediately drop the address for the
 				// script_pubkey version.
-				let payment_hash160 = Hash160::from_data(&PublicKey::from_secret_key(&self.secp_ctx, &payment_key).serialize());
+				let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &payment_key).serialize());
 				Some(Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script())
 			} else { None };
 
@@ -1246,6 +1247,8 @@ impl ChannelMonitor {
 			// insert it here.
 			watch_outputs.append(&mut tx.output.clone());
 			self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
+
+			log_trace!(self, "Got broadcast of non-revoked remote commitment transaction {}", commitment_txid);
 
 			if let Some(revocation_points) = self.their_cur_revocation_points {
 				let revocation_point_option =
@@ -1621,7 +1624,7 @@ impl ChannelMonitor {
 		if tx.input[0].sequence == 0xFFFFFFFF && !tx.input[0].witness.is_empty() && tx.input[0].witness.last().unwrap().len() == 71 {
 			match self.key_storage {
 				Storage::Local { ref shutdown_pubkey, .. } =>  {
-					let our_channel_close_key_hash = Hash160::from_data(&shutdown_pubkey.serialize());
+					let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
 					let shutdown_script = Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
 					for (idx, output) in tx.output.iter().enumerate() {
 						if shutdown_script == output.script_pubkey {
@@ -2098,13 +2101,9 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 		let payment_preimages_len: u64 = Readable::read(reader)?;
 		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
-		let mut sha = Sha256::new();
 		for _ in 0..payment_preimages_len {
 			let preimage: PaymentPreimage = Readable::read(reader)?;
-			sha.reset();
-			sha.input(&preimage.0[..]);
-			let mut hash = PaymentHash([0; 32]);
-			sha.result(&mut hash.0[..]);
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
 			if let Some(_) = payment_preimages.insert(hash, preimage) {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -2148,12 +2147,12 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 mod tests {
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::blockdata::transaction::Transaction;
-	use crypto::digest::Digest;
+	use bitcoin_hashes::Hash;
+	use bitcoin_hashes::sha256::Hash as Sha256;
 	use hex;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use ln::channelmonitor::ChannelMonitor;
 	use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys};
-	use util::sha2::Sha256;
 	use util::test_utils::TestLogger;
 	use secp256k1::key::{SecretKey,PublicKey};
 	use secp256k1::{Secp256k1, Signature};
@@ -2544,10 +2543,7 @@ mod tests {
 			for _ in 0..20 {
 				let mut preimage = PaymentPreimage([0; 32]);
 				rng.fill_bytes(&mut preimage.0[..]);
-				let mut sha = Sha256::new();
-				sha.input(&preimage.0[..]);
-				let mut hash = PaymentHash([0; 32]);
-				sha.result(&mut hash.0[..]);
+				let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
 				preimages.push((preimage, hash));
 			}
 		}

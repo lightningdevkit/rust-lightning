@@ -1,18 +1,18 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
-use bitcoin::util::hash::{Hash160,Sha256dHash};
+use bitcoin::util::hash::{Sha256dHash};
+
+use bitcoin_hashes::{Hash, HashEngine};
+use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::ripemd160::Hash as Ripemd160;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use ln::channelmanager::PaymentHash;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 use secp256k1;
-
-use crypto::digest::Digest;
-use crypto::ripemd160::Ripemd160;
-
-use util::sha2::Sha256;
 
 pub const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 pub const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
@@ -26,20 +26,17 @@ pub fn build_commitment_secret(commitment_seed: [u8; 32], idx: u64) -> [u8; 32] 
 		let bitpos = 47 - i;
 		if idx & (1 << bitpos) == (1 << bitpos) {
 			res[bitpos / 8] ^= 1 << (bitpos & 7);
-			let mut sha = Sha256::new();
-			sha.input(&res);
-			sha.result(&mut res);
+			res = Sha256::hash(&res).into_inner();
 		}
 	}
 	res
 }
 
 pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
-	let mut sha = Sha256::new();
+	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
-	let mut res = [0; 32];
-	sha.result(&mut res);
+	let res = Sha256::from_engine(sha).into_inner();
 
 	let mut key = base_secret.clone();
 	key.add_assign(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &res)?)?;
@@ -47,11 +44,10 @@ pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_co
 }
 
 pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
-	let mut sha = Sha256::new();
+	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
-	let mut res = [0; 32];
-	sha.result(&mut res);
+	let res = Sha256::from_engine(sha).into_inner();
 
 	let hashkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &res)?);
 	base_point.combine(&secp_ctx, &hashkey)
@@ -63,22 +59,18 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
 	let rev_append_commit_hash_key = {
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&revocation_base_point.serialize());
 		sha.input(&per_commitment_point.serialize());
-		let mut res = [0; 32];
-		sha.result(&mut res);
 
-		SecretKey::from_slice(&secp_ctx, &res)?
+		SecretKey::from_slice(&secp_ctx, &Sha256::from_engine(sha).into_inner())?
 	};
 	let commit_append_rev_hash_key = {
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&per_commitment_point.serialize());
 		sha.input(&revocation_base_point.serialize());
-		let mut res = [0; 32];
-		sha.result(&mut res);
 
-		SecretKey::from_slice(&secp_ctx, &res)?
+		SecretKey::from_slice(&secp_ctx, &Sha256::from_engine(sha).into_inner())?
 	};
 
 	let mut part_a = revocation_base_secret.clone();
@@ -91,22 +83,18 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 
 pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let rev_append_commit_hash_key = {
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&revocation_base_point.serialize());
 		sha.input(&per_commitment_point.serialize());
-		let mut res = [0; 32];
-		sha.result(&mut res);
 
-		SecretKey::from_slice(&secp_ctx, &res)?
+		SecretKey::from_slice(&secp_ctx, &Sha256::from_engine(sha).into_inner())?
 	};
 	let commit_append_rev_hash_key = {
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&per_commitment_point.serialize());
 		sha.input(&revocation_base_point.serialize());
-		let mut res = [0; 32];
-		sha.result(&mut res);
 
-		SecretKey::from_slice(&secp_ctx, &res)?
+		SecretKey::from_slice(&secp_ctx, &Sha256::from_engine(sha).into_inner())?
 	};
 
 	let mut part_a = revocation_base_point.clone();
@@ -164,17 +152,11 @@ pub struct HTLCOutputInCommitment {
 
 #[inline]
 pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
-	let payment_hash160 = {
-		let mut ripemd = Ripemd160::new();
-		ripemd.input(&htlc.payment_hash.0[..]);
-		let mut res = [0; 20];
-		ripemd.result(&mut res);
-		res
-	};
+	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
 	if htlc.offered {
 		Builder::new().push_opcode(opcodes::All::OP_DUP)
 		              .push_opcode(opcodes::All::OP_HASH160)
-		              .push_slice(&Hash160::from_data(&revocation_key.serialize())[..])
+		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::All::OP_EQUAL)
 		              .push_opcode(opcodes::All::OP_IF)
 		              .push_opcode(opcodes::All::OP_CHECKSIG)
@@ -202,7 +184,7 @@ pub fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a
 	} else {
 		Builder::new().push_opcode(opcodes::All::OP_DUP)
 		              .push_opcode(opcodes::All::OP_HASH160)
-		              .push_slice(&Hash160::from_data(&revocation_key.serialize())[..])
+		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::All::OP_EQUAL)
 		              .push_opcode(opcodes::All::OP_IF)
 		              .push_opcode(opcodes::All::OP_CHECKSIG)

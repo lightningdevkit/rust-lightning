@@ -1,19 +1,16 @@
 use ln::msgs::HandleError;
 use ln::msgs;
 
+use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin_hashes::sha256::Hash as Sha256;
+
 use secp256k1::Secp256k1;
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use crypto::digest::Digest;
-use crypto::hkdf::{hkdf_extract,hkdf_expand};
-
-use crypto::aead::{AeadEncryptor, AeadDecryptor};
-
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::{byte_utils,rng};
-use util::sha2::Sha256;
 
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
@@ -80,11 +77,10 @@ impl PeerChannelEncryptor {
 		let secp_ctx = Secp256k1::signing_only();
 		let sec_key = SecretKey::from_slice(&secp_ctx, &key).unwrap(); //TODO: nicer rng-is-bad error message
 
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&NOISE_H);
 		sha.input(&their_node_id.serialize()[..]);
-		let mut h = [0; 32];
-		sha.result(&mut h);
+		let h = Sha256::from_engine(sha).into_inner();
 
 		PeerChannelEncryptor {
 			their_node_id: Some(their_node_id),
@@ -105,12 +101,11 @@ impl PeerChannelEncryptor {
 	pub fn new_inbound(our_node_secret: &SecretKey) -> PeerChannelEncryptor {
 		let secp_ctx = Secp256k1::signing_only();
 
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&NOISE_H);
 		let our_node_id = PublicKey::from_secret_key(&secp_ctx, our_node_secret);
 		sha.input(&our_node_id.serialize()[..]);
-		let mut h = [0; 32];
-		sha.result(&mut h);
+		let h = Sha256::from_engine(sha).into_inner();
 
 		PeerChannelEncryptor {
 			their_node_id: None,
@@ -153,28 +148,34 @@ impl PeerChannelEncryptor {
 		Ok(())
 	}
 
+	fn hkdf_extract_expand(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32]) {
+		let mut hmac = HmacEngine::<Sha256>::new(salt);
+		hmac.input(ikm);
+		let prk = Hmac::from_engine(hmac).into_inner();
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&[1; 1]);
+		let t1 = Hmac::from_engine(hmac).into_inner();
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&t1);
+		hmac.input(&[2; 1]);
+		(t1, Hmac::from_engine(hmac).into_inner())
+	}
+
 	#[inline]
 	fn hkdf(state: &mut BidirectionalNoiseState, ss: SharedSecret) -> [u8; 32] {
-		let mut hkdf = [0; 64];
-		{
-			let mut prk = [0; 32];
-			hkdf_extract(Sha256::new(), &state.ck, &ss[..], &mut prk);
-			hkdf_expand(Sha256::new(), &prk, &[0;0], &mut hkdf);
-		}
-		state.ck.copy_from_slice(&hkdf[0..32]);
-		let mut res = [0; 32];
-		res.copy_from_slice(&hkdf[32..]);
-		res
+		let (t1, t2) = Self::hkdf_extract_expand(&state.ck, &ss[..]);
+		state.ck = t1;
+		t2
 	}
 
 	#[inline]
 	fn outbound_noise_act<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, state: &mut BidirectionalNoiseState, our_key: &SecretKey, their_key: &PublicKey) -> ([u8; 50], [u8; 32]) {
 		let our_pub = PublicKey::from_secret_key(secp_ctx, &our_key);
 
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&our_pub.serialize()[..]);
-		sha.result(&mut state.h);
+		state.h = Sha256::from_engine(sha).into_inner();
 
 		let ss = SharedSecret::new(secp_ctx, &their_key, &our_key);
 		let temp_k = PeerChannelEncryptor::hkdf(state, ss);
@@ -183,10 +184,10 @@ impl PeerChannelEncryptor {
 		res[1..34].copy_from_slice(&our_pub.serialize()[..]);
 		PeerChannelEncryptor::encrypt_with_ad(&mut res[34..], 0, &temp_k, &state.h, &[0; 0]);
 
-		sha.reset();
+		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&res[34..]);
-		sha.result(&mut state.h);
+		state.h = Sha256::from_engine(sha).into_inner();
 
 		(res, temp_k)
 	}
@@ -204,10 +205,10 @@ impl PeerChannelEncryptor {
 			Ok(key) => key,
 		};
 
-		let mut sha = Sha256::new();
+		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&their_pub.serialize()[..]);
-		sha.result(&mut state.h);
+		state.h = Sha256::from_engine(sha).into_inner();
 
 		let ss = SharedSecret::new(secp_ctx, &their_pub, &our_key);
 		let temp_k = PeerChannelEncryptor::hkdf(state, ss);
@@ -215,10 +216,10 @@ impl PeerChannelEncryptor {
 		let mut dec = [0; 0];
 		PeerChannelEncryptor::decrypt_with_ad(&mut dec, 0, &temp_k, &state.h, &act[34..])?;
 
-		sha.reset();
+		let mut sha = Sha256::engine();
 		sha.input(&state.h);
 		sha.input(&act[34..]);
-		sha.result(&mut state.h);
+		state.h = Sha256::from_engine(sha).into_inner();
 
 		Ok((their_pub, temp_k))
 	}
@@ -282,7 +283,7 @@ impl PeerChannelEncryptor {
 	pub fn process_act_two(&mut self, act_two: &[u8], our_node_secret: &SecretKey) -> Result<([u8; 66], PublicKey), HandleError> {
 		assert_eq!(act_two.len(), 50);
 
-		let mut final_hkdf = [0; 64];
+		let final_hkdf;
 		let ck;
 		let res: [u8; 66] = match self.noise_state {
 			NoiseState::InProgress { ref state, ref directional_state, ref mut bidirectional_state } =>
@@ -299,19 +300,16 @@ impl PeerChannelEncryptor {
 
 						PeerChannelEncryptor::encrypt_with_ad(&mut res[1..50], 1, &temp_k2, &bidirectional_state.h, &our_node_id.serialize()[..]);
 
-						let mut sha = Sha256::new();
+						let mut sha = Sha256::engine();
 						sha.input(&bidirectional_state.h);
 						sha.input(&res[1..50]);
-						sha.result(&mut bidirectional_state.h);
+						bidirectional_state.h = Sha256::from_engine(sha).into_inner();
 
 						let ss = SharedSecret::new(&self.secp_ctx, &re, our_node_secret);
 						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
 
 						PeerChannelEncryptor::encrypt_with_ad(&mut res[50..], 0, &temp_k, &bidirectional_state.h, &[0; 0]);
-
-						let mut prk = [0; 32];
-						hkdf_extract(Sha256::new(), &bidirectional_state.ck, &[0; 0], &mut prk);
-						hkdf_expand(Sha256::new(), &prk, &[0;0], &mut final_hkdf);
+						final_hkdf = Self::hkdf_extract_expand(&bidirectional_state.ck, &[0; 0]);
 						ck = bidirectional_state.ck.clone();
 						res
 					},
@@ -320,11 +318,7 @@ impl PeerChannelEncryptor {
 			_ => panic!("Cannot get act one after noise handshake completes"),
 		};
 
-		let mut sk = [0; 32];
-		let mut rk = [0; 32];
-		sk.copy_from_slice(&final_hkdf[0..32]);
-		rk.copy_from_slice(&final_hkdf[32..]);
-
+		let (sk, rk) = final_hkdf;
 		self.noise_state = NoiseState::Finished {
 			sk: sk,
 			sn: 0,
@@ -340,7 +334,7 @@ impl PeerChannelEncryptor {
 	pub fn process_act_three(&mut self, act_three: &[u8]) -> Result<PublicKey, HandleError> {
 		assert_eq!(act_three.len(), 66);
 
-		let mut final_hkdf = [0; 64];
+		let final_hkdf;
 		let ck;
 		match self.noise_state {
 			NoiseState::InProgress { ref state, ref directional_state, ref mut bidirectional_state } =>
@@ -360,19 +354,16 @@ impl PeerChannelEncryptor {
 							Err(_) => return Err(HandleError{err: "Bad node_id from peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
 						});
 
-						let mut sha = Sha256::new();
+						let mut sha = Sha256::engine();
 						sha.input(&bidirectional_state.h);
 						sha.input(&act_three[1..50]);
-						sha.result(&mut bidirectional_state.h);
+						bidirectional_state.h = Sha256::from_engine(sha).into_inner();
 
 						let ss = SharedSecret::new(&self.secp_ctx, &self.their_node_id.unwrap(), &re.unwrap());
 						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
 
 						PeerChannelEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..])?;
-
-						let mut prk = [0; 32];
-						hkdf_extract(Sha256::new(), &bidirectional_state.ck, &[0; 0], &mut prk);
-						hkdf_expand(Sha256::new(), &prk, &[0;0], &mut final_hkdf);
+						final_hkdf = Self::hkdf_extract_expand(&bidirectional_state.ck, &[0; 0]);
 						ck = bidirectional_state.ck.clone();
 					},
 					_ => panic!("Wrong direction for act"),
@@ -380,11 +371,7 @@ impl PeerChannelEncryptor {
 			_ => panic!("Cannot get act one after noise handshake completes"),
 		}
 
-		let mut rk = [0; 32];
-		let mut sk = [0; 32];
-		rk.copy_from_slice(&final_hkdf[0..32]);
-		sk.copy_from_slice(&final_hkdf[32..]);
-
+		let (rk, sk) = final_hkdf;
 		self.noise_state = NoiseState::Finished {
 			sk: sk,
 			sn: 0,
@@ -410,13 +397,9 @@ impl PeerChannelEncryptor {
 		match self.noise_state {
 			NoiseState::Finished { ref mut sk, ref mut sn, ref mut sck, rk: _, rn: _, rck: _ } => {
 				if *sn >= 1000 {
-					let mut prk = [0; 32];
-					hkdf_extract(Sha256::new(), sck, sk, &mut prk);
-					let mut hkdf = [0; 64];
-					hkdf_expand(Sha256::new(), &prk, &[0;0], &mut hkdf);
-
-					sck[..].copy_from_slice(&hkdf[0..32]);
-					sk[..].copy_from_slice(&hkdf[32..]);
+					let (new_sck, new_sk) = Self::hkdf_extract_expand(sck, sk);
+					*sck = new_sck;
+					*sk = new_sk;
 					*sn = 0;
 				}
 
@@ -440,13 +423,9 @@ impl PeerChannelEncryptor {
 		match self.noise_state {
 			NoiseState::Finished { sk: _, sn: _, sck: _, ref mut rk, ref mut rn, ref mut rck } => {
 				if *rn >= 1000 {
-					let mut prk = [0; 32];
-					hkdf_extract(Sha256::new(), rck, rk, &mut prk);
-					let mut hkdf = [0; 64];
-					hkdf_expand(Sha256::new(), &prk, &[0;0], &mut hkdf);
-
-					rck[..].copy_from_slice(&hkdf[0..32]);
-					rk[..].copy_from_slice(&hkdf[32..]);
+					let (new_rck, new_rk) = Self::hkdf_extract_expand(rck, rk);
+					*rck = new_rck;
+					*rk = new_rk;
 					*rn = 0;
 				}
 

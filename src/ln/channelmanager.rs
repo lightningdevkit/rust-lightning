@@ -14,6 +14,11 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
 
+use bitcoin_hashes::{Hash, HashEngine};
+use bitcoin_hashes::hmac::{Hmac, HmacEngine};
+use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::cmp::fixed_time_eq;
+
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::{Secp256k1,Message};
 use secp256k1::ecdh::SharedSecret;
@@ -29,18 +34,11 @@ use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
 use chain::keysinterface::KeysInterface;
 use util::config::UserConfig;
 use util::{byte_utils, events, internal_traits, rng};
-use util::sha2::Sha256;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use util::chacha20poly1305rfc::ChaCha20;
+use util::chacha20::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
 use util::errors;
-
-use crypto;
-use crypto::mac::{Mac,MacResult};
-use crypto::hmac::Hmac;
-use crypto::digest::Digest;
-use crypto::symmetriccipher::SynchronousStreamCipher;
 
 use std::{cmp, ptr, mem};
 use std::collections::{HashMap, hash_map, HashSet};
@@ -722,39 +720,31 @@ impl ChannelManager {
 	fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
 		assert_eq!(shared_secret.len(), 32);
 		({
-			let mut hmac = Hmac::new(Sha256::new(), &[0x72, 0x68, 0x6f]); // rho
+			let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
 			hmac.input(&shared_secret[..]);
-			let mut res = [0; 32];
-			hmac.raw_result(&mut res);
-			res
+			Hmac::from_engine(hmac).into_inner()
 		},
 		{
-			let mut hmac = Hmac::new(Sha256::new(), &[0x6d, 0x75]); // mu
+			let mut hmac = HmacEngine::<Sha256>::new(&[0x6d, 0x75]); // mu
 			hmac.input(&shared_secret[..]);
-			let mut res = [0; 32];
-			hmac.raw_result(&mut res);
-			res
+			Hmac::from_engine(hmac).into_inner()
 		})
 	}
 
 	#[inline]
 	fn gen_um_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 		assert_eq!(shared_secret.len(), 32);
-		let mut hmac = Hmac::new(Sha256::new(), &[0x75, 0x6d]); // um
+		let mut hmac = HmacEngine::<Sha256>::new(&[0x75, 0x6d]); // um
 		hmac.input(&shared_secret[..]);
-		let mut res = [0; 32];
-		hmac.raw_result(&mut res);
-		res
+		Hmac::from_engine(hmac).into_inner()
 	}
 
 	#[inline]
 	fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 		assert_eq!(shared_secret.len(), 32);
-		let mut hmac = Hmac::new(Sha256::new(), &[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
+		let mut hmac = HmacEngine::<Sha256>::new(&[0x61, 0x6d, 0x6d, 0x61, 0x67]); // ammag
 		hmac.input(&shared_secret[..]);
-		let mut res = [0; 32];
-		hmac.raw_result(&mut res);
-		res
+		Hmac::from_engine(hmac).into_inner()
 	}
 
 	// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
@@ -766,11 +756,10 @@ impl ChannelManager {
 		for hop in route.hops.iter() {
 			let shared_secret = SharedSecret::new(secp_ctx, &hop.pubkey, &blinded_priv);
 
-			let mut sha = Sha256::new();
+			let mut sha = Sha256::engine();
 			sha.input(&blinded_pub.serialize()[..]);
 			sha.input(&shared_secret[..]);
-			let mut blinding_factor = [0u8; 32];
-			sha.result(&mut blinding_factor);
+			let blinding_factor = Sha256::from_engine(sha).into_inner();
 
 			let ephemeral_pubkey = blinded_pub;
 
@@ -896,10 +885,10 @@ impl ChannelManager {
 				packet_data[20*65 - filler.len()..20*65].copy_from_slice(&filler[..]);
 			}
 
-			let mut hmac = Hmac::new(Sha256::new(), &keys.mu);
+			let mut hmac = HmacEngine::<Sha256>::new(&keys.mu);
 			hmac.input(&packet_data);
 			hmac.input(&associated_data.0[..]);
-			hmac.raw_result(&mut hmac_res);
+			hmac_res = Hmac::from_engine(hmac).into_inner();
 		}
 
 		msgs::OnionPacket{
@@ -948,9 +937,9 @@ impl ChannelManager {
 			pad: pad,
 		};
 
-		let mut hmac = Hmac::new(Sha256::new(), &um);
+		let mut hmac = HmacEngine::<Sha256>::new(&um);
 		hmac.input(&packet.encode()[32..]);
-		hmac.raw_result(&mut packet.hmac);
+		packet.hmac = Hmac::from_engine(hmac).into_inner();
 
 		packet
 	}
@@ -966,14 +955,10 @@ impl ChannelManager {
 			($msg: expr, $err_code: expr) => {
 				{
 					log_info!(self, "Failed to accept/forward incoming HTLC: {}", $msg);
-					let mut sha256_of_onion = [0; 32];
-					let mut sha = Sha256::new();
-					sha.input(&msg.onion_routing_packet.hop_data);
-					sha.result(&mut sha256_of_onion);
 					return (PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						sha256_of_onion,
+						sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
 						failure_code: $err_code,
 					})), self.channel_state.lock().unwrap());
 				}
@@ -1001,10 +986,11 @@ impl ChannelManager {
 			return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
 		}
 
-		let mut hmac = Hmac::new(Sha256::new(), &mu);
+
+		let mut hmac = HmacEngine::<Sha256>::new(&mu);
 		hmac.input(&msg.onion_routing_packet.hop_data);
 		hmac.input(&msg.payment_hash.0[..]);
-		if hmac.result() != MacResult::new(&msg.onion_routing_packet.hmac) {
+		if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &msg.onion_routing_packet.hmac) {
 			return_malformed_err!("HMAC Check failed", 0x8000 | 0x4000 | 5);
 		}
 
@@ -1077,12 +1063,10 @@ impl ChannelManager {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
 				let blinding_factor = {
-					let mut sha = Sha256::new();
+					let mut sha = Sha256::engine();
 					sha.input(&new_pubkey.serialize()[..]);
 					sha.input(&shared_secret);
-					let mut res = [0u8; 32];
-					sha.result(&mut res);
-					SecretKey::from_slice(&self.secp_ctx, &res).expect("SHA-256 is broken?")
+					SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("SHA-256 is broken?")
 				};
 
 				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
@@ -1652,10 +1636,7 @@ impl ChannelManager {
 	///
 	/// May panic if called except in response to a PaymentReceived event.
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
-		let mut sha = Sha256::new();
-		sha.input(&payment_preimage.0[..]);
-		let mut payment_hash = PaymentHash([0; 32]);
-		sha.result(&mut payment_hash.0[..]);
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _ = self.total_consistency_lock.read().unwrap();
 
@@ -2156,12 +2137,10 @@ impl ChannelManager {
 
 				if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 					let um = ChannelManager::gen_um_from_shared_secret(&shared_secret[..]);
-					let mut hmac = Hmac::new(Sha256::new(), &um);
+					let mut hmac = HmacEngine::<Sha256>::new(&um);
 					hmac.input(&err_packet.encode()[32..]);
-					let mut calc_tag = [0u8; 32];
-					hmac.raw_result(&mut calc_tag);
 
-					if crypto::util::fixed_time_eq(&calc_tag, &err_packet.hmac) {
+					if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
 						if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
 							const PERM: u16 = 0x4000;
 							const NODE: u16 = 0x2000;
@@ -3382,13 +3361,13 @@ mod tests {
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 
+	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin_hashes::Hash;
+
 	use hex;
 
 	use secp256k1::{Secp256k1, Message};
 	use secp256k1::key::{PublicKey,SecretKey};
-
-	use crypto::sha2::Sha256;
-	use crypto::digest::Digest;
 
 	use rand::{thread_rng,Rng};
 
@@ -4030,10 +4009,7 @@ mod tests {
 			{
 				let payment_preimage = PaymentPreimage([*$node.network_payment_count.borrow(); 32]);
 				*$node.network_payment_count.borrow_mut() += 1;
-				let mut payment_hash = PaymentHash([0; 32]);
-				let mut sha = Sha256::new();
-				sha.input(&payment_preimage.0[..]);
-				sha.result(&mut payment_hash.0[..]);
+				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
 				(payment_preimage, payment_hash)
 			}
 		}

@@ -12,7 +12,7 @@
 #![cfg_attr(not(feature = "fuzztarget"), deny(missing_docs))]
 
 extern crate bitcoin;
-extern crate crypto;
+extern crate bitcoin_hashes;
 extern crate rand;
 extern crate secp256k1;
 #[cfg(test)] extern crate hex;
