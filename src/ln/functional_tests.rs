@@ -535,6 +535,20 @@ macro_rules! get_payment_preimage_hash {
 	}
 }
 
+macro_rules! expect_pending_htlcs_forwardable {
+	($node: expr) => {{
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		let node_ref: &Node = &$node;
+		node_ref.node.channel_state.lock().unwrap().next_forward = Instant::now();
+		$node.node.process_pending_htlc_forwards();
+	}}
+}
+
 fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
 
@@ -555,15 +569,7 @@ fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], 
 		check_added_monitors!(node, 0);
 		commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 
-		let events_1 = node.node.get_and_clear_pending_events();
-		assert_eq!(events_1.len(), 1);
-		match events_1[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-
-		node.node.channel_state.lock().unwrap().next_forward = Instant::now();
-		node.node.process_pending_htlc_forwards();
+		expect_pending_htlcs_forwardable!(node);
 
 		if idx == expected_route.len() - 1 {
 			let events_2 = node.node.get_and_clear_pending_events();
@@ -1244,14 +1250,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	check_added_monitors!(nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
-	nodes[0].node.channel_state.lock().unwrap().next_forward = Instant::now();
-	nodes[0].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable!(nodes[0]);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -1960,19 +1959,6 @@ fn get_announce_close_broadcast_events(nodes: &Vec<Node>, a: usize, b: usize) {
 		node.router.handle_channel_update(&as_update).unwrap();
 		node.router.handle_channel_update(&bs_update).unwrap();
 	}
-}
-
-macro_rules! expect_pending_htlcs_forwardable {
-	($node: expr) => {{
-		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-		$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
-		$node.node.process_pending_htlc_forwards();
-	}}
 }
 
 fn do_channel_reserve_test(test_recv: bool) {
@@ -3278,15 +3264,7 @@ fn test_force_close_fail_back() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
-	let events_1 = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events_1.len(), 1);
-	match events_1[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
-
-	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
-	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable!(nodes[1]);
 
 	let mut events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
@@ -4063,15 +4041,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
-	let events_4 = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events_4.len(), 1);
-	match events_4[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
-
-	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
-	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable!(nodes[1]);
 
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
@@ -4612,16 +4582,9 @@ fn test_monitor_update_fail_cs() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &final_raa).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
-	let mut events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
-	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
-	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable!(nodes[1]);
 
-	events = nodes[1].node.get_and_clear_pending_events();
+	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentReceived { payment_hash, amt } => {
@@ -4672,15 +4635,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
 	commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false);
 
-	let events_1 = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events_1.len(), 1);
-	match events_1[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
-
-	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
-	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -4850,15 +4805,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		commitment_signed_dance!(nodes[2], nodes[1], send_event_b.commitment_msg, false);
 	}
 
-	let events_5 = nodes[2].node.get_and_clear_pending_events();
-	assert_eq!(events_5.len(), 1);
-	match events_5[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
-
-	nodes[2].node.channel_state.lock().unwrap().next_forward = Instant::now();
-	nodes[2].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable!(nodes[2]);
 
 	let events_6 = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events_6.len(), 1);
@@ -4868,15 +4815,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	};
 
 	if test_ignore_second_cs {
-		let events_7 = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(events_7.len(), 1);
-		match events_7[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-
-		nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
-		nodes[1].node.process_pending_htlc_forwards();
+		expect_pending_htlcs_forwardable!(nodes[1]);
 		check_added_monitors!(nodes[1], 1);
 
 		send_event = SendEvent::from_node(&nodes[1]);
@@ -4885,15 +4824,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
 		commitment_signed_dance!(nodes[0], nodes[1], send_event.commitment_msg, false);
 
-		let events_8 = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events_8.len(), 1);
-		match events_8[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-
-		nodes[0].node.channel_state.lock().unwrap().next_forward = Instant::now();
-		nodes[0].node.process_pending_htlc_forwards();
+		expect_pending_htlcs_forwardable!(nodes[0]);
 
 		let events_9 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_9.len(), 1);
