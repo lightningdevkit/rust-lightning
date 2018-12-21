@@ -1200,7 +1200,9 @@ impl ChannelManager {
 								});
 								match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
 									Err(e) => {
-										if let ChannelError::Ignore(_) = e {} else {
+										if let ChannelError::Ignore(msg) = e {
+											log_trace!(self, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(forward_info.payment_hash.0), msg);
+										} else {
 											panic!("Stated return value requirements in send_htlc() were not met");
 										}
 										let chan_update = self.get_channel_update(forward_chan).unwrap();
@@ -1227,7 +1229,9 @@ impl ChannelManager {
 								log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
 								match forward_chan.get_update_fail_htlc(htlc_id, err_packet) {
 									Err(e) => {
-										if let ChannelError::Ignore(_) = e {} else {
+										if let ChannelError::Ignore(msg) = e {
+											log_trace!(self, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);
+										} else {
 											panic!("Stated return value requirements in get_update_fail_htlc() were not met");
 										}
 										// fail-backs are best-effort, we probably already have one
