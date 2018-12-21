@@ -2956,7 +2956,21 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			}
 		}
 
+		let mut pending_events = Vec::new();
+
 		let forward_htlcs_count: u64 = Readable::read(reader)?;
+		let next_forward = if forward_htlcs_count == 0 {
+			Instant::now()
+		} else {
+			// Wait five seconds to forward things we got off disk to give them a chance to
+			// reconnect to their peers. Probably all the HTLCs have timed out by now, but try
+			// anyway.
+			let now_plus_five = Instant::now() + Duration::from_secs(5);
+			pending_events.push(events::Event::PendingHTLCsForwardable {
+				time_forwardable: now_plus_five,
+			});
+			now_plus_five
+		};
 		let mut forward_htlcs = HashMap::with_capacity(cmp::min(forward_htlcs_count as usize, 128));
 		for _ in 0..forward_htlcs_count {
 			let short_channel_id = Readable::read(reader)?;
@@ -2994,14 +3008,14 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,
 				short_to_id,
-				next_forward: Instant::now(),
+				next_forward,
 				forward_htlcs,
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
 			our_network_key: args.keys_manager.get_node_secret(),
 
-			pending_events: Mutex::new(Vec::new()),
+			pending_events: Mutex::new(pending_events),
 			total_consistency_lock: RwLock::new(()),
 			keys_manager: args.keys_manager,
 			logger: args.logger,
