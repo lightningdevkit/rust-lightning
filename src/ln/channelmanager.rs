@@ -1192,6 +1192,7 @@ impl ChannelManager {
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+								log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(forward_info.payment_hash.0), prev_short_channel_id, short_chan_id);
 								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
 									htlc_id: prev_htlc_id,
@@ -1223,6 +1224,7 @@ impl ChannelManager {
 								}
 							},
 							HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
+								log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
 								match forward_chan.get_update_fail_htlc(htlc_id, err_packet) {
 									Err(e) => {
 										if let ChannelError::Ignore(_) = e {} else {
@@ -1249,7 +1251,7 @@ impl ChannelManager {
 						}
 					}
 
-					if !add_htlc_msgs.is_empty() {
+					if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
 						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
 							Ok(res) => res,
 							Err(e) => {
@@ -1341,6 +1343,10 @@ impl ChannelManager {
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
 	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
+		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
+		//identify whether we sent it or not based on the (I presume) very different runtime
+		//between the branches here. We should make this async and move it into the forward HTLCs
+		//timer handling.
 		match source {
 			HTLCSource::OutboundRoute { ref route, .. } => {
 				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
@@ -1405,36 +1411,25 @@ impl ChannelManager {
 					}
 				};
 
-				let channel_state = channel_state_lock.borrow_parts();
-
-				let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
-					Some(chan_id) => chan_id.clone(),
-					None => return
-				};
-
-				let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-				match chan.get_update_fail_htlc_and_commit(htlc_id, err_packet) {
-					Ok(Some((msg, commitment_msg, chan_monitor))) => {
-						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-							unimplemented!();
-						}
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get_their_node_id(),
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: Vec::new(),
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: vec![msg],
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: None,
-								commitment_signed: commitment_msg,
-							},
-						});
+				let mut forward_event = None;
+				if channel_state_lock.forward_htlcs.is_empty() {
+					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+					channel_state_lock.next_forward = forward_event.unwrap();
+				}
+				match channel_state_lock.forward_htlcs.entry(short_channel_id) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id, err_packet });
 					},
-					Ok(None) => {},
-					Err(_e) => {
-						//TODO: Do something with e?
-						return;
-					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id, err_packet }));
+					}
+				}
+				mem::drop(channel_state_lock);
+				if let Some(time) = forward_event {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::PendingHTLCsForwardable {
+						time_forwardable: time
+					});
 				}
 			},
 		}

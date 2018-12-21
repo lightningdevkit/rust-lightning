@@ -490,16 +490,7 @@ macro_rules! commitment_signed_dance {
 		{
 			let (extra_msg_option, bs_revoke_and_ack) = commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true, true);
 			$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
-			{
-				let mut added_monitors = $node_a.chan_monitor.added_monitors.lock().unwrap();
-				if $fail_backwards {
-					assert_eq!(added_monitors.len(), 2);
-					assert!(added_monitors[0].0 != added_monitors[1].0);
-				} else {
-					assert_eq!(added_monitors.len(), 1);
-				}
-				added_monitors.clear();
-			}
+			check_added_monitors!($node_a, 1);
 			extra_msg_option
 		}
 	};
@@ -512,6 +503,9 @@ macro_rules! commitment_signed_dance {
 		{
 			commitment_signed_dance!($node_a, $node_b, $commitment_signed, $fail_backwards, true);
 			if $fail_backwards {
+				expect_pending_htlcs_forwardable!($node_a);
+				check_added_monitors!($node_a, 1);
+
 				let channel_state = $node_a.node.channel_state.lock().unwrap();
 				assert_eq!(channel_state.pending_msg_events.len(), 1);
 				if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = channel_state.pending_msg_events[0] {
@@ -719,6 +713,7 @@ fn send_payment(origin: &Node, expected_route: &[&Node], recv_value: u64) {
 
 fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: PaymentHash) {
 	assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, 0));
+	expect_pending_htlcs_forwardable!(expected_route.last().unwrap());
 	check_added_monitors!(expected_route.last().unwrap(), 1);
 
 	let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
@@ -727,6 +722,9 @@ fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_l
 			{
 				$node.node.handle_update_fail_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0).unwrap();
 				commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, !$last_node);
+				if skip_last && $last_node {
+					expect_pending_htlcs_forwardable!($node);
+				}
 			}
 		}
 	}
@@ -2826,11 +2824,10 @@ fn test_htlc_on_chain_timeout() {
 	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
 	check_spends!(commitment_tx[0], chan_2.3.clone());
 	nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
-	{
-		let mut added_monitors = nodes[2].chan_monitor.added_monitors.lock().unwrap();
-		assert_eq!(added_monitors.len(), 1);
-		added_monitors.clear();
-	}
+	check_added_monitors!(nodes[2], 0);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	check_added_monitors!(nodes[2], 1);
+
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -2880,14 +2877,20 @@ fn test_htlc_on_chain_timeout() {
 	}
 
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![timeout_tx]}, 1);
+	check_added_monitors!(nodes[1], 0);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	check_added_monitors!(nodes[1], 1);
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match events[1] {
+
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(!update_fail_htlcs.is_empty());
@@ -2943,14 +2946,19 @@ fn test_simple_commitment_revoked_fail_backward() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	check_added_monitors!(nodes[1], 0);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	check_added_monitors!(nodes[1], 1);
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match events[1] {
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed, .. } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert_eq!(update_fail_htlcs.len(), 1);
@@ -3011,6 +3019,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
 	let (_, third_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 
 	assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash, 0));
+	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -3023,6 +3032,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
 	// Drop the last RAA from 3 -> 2
 
 	assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash, 0));
+	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -3039,6 +3049,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
 	check_added_monitors!(nodes[2], 1);
 
 	assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash, 0));
+	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -3069,7 +3080,15 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
 		nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_raa).unwrap();
 		// One monitor for the new revocation preimage, one as we generate a commitment for
 		// nodes[0] to fail first_payment_hash backwards.
-		check_added_monitors!(nodes[1], 2);
+		check_added_monitors!(nodes[1], 1);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		// Deliberately don't process the pending fail-back so they all fail back at once after
+		// block connection just like the !deliver_bs_raa case
 	}
 
 	let mut failed_htlcs = HashSet::new();
@@ -3079,22 +3098,26 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
+	assert_eq!(events.len(), if deliver_bs_raa { 1 } else { 2 });
 	match events[0] {
 		Event::PaymentFailed { ref payment_hash, .. } => {
 			assert_eq!(*payment_hash, fourth_payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
-
 	if !deliver_bs_raa {
-		// If we delivered the RAA already then we already failed first_payment_hash backwards.
-		check_added_monitors!(nodes[1], 1);
+		match events[1] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
 	}
+	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors!(nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 3 } else { 2 });
-	match events[if deliver_bs_raa { 2 } else { 0 }] {
+	match events[if deliver_bs_raa { 1 } else { 0 }] {
 		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
 		_ => panic!("Unexpected event"),
 	}
@@ -3110,80 +3133,50 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool) {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	// Due to the way backwards-failing occurs we do the updates in two steps.
-	let updates = match events[1] {
+	match events[if deliver_bs_raa { 2 } else { 1 }] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed, .. } } => {
 			assert!(update_add_htlcs.is_empty());
-			assert_eq!(update_fail_htlcs.len(), 1);
+			assert_eq!(update_fail_htlcs.len(), 3);
 			assert!(update_fulfill_htlcs.is_empty());
 			assert!(update_fail_malformed_htlcs.is_empty());
 			assert_eq!(nodes[0].node.get_our_node_id(), *node_id);
 
 			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]).unwrap();
-			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed).unwrap();
-			check_added_monitors!(nodes[0], 1);
-			let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-			nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap();
-			check_added_monitors!(nodes[1], 1);
-			let bs_second_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-			nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_signed).unwrap();
-			check_added_monitors!(nodes[1], 1);
-			let bs_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-			nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
-			check_added_monitors!(nodes[0], 1);
+			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[1]).unwrap();
+			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[2]).unwrap();
 
-			if !deliver_bs_raa {
-				// If we delievered B's RAA we got an unknown preimage error, not something
-				// that we should update our routing table for.
-				let events = nodes[0].node.get_and_clear_pending_msg_events();
-				assert_eq!(events.len(), 1);
-				match events[0] {
+			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
+
+			let events = nodes[0].node.get_and_clear_pending_msg_events();
+			// If we delievered B's RAA we got an unknown preimage error, not something
+			// that we should update our routing table for.
+			assert_eq!(events.len(), if deliver_bs_raa { 2 } else { 3 });
+			for event in events {
+				match event {
 					MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
 					_ => panic!("Unexpected event"),
 				}
 			}
 			let events = nodes[0].node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
+			assert_eq!(events.len(), 3);
 			match events[0] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 				},
 				_ => panic!("Unexpected event"),
 			}
-
-			bs_second_update
-		},
-		_ => panic!("Unexpected event"),
-	};
-
-	assert!(updates.update_add_htlcs.is_empty());
-	assert_eq!(updates.update_fail_htlcs.len(), 2);
-	assert!(updates.update_fulfill_htlcs.is_empty());
-	assert!(updates.update_fail_malformed_htlcs.is_empty());
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[1]).unwrap();
-	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
-
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 2);
-	for event in events {
-		match event {
-			MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-			_ => panic!("Unexpected event"),
-		}
-	}
-
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
-	match events[0] {
-		Event::PaymentFailed { ref payment_hash, .. } => {
-			assert!(failed_htlcs.insert(payment_hash.0));
-		},
-		_ => panic!("Unexpected event"),
-	}
-	match events[1] {
-		Event::PaymentFailed { ref payment_hash, .. } => {
-			assert!(failed_htlcs.insert(payment_hash.0));
+			match events[1] {
+				Event::PaymentFailed { ref payment_hash, .. } => {
+					assert!(failed_htlcs.insert(payment_hash.0));
+				},
+				_ => panic!("Unexpected event"),
+			}
+			match events[2] {
+				Event::PaymentFailed { ref payment_hash, .. } => {
+					assert!(failed_htlcs.insert(payment_hash.0));
+				},
+				_ => panic!("Unexpected event"),
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -4611,6 +4604,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
 	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, 0));
+	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -4717,7 +4711,9 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// update_add update.
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
 	nodes[1].node.test_restore_channel_monitor();
-	check_added_monitors!(nodes[1], 2);
+	check_added_monitors!(nodes[1], 1);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
 
 	let mut events_3 = nodes[1].node.get_and_clear_pending_msg_events();
 	if test_ignore_second_cs {
@@ -5740,6 +5736,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	check_spends!(htlc_success_txn[1], commitment_txn[0].clone());
 
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![htlc_timeout_tx] }, 200);
+	expect_pending_htlcs_forwardable!(nodes[1]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
@@ -5978,6 +5975,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 				expect_htlc_forward!(&nodes[2]);
 				expect_event!(&nodes[2], Event::PaymentReceived);
 				callback_node();
+				expect_pending_htlcs_forwardable!(nodes[2]);
 			}
 
 			let update_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -5993,7 +5991,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 
 			// 2 => 1
 			nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &fail_msg).unwrap();
-			commitment_signed_dance!(nodes[1], nodes[2], update_2_1.commitment_signed, true, true);
+			commitment_signed_dance!(nodes[1], nodes[2], update_2_1.commitment_signed, true);
 
 			// backward fail on 1
 			let update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

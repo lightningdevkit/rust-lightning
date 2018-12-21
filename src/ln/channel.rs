@@ -1311,16 +1311,6 @@ impl Channel {
 		}))
 	}
 
-	pub fn get_update_fail_htlc_and_commit(&mut self, htlc_id: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned, ChannelMonitor)>, ChannelError> {
-		match self.get_update_fail_htlc(htlc_id, err_packet)? {
-			Some(update_fail_htlc) => {
-				let (commitment, monitor_update) = self.send_commitment_no_status_check()?;
-				Ok(Some((update_fail_htlc, commitment, monitor_update)))
-			},
-			None => Ok(None)
-		}
-	}
-
 	// Message handlers:
 
 	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig) -> Result<(), ChannelError> {
@@ -3233,6 +3223,12 @@ impl Channel {
 		let mut have_updates = self.pending_update_fee.is_some();
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
+				have_updates = true;
+			}
+			if have_updates { break; }
+		}
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::LocalRemoved(_) = htlc.state {
 				have_updates = true;
 			}
 			if have_updates { break; }
