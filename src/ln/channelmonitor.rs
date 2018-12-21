@@ -1247,6 +1247,42 @@ impl ChannelMonitor {
 
 			log_trace!(self, "Got broadcast of non-revoked remote commitment transaction {}", commitment_txid);
 
+			// TODO: We really should only fail backwards after our revocation claims have been
+			// confirmed, but we also need to do more other tracking of in-flight pre-confirm
+			// on-chain claims, so we can do that at the same time.
+			macro_rules! check_htlc_fails {
+				($txid: expr, $commitment_tx: expr, $id: tt) => {
+					if let Some(&(_, ref latest_outpoints)) = self.remote_claimable_outpoints.get(&$txid) {
+						$id: for &(ref payment_hash, ref source, _) in latest_outpoints.iter() {
+							// Check if the HTLC is present in the commitment transaction that was
+							// broadcast, but not if it was below the dust limit, which we should
+							// fail backwards immediately as there is no way for us to learn the
+							// payment_preimage.
+							// Note that if the dust limit were allowed to change between
+							// commitment transactions we'd want to be check whether *any*
+							// broadcastable commitment transaction has the HTLC in it, but it
+							// cannot currently change after channel initialization, so we don't
+							// need to here.
+							for &(_, ref broadcast_source, ref output_idx) in per_commitment_data.1.iter() {
+								if output_idx.is_some() && source == broadcast_source {
+									continue $id;
+								}
+							}
+							log_trace!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of remote commitment transaction", log_bytes!(payment_hash.0), $commitment_tx);
+							htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
+						}
+					}
+				}
+			}
+			if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
+				if let &Some(ref txid) = current_remote_commitment_txid {
+					check_htlc_fails!(txid, "current", 'current_loop);
+				}
+				if let &Some(ref txid) = prev_remote_commitment_txid {
+					check_htlc_fails!(txid, "previous", 'prev_loop);
+				}
+			}
+
 			if let Some(revocation_points) = self.their_cur_revocation_points {
 				let revocation_point_option =
 					if revocation_points.0 == commitment_number { Some(&revocation_points.1) }
@@ -1407,10 +1443,6 @@ impl ChannelMonitor {
 						output: spend_tx.output[0].clone(),
 					});
 					txn_to_broadcast.push(spend_tx);
-
-					// TODO: We need to fail back HTLCs that were't included in the broadcast
-					// commitment transaction, either because they didn't meet dust or because a
-					// stale (but not yet revoked) commitment transaction was broadcast!
 				}
 			}
 		}

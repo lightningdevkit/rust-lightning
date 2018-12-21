@@ -5697,6 +5697,245 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	check_spends!(spend_txn[1], node_txn[2].clone());
 }
 
+fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, announce_latest: bool) {
+	// Test that we fail backwards the full set of HTLCs we need to when remote broadcasts an
+	// unrevoked commitment transaction.
+	// This includes HTLCs which were below the dust threshold as well as HTLCs which were awaiting
+	// a remote RAA before they could be failed backwards (and combinations thereof).
+	// We also test duplicate-hash HTLCs by adding two nodes on each side of the target nodes which
+	// use the same payment hashes.
+	// Thus, we use a six-node network:
+	//
+	// A \         / E
+	//    - C - D -
+	// B /         \ F
+	// And test where C fails back to A/B when D announces its latest commitment transaction
+	let nodes = create_network(6);
+
+	create_announced_chan_between_nodes(&nodes, 0, 2);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+	let chan = create_announced_chan_between_nodes(&nodes, 2, 3);
+	create_announced_chan_between_nodes(&nodes, 3, 4);
+	create_announced_chan_between_nodes(&nodes, 3, 5);
+
+	// Rebalance and check output sanity...
+	send_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 500000);
+	send_payment(&nodes[1], &[&nodes[2], &nodes[3], &nodes[5]], 500000);
+	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn[0].output.len(), 2);
+
+	let ds_dust_limit = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+	// 0th HTLC:
+	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	// 1st HTLC:
+	let (_, payment_hash_2) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let route = nodes[1].router.get_route(&nodes[5].node.get_our_node_id(), None, &Vec::new(), ds_dust_limit*1000, TEST_FINAL_CLTV).unwrap();
+	// 2nd HTLC:
+	send_along_route_with_hash(&nodes[1], route.clone(), &[&nodes[2], &nodes[3], &nodes[5]], ds_dust_limit*1000, payment_hash_1); // not added < dust limit + HTLC tx fee
+	// 3rd HTLC:
+	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], ds_dust_limit*1000, payment_hash_2); // not added < dust limit + HTLC tx fee
+	// 4th HTLC:
+	let (_, payment_hash_3) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	// 5th HTLC:
+	let (_, payment_hash_4) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	let route = nodes[1].router.get_route(&nodes[5].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	// 6th HTLC:
+	send_along_route_with_hash(&nodes[1], route.clone(), &[&nodes[2], &nodes[3], &nodes[5]], 1000000, payment_hash_3);
+	// 7th HTLC:
+	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], 1000000, payment_hash_4);
+
+	// 8th HTLC:
+	let (_, payment_hash_5) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	// 9th HTLC:
+	let route = nodes[1].router.get_route(&nodes[5].node.get_our_node_id(), None, &Vec::new(), ds_dust_limit*1000, TEST_FINAL_CLTV).unwrap();
+	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], ds_dust_limit*1000, payment_hash_5); // not added < dust limit + HTLC tx fee
+
+	// 10th HTLC:
+	let (_, payment_hash_6) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	// 11th HTLC:
+	let route = nodes[1].router.get_route(&nodes[5].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], 1000000, payment_hash_6);
+
+	// Double-check that six of the new HTLC were added
+	// We now have six HTLCs pending over the dust limit and six HTLCs under the dust limit (ie,
+	// with to_local and to_remote outputs, 8 outputs and 6 HTLCs not included).
+	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.len(), 1);
+	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn[0].output.len(), 8);
+
+	// Now fail back three of the over-dust-limit and three of the under-dust-limit payments in one go.
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_1, ds_dust_limit*1000));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_3, 1000000));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_5, 1000000));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_6, ds_dust_limit*1000));
+	check_added_monitors!(nodes[4], 0);
+	expect_pending_htlcs_forwardable!(nodes[4]);
+	check_added_monitors!(nodes[4], 1);
+
+	let four_removes = get_htlc_update_msgs!(nodes[4], nodes[3].node.get_our_node_id());
+	nodes[3].node.handle_update_fail_htlc(&nodes[4].node.get_our_node_id(), &four_removes.update_fail_htlcs[0]).unwrap();
+	nodes[3].node.handle_update_fail_htlc(&nodes[4].node.get_our_node_id(), &four_removes.update_fail_htlcs[1]).unwrap();
+	nodes[3].node.handle_update_fail_htlc(&nodes[4].node.get_our_node_id(), &four_removes.update_fail_htlcs[2]).unwrap();
+	nodes[3].node.handle_update_fail_htlc(&nodes[4].node.get_our_node_id(), &four_removes.update_fail_htlcs[3]).unwrap();
+	commitment_signed_dance!(nodes[3], nodes[4], four_removes.commitment_signed, false);
+
+	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_2, ds_dust_limit*1000));
+	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_4, 1000000));
+	check_added_monitors!(nodes[5], 0);
+	expect_pending_htlcs_forwardable!(nodes[5]);
+	check_added_monitors!(nodes[5], 1);
+
+	let two_removes = get_htlc_update_msgs!(nodes[5], nodes[3].node.get_our_node_id());
+	nodes[3].node.handle_update_fail_htlc(&nodes[5].node.get_our_node_id(), &two_removes.update_fail_htlcs[0]).unwrap();
+	nodes[3].node.handle_update_fail_htlc(&nodes[5].node.get_our_node_id(), &two_removes.update_fail_htlcs[1]).unwrap();
+	commitment_signed_dance!(nodes[3], nodes[5], two_removes.commitment_signed, false);
+
+	let ds_prev_commitment_tx = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	expect_pending_htlcs_forwardable!(nodes[3]);
+	check_added_monitors!(nodes[3], 1);
+	let six_removes = get_htlc_update_msgs!(nodes[3], nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &six_removes.update_fail_htlcs[0]).unwrap();
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &six_removes.update_fail_htlcs[1]).unwrap();
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &six_removes.update_fail_htlcs[2]).unwrap();
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &six_removes.update_fail_htlcs[3]).unwrap();
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &six_removes.update_fail_htlcs[4]).unwrap();
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &six_removes.update_fail_htlcs[5]).unwrap();
+	if deliver_last_raa {
+		commitment_signed_dance!(nodes[2], nodes[3], six_removes.commitment_signed, false);
+	} else {
+		let _cs_last_raa = commitment_signed_dance!(nodes[2], nodes[3], six_removes.commitment_signed, false, true, false, true);
+	}
+
+	// D's latest commitment transaction now contains 1st + 2nd + 9th HTLCs (implicitly, they're
+	// below the dust limit) and the 5th + 6th + 11th HTLCs. It has failed back the 0th, 3rd, 4th,
+	// 7th, 8th, and 10th, but as we haven't yet delivered the final RAA to C, the fails haven't
+	// propagated back to A/B yet (and D has two unrevoked commitment transactions).
+	//
+	// We now broadcast the latest commitment transaction, which *should* result in failures for
+	// the 0th, 1st, 2nd, 3rd, 4th, 7th, 8th, 9th, and 10th HTLCs, ie all the below-dust HTLCs and
+	// the non-broadcast above-dust HTLCs.
+	//
+	// Alternatively, we may broadcast the previous commitment transaction, which should only
+	// result in failures for the below-dust HTLCs, ie the 0th, 1st, 2nd, 3rd, 9th, and 10th HTLCs.
+	let ds_last_commitment_tx = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	if announce_latest {
+		nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&ds_last_commitment_tx[0]], &[1; 1]);
+	} else {
+		nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&ds_prev_commitment_tx[0]], &[1; 1]);
+	}
+	check_closed_broadcast!(nodes[2]);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	check_added_monitors!(nodes[2], 2);
+
+	let cs_msgs = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(cs_msgs.len(), 2);
+	let mut a_done = false;
+	for msg in cs_msgs {
+		match msg {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				// Both under-dust HTLCs and the one above-dust HTLC that we had already failed
+				// should be failed-backwards here.
+				let target = if *node_id == nodes[0].node.get_our_node_id() {
+					assert_eq!(updates.update_fail_htlcs.len(), if announce_latest { 5 } else { 3 });
+					assert!(!a_done);
+					a_done = true;
+					&nodes[0]
+				} else {
+					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+					assert_eq!(updates.update_fail_htlcs.len(), if announce_latest { 4 } else { 3 });
+					&nodes[1]
+				};
+				target.node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[0]).unwrap();
+				target.node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[1]).unwrap();
+				target.node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[2]).unwrap();
+				if announce_latest {
+					target.node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[3]).unwrap();
+					if *node_id == nodes[0].node.get_our_node_id() {
+						target.node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fail_htlcs[4]).unwrap();
+					}
+				}
+				commitment_signed_dance!(target, nodes[2], updates.commitment_signed, false, true);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	let as_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(as_events.len(), if announce_latest { 5 } else { 3 });
+	let mut as_failds = HashSet::new();
+	for event in as_events.iter() {
+		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, .. } = event {
+			assert!(as_failds.insert(*payment_hash));
+			if *payment_hash != payment_hash_2 {
+				assert_eq!(*rejected_by_dest, deliver_last_raa);
+			} else {
+				assert!(!rejected_by_dest);
+			}
+		} else { panic!("Unexpected event"); }
+	}
+	assert!(as_failds.contains(&payment_hash_1));
+	assert!(as_failds.contains(&payment_hash_2));
+	if announce_latest {
+		assert!(as_failds.contains(&payment_hash_3));
+		assert!(as_failds.contains(&payment_hash_5));
+	}
+	assert!(as_failds.contains(&payment_hash_6));
+
+	let bs_events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(bs_events.len(), if announce_latest { 4 } else { 3 });
+	let mut bs_failds = HashSet::new();
+	for event in bs_events.iter() {
+		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, .. } = event {
+			assert!(bs_failds.insert(*payment_hash));
+			if *payment_hash != payment_hash_1 && *payment_hash != payment_hash_5 {
+				assert_eq!(*rejected_by_dest, deliver_last_raa);
+			} else {
+				assert!(!rejected_by_dest);
+			}
+		} else { panic!("Unexpected event"); }
+	}
+	assert!(bs_failds.contains(&payment_hash_1));
+	assert!(bs_failds.contains(&payment_hash_2));
+	if announce_latest {
+		assert!(bs_failds.contains(&payment_hash_4));
+	}
+	assert!(bs_failds.contains(&payment_hash_5));
+
+	// For each HTLC which was not failed-back by normal process (ie deliver_last_raa), we should
+	// get a PaymentFailureNetworkUpdate. A should have gotten 4 HTLCs which were failed-back due
+	// to unknown-preimage-etc, B should have gotten 2. Thus, in the
+	// announce_latest && deliver_last_raa case, we should have 5-4=1 and 4-2=2
+	// PaymentFailureNetworkUpdates.
+	let as_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(as_msg_events.len(), if deliver_last_raa { 1 } else if !announce_latest { 3 } else { 5 });
+	let bs_msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_msg_events.len(), if deliver_last_raa { 2 } else if !announce_latest { 3 } else { 4 });
+	for event in as_msg_events.iter().chain(bs_msg_events.iter()) {
+		match event {
+			&MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[test]
+fn test_fail_backwards_latest_remote_announce_a() {
+	do_test_fail_backwards_unrevoked_remote_announce(false, true);
+}
+
+#[test]
+fn test_fail_backwards_latest_remote_announce_b() {
+	do_test_fail_backwards_unrevoked_remote_announce(true, true);
+}
+
+#[test]
+fn test_fail_backwards_previous_remote_announce() {
+	do_test_fail_backwards_unrevoked_remote_announce(false, false);
+	// Note that true, true doesn't make sense as it implies we announce a revoked state, which is
+	// tested for in test_commitment_revoked_fail_backward_exhaustive()
+}
+
 #[test]
 fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	let nodes = create_network(2);

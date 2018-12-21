@@ -315,6 +315,9 @@ pub(super) struct Channel {
 	funding_tx_confirmations: u64,
 
 	their_dust_limit_satoshis: u64,
+	#[cfg(test)]
+	pub(super) our_dust_limit_satoshis: u64,
+	#[cfg(not(test))]
 	our_dust_limit_satoshis: u64,
 	their_max_htlc_value_in_flight_msat: u64,
 	//get_our_max_htlc_value_in_flight_msat(): u64,
@@ -346,7 +349,7 @@ pub(super) struct Channel {
 	logger: Arc<Logger>,
 }
 
-const OUR_MAX_HTLCS: u16 = 5; //TODO
+const OUR_MAX_HTLCS: u16 = 50; //TODO
 /// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
 /// really allow for this, so instead we're stuck closing it out at that point.
