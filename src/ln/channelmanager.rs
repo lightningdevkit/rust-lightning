@@ -1189,9 +1189,12 @@ impl ChannelManager {
 
 					let mut add_htlc_msgs = Vec::new();
 					let mut fail_htlc_msgs = Vec::new();
+					//TODO: We should either randomize or sort pending_forwards before processing!
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+								// TODO: Double-check CLTV timeout before we forward as we may have
+								// gone through a serialize-wait-a-day-deserialize operation!
 								log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(forward_info.payment_hash.0), prev_short_channel_id, short_chan_id);
 								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
