@@ -75,9 +75,9 @@ impl Drop for Node {
 	fn drop(&mut self) {
 		if !::std::thread::panicking() {
 			// Check that we processed all pending events
-			assert_eq!(self.node.get_and_clear_pending_msg_events().len(), 0);
-			assert_eq!(self.node.get_and_clear_pending_events().len(), 0);
-			assert_eq!(self.chan_monitor.added_monitors.lock().unwrap().len(), 0);
+			assert!(self.node.get_and_clear_pending_msg_events().is_empty());
+			assert!(self.node.get_and_clear_pending_events().is_empty());
+			assert!(self.chan_monitor.added_monitors.lock().unwrap().is_empty());
 		}
 	}
 }
@@ -333,6 +333,19 @@ macro_rules! get_closing_signed_broadcast {
 	}
 }
 
+macro_rules! check_closed_broadcast {
+	($node: expr) => {{
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				assert_eq!(msg.contents.flags & 2, 2);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}}
+}
+
 fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 	let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 	let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
@@ -543,9 +556,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
-fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
-	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
-
+fn send_along_route_with_hash(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64, our_payment_hash: PaymentHash) {
 	let mut payment_event = {
 		origin_node.node.send_payment(route, our_payment_hash).unwrap();
 		check_added_monitors!(origin_node, 1);
@@ -585,7 +596,11 @@ fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], 
 
 		prev_node = node;
 	}
+}
 
+fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
+	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
+	send_along_route_with_hash(origin_node, route, expected_route, recv_value, our_payment_hash);
 	(our_payment_preimage, our_payment_hash)
 }
 
@@ -1676,14 +1691,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// get_closing_signed_broadcast usually eats the BroadcastChannelUpdate for us and
 		// checks it, but in this case nodes[0] didn't ever get a chance to receive a
 		// closing_signed so we do it ourselves
-		let events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & 2, 2);
-			},
-			_ => panic!("Unexpected event"),
-		}
+		check_closed_broadcast!(nodes[0]);
 	}
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -2124,14 +2132,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 			// If we send a garbage message, the channel should get closed, making the rest of this test case fail.
 			assert_eq!(nodes[1].node.list_channels().len(), 1);
 			assert_eq!(nodes[1].node.list_channels().len(), 1);
-			let channel_close_broadcast = nodes[1].node.get_and_clear_pending_msg_events();
-			assert_eq!(channel_close_broadcast.len(), 1);
-			match channel_close_broadcast[0] {
-				MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-					assert_eq!(msg.contents.flags & 2, 2);
-				},
-				_ => panic!("Unexpected event"),
-			}
+			check_closed_broadcast!(nodes[1]);
 			return;
 		}
 	}
@@ -2684,12 +2685,7 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 
 	nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
-	let events = nodes[2].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[2]);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 1 (commitment tx), ChannelMonitor : 2 (2 * HTLC-Success tx)
 	assert_eq!(node_txn.len(), 3);
 	assert_eq!(node_txn[1], commitment_tx[0]);
@@ -2748,12 +2744,7 @@ fn test_htlc_on_chain_success() {
 	let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
 	check_spends!(commitment_tx[0], chan_1.3.clone());
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 1 (commitment tx), ChannelMonitor : 1 (HTLC-Success) * 2 (block-rescan)
 	assert_eq!(node_txn.len(), 3);
 	assert_eq!(node_txn[0], node_txn[2]);
@@ -2768,12 +2759,7 @@ fn test_htlc_on_chain_success() {
 
 	// Verify that A's ChannelManager is able to extract preimage from preimage tx and generate PaymentSent
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone(), node_txn[0].clone()] }, 1);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -2841,12 +2827,7 @@ fn test_htlc_on_chain_timeout() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
-	let events = nodes[2].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[2]);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 1 (commitment tx)
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan_2.3.clone());
@@ -2878,13 +2859,7 @@ fn test_htlc_on_chain_timeout() {
 
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![timeout_tx]}, 1);
 	check_added_monitors!(nodes[1], 0);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
-		_ => panic!("Unexpected event"),
-	}
-
+	check_closed_broadcast!(nodes[1]);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
@@ -2908,12 +2883,7 @@ fn test_htlc_on_chain_timeout() {
 	check_spends!(commitment_tx[0], chan_1.3.clone());
 
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 2 (commitment tx, HTLC-Timeout tx), ChannelMonitor : 2 (timeout tx) * 2 block-rescan
 	assert_eq!(node_txn.len(), 4);
 	assert_eq!(node_txn[0], node_txn[3]);
@@ -2947,12 +2917,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[1], 0);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
@@ -3201,33 +3166,14 @@ fn test_htlc_ignore_latest_remote_commitment() {
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
 	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
-	{
-		let events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
-				assert_eq!(flags & 0b10, 0b10);
-			},
-			_ => panic!("Unexpected event"),
-		}
-	}
+	check_closed_broadcast!(nodes[0]);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 2);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&node_txn[0], &node_txn[1]], &[1; 2]);
-
-	{
-		let events = nodes[1].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
-				assert_eq!(flags & 0b10, 0b10);
-			},
-			_ => panic!("Unexpected event"),
-		}
-	}
+	check_closed_broadcast!(nodes[1]);
 
 	// Duplicate the block_connected call since this may happen due to other listeners
 	// registering new transactions
@@ -3275,15 +3221,7 @@ fn test_force_close_fail_back() {
 	// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
 
 	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id);
-	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_3.len(), 1);
-	match events_3[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
-			assert_eq!(flags & 0b10, 0b10);
-		},
-		_ => panic!("Unexpected event"),
-	}
-
+	check_closed_broadcast!(nodes[2]);
 	let tx = {
 		let mut node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// Note that we don't bother broadcasting the HTLC-Success transaction here as we don't
@@ -3296,15 +3234,8 @@ fn test_force_close_fail_back() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_checked(&header, 1, &[&tx], &[1]);
 
-	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
 	// Note no UpdateHTLCs event here from nodes[1] to nodes[0]!
-	assert_eq!(events_4.len(), 1);
-	match events_4[0] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
-			assert_eq!(flags & 0b10, 0b10);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 
 	// Now check that if we add the preimage to ChannelMonitor it broadcasts our HTLC-Success..
 	{
@@ -3344,16 +3275,7 @@ fn test_unconf_chan() {
 	while !headers.is_empty() {
 		nodes[0].node.block_disconnected(&headers.pop().unwrap());
 	}
-	{
-		let events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { contents: msgs::UnsignedChannelUpdate { flags, .. }, .. } } => {
-				assert_eq!(flags & 0b10, 0b10);
-			},
-			_ => panic!("Unexpected event"),
-		}
-	}
+	check_closed_broadcast!(nodes[0]);
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 0);
 	assert_eq!(channel_state.short_to_id.len(), 0);
@@ -4150,13 +4072,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
 	nodes[0].node.test_restore_channel_monitor();
 	check_added_monitors!(nodes[0], 1);
-
-	let events_5 = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_5.len(), 1);
-	match events_5[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
 	// PaymentFailed event
@@ -5309,11 +5225,7 @@ fn test_claim_sizeable_push_msat() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
 	nodes[1].node.force_close_channel(&chan.2);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan.3.clone());
@@ -5335,11 +5247,8 @@ fn test_claim_on_remote_sizeable_push_msat() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000);
 	nodes[0].node.force_close_channel(&chan.2);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
+
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan.3.clone());
@@ -5347,11 +5256,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 2);
 	assert_eq!(spend_txn[0], spend_txn[1]);
@@ -5374,11 +5279,8 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 	let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
+
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 4);
@@ -5445,11 +5347,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 
 	let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
+
 	let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 3);
 	assert_eq!(node_txn.pop().unwrap(), node_txn[0]);
@@ -5479,11 +5378,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	// A will generate HTLC-Timeout from revoked commitment tx
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
+
 	let revoked_htlc_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(revoked_htlc_txn.len(), 3);
 	assert_eq!(revoked_htlc_txn[0], revoked_htlc_txn[2]);
@@ -5494,11 +5390,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 	// B will generate justice tx from A's revoked commitment/HTLC tx
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 4);
@@ -5530,11 +5422,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	// B will generate HTLC-Success from revoked commitment tx
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[1]);
 	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 
 	assert_eq!(revoked_htlc_txn.len(), 3);
@@ -5545,11 +5433,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 4);
@@ -5599,12 +5483,7 @@ fn test_onchain_to_onchain_claim() {
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 
 	nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
-	let events = nodes[2].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+	check_closed_broadcast!(nodes[2]);
 
 	let c_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 2 (commitment tx, HTLC-Success tx), ChannelMonitor : 1 (HTLC-Success tx)
 	assert_eq!(c_txn.len(), 3);
@@ -5661,11 +5540,8 @@ fn test_onchain_to_onchain_claim() {
 	assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
 	assert_eq!(b_txn[2].lock_time, 0); // Success tx
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	match msg_events[0] {
-		MessageSendEvent::BroadcastChannelUpdate {  .. } => {},
-		_ => panic!("Unexpected event"),
-	}
+
+	check_closed_broadcast!(nodes[1]);
 }
 
 #[test]
@@ -5687,6 +5563,8 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
+	check_closed_broadcast!(nodes[1]);
+
 	let htlc_timeout_tx;
 	{ // Extract one of the two HTLC-Timeout transaction
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -5702,12 +5580,6 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 		check_spends!(node_txn[3], node_txn[2].clone());
 		check_spends!(node_txn[4], node_txn[2].clone());
 		htlc_timeout_tx = node_txn[1].clone();
-	}
-
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexepected event"),
 	}
 
 	nodes[2].node.claim_funds(our_payment_preimage);
@@ -5840,11 +5712,8 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![local_txn[0].clone()] }, 200);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexepected event"),
-	}
+	check_closed_broadcast!(nodes[0]);
+
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn[0].input.len(), 1);
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
