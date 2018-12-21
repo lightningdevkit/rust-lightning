@@ -1179,11 +1179,34 @@ impl ChannelMonitor {
 				}
 			}
 
-			if !inputs.is_empty() || !txn_to_broadcast.is_empty() { // ie we're confident this is actually ours
+			if !inputs.is_empty() || !txn_to_broadcast.is_empty() || per_commitment_option.is_some() { // ie we're confident this is actually ours
 				// We're definitely a remote commitment transaction!
 				log_trace!(self, "Got broadcast of revoked remote commitment transaction, generating general spend tx with {} inputs and {} other txn to broadcast", inputs.len(), txn_to_broadcast.len());
 				watch_outputs.append(&mut tx.output.clone());
 				self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
+
+				// TODO: We really should only fail backwards after our revocation claims have been
+				// confirmed, but we also need to do more other tracking of in-flight pre-confirm
+				// on-chain claims, so we can do that at the same time.
+				if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
+					if let &Some(ref txid) = current_remote_commitment_txid {
+						if let Some(&(_, ref latest_outpoints)) = self.remote_claimable_outpoints.get(&txid) {
+							for &(ref payment_hash, ref source, _) in latest_outpoints.iter() {
+								log_trace!(self, "Failing HTLC with payment_hash {} from current remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
+								htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
+							}
+						}
+					}
+					if let &Some(ref txid) = prev_remote_commitment_txid {
+						if let Some(&(_, ref prev_outpoint)) = self.remote_claimable_outpoints.get(&txid) {
+							for &(ref payment_hash, ref source, _) in prev_outpoint.iter() {
+								log_trace!(self, "Failing HTLC with payment_hash {} from previous remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
+								htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
+							}
+						}
+					}
+				}
+				// No need to check local commitment txn, symmetric HTLCSource must be present as per-htlc data on remote commitment tx
 			}
 			if inputs.is_empty() { return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); } // Nothing to be done...probably a false positive/local tx
 
@@ -1211,29 +1234,6 @@ impl ChannelMonitor {
 				output: spend_tx.output[0].clone(),
 			});
 			txn_to_broadcast.push(spend_tx);
-
-			// TODO: We really should only fail backwards after our revocation claims have been
-			// confirmed, but we also need to do more other tracking of in-flight pre-confirm
-			// on-chain claims, so we can do that at the same time.
-			if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
-				if let &Some(ref txid) = current_remote_commitment_txid {
-					if let Some(&(_, ref latest_outpoints)) = self.remote_claimable_outpoints.get(&txid) {
-						for &(ref payment_hash, ref source, _) in latest_outpoints.iter() {
-							log_trace!(self, "Failing HTLC with payment_hash {} from current remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
-							htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
-						}
-					}
-				}
-				if let &Some(ref txid) = prev_remote_commitment_txid {
-					if let Some(&(_, ref prev_outpoint)) = self.remote_claimable_outpoints.get(&txid) {
-						for &(ref payment_hash, ref source, _) in prev_outpoint.iter() {
-							log_trace!(self, "Failing HTLC with payment_hash {} from previous remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
-							htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
-						}
-					}
-				}
-			}
-			// No need to check local commitment txn, symmetric HTLCSource must be present as per-htlc data on remote commitment tx
 		} else if let Some(per_commitment_data) = per_commitment_option {
 			// While this isn't useful yet, there is a potential race where if a counterparty
 			// revokes a state at the same time as the commitment transaction for that state is
