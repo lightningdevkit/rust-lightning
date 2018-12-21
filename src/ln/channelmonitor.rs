@@ -989,9 +989,6 @@ impl ChannelMonitor {
 		self.write(writer, false)
 	}
 
-	//TODO: Functions to serialize/deserialize (with different forms depending on which information
-	//we want to leave out (eg funding_txo, etc).
-
 	/// Can only fail if idx is < get_min_seen_secret
 	pub(super) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		for i in 0..self.old_secrets.len() {
