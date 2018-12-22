@@ -39,7 +39,6 @@ use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::chacha20::ChaCha20;
 use util::logger::Logger;
 use util::errors::APIError;
-use util::errors;
 
 use std::{cmp, mem};
 use std::collections::{HashMap, hash_map, HashSet};
@@ -209,13 +208,16 @@ impl MsgHandleErrInternal {
 /// probably increase this significantly.
 const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u32 = 50;
 
-pub(super) struct HTLCForwardInfo {
-	prev_short_channel_id: u64,
-	prev_htlc_id: u64,
-	#[cfg(test)]
-	pub(super) forward_info: PendingForwardHTLCInfo,
-	#[cfg(not(test))]
-	forward_info: PendingForwardHTLCInfo,
+pub(super) enum HTLCForwardInfo {
+	AddHTLC {
+		prev_short_channel_id: u64,
+		prev_htlc_id: u64,
+		forward_info: PendingForwardHTLCInfo,
+	},
+	FailHTLC {
+		htlc_id: u64,
+		err_packet: msgs::OnionErrorPacket,
+	},
 }
 
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
@@ -1162,13 +1164,23 @@ impl ChannelManager {
 						Some(chan_id) => chan_id.clone(),
 						None => {
 							failed_forwards.reserve(pending_forwards.len());
-							for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
-								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-									short_channel_id: prev_short_channel_id,
-									htlc_id: prev_htlc_id,
-									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-								});
-								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
+							for forward_info in pending_forwards.drain(..) {
+								match forward_info {
+									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+											short_channel_id: prev_short_channel_id,
+											htlc_id: prev_htlc_id,
+											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+										});
+										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x4000 | 10, None));
+									},
+									HTLCForwardInfo::FailHTLC { .. } => {
+										// Channel went away before we could fail it. This implies
+										// the channel is now on chain and our counterparty is
+										// trying to broadcast the HTLC-Timeout, but that's their
+										// problem, not ours.
+									}
+								}
 							}
 							continue;
 						}
@@ -1176,36 +1188,70 @@ impl ChannelManager {
 					let forward_chan = &mut channel_state.by_id.get_mut(&forward_chan_id).unwrap();
 
 					let mut add_htlc_msgs = Vec::new();
-					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
-						let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-							short_channel_id: prev_short_channel_id,
-							htlc_id: prev_htlc_id,
-							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-						});
-						match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
-							Err(_e) => {
-								let chan_update = self.get_channel_update(forward_chan).unwrap();
-								failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
-								continue;
-							},
-							Ok(update_add) => {
-								match update_add {
-									Some(msg) => { add_htlc_msgs.push(msg); },
-									None => {
-										// Nothing to do here...we're waiting on a remote
-										// revoke_and_ack before we can add anymore HTLCs. The Channel
-										// will automatically handle building the update_add_htlc and
-										// commitment_signed messages when we can.
-										// TODO: Do some kind of timer to set the channel as !is_live()
-										// as we don't really want others relying on us relaying through
-										// this channel currently :/.
+					let mut fail_htlc_msgs = Vec::new();
+					for forward_info in pending_forwards.drain(..) {
+						match forward_info {
+							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+								log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(forward_info.payment_hash.0), prev_short_channel_id, short_chan_id);
+								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+									short_channel_id: prev_short_channel_id,
+									htlc_id: prev_htlc_id,
+									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+								});
+								match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
+									Err(e) => {
+										if let ChannelError::Ignore(_) = e {} else {
+											panic!("Stated return value requirements in send_htlc() were not met");
+										}
+										let chan_update = self.get_channel_update(forward_chan).unwrap();
+										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
+										continue;
+									},
+									Ok(update_add) => {
+										match update_add {
+											Some(msg) => { add_htlc_msgs.push(msg); },
+											None => {
+												// Nothing to do here...we're waiting on a remote
+												// revoke_and_ack before we can add anymore HTLCs. The Channel
+												// will automatically handle building the update_add_htlc and
+												// commitment_signed messages when we can.
+												// TODO: Do some kind of timer to set the channel as !is_live()
+												// as we don't really want others relying on us relaying through
+												// this channel currently :/.
+											}
+										}
 									}
 								}
-							}
+							},
+							HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
+								log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
+								match forward_chan.get_update_fail_htlc(htlc_id, err_packet) {
+									Err(e) => {
+										if let ChannelError::Ignore(_) = e {} else {
+											panic!("Stated return value requirements in get_update_fail_htlc() were not met");
+										}
+										// fail-backs are best-effort, we probably already have one
+										// pending, and if not that's OK, if not, the channel is on
+										// the chain and sending the HTLC-Timeout is their problem.
+										continue;
+									},
+									Ok(Some(msg)) => { fail_htlc_msgs.push(msg); },
+									Ok(None) => {
+										// Nothing to do here...we're waiting on a remote
+										// revoke_and_ack before we can update the commitment
+										// transaction. The Channel will automatically handle
+										// building the update_fail_htlc and commitment_signed
+										// messages when we can.
+										// We don't need any kind of timer here as they should fail
+										// the channel onto the chain if they can't get our
+										// update_fail_htlc in time, its not our problem.
+									}
+								}
+							},
 						}
 					}
 
-					if !add_htlc_msgs.is_empty() {
+					if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
 						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
 							Ok(res) => res,
 							Err(e) => {
@@ -1224,7 +1270,7 @@ impl ChannelManager {
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: add_htlc_msgs,
 								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: Vec::new(),
+								update_fail_htlcs: fail_htlc_msgs,
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: None,
 								commitment_signed: commitment_msg,
@@ -1232,20 +1278,27 @@ impl ChannelManager {
 						});
 					}
 				} else {
-					for HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info } in pending_forwards.drain(..) {
-						let prev_hop_data = HTLCPreviousHopData {
-							short_channel_id: prev_short_channel_id,
-							htlc_id: prev_htlc_id,
-							incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-						};
-						match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
-							hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
-							hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
-						};
-						new_events.push(events::Event::PaymentReceived {
-							payment_hash: forward_info.payment_hash,
-							amt: forward_info.amt_to_forward,
-						});
+					for forward_info in pending_forwards.drain(..) {
+						match forward_info {
+							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+								let prev_hop_data = HTLCPreviousHopData {
+									short_channel_id: prev_short_channel_id,
+									htlc_id: prev_htlc_id,
+									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+								};
+								match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
+									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
+									hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
+								};
+								new_events.push(events::Event::PaymentReceived {
+									payment_hash: forward_info.payment_hash,
+									amt: forward_info.amt_to_forward,
+								});
+							},
+							HTLCForwardInfo::FailHTLC { .. } => {
+								panic!("Got pending fail of our own HTLC");
+							}
+						}
 					}
 				}
 			}
@@ -1290,6 +1343,10 @@ impl ChannelManager {
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
 	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
+		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
+		//identify whether we sent it or not based on the (I presume) very different runtime
+		//between the branches here. We should make this async and move it into the forward HTLCs
+		//timer handling.
 		match source {
 			HTLCSource::OutboundRoute { ref route, .. } => {
 				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
@@ -1297,9 +1354,9 @@ impl ChannelManager {
 				match &onion_error {
 					&HTLCFailReason::ErrorPacket { ref err } => {
 #[cfg(test)]
-						let (channel_update, payment_retryable, onion_error_code) = self.process_onion_failure(&source, err.data.clone());
+						let (channel_update, payment_retryable, onion_error_code) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
-						let (channel_update, payment_retryable, _) = self.process_onion_failure(&source, err.data.clone());
+						let (channel_update, payment_retryable, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
@@ -1354,36 +1411,25 @@ impl ChannelManager {
 					}
 				};
 
-				let channel_state = channel_state_lock.borrow_parts();
-
-				let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
-					Some(chan_id) => chan_id.clone(),
-					None => return
-				};
-
-				let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-				match chan.get_update_fail_htlc_and_commit(htlc_id, err_packet) {
-					Ok(Some((msg, commitment_msg, chan_monitor))) => {
-						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-							unimplemented!();
-						}
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get_their_node_id(),
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: Vec::new(),
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: vec![msg],
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: None,
-								commitment_signed: commitment_msg,
-							},
-						});
+				let mut forward_event = None;
+				if channel_state_lock.forward_htlcs.is_empty() {
+					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+					channel_state_lock.next_forward = forward_event.unwrap();
+				}
+				match channel_state_lock.forward_htlcs.entry(short_channel_id) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id, err_packet });
 					},
-					Ok(None) => {},
-					Err(_e) => {
-						//TODO: Do something with e?
-						return;
-					},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id, err_packet }));
+					}
+				}
+				mem::drop(channel_state_lock);
+				if let Some(time) = forward_event {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::PendingHTLCsForwardable {
+						time_forwardable: time
+					});
 				}
 			},
 		}
@@ -1865,155 +1911,6 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	// Process failure we got back from upstream on a payment we sent. Returns update and a boolean
-	// indicating that the payment itself failed
-	fn process_onion_failure(&self, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>) {
-		if let &HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
-
-			let mut res = None;
-			let mut htlc_msat = *first_hop_htlc_msat;
-			let mut error_code_ret = None;
-			let mut next_route_hop_ix = 0;
-			let mut is_from_final_node = false;
-
-			// Handle packed channel/node updates for passing back for the route handler
-			onion_utils::construct_onion_keys_callback(&self.secp_ctx, route, session_priv, |shared_secret, _, _, route_hop| {
-				next_route_hop_ix += 1;
-				if res.is_some() { return; }
-
-				let amt_to_forward = htlc_msat - route_hop.fee_msat;
-				htlc_msat = amt_to_forward;
-
-				let ammag = onion_utils::gen_ammag_from_shared_secret(&shared_secret[..]);
-
-				let mut decryption_tmp = Vec::with_capacity(packet_decrypted.len());
-				decryption_tmp.resize(packet_decrypted.len(), 0);
-				let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
-				chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
-				packet_decrypted = decryption_tmp;
-
-				is_from_final_node = route.hops.last().unwrap().pubkey == route_hop.pubkey;
-
-				if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
-					let um = onion_utils::gen_um_from_shared_secret(&shared_secret[..]);
-					let mut hmac = HmacEngine::<Sha256>::new(&um);
-					hmac.input(&err_packet.encode()[32..]);
-
-					if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
-						if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
-							const PERM: u16 = 0x4000;
-							const NODE: u16 = 0x2000;
-							const UPDATE: u16 = 0x1000;
-
-							let error_code = byte_utils::slice_to_be16(&error_code_slice);
-							error_code_ret = Some(error_code);
-
-							let (debug_field, debug_field_size) = errors::get_onion_debug_field(error_code);
-
-							// indicate that payment parameter has failed and no need to
-							// update Route object
-							let payment_failed = (match error_code & 0xff {
-								15|16|17|18|19 => true,
-								_ => false,
-							} && is_from_final_node) // PERM bit observed below even this error is from the intermediate nodes
-							|| error_code == 21; // Special case error 21 as the Route object is bogus, TODO: Maybe fail the node if the CLTV was reasonable?
-
-							let mut fail_channel_update = None;
-
-							if error_code & NODE == NODE {
-								fail_channel_update = Some(msgs::HTLCFailChannelUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent: error_code & PERM == PERM });
-							}
-							else if error_code & PERM == PERM {
-								fail_channel_update = if payment_failed {None} else {Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-									short_channel_id: route.hops[next_route_hop_ix - if next_route_hop_ix == route.hops.len() { 1 } else { 0 }].short_channel_id,
-									is_permanent: true,
-								})};
-							}
-							else if error_code & UPDATE == UPDATE {
-								if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
-									let update_len = byte_utils::slice_to_be16(&update_len_slice) as usize;
-									if let Some(update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
-										if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice)) {
-											// if channel_update should NOT have caused the failure:
-											// MAY treat the channel_update as invalid.
-											let is_chan_update_invalid = match error_code & 0xff {
-												7 => false,
-												11 => amt_to_forward > chan_update.contents.htlc_minimum_msat,
-												12 => {
-													let new_fee = amt_to_forward.checked_mul(chan_update.contents.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan_update.contents.fee_base_msat as u64) });
-													new_fee.is_some() && route_hop.fee_msat >= new_fee.unwrap()
-												}
-												13 => route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta,
-												14 => false, // expiry_too_soon; always valid?
-												20 => chan_update.contents.flags & 2 == 0,
-												_ => false, // unknown error code; take channel_update as valid
-											};
-											fail_channel_update = if is_chan_update_invalid {
-												// This probably indicates the node which forwarded
-												// to the node in question corrupted something.
-												Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-													short_channel_id: route_hop.short_channel_id,
-													is_permanent: true,
-												})
-											} else {
-												Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
-													msg: chan_update,
-												})
-											};
-										}
-									}
-								}
-								if fail_channel_update.is_none() {
-									// They provided an UPDATE which was obviously bogus, not worth
-									// trying to relay through them anymore.
-									fail_channel_update = Some(msgs::HTLCFailChannelUpdate::NodeFailure {
-										node_id: route_hop.pubkey,
-										is_permanent: true,
-									});
-								}
-							} else if !payment_failed {
-								// We can't understand their error messages and they failed to
-								// forward...they probably can't understand our forwards so its
-								// really not worth trying any further.
-								fail_channel_update = Some(msgs::HTLCFailChannelUpdate::NodeFailure {
-									node_id: route_hop.pubkey,
-									is_permanent: true,
-								});
-							}
-
-							// TODO: Here (and a few other places) we assume that BADONION errors
-							// are always "sourced" from the node previous to the one which failed
-							// to decode the onion.
-							res = Some((fail_channel_update, !(error_code & PERM == PERM && is_from_final_node)));
-
-							let (description, title) = errors::get_onion_error_description(error_code);
-							if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
-								log_warn!(self, "Onion Error[{}({:#x}) {}({})] {}", title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
-							}
-							else {
-								log_warn!(self, "Onion Error[{}({:#x})] {}", title, error_code, description);
-							}
-						} else {
-							// Useless packet that we can't use but it passed HMAC, so it
-							// definitely came from the peer in question
-							res = Some((Some(msgs::HTLCFailChannelUpdate::NodeFailure {
-								node_id: route_hop.pubkey,
-								is_permanent: true,
-							}), !is_from_final_node));
-						}
-					}
-				}
-			}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-			if let Some((channel_update, payment_retryable)) = res {
-				(channel_update, payment_retryable, error_code_ret)
-			} else {
-				// only not set either packet unparseable or hmac does not match with any
-				// payment not retryable only when garbage is from the final node
-				(None, !is_from_final_node, None)
-			}
-		} else { unreachable!(); }
-	}
-
 	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_lock.borrow_parts();
@@ -2106,10 +2003,10 @@ impl ChannelManager {
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info });
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo { prev_short_channel_id, prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info }));
 						}
 					}
 				}
@@ -2864,11 +2761,41 @@ impl<R: ::std::io::Read> Readable<R> for HTLCFailReason {
 	}
 }
 
-impl_writeable!(HTLCForwardInfo, 0, {
-	prev_short_channel_id,
-	prev_htlc_id,
-	forward_info
-});
+impl Writeable for HTLCForwardInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&HTLCForwardInfo::AddHTLC { ref prev_short_channel_id, ref prev_htlc_id, ref forward_info } => {
+				0u8.write(writer)?;
+				prev_short_channel_id.write(writer)?;
+				prev_htlc_id.write(writer)?;
+				forward_info.write(writer)?;
+			},
+			&HTLCForwardInfo::FailHTLC { ref htlc_id, ref err_packet } => {
+				1u8.write(writer)?;
+				htlc_id.write(writer)?;
+				err_packet.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
+	fn read(reader: &mut R) -> Result<HTLCForwardInfo, DecodeError> {
+		match <u8 as Readable<R>>::read(reader)? {
+			0 => Ok(HTLCForwardInfo::AddHTLC {
+				prev_short_channel_id: Readable::read(reader)?,
+				prev_htlc_id: Readable::read(reader)?,
+				forward_info: Readable::read(reader)?,
+			}),
+			1 => Ok(HTLCForwardInfo::FailHTLC {
+				htlc_id: Readable::read(reader)?,
+				err_packet: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
 
 impl Writeable for ChannelManager {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
