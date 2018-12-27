@@ -1188,22 +1188,22 @@ impl ChannelMonitor {
 				// TODO: We really should only fail backwards after our revocation claims have been
 				// confirmed, but we also need to do more other tracking of in-flight pre-confirm
 				// on-chain claims, so we can do that at the same time.
-				if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
-					if let &Some(ref txid) = current_remote_commitment_txid {
-						if let Some(&(_, ref latest_outpoints)) = self.remote_claimable_outpoints.get(&txid) {
-							for &(ref payment_hash, ref source, _) in latest_outpoints.iter() {
-								log_trace!(self, "Failing HTLC with payment_hash {} from current remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
+				macro_rules! check_htlc_fails {
+					($txid: expr, $commitment_tx: expr) => {
+						if let Some(&(_, ref outpoints)) = self.remote_claimable_outpoints.get(&$txid) {
+							for &(ref payment_hash, ref source, _) in outpoints.iter() {
+								log_trace!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0), $commitment_tx);
 								htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
 							}
 						}
 					}
+				}
+				if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
+					if let &Some(ref txid) = current_remote_commitment_txid {
+						check_htlc_fails!(txid, "current");
+					}
 					if let &Some(ref txid) = prev_remote_commitment_txid {
-						if let Some(&(_, ref prev_outpoint)) = self.remote_claimable_outpoints.get(&txid) {
-							for &(ref payment_hash, ref source, _) in prev_outpoint.iter() {
-								log_trace!(self, "Failing HTLC with payment_hash {} from previous remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(payment_hash.0));
-								htlc_updated.push(((*source).clone(), None, payment_hash.clone()));
-							}
-						}
+						check_htlc_fails!(txid, "remote");
 					}
 				}
 				// No need to check local commitment txn, symmetric HTLCSource must be present as per-htlc data on remote commitment tx
