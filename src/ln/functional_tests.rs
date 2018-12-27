@@ -2951,7 +2951,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 	}
 }
 
-fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use_dust: bool) {
+fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use_dust: bool, no_to_remote: bool) {
 	// Test that if our counterparty broadcasts a revoked commitment transaction we fail all
 	// pending HTLCs on that channel backwards even if the HTLCs aren't present in our latest
 	// commitment transaction anymore.
@@ -2973,9 +2973,10 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
+	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], if no_to_remote { 10_000 } else { 3_000_000 });
 	// Get the will-be-revoked local txn from nodes[2]
 	let revoked_local_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
+	assert_eq!(revoked_local_txn[0].output.len(), if no_to_remote { 1 } else { 2 });
 	// Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
@@ -3158,11 +3159,19 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 }
 
 #[test]
-fn test_commitment_revoked_fail_backward_exhaustive() {
-	do_test_commitment_revoked_fail_backward_exhaustive(false, true);
-	do_test_commitment_revoked_fail_backward_exhaustive(true, true);
-	do_test_commitment_revoked_fail_backward_exhaustive(false, false);
-	do_test_commitment_revoked_fail_backward_exhaustive(true, false);
+fn test_commitment_revoked_fail_backward_exhaustive_a() {
+	do_test_commitment_revoked_fail_backward_exhaustive(false, true, false);
+	do_test_commitment_revoked_fail_backward_exhaustive(true, true, false);
+	do_test_commitment_revoked_fail_backward_exhaustive(false, false, false);
+	do_test_commitment_revoked_fail_backward_exhaustive(true, false, false);
+}
+
+#[test]
+fn test_commitment_revoked_fail_backward_exhaustive_b() {
+	do_test_commitment_revoked_fail_backward_exhaustive(false, true, true);
+	do_test_commitment_revoked_fail_backward_exhaustive(true, true, true);
+	do_test_commitment_revoked_fail_backward_exhaustive(false, false, true);
+	do_test_commitment_revoked_fail_backward_exhaustive(true, false, true);
 }
 
 #[test]
