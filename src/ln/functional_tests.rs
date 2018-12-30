@@ -5762,6 +5762,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn[0].output.len(), 8);
 
 	// Now fail back three of the over-dust-limit and three of the under-dust-limit payments in one go.
+	// Fail 0th below-dust, 4th above-dust, 8th above-dust, 10th below-dust HTLCs
 	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_1, ds_dust_limit*1000));
 	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_3, 1000000));
 	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_5, 1000000));
@@ -5777,6 +5778,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	nodes[3].node.handle_update_fail_htlc(&nodes[4].node.get_our_node_id(), &four_removes.update_fail_htlcs[3]).unwrap();
 	commitment_signed_dance!(nodes[3], nodes[4], four_removes.commitment_signed, false);
 
+	// Fail 3rd below-dust and 7th above-dust HTLCs
 	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_2, ds_dust_limit*1000));
 	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_4, 1000000));
 	check_added_monitors!(nodes[5], 0);
@@ -5837,11 +5839,19 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 				// Both under-dust HTLCs and the one above-dust HTLC that we had already failed
 				// should be failed-backwards here.
 				let target = if *node_id == nodes[0].node.get_our_node_id() {
+					// If announce_latest, expect 0th, 1st, 4th, 8th, 10th HTLCs, else only 0th, 1st, 10th below-dust HTLCs
+					for htlc in &updates.update_fail_htlcs {
+						assert!(htlc.htlc_id == 1 || htlc.htlc_id == 2 || htlc.htlc_id == 6 || if announce_latest { htlc.htlc_id == 3 || htlc.htlc_id == 5 } else { false });
+					}
 					assert_eq!(updates.update_fail_htlcs.len(), if announce_latest { 5 } else { 3 });
 					assert!(!a_done);
 					a_done = true;
 					&nodes[0]
 				} else {
+					// If announce_latest, expect 2nd, 3rd, 7th, 9th HTLCs, else only 2nd, 3rd, 9th below-dust HTLCs
+					for htlc in &updates.update_fail_htlcs {
+						assert!(htlc.htlc_id == 1 || htlc.htlc_id == 2 || htlc.htlc_id == 5 || if announce_latest { htlc.htlc_id == 4 } else { false });
+					}
 					assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 					assert_eq!(updates.update_fail_htlcs.len(), if announce_latest { 4 } else { 3 });
 					&nodes[1]
