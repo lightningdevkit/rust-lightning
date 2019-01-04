@@ -1568,6 +1568,7 @@ impl ChannelMonitor {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				if let &Some((ref their_sig, ref our_sig)) = sigs {
 					if htlc.offered {
+						log_trace!(self, "Broadcasting HTLC-Timeout transaction against local commitment transactions");
 						let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
 
 						htlc_timeout_tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
@@ -1584,6 +1585,7 @@ impl ChannelMonitor {
 						res.push(htlc_timeout_tx);
 					} else {
 						if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+							log_trace!(self, "Broadcasting HTLC-Success transaction against local commitment transactions");
 							let mut htlc_success_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
 
 							htlc_success_tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
@@ -1618,6 +1620,7 @@ impl ChannelMonitor {
 		// weren't yet included in our commitment transaction(s).
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
+				log_trace!(self, "Got latest local commitment tx broadcast, searching for available HTLCs to claim");
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
 						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
@@ -1632,6 +1635,7 @@ impl ChannelMonitor {
 		}
 		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
+				log_trace!(self, "Got previous local commitment tx broadcast, searching for available HTLCs to claim");
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref prev_latest_per_commitment_point, .. } => {
 						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key));
@@ -1787,44 +1791,66 @@ impl ChannelMonitor {
 	}
 
 	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {
-		// TODO: We need to consider HTLCs which weren't included in latest local commitment
-		// transaction (or in any of the latest two local commitment transactions). This probably
-		// needs to use the same logic as the revoked-tx-announe logic - checking the last two
-		// remote commitment transactions. This probably has implications for what data we need to
-		// store in local commitment transactions.
+		// We need to consider all HTLCs which are:
+		//  * in any unrevoked remote commitment transaction, as they could broadcast said
+		//    transactions and we'd end up in a race, or
+		//  * are in our latest local commitment transaction, as this is the thing we will
+		//    broadcast if we go on-chain.
 		// Note that we consider HTLCs which were below dust threshold here - while they don't
 		// strictly imply that we need to fail the channel, we need to go ahead and fail them back
 		// to the source, and if we don't fail the channel we will have to ensure that the next
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
-		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
-				// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
-				// chain with enough room to claim the HTLC without our counterparty being able to
-				// time out the HTLC first.
-				// For outbound HTLCs which our counterparty hasn't failed/claimed, our primary
-				// concern is being able to claim the corresponding inbound HTLC (on another
-				// channel) before it expires. In fact, we don't even really care if our
-				// counterparty here claims such an outbound HTLC after it expired as long as we
-				// can still claim the corresponding HTLC. Thus, to avoid needlessly hitting the
-				// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
-				// we give ourselves a few blocks of headroom after expiration before going
-				// on-chain for an expired HTLC.
-				// Note that, to avoid a potential attack whereby a node delays claiming an HTLC
-				// from us until we've reached the point where we go on-chain with the
-				// corresponding inbound HTLC, we must ensure that outbound HTLCs go on chain at
-				// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
-				//  aka outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS == height - CLTV_CLAIM_BUFFER
-				//      inbound_cltv == height + CLTV_CLAIM_BUFFER
-				//      outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS + CLTV_CLAIM_BUFER <= inbound_cltv - CLTV_CLAIM_BUFFER
-				//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= inbound_cltv - outbound_cltv
-				//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= CLTV_EXPIRY_DELTA
-				if ( htlc.offered && htlc.cltv_expiry + HTLC_FAIL_TIMEOUT_BLOCKS <= height) ||
-				   (!htlc.offered && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
-					return true;
+		macro_rules! scan_commitment {
+			($htlcs: expr, $local_tx: expr) => {
+				for ref htlc in $htlcs {
+					// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
+					// chain with enough room to claim the HTLC without our counterparty being able to
+					// time out the HTLC first.
+					// For outbound HTLCs which our counterparty hasn't failed/claimed, our primary
+					// concern is being able to claim the corresponding inbound HTLC (on another
+					// channel) before it expires. In fact, we don't even really care if our
+					// counterparty here claims such an outbound HTLC after it expired as long as we
+					// can still claim the corresponding HTLC. Thus, to avoid needlessly hitting the
+					// chain when our counterparty is waiting for expiration to off-chain fail an HTLC
+					// we give ourselves a few blocks of headroom after expiration before going
+					// on-chain for an expired HTLC.
+					// Note that, to avoid a potential attack whereby a node delays claiming an HTLC
+					// from us until we've reached the point where we go on-chain with the
+					// corresponding inbound HTLC, we must ensure that outbound HTLCs go on chain at
+					// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
+					//  aka outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS == height - CLTV_CLAIM_BUFFER
+					//      inbound_cltv == height + CLTV_CLAIM_BUFFER
+					//      outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS + CLTV_CLAIM_BUFER <= inbound_cltv - CLTV_CLAIM_BUFFER
+					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= inbound_cltv - outbound_cltv
+					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= CLTV_EXPIRY_DELTA
+					let htlc_outbound = $local_tx == htlc.offered;
+					if ( htlc_outbound && htlc.cltv_expiry + HTLC_FAIL_TIMEOUT_BLOCKS <= height) ||
+					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
+						log_info!(self, "Force-closing channel due to {} HTLC timeout, HTLC expiry is {}", if htlc_outbound { "outbound" } else { "inbound "}, htlc.cltv_expiry);
+						return true;
+					}
 				}
 			}
 		}
+
+		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
+			scan_commitment!(cur_local_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), true);
+		}
+
+		if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
+			if let &Some(ref txid) = current_remote_commitment_txid {
+				if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
+					scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
+				}
+			}
+			if let &Some(ref txid) = prev_remote_commitment_txid {
+				if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
+					scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
+				}
+			}
+		}
+
 		false
 	}
 
