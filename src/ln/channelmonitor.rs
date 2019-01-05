@@ -1844,8 +1844,11 @@ impl ChannelMonitor {
 					}
 					if payment_data.is_none() {
 						for htlc_output in $htlc_outputs {
-							if input.previous_output.vout == htlc_output.transaction_output_index {
+							if input.previous_output.vout == htlc_output.transaction_output_index && !htlc_output.offered {
 								log_info!(self, "Input spending {}:{} in {} resolves inbound HTLC with timeout from {}", input.previous_output.txid, input.previous_output.vout, tx.txid(), $source);
+								continue 'outer_loop;
+							} else if input.previous_output.vout == htlc_output.transaction_output_index && tx.lock_time > 0 {
+								log_info!(self, "Input spending {}:{} in {} resolves offered HTLC with HTLC-timeout from {}", input.previous_output.txid, input.previous_output.vout, tx.txid(), $source);
 								continue 'outer_loop;
 							}
 						}
