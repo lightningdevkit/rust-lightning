@@ -3050,8 +3050,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	if deliver_bs_raa {
 		nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_raa).unwrap();
-		// One monitor for the new revocation preimage, one as we generate a commitment for
-		// nodes[0] to fail first_payment_hash backwards.
+		// One monitor for the new revocation preimage, no second on as we won't generate a new
+		// commitment transaction for nodes[0] until process_pending_htlc_forwards().
 		check_added_monitors!(nodes[1], 1);
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
