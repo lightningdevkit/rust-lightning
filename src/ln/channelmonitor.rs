@@ -1747,10 +1747,13 @@ impl ChannelMonitor {
 				for tx in txn.iter() {
 					broadcaster.broadcast_transaction(tx);
 				}
-				let mut updated = self.is_resolving_htlc_output(tx);
-				if updated.len() > 0 {
-					htlc_updated.append(&mut updated);
-				}
+			}
+			// While all commitment/HTLC-Success/HTLC-Timeout transactions have one input, HTLCs
+			// can also be resolved in a few other ways which can have more than one output. Thus,
+			// we call is_resolving_htlc_output here outside of the tx.input.len() == 1 check.
+			let mut updated = self.is_resolving_htlc_output(tx);
+			if updated.len() > 0 {
+				htlc_updated.append(&mut updated);
 			}
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
@@ -1882,10 +1885,10 @@ impl ChannelMonitor {
 					|| (input.witness.len() == 3 && input.witness[2].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33) {
 					log_error!(self, "Remote used revocation sig to take a {} HTLC output at index {} from commitment_tx {}", if input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT { "offered" } else { "accepted" }, input.previous_output.vout, input.previous_output.txid);
 				} else if input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
-					payment_preimage.0.copy_from_slice(&tx.input[0].witness[3]);
+					payment_preimage.0.copy_from_slice(&input.witness[3]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else if input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT {
-					payment_preimage.0.copy_from_slice(&tx.input[0].witness[1]);
+					payment_preimage.0.copy_from_slice(&input.witness[1]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else {
 					htlc_updated.push((source, None, payment_hash));
