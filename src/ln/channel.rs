@@ -132,18 +132,6 @@ struct OutboundHTLCOutput {
 	fail_reason: Option<HTLCFailReason>,
 }
 
-macro_rules! get_htlc_in_commitment {
-	($htlc: expr, $offered: expr) => {
-		HTLCOutputInCommitment {
-			offered: $offered,
-			amount_msat: $htlc.amount_msat,
-			cltv_expiry: $htlc.cltv_expiry,
-			payment_hash: $htlc.payment_hash,
-			transaction_output_index: 0
-		}
-	}
-}
-
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum HTLCUpdateAwaitingACK {
 	AddHTLC {
@@ -775,38 +763,46 @@ impl Channel {
 		};
 
 		let mut txouts: Vec<(TxOut, Option<(HTLCOutputInCommitment, Option<&HTLCSource>)>)> = Vec::with_capacity(self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len() + 2);
-		let mut unincluded_htlc_sources: Vec<(PaymentHash, &HTLCSource, Option<u32>)> = Vec::new();
+		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 
 		let dust_limit_satoshis = if local { self.our_dust_limit_satoshis } else { self.their_dust_limit_satoshis };
 		let mut remote_htlc_total_msat = 0;
 		let mut local_htlc_total_msat = 0;
 		let mut value_to_self_msat_offset = 0;
 
+		macro_rules! get_htlc_in_commitment {
+			($htlc: expr, $offered: expr) => {
+				HTLCOutputInCommitment {
+					offered: $offered,
+					amount_msat: $htlc.amount_msat,
+					cltv_expiry: $htlc.cltv_expiry,
+					payment_hash: $htlc.payment_hash,
+					transaction_output_index: None
+				}
+			}
+		}
+
 		macro_rules! add_htlc_output {
 			($htlc: expr, $outbound: expr, $source: expr) => {
 				if $outbound == local { // "offered HTLC output"
+					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
 					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
-						let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
 						txouts.push((TxOut {
 							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
 							value: $htlc.amount_msat / 1000
 						}, Some((htlc_in_tx, $source))));
 					} else {
-						if let Some(source) = $source {
-							unincluded_htlc_sources.push(($htlc.payment_hash, source, None));
-						}
+						included_dust_htlcs.push((htlc_in_tx, $source));
 					}
 				} else {
+					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
 					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
-						let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
 						txouts.push((TxOut { // "received HTLC output"
 							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
 							value: $htlc.amount_msat / 1000
 						}, Some((htlc_in_tx, $source))));
 					} else {
-						if let Some(source) = $source {
-							unincluded_htlc_sources.push(($htlc.payment_hash, source, None));
-						}
+						included_dust_htlcs.push((htlc_in_tx, $source));
 					}
 				}
 			}
@@ -920,18 +916,22 @@ impl Channel {
 
 		let mut outputs: Vec<TxOut> = Vec::with_capacity(txouts.len());
 		let mut htlcs_included: Vec<HTLCOutputInCommitment> = Vec::with_capacity(txouts.len());
-		let mut htlc_sources: Vec<(PaymentHash, &HTLCSource, Option<u32>)> = Vec::with_capacity(txouts.len() + unincluded_htlc_sources.len());
+		let mut htlc_sources: Vec<(PaymentHash, &HTLCSource, Option<u32>)> = Vec::with_capacity(txouts.len() + included_dust_htlcs.len());
 		for (idx, out) in txouts.drain(..).enumerate() {
 			outputs.push(out.0);
 			if let Some((mut htlc, source_option)) = out.1 {
-				htlc.transaction_output_index = idx as u32;
+				htlc.transaction_output_index = Some(idx as u32);
 				if let Some(source) = source_option {
 					htlc_sources.push((htlc.payment_hash, source, Some(idx as u32)));
 				}
 				htlcs_included.push(htlc);
 			}
 		}
-		htlc_sources.append(&mut unincluded_htlc_sources);
+		for (htlc, source_option) in included_dust_htlcs.drain(..) {
+			if let Some(source) = source_option {
+				htlc_sources.push((htlc.payment_hash, source, None));
+			}
+		}
 
 		(Transaction {
 			version: 2,
@@ -1720,18 +1720,20 @@ impl Channel {
 
 		let mut htlcs_and_sigs = Vec::with_capacity(local_commitment_tx.1.len());
 		for (idx, htlc) in local_commitment_tx.1.drain(..).enumerate() {
-			let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
-			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
-			secp_check!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx signature from peer");
-			let htlc_sig = if htlc.offered {
-				let htlc_sig = self.sign_htlc_transaction(&mut htlc_tx, &msg.htlc_signatures[idx], &None, &htlc, &local_keys)?;
-				new_local_commitment_txn.push(htlc_tx);
-				htlc_sig
-			} else {
-				self.create_htlc_tx_signature(&htlc_tx, &htlc, &local_keys)?.1
-			};
-			htlcs_and_sigs.push((htlc, msg.htlc_signatures[idx], htlc_sig));
+			if let Some(_) = htlc.transaction_output_index {
+				let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
+				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+				secp_check!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx signature from peer");
+				let htlc_sig = if htlc.offered {
+					let htlc_sig = self.sign_htlc_transaction(&mut htlc_tx, &msg.htlc_signatures[idx], &None, &htlc, &local_keys)?;
+					new_local_commitment_txn.push(htlc_tx);
+					htlc_sig
+				} else {
+					self.create_htlc_tx_signature(&htlc_tx, &htlc, &local_keys)?.1
+				};
+				htlcs_and_sigs.push((htlc, msg.htlc_signatures[idx], htlc_sig));
+			}
 		}
 
 		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1));
@@ -3295,11 +3297,13 @@ impl Channel {
 		let mut htlc_sigs = Vec::new();
 
 		for ref htlc in remote_commitment_tx.1.iter() {
-			let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys, feerate_per_kw);
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys);
-			let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
-			let our_htlc_key = secp_check!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key), "Derived invalid key, peer is maliciously selecting parameters");
-			htlc_sigs.push(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key));
+			if let Some(_) = htlc.transaction_output_index {
+				let htlc_tx = self.build_htlc_transaction(&remote_commitment_txid, htlc, false, &remote_keys, feerate_per_kw);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &remote_keys);
+				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+				let our_htlc_key = secp_check!(chan_utils::derive_private_key(&self.secp_ctx, &remote_keys.per_commitment_point, &self.local_keys.htlc_base_key), "Derived invalid key, peer is maliciously selecting parameters");
+				htlc_sigs.push(self.secp_ctx.sign(&htlc_sighash, &our_htlc_key));
+			}
 		}
 
 		Ok((msgs::CommitmentSigned {

@@ -147,7 +147,7 @@ pub struct HTLCOutputInCommitment {
 	pub amount_msat: u64,
 	pub cltv_expiry: u32,
 	pub payment_hash: PaymentHash,
-	pub transaction_output_index: u32,
+	pub transaction_output_index: Option<u32>,
 }
 
 #[inline]
@@ -222,12 +222,13 @@ pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKey
 	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key)
 }
 
+/// panics if htlc.transaction_output_index.is_none()!
 pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
 			txid: prev_hash.clone(),
-			vout: htlc.transaction_output_index,
+			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
 		},
 		script_sig: Script::new(),
 		sequence: 0,
