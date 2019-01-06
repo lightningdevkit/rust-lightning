@@ -1836,22 +1836,48 @@ impl ChannelMonitor {
 
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
+			let revocation_sig_claim = (input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33)
+				|| (input.witness.len() == 3 && input.witness[2].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33);
+			let accepted_preimage_claim = input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT;
+			let offered_preimage_claim = input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT;
+
+			macro_rules! log_claim {
+				($source: expr, $local_tx: expr, $outbound_htlc: expr, $payment_hash: expr, $source_avail: expr) => {
+					// We found the output in question, but aren't failing it backwards
+					// as we have no corresponding source. This implies either it is an
+					// inbound HTLC or an outbound HTLC on a revoked transaction.
+					if ($local_tx && revocation_sig_claim) ||
+							($outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
+						log_error!(self, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
+							$source, input.previous_output.txid, input.previous_output.vout, tx.txid(),
+							if $outbound_htlc { "outbound" } else { "inbound" }, log_bytes!($payment_hash.0),
+							if revocation_sig_claim { "revocation sig" } else { "preimage claim after we'd passed the HTLC resolution back" });
+					} else {
+						log_info!(self, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}",
+							$source, input.previous_output.txid, input.previous_output.vout, tx.txid(),
+							if $outbound_htlc { "outbound" } else { "inbound" }, log_bytes!($payment_hash.0),
+							if revocation_sig_claim { "revocation sig" } else if accepted_preimage_claim || offered_preimage_claim { "preimage" } else { "timeout" });
+					}
+				}
+			}
 
 			macro_rules! scan_commitment {
-				($htlc_outputs: expr, $htlc_sources: expr, $source: expr) => {
+				($htlc_outputs: expr, $htlc_sources: expr, $source: expr, $local_tx: expr) => {
 					for &(ref payment_hash, ref source, ref vout) in $htlc_sources.iter() {
 						if &Some(input.previous_output.vout) == vout {
-							log_trace!(self, "Input spending {}:{} resolves HTLC with payment hash {} from {}", input.previous_output.txid, input.previous_output.vout, log_bytes!(payment_hash.0), $source);
+							log_claim!($source, $local_tx, true, payment_hash, true);
+							// We have a resolution of an HTLC either from one of our latest
+							// local commitment transactions or an unrevoked remote commitment
+							// transaction. This implies we either learned a preimage, the HTLC
+							// has timed out, or we screwed up. In any case, we should now
+							// resolve the source HTLC with the original sender.
 							payment_data = Some((source.clone(), *payment_hash));
 						}
 					}
 					if payment_data.is_none() {
 						for htlc_output in $htlc_outputs {
-							if input.previous_output.vout == htlc_output.transaction_output_index && !htlc_output.offered {
-								log_info!(self, "Input spending {}:{} in {} resolves inbound HTLC with timeout from {}", input.previous_output.txid, input.previous_output.vout, tx.txid(), $source);
-								continue 'outer_loop;
-							} else if input.previous_output.vout == htlc_output.transaction_output_index && tx.lock_time > 0 {
-								log_info!(self, "Input spending {}:{} in {} resolves offered HTLC with HTLC-timeout from {}", input.previous_output.txid, input.previous_output.vout, tx.txid(), $source);
+							if input.previous_output.vout == htlc_output.transaction_output_index {
+								log_claim!($source, $local_tx, $local_tx == htlc_output.offered, htlc_output.payment_hash, false);
 								continue 'outer_loop;
 							}
 						}
@@ -1863,31 +1889,28 @@ impl ChannelMonitor {
 				if input.previous_output.txid == current_local_signed_commitment_tx.txid {
 					scan_commitment!(current_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a),
 						current_local_signed_commitment_tx.htlc_sources,
-						"our latest local commitment tx");
+						"our latest local commitment tx", true);
 				}
 			}
 			if let Some(ref prev_local_signed_commitment_tx) = self.prev_local_signed_commitment_tx {
 				if input.previous_output.txid == prev_local_signed_commitment_tx.txid {
 					scan_commitment!(prev_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a),
 						prev_local_signed_commitment_tx.htlc_sources,
-						"our previous local commitment tx");
+						"our previous local commitment tx", true);
 				}
 			}
 			if let Some(&(ref htlc_outputs, ref htlc_sources)) = self.remote_claimable_outpoints.get(&input.previous_output.txid) {
-				scan_commitment!(htlc_outputs, htlc_sources, "remote commitment tx");
+				scan_commitment!(htlc_outputs, htlc_sources, "remote commitment tx", false);
 			}
 
-			// If tx isn't solving htlc output from local/remote commitment tx and htlc isn't outbound we don't need
-			// to broadcast solving backward
+			// Check that scan_commitment, above, decided there is some source worth relaying an
+			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
 			if let Some((source, payment_hash)) = payment_data {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
-				if (input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33)
-					|| (input.witness.len() == 3 && input.witness[2].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33) {
-					log_error!(self, "Remote used revocation sig to take a {} HTLC output at index {} from commitment_tx {}", if input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT { "offered" } else { "accepted" }, input.previous_output.vout, input.previous_output.txid);
-				} else if input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
+				if accepted_preimage_claim {
 					payment_preimage.0.copy_from_slice(&input.witness[3]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
-				} else if input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT {
+				} else if offered_preimage_claim {
 					payment_preimage.0.copy_from_slice(&input.witness[1]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else {
