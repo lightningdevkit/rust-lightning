@@ -50,11 +50,12 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use std::mem;
 
+const CHAN_CONFIRM_DEPTH: u32 = 100;
 fn confirm_transaction(chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
 	assert!(chain.does_match_tx(tx));
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	chain.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
-	for i in 2..100 {
+	for i in 2..CHAN_CONFIRM_DEPTH {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		chain.block_connected_checked(&header, i, &[tx; 0], &[0; 0]);
 	}
@@ -6044,6 +6045,49 @@ fn test_static_output_closing_tx() {
 	let spend_txn = check_spendable_outputs!(nodes[1], 2);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
+}
+
+fn do_htlc_claim_local_commitment_only(use_dust: bool) {
+	let nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3000000 });
+
+	// Claim the payment, but don't deliver A's commitment_signed, resulting in the HTLC only being
+	// present in B's local commitment transaction, but none of A's commitment transactions.
+	assert!(nodes[1].node.claim_funds(our_payment_preimage));
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentSent { payment_preimage } => {
+			assert_eq!(payment_preimage, our_payment_preimage);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_updates = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_updates.0).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 1 {
+		nodes[1].chain_monitor.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
+		header.prev_blockhash = header.bitcoin_hash();
+	}
+	test_txn_broadcast(&nodes[1], &chan, None, if use_dust { HTLCType::NONE } else { HTLCType::SUCCESS });
+	check_closed_broadcast!(nodes[1]);
+}
+
+#[test]
+fn htlc_claim_local_commitment_only() {
+	do_htlc_claim_local_commitment_only(true);
+	do_htlc_claim_local_commitment_only(false);
 }
 
 fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, callback_msg: F1, callback_node: F2, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<HTLCFailChannelUpdate>)

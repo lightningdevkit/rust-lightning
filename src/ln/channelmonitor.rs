@@ -1797,7 +1797,6 @@ impl ChannelMonitor {
 		// to the source, and if we don't fail the channel we will have to ensure that the next
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
-		// TODO: Test below dust HTLC channel failing
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			for &(ref htlc, _, _) in cur_local_tx.htlc_outputs.iter() {
 				// For inbound HTLCs which we know the preimage for, we have to ensure we hit the
