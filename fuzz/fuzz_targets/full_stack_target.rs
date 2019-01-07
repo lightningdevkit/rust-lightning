@@ -18,11 +18,12 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::{BitcoinHash, Sha256dHash, Hash160};
+use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
 
 use bitcoin_hashes::Hash as TraitImport;
 use bitcoin_hashes::HashEngine as TraitImportEngine;
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::hash160::Hash as Hash160;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
@@ -244,7 +245,7 @@ impl KeysInterface for KeyProvider {
 	fn get_destination_script(&self) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&secp_ctx, &hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-		let our_channel_monitor_claim_key_hash = Hash160::from_data(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		let our_channel_monitor_claim_key_hash = Hash160::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 		Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 
