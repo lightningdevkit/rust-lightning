@@ -1870,7 +1870,7 @@ impl ChannelMonitor {
 				if input.previous_output.txid == prev_local_signed_commitment_tx.txid {
 					scan_commitment!(prev_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a),
 						prev_local_signed_commitment_tx.htlc_sources,
-						"our latest local commitment tx");
+						"our previous local commitment tx");
 				}
 			}
 			if let Some(&(ref htlc_outputs, ref htlc_sources)) = self.remote_claimable_outpoints.get(&input.previous_output.txid) {
