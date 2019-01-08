@@ -2616,6 +2616,25 @@ impl ChannelMessageHandler for ChannelManager {
 					true
 				})
 			}
+			pending_msg_events.retain(|msg| {
+				match msg {
+					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendFundingLocked { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
+					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
+				}
+			});
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
