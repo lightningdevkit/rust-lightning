@@ -439,17 +439,10 @@ macro_rules! try_chan_entry {
 }
 
 macro_rules! return_monitor_err {
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, Vec::new(), Vec::new())
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
+		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new())
 	};
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $raa_first_dropped_cs: expr) => {
-		if $action_type != RAACommitmentOrder::RevokeAndACKFirst { panic!("Bad return_monitor_err call!"); }
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, Vec::new(), Vec::new(), $raa_first_dropped_cs)
-	};
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $failed_forwards: expr, $failed_fails: expr) => {
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, $failed_forwards, $failed_fails, false)
-	};
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $failed_forwards: expr, $failed_fails: expr, $raa_first_dropped_cs: expr) => {
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				let (channel_id, mut chan) = $entry.remove_entry();
@@ -468,7 +461,7 @@ macro_rules! return_monitor_err {
 				return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
-				$entry.get_mut().monitor_update_failed($action_type, $failed_forwards, $failed_fails, $raa_first_dropped_cs);
+				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
 				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()));
 			},
 		}
@@ -477,7 +470,7 @@ macro_rules! return_monitor_err {
 
 // Does not break in case of TemporaryFailure!
 macro_rules! maybe_break_monitor_err {
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				let (channel_id, mut chan) = $entry.remove_entry();
@@ -487,7 +480,7 @@ macro_rules! maybe_break_monitor_err {
 				break Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
-				$entry.get_mut().monitor_update_failed($action_type, Vec::new(), Vec::new(), false);
+				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new());
 			},
 		}
 	}
@@ -1018,7 +1011,7 @@ impl ChannelManager {
 				} {
 					Some((update_add, commitment_signed, chan_monitor)) => {
 						if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst);
+							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
 							// Note that MonitorUpdateFailed here indicates (per function docs)
 							// that we will resent the commitment update once we unfree monitor
 							// updating, so we have to take special care that we don't return
@@ -1962,7 +1955,7 @@ impl ChannelManager {
 				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) =
 					try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &*self.fee_estimator), channel_state, chan);
 				if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, commitment_signed.is_some());
+					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
@@ -2040,7 +2033,7 @@ impl ChannelManager {
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) =
 						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
 					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, pending_forwards, pending_failures);
+						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
 					}
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -2147,7 +2140,7 @@ impl ChannelManager {
 						if commitment_update.is_none() {
 							order = RAACommitmentOrder::RevokeAndACKFirst;
 						}
-						return_monitor_err!(self, e, channel_state, chan, order);
+						return_monitor_err!(self, e, channel_state, chan, order, revoke_and_ack.is_some(), commitment_update.is_some());
 						//TODO: Resend the funding_locked if needed once we get the monitor running again
 					}
 				}

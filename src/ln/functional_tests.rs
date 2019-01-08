@@ -4552,6 +4552,49 @@ fn test_monitor_update_fail_cs() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 }
 
+#[test]
+fn test_monitor_update_fail_no_rebroadcast() {
+	// Tests handling of a monitor update failure when no message rebroadcasting on
+	// test_restore_channel_monitor() is required. Backported from
+	// chanmon_fail_consistency fuzz tests.
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_1, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
+	let bs_raa = commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false, true, false, true);
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_raa).unwrap_err() {
+		assert_eq!(err, "Failed to update ChannelMonitor");
+	} else { panic!(); }
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	check_added_monitors!(nodes[1], 1);
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[1].node.test_restore_channel_monitor();
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(nodes[1], 1);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentReceived { payment_hash, .. } => {
+			assert_eq!(payment_hash, our_payment_hash);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+}
+
 fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Tests handling of a monitor update failure when processing an incoming RAA
 	let mut nodes = create_network(3);
