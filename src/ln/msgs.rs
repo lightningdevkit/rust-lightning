@@ -555,12 +555,18 @@ pub struct HandleError { //TODO: rename me
 /// transaction updates if they were pending.
 #[derive(PartialEq, Clone)]
 pub struct CommitmentUpdate {
-	pub(crate) update_add_htlcs: Vec<UpdateAddHTLC>,
-	pub(crate) update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
-	pub(crate) update_fail_htlcs: Vec<UpdateFailHTLC>,
-	pub(crate) update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
-	pub(crate) update_fee: Option<UpdateFee>,
-	pub(crate) commitment_signed: CommitmentSigned,
+	/// update_add_htlc messages which should be sent
+	pub update_add_htlcs: Vec<UpdateAddHTLC>,
+	/// update_fulfill_htlc messages which should be sent
+	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
+	/// update_fail_htlc messages which should be sent
+	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
+	/// update_fail_malformed_htlc messages which should be sent
+	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
+	/// An update_fee message which should be sent
+	pub update_fee: Option<UpdateFee>,
+	/// Finally, the commitment_signed message which should be sent
+	pub commitment_signed: CommitmentSigned,
 }
 
 /// The information we received from a peer along the route of a payment we originated. This is
