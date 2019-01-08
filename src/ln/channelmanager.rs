@@ -381,7 +381,7 @@ pub struct ChannelDetails {
 }
 
 macro_rules! handle_error {
-	($self: ident, $internal: expr, $their_node_id: expr) => {
+	($self: ident, $internal: expr) => {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, shutdown_finish }) => {
@@ -1044,7 +1044,7 @@ impl ChannelManager {
 			return Ok(());
 		};
 
-		match handle_error!(self, err, route.hops.first().unwrap().pubkey) {
+		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
 				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
@@ -1087,7 +1087,7 @@ impl ChannelManager {
 					None => return
 				}
 			};
-			match handle_error!(self, res, chan.get_their_node_id()) {
+			match handle_error!(self, res) {
 				Ok(funding_msg) => {
 					(chan, funding_msg.0, funding_msg.1)
 				},
@@ -2243,7 +2243,7 @@ impl ChannelManager {
 			return Ok(())
 		};
 
-		match handle_error!(self, err, their_node_id) {
+		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
 				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
@@ -2429,82 +2429,82 @@ impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_open_channel(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_open_channel(their_node_id, msg))
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_accept_channel(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_accept_channel(their_node_id, msg))
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_created(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_funding_created(their_node_id, msg))
 	}
 
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_signed(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_funding_signed(their_node_id, msg))
 	}
 
 	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_locked(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_funding_locked(their_node_id, msg))
 	}
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_shutdown(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_shutdown(their_node_id, msg))
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_closing_signed(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_closing_signed(their_node_id, msg))
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg))
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg))
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg))
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg))
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_commitment_signed(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_commitment_signed(their_node_id, msg))
 	}
 
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg))
 	}
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fee(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fee(their_node_id, msg))
 	}
 
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg))
 	}
 
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg))
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
