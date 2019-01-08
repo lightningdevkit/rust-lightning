@@ -10,6 +10,7 @@ pub fn slice_to_be32(v: &[u8]) -> u32 {
 	((v[2] as u32) << 8*1) |
 	((v[3] as u32) << 8*0)
 }
+#[cfg(not(feature = "fuzztarget"))] // Used only by poly1305
 #[inline]
 pub fn slice_to_le32(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*0) |
@@ -54,6 +55,7 @@ pub fn be32_to_array(u: u32) -> [u8; 4] {
 	v[3] = ((u >> 8*0) & 0xff) as u8;
 	v
 }
+#[cfg(not(feature = "fuzztarget"))] // Used only by poly1305
 #[inline]
 pub fn le32_to_array(u: u32) -> [u8; 4] {
 	let mut v = [0; 4];
