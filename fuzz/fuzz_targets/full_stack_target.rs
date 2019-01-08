@@ -1,3 +1,9 @@
+//! Test that no series of bytes received over the wire/connections created/payments sent can
+//! result in a crash. We do this by standing up a node and then reading bytes from input to denote
+//! actions such as creating new inbound/outbound connections, bytes to be read from a connection,
+//! or payments to send/ways to handle events generated.
+//! This test has been very useful, though due to its complexity good starting inputs are critical.
+
 //Uncomment this for libfuzzer builds:
 //#![no_main]
 
