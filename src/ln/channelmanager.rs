@@ -161,6 +161,16 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
+	fn ignore_no_close(err: &'static str) -> Self {
+		Self {
+			err: HandleError {
+				err,
+				action: Some(msgs::ErrorAction::IgnoreError),
+			},
+			shutdown_finish: None,
+		}
+	}
+	#[inline]
 	fn from_no_close(err: msgs::HandleError) -> Self {
 		Self { err, shutdown_finish: None }
 	}
@@ -2030,10 +2040,16 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
+					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) =
 						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
 					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
+						if was_frozen_for_monitor {
+							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
+							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA"));
+						} else {
+							return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
+						}
 					}
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
