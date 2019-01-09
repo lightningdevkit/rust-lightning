@@ -4595,6 +4595,75 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 }
 
+#[test]
+fn test_monitor_update_raa_while_paused() {
+	// Tests handling of an RAA while monitor updating has already been marked failed.
+	// Backported from chanmon_fail_consistency fuzz tests as this used to be broken.
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	send_payment(&nodes[0], &[&nodes[1]], 5000000);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_1, our_payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, our_payment_hash_1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let send_event_1 = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+
+	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_2, our_payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[1].node.send_payment(route, our_payment_hash_2).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let send_event_2 = SendEvent::from_event(nodes[1].node.get_and_clear_pending_msg_events().remove(0));
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event_1.msgs[0]).unwrap();
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_event_1.commitment_msg).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event_2.msgs[0]).unwrap();
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg).unwrap_err() {
+		assert_eq!(err, "Failed to update ChannelMonitor");
+	} else { panic!(); }
+	check_added_monitors!(nodes[0], 1);
+
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap_err() {
+		assert_eq!(err, "Previous monitor update failure prevented responses to RAA");
+	} else { panic!(); }
+	check_added_monitors!(nodes[0], 1);
+
+	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[0].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[0], 1);
+
+	let as_update_raa = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_update_raa.0).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_cs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_update_raa.1).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	expect_pending_htlcs_forwardable!(nodes[0]);
+	expect_payment_received!(nodes[0], our_payment_hash_2, 1000000);
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], our_payment_hash_1, 1000000);
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_2);
+}
+
 fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Tests handling of a monitor update failure when processing an incoming RAA
 	let mut nodes = create_network(3);
