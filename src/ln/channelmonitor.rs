@@ -1821,9 +1821,12 @@ impl ChannelMonitor {
 					// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
 					//  aka outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS == height - CLTV_CLAIM_BUFFER
 					//      inbound_cltv == height + CLTV_CLAIM_BUFFER
-					//      outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS + CLTV_CLAIM_BUFER <= inbound_cltv - CLTV_CLAIM_BUFFER
-					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= inbound_cltv - outbound_cltv
-					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFER <= CLTV_EXPIRY_DELTA
+					//      outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS + CLTV_CLAIM_BUFFER <= inbound_cltv - CLTV_CLAIM_BUFFER
+					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFFER <= inbound_cltv - outbound_cltv
+					//      CLTV_EXPIRY_DELTA <= inbound_cltv - outbound_cltv (by check in ChannelManager::decode_update_add_htlc_onion)
+					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFFER <= CLTV_EXPIRY_DELTA
+					//  The final, above, condition is checked for statically in channelmanager
+					//  with CHECK_CLTV_EXPIRY_SANITY_2.
 					let htlc_outbound = $local_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + HTLC_FAIL_TIMEOUT_BLOCKS <= height) ||
 					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
