@@ -2039,6 +2039,10 @@ impl Channel {
 			// cells) while we can't update the monitor, so we just return what we have.
 			if require_commitment {
 				self.monitor_pending_commitment_signed = true;
+				// When the monitor updating is restored we'll call get_last_commitment_update(),
+				// which does not update state, but we're definitely now awaiting a remote revoke
+				// before we can step forward any more, so set it here.
+				self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
