@@ -149,11 +149,7 @@ impl<R: ::std::io::Read> Readable<R> for ChannelInfo {
 		let features = Readable::read(reader)?;
 		let one_to_two = Readable::read(reader)?;
 		let two_to_one = Readable::read(reader)?;
-		let announcement_message = match <u8 as Readable<R>>::read(reader)? {
-			0 => None,
-			1 => Some(msgs::ChannelAnnouncement::read(reader)?),
-			_ => return Err(DecodeError::InvalidValue),
-		};
+		let announcement_message = Readable::read(reader)?;
 		Ok(ChannelInfo {
 			features,
 			one_to_two,
@@ -240,13 +236,7 @@ impl<R: ::std::io::Read> Readable<R> for NodeInfo {
 				_ => unreachable!(),
 			}
 		}
-		let announcement_message = match <u8 as Readable<R>>::read(reader)? {
-			0 => None,
-			1 => Some(msgs::NodeAnnouncement::read(reader)?),
-			_ => return Err(DecodeError::InvalidValue),
-
-
-		};
+		let announcement_message = Readable::read(reader)?;
 		Ok(NodeInfo {
 			channels,
 			lowest_inbound_channel_fee_base_msat,
