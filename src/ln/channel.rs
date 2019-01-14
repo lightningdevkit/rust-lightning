@@ -25,7 +25,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::transaction_utils;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, WriterWriteAdaptor};
-use util::logger::Logger;
+use util::logger::{Logger, LogHolder};
 use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
 
@@ -1992,74 +1992,89 @@ impl Channel {
 			self.monitor_pending_order = None;
 		}
 
+		log_trace!(self, "Updating HTLCs on receipt of RAA...");
 		let mut to_forward_infos = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
 		let mut update_fail_malformed_htlcs = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
-		// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
-		self.pending_inbound_htlcs.retain(|htlc| {
-			if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
-				if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
-					value_to_self_msat_diff += htlc.amount_msat as i64;
-				}
-				false
-			} else { true }
-		});
-		self.pending_outbound_htlcs.retain(|htlc| {
-			if let OutboundHTLCState::AwaitingRemovedRemoteRevoke = htlc.state {
-				if let Some(reason) = htlc.fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
-					revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
-				} else {
-					// They fulfilled, so we sent them money
-					value_to_self_msat_diff -= htlc.amount_msat as i64;
-				}
-				false
-			} else { true }
-		});
-		for htlc in self.pending_inbound_htlcs.iter_mut() {
-			let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
-				true
-			} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = &htlc.state {
-				true
-			} else { false };
-			if swap {
-				let mut state = InboundHTLCState::Committed;
-				mem::swap(&mut state, &mut htlc.state);
 
-				if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
-					htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
-					require_commitment = true;
-				} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
-					match forward_info {
-						PendingHTLCStatus::Fail(fail_msg) => {
-							require_commitment = true;
-							match fail_msg {
-								HTLCFailureMsg::Relay(msg) => {
-									htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
-									update_fail_htlcs.push(msg)
-								},
-								HTLCFailureMsg::Malformed(msg) => {
-									htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
-									update_fail_malformed_htlcs.push(msg)
-								},
+		{
+			// Take references explicitly so that we can hold multiple references to self.
+			let pending_inbound_htlcs: &mut Vec<_> = &mut self.pending_inbound_htlcs;
+			let pending_outbound_htlcs: &mut Vec<_> = &mut self.pending_outbound_htlcs;
+			let logger = LogHolder { logger: &self.logger };
+
+			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
+			pending_inbound_htlcs.retain(|htlc| {
+				if let &InboundHTLCState::LocalRemoved(ref reason) = &htlc.state {
+					log_trace!(logger, " ...removing inbound LocalRemoved {}", log_bytes!(htlc.payment_hash.0));
+					if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
+						value_to_self_msat_diff += htlc.amount_msat as i64;
+					}
+					false
+				} else { true }
+			});
+			pending_outbound_htlcs.retain(|htlc| {
+				if let OutboundHTLCState::AwaitingRemovedRemoteRevoke = htlc.state {
+					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", log_bytes!(htlc.payment_hash.0));
+					if let Some(reason) = htlc.fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
+						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
+					} else {
+						// They fulfilled, so we sent them money
+						value_to_self_msat_diff -= htlc.amount_msat as i64;
+					}
+					false
+				} else { true }
+			});
+			for htlc in pending_inbound_htlcs.iter_mut() {
+				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
+					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to Committed", log_bytes!(htlc.payment_hash.0));
+					true
+				} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = &htlc.state {
+					log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", log_bytes!(htlc.payment_hash.0));
+					true
+				} else { false };
+				if swap {
+					let mut state = InboundHTLCState::Committed;
+					mem::swap(&mut state, &mut htlc.state);
+
+					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
+						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
+						require_commitment = true;
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
+						match forward_info {
+							PendingHTLCStatus::Fail(fail_msg) => {
+								require_commitment = true;
+								match fail_msg {
+									HTLCFailureMsg::Relay(msg) => {
+										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+										update_fail_htlcs.push(msg)
+									},
+									HTLCFailureMsg::Malformed(msg) => {
+										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+										update_fail_malformed_htlcs.push(msg)
+									},
+								}
+							},
+							PendingHTLCStatus::Forward(forward_info) => {
+								to_forward_infos.push((forward_info, htlc.htlc_id));
+								htlc.state = InboundHTLCState::Committed;
 							}
-						},
-						PendingHTLCStatus::Forward(forward_info) => {
-							to_forward_infos.push((forward_info, htlc.htlc_id));
-							htlc.state = InboundHTLCState::Committed;
 						}
 					}
 				}
 			}
-		}
-		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				htlc.state = OutboundHTLCState::Committed;
-			} else if let OutboundHTLCState::AwaitingRemoteRevokeToRemove = htlc.state {
-				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke;
-				require_commitment = true;
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
+					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", log_bytes!(htlc.payment_hash.0));
+					htlc.state = OutboundHTLCState::Committed;
+				} else if let OutboundHTLCState::AwaitingRemoteRevokeToRemove = htlc.state {
+					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
+					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke;
+					require_commitment = true;
+				}
 			}
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
