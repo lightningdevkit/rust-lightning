@@ -5,7 +5,7 @@ use util::{byte_utils, internal_traits};
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable};
-use util::logger::Logger;
+use util::logger::{Logger, LogHolder};
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::cmp::fixed_time_eq;
@@ -265,7 +265,6 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 }
 
-struct LogHolder<'a> { logger: &'a Arc<Logger> }
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
