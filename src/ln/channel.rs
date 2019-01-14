@@ -1790,8 +1790,24 @@ impl Channel {
 		self.received_commitment_while_awaiting_raa = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) != 0;
 
 		if (self.channel_state & ChannelState::MonitorUpdateFailed as u32) != 0 {
+			// In case we initially failed monitor updating without requiring a response, we need
+			// to make sure the RAA gets sent first.
+			if !self.monitor_pending_commitment_signed {
+				self.monitor_pending_order = Some(RAACommitmentOrder::RevokeAndACKFirst);
+			}
 			self.monitor_pending_revoke_and_ack = true;
-			self.monitor_pending_commitment_signed |= need_our_commitment;
+			if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+				// If we were going to send a commitment_signed after the RAA, go ahead and do all
+				// the corresponding HTLC status updates so that get_last_commitment_update
+				// includes the right HTLCs.
+				// Note that this generates a monitor update that we ignore! This is OK since we
+				// won't actually send the commitment_signed that generated the update to the other
+				// side until the latest monitor has been pulled from us and stored.
+				self.monitor_pending_commitment_signed = true;
+				self.send_commitment_no_status_check()?;
+			}
+			// TODO: Call maybe_propose_first_closing_signed on restoration (or call it here and
+			// re-send the message on restoration)
 			return Err(ChannelError::Ignore("Previous monitor update failure prevented generation of RAA"));
 		}
 

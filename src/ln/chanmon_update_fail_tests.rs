@@ -1275,3 +1275,93 @@ fn monitor_failed_no_reestablish_response() {
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 }
+
+#[test]
+fn first_message_on_recv_ordering() {
+	// Test that if the initial generator of a monitor-update-frozen state doesn't generate
+	// messages, we're willing to flip the order of response messages if neccessary in resposne to
+	// a commitment_signed which needs to send an RAA first.
+	// At a high level, our goal is to fail monitor updating in response to an RAA which needs no
+	// response and then handle a CS while in the failed state, requiring an RAA followed by a CS
+	// response. To do this, we start routing two payments, with the final RAA for the first being
+	// delivered while B is in AwaitingRAA, hence when we deliver the CS for the second B will
+	// have no pending response but will want to send a RAA/CS (with the updates for the second
+	// payment applied).
+	// Backported from chanmon_fail_consistency fuzz tests as it caught a bug here.
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Route the first payment outbound, holding the last RAA for B until we are set up so that we
+	// can deliver it and fail the monitor update.
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, payment_hash_1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_responses.0).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_responses.1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+	// Route the second payment, generating an update_add_htlc/commitment_signed
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+
+	// Deliver the final RAA for the first payment, which does not require a response. RAAs
+	// generally require a commitment_signed, so the fact that we're expecting an opposite response
+	// to the next message also tests resetting the delivery order.
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap_err() {
+		assert_eq!(err, "Failed to update ChannelMonitor");
+	} else { panic!(); }
+	check_added_monitors!(nodes[1], 1);
+
+	// Now deliver the update_add_htlc/commitment_signed for the second payment, which does need an
+	// RAA/CS response, which should be generated when we call test_restore_channel_monitor (with
+	// the appropriate HTLC acceptance).
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
+		assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
+	} else { panic!(); }
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[1].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[1], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_1, 1000000);
+
+	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_responses.0).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_responses.1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+}
