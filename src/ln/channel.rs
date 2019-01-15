@@ -2373,6 +2373,8 @@ impl Channel {
 			}
 		}
 
+		log_trace!(self, "Regenerated latest commitment update with {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
+				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
 			update_fee: None, //TODO: We need to support re-generating any update_fees in the last commitment_signed!
