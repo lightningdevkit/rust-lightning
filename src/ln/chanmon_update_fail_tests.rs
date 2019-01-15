@@ -1365,3 +1365,194 @@ fn first_message_on_recv_ordering() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
+
+#[test]
+fn test_monitor_update_fail_claim() {
+	// Basic test for monitor update failures when processing claim_funds calls.
+	// We set up a simple 3-node network, sending a payment from A to B and failing B's monitor
+	// update to claim the payment. We then send a payment C->B->A, making the forward of this
+	// payment from B to A fail due to the paused channel. Finally, we restore the channel monitor
+	// updating and claim the payment on B.
+	let mut nodes = create_network(3);
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Rebalance a bit so that we can send backwards from 3 to 2.
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
+
+	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
+	check_added_monitors!(nodes[1], 1);
+
+	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[2].node.send_payment(route, payment_hash_2).unwrap();
+	check_added_monitors!(nodes[2], 1);
+
+	// Successfully update the monitor on the 1<->2 channel, but the 0<->1 channel should still be
+	// paused, so forward shouldn't succeed until we call test_restore_channel_monitor().
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+
+	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false, true);
+
+	let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[2], nodes[1], bs_fail_update.commitment_signed, false, true);
+
+	let msg_events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events[0] {
+		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
+			assert_eq!(msg.contents.short_channel_id, chan_1.0.contents.short_channel_id);
+			assert_eq!(msg.contents.flags & 2, 2); // temp disabled
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let Event::PaymentFailed { payment_hash, rejected_by_dest, .. } = events[0] {
+		assert_eq!(payment_hash, payment_hash_2);
+		assert!(!rejected_by_dest);
+	} else { panic!("Unexpected event!"); }
+
+	// Now restore monitor updating on the 0<->1 channel and claim the funds on B.
+	nodes[1].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_fulfill_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_fulfill_update.update_fulfill_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[0], nodes[1], bs_fulfill_update.commitment_signed, false);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let Event::PaymentSent { payment_preimage, .. } = events[0] {
+		assert_eq!(payment_preimage, payment_preimage_1);
+	} else { panic!("Unexpected event!"); }
+}
+
+#[test]
+fn test_monitor_update_on_pending_forwards() {
+	// Basic test for monitor update failures when processing pending HTLC fail/add forwards.
+	// We do this with a simple 3-node network, sending a payment from A to C and one from C to A.
+	// The payment from A to C will be failed by C and pending a back-fail to A, while the payment
+	// from C to A will be pending a forward to A.
+	let mut nodes = create_network(3);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Rebalance a bit so that we can send backwards from 3 to 1.
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
+
+	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, 1000000));
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	check_added_monitors!(nodes[2], 1);
+
+	let cs_fail_update = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &cs_fail_update.update_fail_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[1], nodes[2], cs_fail_update.commitment_signed, true, true);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[2].node.send_payment(route, payment_hash_2).unwrap();
+	check_added_monitors!(nodes[2], 1);
+
+	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false);
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[1].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fail_htlcs[0]).unwrap();
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_add_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	if let Event::PaymentFailed { payment_hash, rejected_by_dest, .. } = events[0] {
+		assert_eq!(payment_hash, payment_hash_1);
+		assert!(rejected_by_dest);
+	} else { panic!("Unexpected event!"); }
+	match events[1] {
+		Event::PendingHTLCsForwardable { .. } => { },
+		_ => panic!("Unexpected event"),
+	};
+	nodes[0].node.channel_state.lock().unwrap().next_forward = Instant::now();
+	nodes[0].node.process_pending_htlc_forwards();
+	expect_payment_received!(nodes[0], payment_hash_2, 1000000);
+
+	claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_2);
+}
+
+#[test]
+fn monitor_update_claim_fail_no_response() {
+	// Test for claim_funds resulting in both a monitor update failure and no message response (due
+	// to channel being AwaitingRAA).
+	// Backported from chanmon_fail_consistency fuzz tests as an unmerged version of the handling
+	// code was broken.
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Forward a payment for B to claim
+	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	let as_raa = commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true, false, true);
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[1].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+
+	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentSent { ref payment_preimage } => {
+			assert_eq!(*payment_preimage, payment_preimage_1);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+}
