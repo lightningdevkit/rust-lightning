@@ -1225,6 +1225,7 @@ impl Channel {
 					_ => {}
 				}
 			}
+			log_trace!(self, "Adding HTLC claim to holding_cell! Current state: {}", self.channel_state);
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 				payment_preimage: payment_preimage_arg, htlc_id: htlc_id_arg,
 			});
@@ -1238,6 +1239,7 @@ impl Channel {
 				debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
 				return Ok((None, Some(self.channel_monitor.clone())));
 			}
+			log_trace!(self, "Upgrading HTLC {} to LocalRemoved with a Fulfill!", log_bytes!(htlc.payment_hash.0));
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
 		}
 
