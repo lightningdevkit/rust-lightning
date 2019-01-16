@@ -116,7 +116,7 @@ impl_writeable!(ChannelKeys, 0, {
 /// Cooperative closes may use seed/2'
 /// The two close keys may be needed to claim on-chain funds!
 pub struct KeysManager {
-	secp_ctx: Secp256k1<secp256k1::All>,
+	secp_ctx: Secp256k1<secp256k1::SignOnly>,
 	node_secret: SecretKey,
 	destination_script: Script,
 	shutdown_pubkey: PublicKey,
@@ -132,7 +132,7 @@ impl KeysManager {
 	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
 	/// RNG is busted) this may panic.
 	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> KeysManager {
-		let secp_ctx = Secp256k1::new();
+		let secp_ctx = Secp256k1::signing_only();
 		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)).expect("Your RNG is busted").secret_key;
