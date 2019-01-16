@@ -6604,7 +6604,7 @@ fn test_onion_failure() {
 }
 
 #[test]
-fn test_update_add_htlc_bolt2() {
+fn test_update_add_htlc_bolt2_sender() {
 	use util::rng;
 	use std::sync::atomic::Ordering;
 	use super::channelmanager::HTLCSource;
@@ -6612,7 +6612,8 @@ fn test_update_add_htlc_bolt2() {
 
 	let secp_ctx = Secp256k1::new();
 
-	// BOLT 2 Requirements for Sender
+	// BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
+
 	// BOLT 2 Requirement: MUST NOT offer amount_msat it cannot pay for in the remote commitment transaction at the current feerate_per_kw (see "Updating Fees") while maintaining its channel reserve.
 	//TODO: I don't believe this is explicitly enforced when sending an HTLC but as the Fee aspect of the BOLT specs is in flux leaving this as a TODO.
 
@@ -6637,11 +6638,11 @@ fn test_update_add_htlc_bolt2() {
 	let err = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().send_htlc(0, our_payment_hash, TEST_FINAL_CLTV, HTLCSource::OutboundRoute {
 		route: route.clone(),
 		session_priv: session_priv.clone(),
-		first_hop_htlc_msat: 100000,
+		first_hop_htlc_msat: 0,
 	}, onion_packet);
 
-	if let Err(ChannelError::Ignore(_)) = err {
-		assert!(true);
+	if let Err(ChannelError::Ignore(msg)) = err {
+		assert_eq!(msg, "Cannot send less than their minimum HTLC value");
 	} else {
 		assert!(false);
 	}
@@ -6683,17 +6684,13 @@ fn test_update_add_htlc_bolt2() {
 		first_hop_htlc_msat: 0,
 	}, onion_packet);
 
-	if let Err(ChannelError::Ignore(_)) = err {
-		assert!(true);
+	if let Err(ChannelError::Ignore(msg)) = err {
+		assert_eq!(msg, "Cannot push more than their max accepted HTLCs");
 	} else {
 		assert!(false);
 	}
-	//Clear any unhandled msg events.
-	let _ = nodes[0].node.get_and_clear_pending_msg_events();
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
 
 	// BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
-	let mut nodes = create_network(2);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6715,15 +6712,14 @@ fn test_update_add_htlc_bolt2() {
 		first_hop_htlc_msat: 0,
 	}, onion_packet);
 
-	if let Err(ChannelError::Ignore(_)) = err {
-		assert!(true);
+	if let Err(ChannelError::Ignore(msg)) = err {
+		assert_eq!(msg, "Cannot send value that would put us over our max HTLC value in flight");
 	} else {
 		assert!(false);
 	}
 
 	// BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
 	// BOLT 2 Requirement: MUST increase the value of id by 1 for each successive offer.
-	let mut nodes = create_network(2);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6752,8 +6748,11 @@ fn test_update_add_htlc_bolt2() {
 			assert!(false);
 		}
 	}
+}
 
-	// BOLT 2 Requirements for Receiver
+#[test]
+fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
+	use super::msgs::HandleError;
 
 	//BOLT2 Requirement: receiving an amount_msat equal to 0, OR less than its own htlc_minimum_msat -> SHOULD fail the channel.
 	let mut nodes = create_network(2);
@@ -6772,13 +6771,24 @@ fn test_update_add_htlc_bolt2() {
 
 	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat-1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	assert!(err.is_err());
+
+	if let Err(HandleError{err, action: _}) = err {
+		assert_eq!(err, "Remote side tried to send less than our minimum HTLC value");
+	} else {
+		assert!(false);
+	}
+
 	//Confirm the channel was closed
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
 	//Clear unhandled msg events.
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
+	use super::msgs::HandleError;
 
 	//BOLT2 Requirement: receiving an amount_msat that the sending node cannot afford at the current feerate_per_kw (while maintaining its channel reserve): SHOULD fail the channel
 	let mut nodes = create_network(2);
@@ -6791,13 +6801,26 @@ fn test_update_add_htlc_bolt2() {
 
 	updates.update_add_htlcs[0].amount_msat = 4000001;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	assert!(err.is_err());
+
+	if let Err(HandleError{err, action: _}) = err {
+		assert_eq!(err, "Remote HTLC add would put them over their reserve value");
+	} else {
+		assert!(false);
+	}
+
 	//Confirm the channel was closed
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
 	//Clear unhandled msg events.
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
+	use util::rng;
+	let secp_ctx = Secp256k1::new();
+	use super::msgs::HandleError;
 
 	//BOLT 2 Requirement: if a sending node adds more than its max_accepted_htlcs HTLCs to its local commitment transaction: SHOULD fail the channel
 	//BOLT 2 Requirement: MUST allow multiple HTLCs with the same payment_hash.
@@ -6832,13 +6855,24 @@ fn test_update_add_htlc_bolt2() {
 	}
 	msg.htlc_id = (super::channel::OUR_MAX_HTLCS + 1) as u64;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
-	assert!(err.is_err());
+
+	if let Err(HandleError{err, action: _}) = err {
+		assert_eq!(err, "Remote tried to push more than our max accepted HTLCs");
+	} else {
+		assert!(false);
+	}
+
 	//Confirm the channel was closed
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
 	//Clear unhandled msg events.
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
+	use super::msgs::HandleError;
 
 	//OR adds more than its max_htlc_value_in_flight_msat worth of offered HTLCs to its local commitment transaction: SHOULD fail the channel
 	let mut nodes = create_network(2);
@@ -6850,13 +6884,24 @@ fn test_update_add_htlc_bolt2() {
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_htlc_value_in_flight_msat + 1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	assert!(err.is_err());
+
+	if let Err(HandleError{err, action: _}) = err {
+		assert_eq!(err,"Remote HTLC add would put them over their max HTLC value in flight");
+	} else {
+		assert!(false);
+	}
+
 	//Confirm the channel was closed
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
 	//Clear unhandled msg events.
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
+	use super::msgs::HandleError;
 
 	//BOLT2 Requirement: if sending node sets cltv_expiry to greater or equal to 500000000: SHOULD fail the channel.
 	let mut nodes = create_network(2);
@@ -6868,13 +6913,24 @@ fn test_update_add_htlc_bolt2() {
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].cltv_expiry = 500000000;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	assert!(err.is_err());
+
+	if let Err(HandleError{err, action: _}) = err {
+		assert_eq!(err,"Remote provided CLTV expiry in seconds instead of block height");
+	} else {
+		assert!(false);
+	}
+
 	//Confirm the channel was closed
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
 	//Clear unhandled msg events.
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
+	use super::msgs::HandleError;
 
 	//BOLT 2 requirement: if the sender did not previously acknowledge the commitment of that HTLC: MUST ignore a repeated id value after a reconnection.
 	let mut nodes = create_network(2);
