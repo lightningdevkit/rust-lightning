@@ -1091,7 +1091,6 @@ mod tests {
 	}
 
 	fn create_network(peer_count: usize) -> Vec<PeerManager<FileDescriptor>> {
-		let secp_ctx = Secp256k1::new();
 		let mut peers = Vec::new();
 		let mut rng = thread_rng();
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
@@ -1102,7 +1101,7 @@ mod tests {
 			let node_id = {
 				let mut key_slice = [0;32];
 				rng.fill_bytes(&mut key_slice);
-				SecretKey::from_slice(&secp_ctx, &key_slice).unwrap()
+				SecretKey::from_slice(&key_slice).unwrap()
 			};
 			let msg_handler = MessageHandler { chan_handler: Arc::new(chan_handler), route_handler: Arc::new(router) };
 			let peer = PeerManager::new(msg_handler, node_id, Arc::clone(&logger));

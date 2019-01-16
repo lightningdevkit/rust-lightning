@@ -69,7 +69,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 	for hop in route.hops.iter() {
-		let shared_secret = SharedSecret::new(secp_ctx, &hop.pubkey, &blinded_priv);
+		let shared_secret = SharedSecret::new(&hop.pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
 		sha.input(&blinded_pub.serialize()[..]);
@@ -78,7 +78,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 
 		let ephemeral_pubkey = blinded_pub;
 
-		blinded_priv.mul_assign(secp_ctx, &SecretKey::from_slice(secp_ctx, &blinding_factor)?)?;
+		blinded_priv.mul_assign(&blinding_factor)?;
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 		callback(shared_secret, blinding_factor, ephemeral_pubkey, hop);
@@ -438,29 +438,29 @@ mod tests {
 		let route = Route {
 			hops: vec!(
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 			),
 		};
 
-		let session_priv = SecretKey::from_slice(&secp_ctx, &hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
+		let session_priv = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
 
 		let onion_keys = super::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
 		assert_eq!(onion_keys.len(), route.hops.len());

@@ -15,7 +15,6 @@ use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
 use secp256k1::key::PublicKey;
-use secp256k1::Secp256k1;
 
 mod utils;
 
@@ -146,10 +145,9 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
-	let secp_ctx = Secp256k1::new();
 	macro_rules! get_pubkey {
 		() => {
-			match PublicKey::from_slice(&secp_ctx, get_slice!(33)) {
+			match PublicKey::from_slice(get_slice!(33)) {
 				Ok(key) => key,
 				Err(_) => return,
 			}

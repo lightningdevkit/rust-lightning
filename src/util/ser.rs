@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use secp256k1::{Secp256k1, Signature};
+use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
@@ -334,7 +334,7 @@ impl Writeable for PublicKey {
 impl<R: Read> Readable<R> for PublicKey {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 33] = Readable::read(r)?;
-		match PublicKey::from_slice(&Secp256k1::without_caps(), &buf) {
+		match PublicKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
@@ -352,7 +352,7 @@ impl Writeable for SecretKey {
 impl<R: Read> Readable<R> for SecretKey {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
-		match SecretKey::from_slice(&Secp256k1::without_caps(), &buf) {
+		match SecretKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
@@ -374,14 +374,14 @@ impl<R: Read> Readable<R> for Sha256dHash {
 
 impl Writeable for Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		self.serialize_compact(&Secp256k1::without_caps()).write(w)
+		self.serialize_compact().write(w)
 	}
 }
 
 impl<R: Read> Readable<R> for Signature {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 64] = Readable::read(r)?;
-		match Signature::from_compact(&Secp256k1::without_caps(), &buf) {
+		match Signature::from_compact(&buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
