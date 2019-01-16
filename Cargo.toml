@@ -22,13 +22,13 @@ max_level_info = []
 max_level_debug = []
 
 [dependencies]
-bitcoin = "0.15"
-bitcoin_hashes = { git = "https://github.com/TheBlueMatt/bitcoin_hashes", branch = "rust-lightning-dep" }
+bitcoin = "0.16"
+bitcoin_hashes = "0.2"
 rand = "0.4"
-secp256k1 = "0.11"
+secp256k1 = "0.12"
 
 [dev-dependencies.bitcoin]
-version = "0.15"
+version = "0.16"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]

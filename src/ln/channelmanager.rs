@@ -108,7 +108,7 @@ impl HTLCSource {
 	pub fn dummy() -> Self {
 		HTLCSource::OutboundRoute {
 			route: Route { hops: Vec::new() },
-			session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
+			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 		}
 	}
@@ -733,7 +733,7 @@ impl ChannelManager {
 
 		let shared_secret = {
 			let mut arr = [0; 32];
-			arr.copy_from_slice(&SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
+			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
 			arr
 		};
 		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(&shared_secret);
@@ -827,10 +827,10 @@ impl ChannelManager {
 					let mut sha = Sha256::engine();
 					sha.input(&new_pubkey.serialize()[..]);
 					sha.input(&shared_secret);
-					SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("SHA-256 is broken?")
+					Sha256::from_engine(sha).into_inner()
 				};
 
-				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
+				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
 					Err(e)
 				} else { Ok(new_pubkey) };
 

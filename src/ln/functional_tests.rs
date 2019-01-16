@@ -2107,7 +2107,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 
 		// Need to manually create update_add_htlc message to go around the channel reserve check in send_htlc()
 		let secp_ctx = Secp256k1::new();
-		let session_priv = SecretKey::from_slice(&secp_ctx, &{
+		let session_priv = SecretKey::from_slice(&{
 			let mut session_key = [0; 32];
 			rng::fill_bytes(&mut session_key);
 			session_key
@@ -5170,7 +5170,7 @@ macro_rules! check_spendable_outputs {
 										witness: Vec::new(),
 									};
 									let outp = TxOut {
-										script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
 										value: output.value,
 									};
 									let mut spend_tx = Transaction {
@@ -5184,7 +5184,7 @@ macro_rules! check_spendable_outputs {
 									let witness_script = Address::p2pkh(&remotepubkey, Network::Testnet).script_pubkey();
 									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
 									let remotesig = secp_ctx.sign(&sighash, key);
-									spend_tx.input[0].witness.push(remotesig.serialize_der(&secp_ctx).to_vec());
+									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
 									spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
 									txn.push(spend_tx);
@@ -5197,7 +5197,7 @@ macro_rules! check_spendable_outputs {
 										witness: Vec::new(),
 									};
 									let outp = TxOut {
-										script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
 										value: output.value,
 									};
 									let mut spend_tx = Transaction {
@@ -5209,7 +5209,7 @@ macro_rules! check_spendable_outputs {
 									let secp_ctx = Secp256k1::new();
 									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], witness_script, output.value)[..]).unwrap();
 									let local_delaysig = secp_ctx.sign(&sighash, key);
-									spend_tx.input[0].witness.push(local_delaysig.serialize_der(&secp_ctx).to_vec());
+									spend_tx.input[0].witness.push(local_delaysig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
 									spend_tx.input[0].witness.push(vec!(0));
 									spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
@@ -5224,7 +5224,7 @@ macro_rules! check_spendable_outputs {
 										witness: Vec::new(),
 									};
 									let outp = TxOut {
-										script_pubkey: Builder::new().push_opcode(opcodes::All::OP_RETURN).into_script(),
+										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
 										value: output.value,
 									};
 									let mut spend_tx = Transaction {
@@ -5234,7 +5234,7 @@ macro_rules! check_spendable_outputs {
 										output: vec![outp.clone()],
 									};
 									let secret = {
-										match ExtendedPrivKey::new_master(&secp_ctx, Network::Testnet, &$node.node_seed) {
+										match ExtendedPrivKey::new_master(Network::Testnet, &$node.node_seed) {
 											Ok(master_key) => {
 												match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx)) {
 													Ok(key) => key,
@@ -5248,7 +5248,7 @@ macro_rules! check_spendable_outputs {
 									let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
 									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
 									let sig = secp_ctx.sign(&sighash, &secret.secret_key);
-									spend_tx.input[0].witness.push(sig.serialize_der(&secp_ctx).to_vec());
+									spend_tx.input[0].witness.push(sig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
 									spend_tx.input[0].witness.push(pubkey.serialize().to_vec());
 									txn.push(spend_tx);
@@ -6397,7 +6397,7 @@ fn test_onion_failure() {
 
 	let mut nodes = create_network(3);
 	for node in nodes.iter() {
-		*node.keys_manager.override_session_priv.lock().unwrap() = Some(SecretKey::from_slice(&Secp256k1::without_caps(), &[3; 32]).unwrap());
+		*node.keys_manager.override_session_priv.lock().unwrap() = Some(SecretKey::from_slice(&[3; 32]).unwrap());
 	}
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1), create_announced_chan_between_nodes(&nodes, 1, 2)];
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6407,7 +6407,7 @@ fn test_onion_failure() {
 
 	// intermediate node failure
 	run_onion_failure_test("invalid_realm", 0, &nodes, &route, &payment_hash, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
@@ -6417,7 +6417,7 @@ fn test_onion_failure() {
 
 	// final node failure
 	run_onion_failure_test("invalid_realm", 3, &nodes, &route, &payment_hash, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
@@ -6433,7 +6433,7 @@ fn test_onion_failure() {
 		msg.amount_msat -= 1;
 	}, |msg| {
 		// and tamper returing error message
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], NODE|2, &[0;0]);
 	}, ||{}, true, Some(NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[0].pubkey, is_permanent: false}));
@@ -6441,7 +6441,7 @@ fn test_onion_failure() {
 	// final node failure
 	run_onion_failure_test_with_fail_intercept("temporary_node_failure", 200, &nodes, &route, &payment_hash, |_msg| {}, |msg| {
 		// and tamper returing error message
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], NODE|2, &[0;0]);
 	}, ||{
@@ -6452,14 +6452,14 @@ fn test_onion_failure() {
 	run_onion_failure_test_with_fail_intercept("permanent_node_failure", 100, &nodes, &route, &payment_hash, |msg| {
 		msg.amount_msat -= 1;
 	}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|NODE|2, &[0;0]);
 	}, ||{}, true, Some(PERM|NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[0].pubkey, is_permanent: true}));
 
 	// final node failure
 	run_onion_failure_test_with_fail_intercept("permanent_node_failure", 200, &nodes, &route, &payment_hash, |_msg| {}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|2, &[0;0]);
 	}, ||{
@@ -6470,7 +6470,7 @@ fn test_onion_failure() {
 	run_onion_failure_test_with_fail_intercept("required_node_feature_missing", 100, &nodes, &route, &payment_hash, |msg| {
 		msg.amount_msat -= 1;
 	}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|NODE|3, &[0;0]);
 	}, ||{
@@ -6479,7 +6479,7 @@ fn test_onion_failure() {
 
 	// final node failure
 	run_onion_failure_test_with_fail_intercept("required_node_feature_missing", 200, &nodes, &route, &payment_hash, |_msg| {}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|3, &[0;0]);
 	}, ||{
@@ -6498,7 +6498,7 @@ fn test_onion_failure() {
 	run_onion_failure_test_with_fail_intercept("temporary_channel_failure", 100, &nodes, &route, &payment_hash, |msg| {
 		msg.amount_msat -= 1;
 	}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], UPDATE|7, &ChannelUpdate::dummy().encode_with_len()[..]);
 	}, ||{}, true, Some(UPDATE|7), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
@@ -6506,7 +6506,7 @@ fn test_onion_failure() {
 	run_onion_failure_test_with_fail_intercept("permanent_channel_failure", 100, &nodes, &route, &payment_hash, |msg| {
 		msg.amount_msat -= 1;
 	}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|8, &[0;0]);
 		// short_channel_id from the processing node
@@ -6515,7 +6515,7 @@ fn test_onion_failure() {
 	run_onion_failure_test_with_fail_intercept("required_channel_feature_missing", 100, &nodes, &route, &payment_hash, |msg| {
 		msg.amount_msat -= 1;
 	}, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|9, &[0;0]);
 		// short_channel_id from the processing node
@@ -6592,7 +6592,7 @@ fn test_onion_failure() {
 	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	run_onion_failure_test("expiry_too_far", 0, &nodes, &route, &payment_hash, |msg| {
-		let session_priv = SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[3; 32]).unwrap();
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let mut route = route.clone();
 		let height = 1;
 		route.hops[1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.hops[0].cltv_expiry_delta + 1;
@@ -6769,8 +6769,6 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
-	let secp_ctx = Secp256k1::new();
-
 	//BOLT 2 Requirement: if a sending node adds more than its max_accepted_htlcs HTLCs to its local commitment transaction: SHOULD fail the channel
 	//BOLT 2 Requirement: MUST allow multiple HTLCs with the same payment_hash.
 	let mut nodes = create_network(2);
@@ -6778,14 +6776,14 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
-	let session_priv = SecretKey::from_slice(&secp_ctx, &{
+	let session_priv = SecretKey::from_slice(&{
 		let mut session_key = [0; 32];
 		rng::fill_bytes(&mut session_key);
 		session_key
 	}).expect("RNG is bad!");
 
 	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
+	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route, &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
 

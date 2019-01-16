@@ -133,13 +133,13 @@ impl KeysManager {
 	/// RNG is busted) this may panic.
 	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> KeysManager {
 		let secp_ctx = Secp256k1::new();
-		match ExtendedPrivKey::new_master(&secp_ctx, network.clone(), seed) {
+		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)).expect("Your RNG is busted").secret_key;
 				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1)) {
 					Ok(destination_key) => {
 						let pubkey_hash160 = Hash160::hash(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..]);
-						Builder::new().push_opcode(opcodes::All::OP_PUSHBYTES_0)
+						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
 						              .push_slice(&pubkey_hash160.into_inner())
 						              .into_script()
 					},
@@ -215,7 +215,7 @@ impl KeysInterface for KeysManager {
 				sha.input(&seed);
 				sha.input(&$prev_key[..]);
 				sha.input(&$info[..]);
-				SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("SHA-256 is busted")
+				SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("SHA-256 is busted")
 			}}
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
@@ -244,6 +244,6 @@ impl KeysInterface for KeysManager {
 		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
 		sha.input(&child_privkey.secret_key[..]);
-		SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted")
+		SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted")
 	}
 }
