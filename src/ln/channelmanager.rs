@@ -20,7 +20,7 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::cmp::fixed_time_eq;
 
 use secp256k1::key::{SecretKey,PublicKey};
-use secp256k1::{Secp256k1,Message};
+use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
@@ -937,7 +937,7 @@ impl ChannelManager {
 		};
 
 		let msg_hash = Sha256dHash::from_data(&unsigned.encode()[..]);
-		let sig = self.secp_ctx.sign(&Message::from_slice(&msg_hash[..]).unwrap(), &self.our_network_key);
+		let sig = self.secp_ctx.sign(&hash_to_message!(&msg_hash[..]), &self.our_network_key);
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -1130,7 +1130,7 @@ impl ChannelManager {
 			Ok(res) => res,
 			Err(_) => return None, // Only in case of state precondition violations eg channel is closing
 		};
-		let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
+		let msghash = hash_to_message!(&Sha256dHash::from_data(&announcement.encode()[..])[..]);
 		let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
 		Some(msgs::AnnouncementSignatures {
@@ -2101,7 +2101,7 @@ impl ChannelManager {
 					try_chan_entry!(self, chan.get_mut().get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone()), channel_state, chan);
 
 				let were_node_one = announcement.node_id_1 == our_node_id;
-				let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
+				let msghash = hash_to_message!(&Sha256dHash::from_data(&announcement.encode()[..])[..]);
 				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
 						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
 					try_chan_entry!(self, Err(ChannelError::Close("Bad announcement_signatures node_signature")), channel_state, chan);

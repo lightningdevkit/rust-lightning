@@ -24,7 +24,7 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::hash160::Hash as Hash160;
 
-use secp256k1::{Secp256k1,Message,Signature};
+use secp256k1::{Secp256k1,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1;
 
@@ -1105,7 +1105,7 @@ impl ChannelMonitor {
 									let htlc = &per_commitment_option.unwrap()[$htlc_idx.unwrap()].0;
 									chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey)
 								};
-								let sighash = ignore_error!(Message::from_slice(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]));
+								let sighash = hash_to_message!(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]);
 								let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &revocation_base_key));
 								(self.secp_ctx.sign(&sighash, &revocation_key), redeemscript)
 							},
@@ -1327,7 +1327,7 @@ impl ChannelMonitor {
 									Storage::Local { ref htlc_base_key, .. } => {
 										let htlc = &per_commitment_option.unwrap()[$input.sequence as usize].0;
 										let redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
-										let sighash = ignore_error!(Message::from_slice(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]));
+										let sighash = hash_to_message!(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]);
 										let htlc_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &htlc_base_key));
 										(self.secp_ctx.sign(&sighash, &htlc_key), redeemscript)
 									},
@@ -1512,7 +1512,7 @@ impl ChannelMonitor {
 
 			let sig = match self.key_storage {
 				Storage::Local { ref revocation_base_key, .. } => {
-					let sighash = ignore_error!(Message::from_slice(&sighash_parts.sighash_all(&spend_tx.input[0], &redeemscript, amount)[..]));
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&spend_tx.input[0], &redeemscript, amount)[..]);
 					let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &revocation_base_key));
 					self.secp_ctx.sign(&sighash, &revocation_key)
 				}

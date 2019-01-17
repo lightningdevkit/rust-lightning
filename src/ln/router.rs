@@ -4,7 +4,7 @@
 //! interrogate it to get routes for your own payments.
 
 use secp256k1::key::PublicKey;
-use secp256k1::{Secp256k1,Message};
+use secp256k1::Secp256k1;
 use secp256k1;
 
 use bitcoin::util::hash::Sha256dHash;
@@ -239,7 +239,7 @@ macro_rules! secp_verify_sig {
 
 impl RoutingMessageHandler for Router {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
-		let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
+		let msg_hash = hash_to_message!(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
 		if msg.contents.features.requires_unknown_bits() {
@@ -272,7 +272,7 @@ impl RoutingMessageHandler for Router {
 			return Err(HandleError{err: "Channel announcement node had a channel with itself", action: Some(ErrorAction::IgnoreError)});
 		}
 
-		let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
+		let msg_hash = hash_to_message!(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
@@ -448,7 +448,7 @@ impl RoutingMessageHandler for Router {
 						};
 					}
 				}
-				let msg_hash = Message::from_slice(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]).unwrap();
+				let msg_hash = hash_to_message!(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]);
 				if msg.contents.flags & 1 == 1 {
 					dest_node_id = channel.one_to_two.src_node_id.clone();
 					secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &channel.two_to_one.src_node_id);
