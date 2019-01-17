@@ -1098,3 +1098,120 @@ fn raa_no_response_awaiting_raa_state() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 }
+
+#[test]
+fn claim_while_disconnected_monitor_update_fail() {
+	// Test for claiming a payment while disconnected and then having the resulting
+	// channel-update-generated monitor update fail. This kind of thing isn't a particularly
+	// contrived case for nodes with network instability.
+	// Backported from chanmon_fail_consistency fuzz tests as an unmerged version of the handling
+	// code introduced a regression in this test (specifically, this caught a removal of the
+	// channel_reestablish handling ensuring the order was sensical given the messages used).
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Forward a payment for B to claim
+	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+
+	let as_reconnect = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	let bs_reconnect = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now deliver a's reestablish, freeing the claim from the holding cell, but fail the monitor
+	// update.
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect).unwrap_err() {
+		assert_eq!(err, "Failed to update ChannelMonitor");
+	} else { panic!(); }
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Send a second payment from A to B, resulting in a commitment update that gets swallowed with
+	// the monitor still failed
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]).unwrap();
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_updates.commitment_signed).unwrap_err() {
+		assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
+	} else { panic!(); }
+	// Note that nodes[1] not updating monitor here is OK - it wont take action on the new HTLC
+	// until we've test_restore_channel_monitor'd and updated for the new commitment transaction.
+
+	// Now un-fail the monitor, which will result in B sending its original commitment update,
+	// receiving the commitment update from A, and the resulting commitment dances.
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[1].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_msgs = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_msgs.len(), 2);
+
+	match bs_msgs[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]).unwrap();
+			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed).unwrap();
+			check_added_monitors!(nodes[0], 1);
+
+			let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+			check_added_monitors!(nodes[1], 1);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	match bs_msgs[1] {
+		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), msg).unwrap();
+			check_added_monitors!(nodes[0], 1);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let as_commitment = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	let bs_commitment = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_commitment.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment.commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentSent { ref payment_preimage } => {
+			assert_eq!(*payment_preimage, payment_preimage_1);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+}
