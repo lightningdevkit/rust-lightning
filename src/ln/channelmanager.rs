@@ -471,6 +471,12 @@ macro_rules! return_monitor_err {
 				return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
+				if !$resend_commitment {
+					debug_assert!($action_type == RAACommitmentOrder::RevokeAndACKFirst || !$resend_raa);
+				}
+				if !$resend_raa {
+					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
+				}
 				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
 				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()));
 			},
