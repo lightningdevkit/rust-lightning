@@ -1215,3 +1215,63 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
+
+#[test]
+fn monitor_failed_no_reestablish_response() {
+	// Test for receiving a channel_reestablish after a monitor update failure resulted in no
+	// response to a commitment_signed.
+	// Backported from chanmon_fail_consistency fuzz tests as it caught a long-standing
+	// debug_assert!() failure in channel_reestablish handling.
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
+	// on receipt).
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, payment_hash_1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	if let msgs::HandleError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
+		assert_eq!(err, "Failed to update ChannelMonitor");
+	} else { panic!(); }
+	check_added_monitors!(nodes[1], 1);
+
+	// Now disconnect and immediately reconnect, delivering the channel_reestablish while nodes[1]
+	// is still failing to update monitors.
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+
+	let as_reconnect = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	let bs_reconnect = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect).unwrap();
+
+	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	nodes[1].node.test_restore_channel_monitor();
+	check_added_monitors!(nodes[1], 1);
+	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_responses.0).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_responses.1).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_1, 1000000);
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+}

@@ -2425,9 +2425,6 @@ impl Channel {
 				log_debug!(self, "Reconnected channel {} with only lost remote commitment tx", log_bytes!(self.channel_id()));
 			}
 
-			// If monitor_pending_order is set, it must be CommitmentSigned if we have no RAA
-			debug_assert!(self.monitor_pending_order != Some(RAACommitmentOrder::RevokeAndACKFirst) || required_revoke.is_some());
-
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
 				return Ok((resend_funding_locked, None, None, None, order, shutdown_msg));
