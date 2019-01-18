@@ -271,6 +271,9 @@ pub(super) struct Channel {
 	// is received. holding_cell_update_fee is updated when there are additional
 	// update_fee() during ChannelState::AwaitingRemoteRevoke.
 	holding_cell_update_fee: Option<u64>,
+	#[cfg(test)]
+	pub next_local_htlc_id: u64,
+	#[cfg(not(test))]
 	next_local_htlc_id: u64,
 	#[cfg(test)]
 	pub next_remote_htlc_id: u64,

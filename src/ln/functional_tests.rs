@@ -6603,153 +6603,112 @@ fn test_onion_failure() {
 	}, ||{}, true, Some(21), None);
 }
 
+// BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
+// BOLT 2 Requirement: MUST NOT offer amount_msat it cannot pay for in the remote commitment transaction at the current feerate_per_kw (see "Updating Fees") while maintaining its channel reserve.
+//TODO: I don't believe this is explicitly enforced when sending an HTLC but as the Fee aspect of the BOLT specs is in flux leaving this as a TODO.
+
 #[test]
-fn test_update_add_htlc_bolt2_sender() {
-	use util::rng;
-	use std::sync::atomic::Ordering;
-	use super::channelmanager::HTLCSource;
-	use super::channel::ChannelError;
-
-	let secp_ctx = Secp256k1::new();
-
-	// BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
-
-	// BOLT 2 Requirement: MUST NOT offer amount_msat it cannot pay for in the remote commitment transaction at the current feerate_per_kw (see "Updating Fees") while maintaining its channel reserve.
-	//TODO: I don't believe this is explicitly enforced when sending an HTLC but as the Fee aspect of the BOLT specs is in flux leaving this as a TODO.
-
-	// BOLT2 Requirement: MUST offer amount_msat greater than 0.
-	// BOLT2 Requirement: MUST NOT offer amount_msat below the receiving node's htlc_minimum_msat (same validation check catches both of these)
+fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
+	//BOLT2 Requirement: MUST offer amount_msat greater than 0.
+	//BOLT2 Requirement: MUST NOT offer amount_msat below the receiving node's htlc_minimum_msat (same validation check catches both of these)
 	let mut nodes = create_network(2);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
+	let mut route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
-	let session_priv = SecretKey::from_slice(&secp_ctx, &{
-		let mut session_key = [0; 32];
-		rng::fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
+	route.hops[0].fee_msat = 0;
 
-	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
+	let err = nodes[0].node.send_payment(route, our_payment_hash);
 
-	let err = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().send_htlc(0, our_payment_hash, TEST_FINAL_CLTV, HTLCSource::OutboundRoute {
-		route: route.clone(),
-		session_priv: session_priv.clone(),
-		first_hop_htlc_msat: 0,
-	}, onion_packet);
-
-	if let Err(ChannelError::Ignore(msg)) = err {
-		assert_eq!(msg, "Cannot send less than their minimum HTLC value");
+	if let Err(APIError::ChannelUnavailable{err}) = err {
+		assert_eq!(err, "Cannot send less than their minimum HTLC value");
 	} else {
 		assert!(false);
-	}
-
-	//BOLT 2 Requirement: MUST set cltv_expiry less than 500000000.
-	//TODO: This is not currently explicitly checked when sending an HTLC and exists as TODO in the channel::send_htlc(...) function
-	//It is enforced when constructing a route.
-
-	// BOLT 2 Requirement: if result would be offering more than the remote's max_accepted_htlcs HTLCs, in the remote commitment transaction: MUST NOT add an HTLC.
-	let mut nodes = create_network(2);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
-	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-
-	let session_priv = SecretKey::from_slice(&secp_ctx, &{
-		let mut session_key = [0; 32];
-		rng::fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
-
-	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
-
-	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_accepted_htlcs;
-
-	for _i in 0..max_accepted_htlcs {
-		let _ = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().send_htlc(10000, our_payment_hash, TEST_FINAL_CLTV, HTLCSource::OutboundRoute {
-			route: route.clone(),
-			session_priv: session_priv.clone(),
-			first_hop_htlc_msat: 0,
-		}, onion_packet.clone());
-	}
-
-	let err = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().send_htlc(10000, our_payment_hash, TEST_FINAL_CLTV, HTLCSource::OutboundRoute {
-		route: route.clone(),
-		session_priv: session_priv.clone(),
-		first_hop_htlc_msat: 0,
-	}, onion_packet);
-
-	if let Err(ChannelError::Ignore(msg)) = err {
-		assert_eq!(msg, "Cannot push more than their max accepted HTLCs");
-	} else {
-		assert!(false);
-	}
-
-	// BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
-	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-
-	let session_priv = SecretKey::from_slice(&secp_ctx, &{
-		let mut session_key = [0; 32];
-		rng::fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
-
-	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
-
-	let err = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().send_htlc(10000001, our_payment_hash, TEST_FINAL_CLTV, HTLCSource::OutboundRoute {
-		route: route.clone(),
-		session_priv: session_priv.clone(),
-		first_hop_htlc_msat: 0,
-	}, onion_packet);
-
-	if let Err(ChannelError::Ignore(msg)) = err {
-		assert_eq!(msg, "Cannot send value that would put us over our max HTLC value in flight");
-	} else {
-		assert!(false);
-	}
-
-	// BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
-	// BOLT 2 Requirement: MUST increase the value of id by 1 for each successive offer.
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
-	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-
-	let session_priv = SecretKey::from_slice(&secp_ctx, &{
-		let mut session_key = [0; 32];
-		rng::fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
-
-	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
-
-	for expected_id in 0..2 {
-		let res = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().send_htlc(100000, our_payment_hash, TEST_FINAL_CLTV, HTLCSource::OutboundRoute {
-			route: route.clone(),
-			session_priv: session_priv.clone(),
-			first_hop_htlc_msat: 0,
-		}, onion_packet.clone());
-
-		if let Ok(Some(msg)) = res {
-			assert_eq!(msg.htlc_id, expected_id);
-		} else {
-			assert!(false);
-		}
 	}
 }
 
+#[test]
+fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
+	//BOLT 2 Requirement: MUST set cltv_expiry less than 500000000.
+	//TODO: This is not currently explicitly checked when sending an HTLC and exists as TODO in the channel::send_htlc(...) function
+	//It is enforced when constructing a route.
+	let mut nodes = create_network(2);
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000000, 500000001).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+
+	let err = nodes[0].node.send_payment(route, our_payment_hash);
+
+	if let Err(APIError::RouteError{err}) = err {
+		assert_eq!(err, "Channel CLTV overflowed?!");
+	} else {
+		assert!(false);
+	}
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment() {
+	//BOLT 2 Requirement: if result would be offering more than the remote's max_accepted_htlcs HTLCs, in the remote commitment transaction: MUST NOT add an HTLC.
+	//BOLT 2 Requirement: for the first HTLC it offers MUST set id to 0.
+	//BOLT 2 Requirement: MUST increase the value of id by 1 for each successive offer.
+	let mut nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
+	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_accepted_htlcs as u64;
+
+	//Confirm the first HTLC ID is zero
+	assert_eq!(nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_local_htlc_id, 0);
+
+	for i in 0..max_accepted_htlcs {
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+		let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		let mut payment_event = {
+			nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+			check_added_monitors!(nodes[0], 1);
+
+			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
+		};
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		let _ = nodes[1].node.get_and_clear_pending_events();
+
+		//Confirm the value of the id is increased
+		assert_eq!(nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_local_htlc_id, i+1);
+	}
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let err = nodes[0].node.send_payment(route, our_payment_hash);
+
+	if let Err(APIError::ChannelUnavailable{err}) = err {
+		assert_eq!(err, "Cannot push more than their max accepted HTLCs");
+	} else {
+		assert!(false);
+	}
+}
+
+#[test]
+fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
+	//BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
+	let mut nodes = create_network(2);
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+
+	let err = nodes[0].node.send_payment(route, our_payment_hash);
+
+	if let Err(APIError::ChannelUnavailable{err}) = err {
+		assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight");
+	} else {
+		assert!(false);
+	}
+}
+
+// BOLT 2 Requirements for the Receiver when handling an update_add_htlc message.
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	use super::msgs::HandleError;
@@ -6930,8 +6889,6 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
-	use super::msgs::HandleError;
-
 	//BOLT 2 requirement: if the sender did not previously acknowledge the commitment of that HTLC: MUST ignore a repeated id value after a reconnection.
 	let mut nodes = create_network(2);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
@@ -6963,3 +6920,4 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	//Clear unhandled msg events
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
 }
+
