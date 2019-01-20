@@ -104,9 +104,13 @@ impl LocalFeatures {
 }
 
 /// Tracks globalfeatures which are in init messages and routing announcements
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct GlobalFeatures {
+	#[cfg(not(test))]
 	flags: Vec<u8>,
+	// Used to test encoding of diverse msgs
+	#[cfg(test)]
+	pub flags: Vec<u8>
 }
 
 impl GlobalFeatures {
@@ -316,7 +320,7 @@ pub struct ChannelReestablish {
 }
 
 /// An announcement_signatures message to be sent or received from a peer
-#[derive(Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct AnnouncementSignatures {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) short_channel_id: u64,
@@ -325,7 +329,7 @@ pub struct AnnouncementSignatures {
 }
 
 /// An address which can be used to connect to a remote peer
-#[derive(PartialEq, Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum NetAddress {
 	/// An IPv4 address/port on which the peer is listening.
 	IPv4 {
@@ -448,9 +452,9 @@ impl<R: ::std::io::Read>  Readable<R> for Result<NetAddress, u8> {
 	}
 }
 
-#[derive(PartialEq, Clone)]
 // Only exposed as broadcast of node_announcement should be filtered by node_id
 /// The unsigned part of a node_announcement
+#[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedNodeAnnouncement {
 	pub(crate) features: GlobalFeatures,
 	pub(crate) timestamp: u32,
@@ -474,7 +478,7 @@ pub struct NodeAnnouncement {
 
 // Only exposed as broadcast of channel_announcement should be filtered by node_id
 /// The unsigned part of a channel_announcement
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedChannelAnnouncement {
 	pub(crate) features: GlobalFeatures,
 	pub(crate) chain_hash: Sha256dHash,
@@ -488,7 +492,7 @@ pub struct UnsignedChannelAnnouncement {
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_announcement message to be sent or received from a peer
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct ChannelAnnouncement {
 	pub(crate) node_signature_1: Signature,
 	pub(crate) node_signature_2: Signature,
@@ -497,7 +501,7 @@ pub struct ChannelAnnouncement {
 	pub(crate) contents: UnsignedChannelAnnouncement,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub(crate) struct UnsignedChannelUpdate {
 	pub(crate) chain_hash: Sha256dHash,
 	pub(crate) short_channel_id: u64,
@@ -510,7 +514,7 @@ pub(crate) struct UnsignedChannelUpdate {
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_update message to be sent or received from a peer
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct ChannelUpdate {
 	pub(crate) signature: Signature,
 	pub(crate) contents: UnsignedChannelUpdate,
@@ -1378,10 +1382,13 @@ impl_writeable_len_match!(NodeAnnouncement, {
 mod tests {
 	use hex;
 	use ln::msgs;
-	use ln::msgs::OptionalField;
+	use ln::msgs::{GlobalFeatures, OptionalField};
 	use util::ser::Writeable;
+
+	use bitcoin::util::hash::Sha256dHash;
+
 	use secp256k1::key::{PublicKey,SecretKey};
-	use secp256k1::Secp256k1;
+	use secp256k1::{Secp256k1, Message};
 
 	#[test]
 	fn encoding_channel_reestablish_no_secret() {
@@ -1418,5 +1425,258 @@ mod tests {
 			encoded_value,
 			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]
 		);
+	}
+
+	macro_rules! get_keys_from {
+		($slice: expr, $secp_ctx: expr) => {
+			{
+				let privkey = SecretKey::from_slice(&hex::decode($slice).unwrap()[..]).unwrap();
+				let pubkey = PublicKey::from_secret_key(&$secp_ctx, &privkey);
+				(privkey, pubkey)
+			}
+		}
+	}
+
+	macro_rules! get_sig_on {
+		($privkey: expr, $ctx: expr, $string: expr) => {
+			{
+				let sighash = Message::from_slice(&$string.into_bytes()[..]).unwrap();
+				$ctx.sign(&sighash, &$privkey)
+			}
+		}
+	}
+
+	#[test]
+	fn encoding_announcement_signatures() {
+		let secp_ctx = Secp256k1::new();
+		let (privkey, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_2 = get_sig_on!(privkey, secp_ctx, String::from("02020202020202020202020202020202"));
+		let announcement_signatures = msgs::AnnouncementSignatures {
+			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+			short_channel_id: 2316138423780173,
+			node_signature: sig_1,
+			bitcoin_signature: sig_2,
+		};
+
+		let encoded_value = announcement_signatures.encode();
+		assert_eq!(encoded_value, hex::decode("040000000000000005000000000000000600000000000000070000000000000000083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073acf9953cef4700860f5967838eba2bae89288ad188ebf8b20bf995c3ea53a26df1876d0a3a0e13172ba286a673140190c02ba9da60a2e43a745188c8a83c7f3ef").unwrap());
+	}
+
+	fn do_encoding_channel_announcement(unknown_features_bits: bool, non_bitcoin_chain_hash: bool, excess_data: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (privkey_2, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
+		let (privkey_3, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
+		let (privkey_4, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
+		let mut features = GlobalFeatures::new();
+		if unknown_features_bits {
+			features.flags = vec![0xFF, 0xFF];
+		}
+		let unsigned_channel_announcement = msgs::UnsignedChannelAnnouncement {
+			features,
+			chain_hash: if !non_bitcoin_chain_hash { Sha256dHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { Sha256dHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			short_channel_id: 2316138423780173,
+			node_id_1: pubkey_1,
+			node_id_2: pubkey_2,
+			bitcoin_key_1: pubkey_3,
+			bitcoin_key_2: pubkey_4,
+			excess_data: if excess_data { vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40] } else { Vec::new() },
+		};
+		let channel_announcement = msgs::ChannelAnnouncement {
+			node_signature_1: sig_1,
+			node_signature_2: sig_2,
+			bitcoin_signature_1: sig_3,
+			bitcoin_signature_2: sig_4,
+			contents: unsigned_channel_announcement,
+		};
+		let encoded_value = channel_announcement.encode();
+		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a1735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap();
+		if unknown_features_bits {
+			target_value.append(&mut hex::decode("0002ffff").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("0000").unwrap());
+		}
+		if non_bitcoin_chain_hash {
+			target_value.append(&mut hex::decode("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		}
+		target_value.append(&mut hex::decode("00083a840000034d031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
+		if excess_data {
+			target_value.append(&mut hex::decode("0a00001400001e000028").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_channel_announcement() {
+		do_encoding_channel_announcement(false, false, false);
+		do_encoding_channel_announcement(true, false, false);
+		do_encoding_channel_announcement(true, true, false);
+		do_encoding_channel_announcement(true, true, true);
+		do_encoding_channel_announcement(false, true, true);
+		do_encoding_channel_announcement(false, false, true);
+		do_encoding_channel_announcement(false, true, false);
+		do_encoding_channel_announcement(true, false, true);
+	}
+
+	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, excess_address_data: bool, excess_data: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let mut features = GlobalFeatures::new();
+		if unknown_features_bits {
+			features.flags = vec![0xFF, 0xFF];
+		}
+		let mut addresses = Vec::new();
+		if ipv4 {
+			addresses.push(msgs::NetAddress::IPv4 {
+				addr: [255, 254, 253, 252],
+				port: 9735
+			});
+		}
+		if ipv6 {
+			addresses.push(msgs::NetAddress::IPv6 {
+				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
+				port: 9735
+			});
+		}
+		if onionv2 {
+			addresses.push(msgs::NetAddress::OnionV2 {
+				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246],
+				port: 9735
+			});
+		}
+		if onionv3 {
+			addresses.push(msgs::NetAddress::OnionV3 {
+				ed25519_pubkey:	[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240, 239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224],
+				checksum: 32,
+				version: 16,
+				port: 9735
+			});
+		}
+		let mut addr_len = 0;
+		for addr in &addresses {
+			addr_len += addr.len() + 1;
+		}
+		let unsigned_node_announcement = msgs::UnsignedNodeAnnouncement {
+			features,
+			timestamp: 20190119,
+			node_id: pubkey_1,
+			rgb: [32; 3],
+			alias: [16;32],
+			addresses,
+			excess_address_data: if excess_address_data { vec![33, 108, 40, 11, 83, 149, 162, 84, 110, 126, 75, 38, 99, 224, 79, 129, 22, 34, 241, 90, 79, 146, 232, 58, 162, 233, 43, 162, 165, 115, 193, 57, 20, 44, 84, 174, 99, 7, 42, 30, 193, 238, 125, 192, 192, 75, 222, 92, 132, 120, 6, 23, 42, 160, 92, 146, 194, 42, 232, 227, 8, 209, 210, 105] } else { Vec::new() },
+			excess_data: if excess_data { vec![59, 18, 204, 25, 92, 224, 162, 209, 189, 166, 168, 139, 239, 161, 159, 160, 127, 81, 202, 167, 92, 232, 56, 55, 242, 137, 101, 96, 11, 138, 172, 171, 8, 85, 255, 176, 231, 65, 236, 95, 124, 65, 66, 30, 152, 41, 169, 212, 134, 17, 200, 200, 49, 247, 27, 229, 234, 115, 230, 101, 148, 151, 127, 253] } else { Vec::new() },
+		};
+		addr_len += unsigned_node_announcement.excess_address_data.len() as u16;
+		let node_announcement = msgs::NodeAnnouncement {
+			signature: sig_1,
+			contents: unsigned_node_announcement,
+		};
+		let encoded_value = node_announcement.encode();
+		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		if unknown_features_bits {
+			target_value.append(&mut hex::decode("0002ffff").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("0000").unwrap());
+		}
+		target_value.append(&mut hex::decode("013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010").unwrap());
+		target_value.append(&mut vec![(addr_len >> 8) as u8, addr_len as u8]);
+		if ipv4 {
+			target_value.append(&mut hex::decode("01fffefdfc2607").unwrap());
+		}
+		if ipv6 {
+			target_value.append(&mut hex::decode("02fffefdfcfbfaf9f8f7f6f5f4f3f2f1f02607").unwrap());
+		}
+		if onionv2 {
+			target_value.append(&mut hex::decode("03fffefdfcfbfaf9f8f7f62607").unwrap());
+		}
+		if onionv3 {
+			target_value.append(&mut hex::decode("04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
+		}
+		if excess_address_data {
+			target_value.append(&mut hex::decode("216c280b5395a2546e7e4b2663e04f811622f15a4f92e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d269").unwrap());
+		}
+		if excess_data {
+			target_value.append(&mut hex::decode("3b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_node_announcement() {
+		do_encoding_node_announcement(true, true, true, true, true, true, true);
+		do_encoding_node_announcement(false, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, true, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, true, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, true, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, true, false, false);
+		do_encoding_node_announcement(false, false, false, false, false, true, false);
+		do_encoding_node_announcement(false, true, false, true, false, true, false);
+		do_encoding_node_announcement(false, false, true, false, true, false, false);
+	}
+
+	fn do_encoding_channel_update(non_bitcoin_chain_hash: bool, direction: bool, disable: bool, htlc_maximum_msat: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let unsigned_channel_update = msgs::UnsignedChannelUpdate {
+			chain_hash: if !non_bitcoin_chain_hash { Sha256dHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { Sha256dHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			short_channel_id: 2316138423780173,
+			timestamp: 20190119,
+			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 } | if htlc_maximum_msat { 1 << 8 } else { 0 },
+			cltv_expiry_delta: 144,
+			htlc_minimum_msat: 1000000,
+			fee_base_msat: 10000,
+			fee_proportional_millionths: 20,
+			excess_data: if htlc_maximum_msat { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() }
+		};
+		let channel_update = msgs::ChannelUpdate {
+			signature: sig_1,
+			contents: unsigned_channel_update
+		};
+		let encoded_value = channel_update.encode();
+		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		if non_bitcoin_chain_hash {
+			target_value.append(&mut hex::decode("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		}
+		target_value.append(&mut hex::decode("00083a840000034d013413a7").unwrap());
+		if htlc_maximum_msat {
+			target_value.append(&mut hex::decode("01").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("00").unwrap());
+		}
+		target_value.append(&mut hex::decode("00").unwrap());
+		if direction {
+			let flag = target_value.last_mut().unwrap();
+			*flag = 1;
+		}
+		if disable {
+			let flag = target_value.last_mut().unwrap();
+			*flag = *flag | 1 << 1;
+		}
+		target_value.append(&mut hex::decode("009000000000000f42400000271000000014").unwrap());
+		if htlc_maximum_msat {
+			target_value.append(&mut hex::decode("000000003b9aca00").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_channel_update() {
+		do_encoding_channel_update(false, false, false, false);
+		do_encoding_channel_update(true, false, false, false);
+		do_encoding_channel_update(false, true, false, false);
+		do_encoding_channel_update(false, false, true, false);
+		do_encoding_channel_update(false, false, false, true);
+		do_encoding_channel_update(true, true, true, true);
 	}
 }
