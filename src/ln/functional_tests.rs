@@ -6736,10 +6736,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	} else {
 		assert!(false);
 	}
-	//Confirm the channel was closed
-	{
-		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
-	}
+	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1]);
 }
 
@@ -6768,10 +6765,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 		assert!(false);
 	}
 
-	//Confirm the channel was closed
-	{
-		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
-	}
+	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1]);
 }
 
@@ -6821,10 +6815,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		assert!(false);
 	}
 
-	//Confirm the channel was closed
-	{
-		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
-	}
+	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1]);
 }
 
@@ -6849,12 +6840,8 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 		assert!(false);
 	}
 
-	//Confirm the channel was closed
-	{
-		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
-	}
-	//Clear unhandled msg events.
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[1]);
 }
 
 #[test]
@@ -6878,10 +6865,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 		assert!(false);
 	}
 
-	//Confirm the channel was closed
-	{
-		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
-	}
+	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1]);
 }
 
@@ -6894,7 +6878,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
-	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let _ = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_remote_htlc_id, 1);
 
