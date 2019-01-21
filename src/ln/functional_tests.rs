@@ -1040,6 +1040,132 @@ fn fake_network_test() {
 }
 
 #[test]
+fn holding_cell_htlc_counting() {
+	// Tests that HTLCs in the holding cell count towards the pending HTLC limits on outbound HTLCs
+	// to ensure we don't end up with HTLCs sitting around in our holding cell for several
+	// commitment dance rounds.
+	let mut nodes = create_network(3);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let mut payments = Vec::new();
+	for _ in 0..::ln::channel::OUR_MAX_HTLCS {
+		let route = nodes[1].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		nodes[1].node.send_payment(route, payment_hash).unwrap();
+		payments.push((payment_preimage, payment_hash));
+	}
+	check_added_monitors!(nodes[1], 1);
+
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let initial_payment_event = SendEvent::from_event(events.pop().unwrap());
+	assert_eq!(initial_payment_event.node_id, nodes[2].node.get_our_node_id());
+
+	// There is now one HTLC in an outbound commitment transaction and (OUR_MAX_HTLCS - 1) HTLCs in
+	// the holding cell waiting on B's RAA to send. At this point we should not be able to add
+	// another HTLC.
+	let route = nodes[1].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+	let (_, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	if let APIError::ChannelUnavailable { err } = nodes[1].node.send_payment(route, payment_hash_1).unwrap_err() {
+		assert_eq!(err, "Cannot push more than their max accepted HTLCs");
+	} else { panic!("Unexpected event"); }
+
+	// This should also be true if we try to forward a payment.
+	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let payment_event = SendEvent::from_event(events.pop().unwrap());
+	assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
+	// fails), the second will process the resulting failure and fail the HTLC backward.
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_updates.update_fail_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[0], nodes[1], bs_fail_updates.commitment_signed, false, true);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
+			assert_eq!(msg.contents.short_channel_id, chan_2.0.contents.short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_hash, rejected_by_dest, .. } => {
+			assert_eq!(payment_hash, payment_hash_2);
+			assert!(!rejected_by_dest);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Now forward all the pending HTLCs and claim them back
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &initial_payment_event.msgs[0]).unwrap();
+	nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &initial_payment_event.commitment_msg).unwrap();
+	check_added_monitors!(nodes[2], 1);
+
+	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let as_updates = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+
+	nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &bs_commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let as_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
+
+	for ref update in as_updates.update_add_htlcs.iter() {
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), update).unwrap();
+	}
+	nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &as_updates.commitment_signed).unwrap();
+	check_added_monitors!(nodes[2], 1);
+	nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[2], 1);
+	let (bs_revoke_and_ack, bs_commitment_signed) = get_revoke_commit_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &bs_commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let as_final_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
+
+	nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_final_raa).unwrap();
+	check_added_monitors!(nodes[2], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[2]);
+
+	let events = nodes[2].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), payments.len());
+	for (event, &(_, ref hash)) in events.iter().zip(payments.iter()) {
+		match event {
+			&Event::PaymentReceived { ref payment_hash, .. } => {
+				assert_eq!(*payment_hash, *hash);
+			},
+			_ => panic!("Unexpected event"),
+		};
+	}
+
+	for (preimage, _) in payments.drain(..) {
+		claim_payment(&nodes[1], &[&nodes[2]], preimage);
+	}
+
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+}
+
+#[test]
 fn duplicate_htlc_test() {
 	// Test that we accept duplicate payment_hash HTLCs across the network and that
 	// claiming/failing them are all separate and don't affect each other
@@ -1109,7 +1235,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		assert!(route.hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 		let err = nodes[0].node.send_payment(route, our_payment_hash).err().unwrap();
 		match err {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -1145,7 +1271,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
 		let err = nodes[0].node.send_payment(route.clone(), our_payment_hash).err().unwrap();
 		match err {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the reserve value"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -1170,7 +1296,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 		match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the reserve value"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -1233,7 +1359,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
 		match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over our reserve value"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the reserve value"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -4726,7 +4852,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let err = nodes[0].node.send_payment(route, our_payment_hash);
 
 	if let Err(APIError::ChannelUnavailable{err}) = err {
-		assert_eq!(err, "Cannot send value that would put us over our max HTLC value in flight");
+		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight");
 	} else {
 		assert!(false);
 	}

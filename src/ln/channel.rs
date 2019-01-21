@@ -1543,14 +1543,23 @@ impl Channel {
 		(self.pending_inbound_htlcs.len() as u32, htlc_inbound_value_msat)
 	}
 
-	/// Returns (outbound_htlc_count, htlc_outbound_value_msat)
+	/// Returns (outbound_htlc_count, htlc_outbound_value_msat) *including* pending adds in our
+	/// holding cell.
 	fn get_outbound_pending_htlc_stats(&self) -> (u32, u64) {
 		let mut htlc_outbound_value_msat = 0;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			htlc_outbound_value_msat += htlc.amount_msat;
 		}
 
-		(self.pending_outbound_htlcs.len() as u32, htlc_outbound_value_msat)
+		let mut htlc_outbound_count = self.pending_outbound_htlcs.len();
+		for update in self.holding_cell_htlc_updates.iter() {
+			if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
+				htlc_outbound_count += 1;
+				htlc_outbound_value_msat += amount_msat;
+			}
+		}
+
+		(htlc_outbound_count as u32, htlc_outbound_value_msat)
 	}
 
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), ChannelError> {
@@ -1853,6 +1862,14 @@ impl Channel {
 							match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone()) {
 								Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 								Err(e) => {
+									match e {
+										ChannelError::Ignore(ref msg) => {
+											log_info!(self, "Failed to send HTLC with payment_hash {} due to {}", log_bytes!(payment_hash.0), msg);
+										},
+										_ => {
+											log_info!(self, "Failed to send HTLC with payment_hash {} resulting in a channel closure during holding_cell freeing", log_bytes!(payment_hash.0));
+										},
+									}
 									err = Some(e);
 								}
 							}
@@ -1882,6 +1899,11 @@ impl Channel {
 					}
 					if err.is_some() {
 						self.holding_cell_htlc_updates.push(htlc_update);
+						if let Some(ChannelError::Ignore(_)) = err {
+							// If we failed to add the HTLC, but got an Ignore error, we should
+							// still send the new commitment_signed, so reset the err to None.
+							err = None;
+						}
 					}
 				}
 			}
@@ -3166,30 +3188,19 @@ impl Channel {
 		//TODO: Spec is unclear if this is per-direction or in total (I assume per direction):
 		// Check their_max_htlc_value_in_flight_msat
 		if htlc_outbound_value_msat + amount_msat > self.their_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Ignore("Cannot send value that would put us over our max HTLC value in flight"));
-		}
-
-		let mut holding_cell_outbound_amount_msat = 0;
-		for holding_htlc in self.holding_cell_htlc_updates.iter() {
-			match holding_htlc {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } => {
-					holding_cell_outbound_amount_msat += *amount_msat;
-				}
-				_ => {}
-			}
+			return Err(ChannelError::Ignore("Cannot send value that would put us over the max HTLC value in flight"));
 		}
 
 		// Check self.their_channel_reserve_satoshis (the amount we must keep as
 		// reserve for them to have something to claim if we misbehave)
-		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + holding_cell_outbound_amount_msat + htlc_outbound_value_msat {
-			return Err(ChannelError::Ignore("Cannot send value that would put us over our reserve value"));
+		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
+			return Err(ChannelError::Ignore("Cannot send value that would put us over the reserve value"));
 		}
 
 		//TODO: Check cltv_expiry? Do this in channel manager?
 
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
-			//TODO: Check the limits *including* other pending holding cell HTLCs!
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
 				amount_msat: amount_msat,
 				payment_hash: payment_hash,
