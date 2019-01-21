@@ -140,7 +140,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	//   TemporaryFailure likely indicates net disconnect which resulted in failing to update
 	//   the ChannelMonitor on a watchtower).
 	// * If !(disconnect_count & 16) we deliver a update_fulfill_htlc/CS for the first payment
-	//   immediately, otherwise we wait sconnect and deliver them via the reconnect
+	//   immediately, otherwise we wait disconnect and deliver them via the reconnect
 	//   channel_reestablish processing (ie disconnect_count & 16 makes no sense if
 	//   disconnect_count & !disconnect_flags is 0).
 	// * We then update the channel monitor, reconnecting if disconnect_count is set and walk
