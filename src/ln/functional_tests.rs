@@ -1968,18 +1968,32 @@ fn get_announce_close_broadcast_events(nodes: &Vec<Node>, a: usize, b: usize) {
 	}
 }
 
+macro_rules! expect_payment_received {
+	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!($expected_payment_hash, *payment_hash);
+				assert_eq!($expected_recv_value, amt);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+macro_rules! get_channel_value_stat {
+	($node: expr, $channel_id: expr) => {{
+		let chan_lock = $node.node.channel_state.lock().unwrap();
+		let chan = chan_lock.by_id.get(&$channel_id).unwrap();
+		chan.get_value_stat()
+	}}
+}
+
 fn do_channel_reserve_test(test_recv: bool) {
 	use util::rng;
 	use std::sync::atomic::Ordering;
 	use ln::msgs::HandleError;
-
-	macro_rules! get_channel_value_stat {
-		($node: expr, $channel_id: expr) => {{
-			let chan_lock = $node.node.channel_state.lock().unwrap();
-			let chan = chan_lock.by_id.get(&$channel_id).unwrap();
-			chan.get_value_stat()
-		}}
-	}
 
 	let mut nodes = create_network(3);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001);
@@ -2008,20 +2022,6 @@ fn do_channel_reserve_test(test_recv: bool) {
 			payment_event
 		}}
 	}
-
-	macro_rules! expect_payment_received {
-		($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
-			let events = $node.node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				Event::PaymentReceived { ref payment_hash, amt } => {
-					assert_eq!($expected_payment_hash, *payment_hash);
-					assert_eq!($expected_recv_value, amt);
-				},
-				_ => panic!("Unexpected event"),
-			}
-		}
-	};
 
 	let feemsat = 239; // somehow we know?
 	let total_fee_msat = (nodes.len() - 2) as u64 * 239;
@@ -6655,9 +6655,6 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
 	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_accepted_htlcs as u64;
 
-	//Confirm the first HTLC ID is zero
-	assert_eq!(nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_local_htlc_id, 0);
-
 	for i in 0..max_accepted_htlcs {
 		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 		let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6667,6 +6664,11 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
+			if let MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate{ update_add_htlcs: ref htlcs, .. }, } = events[0] {
+				assert_eq!(htlcs[0].htlc_id, i);
+			} else {
+				assert!(false);
+			}
 			SendEvent::from_event(events.remove(0))
 		};
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
@@ -6674,10 +6676,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		let _ = nodes[1].node.get_and_clear_pending_events();
-
-		//Confirm the value of the id is increased
-		assert_eq!(nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_local_htlc_id, i+1);
+		expect_payment_received!(nodes[1], our_payment_hash, 100000);
 	}
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6694,11 +6693,14 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	//BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
 	let mut nodes = create_network(2);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0);
+	let channel_value = 100000;
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0);
+	let max_in_flight = get_channel_value_stat!(nodes[0], chan.2).their_max_htlc_value_in_flight_msat;
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000000, TEST_FINAL_CLTV).unwrap();
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], max_in_flight);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], max_in_flight+1, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-
 	let err = nodes[0].node.send_payment(route, our_payment_hash);
 
 	if let Err(APIError::ChannelUnavailable{err}) = err {
@@ -6727,22 +6729,18 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-
 	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat-1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-
 	if let Err(HandleError{err, action: _}) = err {
 		assert_eq!(err, "Remote side tried to send less than our minimum HTLC value");
 	} else {
 		assert!(false);
 	}
-
 	//Confirm the channel was closed
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
-	//Clear unhandled msg events.
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+	check_closed_broadcast!(nodes[1]);
 }
 
 #[test]
@@ -6751,14 +6749,17 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 
 	//BOLT2 Requirement: receiving an amount_msat that the sending node cannot afford at the current feerate_per_kw (while maintaining its channel reserve): SHOULD fail the channel
 	let mut nodes = create_network(2);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV).unwrap();
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
+
+	let their_channel_reserve = get_channel_value_stat!(nodes[0], chan.2).channel_reserve_msat;
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 5000000-their_channel_reserve, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
-	updates.update_add_htlcs[0].amount_msat = 4000001;
+	updates.update_add_htlcs[0].amount_msat = 5000000-their_channel_reserve+1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	if let Err(HandleError{err, action: _}) = err {
@@ -6771,8 +6772,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
-	//Clear unhandled msg events.
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+	check_closed_broadcast!(nodes[1]);
 }
 
 #[test]
@@ -6812,7 +6812,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		msg.htlc_id = i as u64;
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg).unwrap();
 	}
-	msg.htlc_id = (super::channel::OUR_MAX_HTLCS + 1) as u64;
+	msg.htlc_id = (super::channel::OUR_MAX_HTLCS) as u64;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 
 	if let Err(HandleError{err, action: _}) = err {
@@ -6825,8 +6825,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
-	//Clear unhandled msg events.
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+	check_closed_broadcast!(nodes[1]);
 }
 
 #[test]
@@ -6838,7 +6837,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-    nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_htlc_value_in_flight_msat + 1;
@@ -6883,8 +6882,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	{
 		assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.len(), 0);
 	}
-	//Clear unhandled msg events.
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+	check_closed_broadcast!(nodes[1]);
 }
 
 #[test]
@@ -6896,7 +6894,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
-	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let _ = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_remote_htlc_id, 1);
 
@@ -6913,11 +6911,10 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let _ = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
 	let _ = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
-	let _ = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	//Confirm the HTLC was ignored
-	assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_remote_htlc_id, 1);
 
-	//Clear unhandled msg events
-	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+	//Resend HTLC
+	let _ = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	assert_eq!(nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().next_remote_htlc_id, 1);
+	assert_eq!(updates.commitment_signed.htlc_signatures.len(), 1);
 }
 

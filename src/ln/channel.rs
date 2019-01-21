@@ -271,9 +271,6 @@ pub(super) struct Channel {
 	// is received. holding_cell_update_fee is updated when there are additional
 	// update_fee() during ChannelState::AwaitingRemoteRevoke.
 	holding_cell_update_fee: Option<u64>,
-	#[cfg(test)]
-	pub next_local_htlc_id: u64,
-	#[cfg(not(test))]
 	next_local_htlc_id: u64,
 	#[cfg(test)]
 	pub next_remote_htlc_id: u64,
@@ -394,7 +391,7 @@ macro_rules! secp_check {
 
 impl Channel {
 	// Convert constants + channel value to limits:
-	pub fn get_our_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
+	fn get_our_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
 		channel_value_satoshis * 1000 / 10 //TODO
 	}
 
@@ -1609,7 +1606,6 @@ impl Channel {
 			cltv_expiry: msg.cltv_expiry,
 			state: InboundHTLCState::RemoteAnnounced(pending_forward_state),
 		});
-
 		Ok(())
 	}
 
