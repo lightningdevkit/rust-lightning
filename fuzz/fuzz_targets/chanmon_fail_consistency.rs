@@ -439,7 +439,7 @@ pub fn do_test(data: &[u8]) {
 					match event {
 						events::Event::PaymentReceived { payment_hash, .. } => {
 							if $fail {
-								assert!(nodes[$node].fail_htlc_backwards(&payment_hash, 0));
+								assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
 							} else {
 								assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0)));
 							}

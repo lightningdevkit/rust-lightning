@@ -252,10 +252,12 @@ pub(super) struct ChannelHolder {
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
 	/// ids in the PendingForwardHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
+	/// payment_hash -> Vec<(amount_received, htlc_source)> for tracking things that were to us and
+	/// can be failed/claimed by the user
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	pub(super) claimable_htlcs: HashMap<PaymentHash, Vec<HTLCPreviousHopData>>,
+	pub(super) claimable_htlcs: HashMap<PaymentHash, Vec<(u64, HTLCPreviousHopData)>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<events::MessageSendEvent>,
@@ -265,7 +267,7 @@ pub(super) struct MutChannelHolder<'a> {
 	pub(super) short_to_id: &'a mut HashMap<u64, [u8; 32]>,
 	pub(super) next_forward: &'a mut Instant,
 	pub(super) forward_htlcs: &'a mut HashMap<u64, Vec<HTLCForwardInfo>>,
-	pub(super) claimable_htlcs: &'a mut HashMap<PaymentHash, Vec<HTLCPreviousHopData>>,
+	pub(super) claimable_htlcs: &'a mut HashMap<PaymentHash, Vec<(u64, HTLCPreviousHopData)>>,
 	pub(super) pending_msg_events: &'a mut Vec<events::MessageSendEvent>,
 }
 impl ChannelHolder {
@@ -1308,8 +1310,8 @@ impl ChannelManager {
 									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 								};
 								match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
-									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(prev_hop_data),
-									hash_map::Entry::Vacant(entry) => { entry.insert(vec![prev_hop_data]); },
+									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push((forward_info.amt_to_forward, prev_hop_data)),
+									hash_map::Entry::Vacant(entry) => { entry.insert(vec![(forward_info.amt_to_forward, prev_hop_data)]); },
 								};
 								new_events.push(events::Event::PaymentReceived {
 									payment_hash: forward_info.payment_hash,
@@ -1354,20 +1356,21 @@ impl ChannelManager {
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
-	/// after a PaymentReceived event.
-	/// expected_value is the value you expected the payment to be for (not the amount it actually
-	/// was for from the PaymentReceived event).
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, expected_value: u64) -> bool {
+	/// after a PaymentReceived event, failing the HTLC back to its origin and freeing resources
+	/// along the path (including in our own channel on which we received it).
+	/// Returns false if no payment was found to fail backwards, true if the process of failing the
+	/// HTLC backwards has been started.
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) -> bool {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
-			for htlc_with_hash in sources.drain(..) {
+			for (recvd_value, htlc_with_hash) in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 						HTLCSource::PreviousHopData(htlc_with_hash), payment_hash,
-						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(expected_value).to_vec() });
+						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(recvd_value).to_vec() });
 			}
 			true
 		} else { false }
@@ -1485,7 +1488,10 @@ impl ChannelManager {
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some(mut sources) = removed_source {
-			for htlc_with_hash in sources.drain(..) {
+			// TODO: We should require the user specify the expected amount so that we can claim
+			// only payments for the correct amount, and reject payments for incorrect amounts
+			// (which are probably middle nodes probing to break our privacy).
+			for (_, htlc_with_hash) in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_preimage);
 			}
@@ -2910,7 +2916,8 @@ impl Writeable for ChannelManager {
 		for (payment_hash, previous_hops) in channel_state.claimable_htlcs.iter() {
 			payment_hash.write(writer)?;
 			(previous_hops.len() as u64).write(writer)?;
-			for previous_hop in previous_hops {
+			for &(recvd_amt, ref previous_hop) in previous_hops.iter() {
+				recvd_amt.write(writer)?;
 				previous_hop.write(writer)?;
 			}
 		}
@@ -3047,7 +3054,7 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			let previous_hops_len: u64 = Readable::read(reader)?;
 			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, 2));
 			for _ in 0..previous_hops_len {
-				previous_hops.push(Readable::read(reader)?);
+				previous_hops.push((Readable::read(reader)?, Readable::read(reader)?));
 			}
 			claimable_htlcs.insert(payment_hash, previous_hops);
 		}
