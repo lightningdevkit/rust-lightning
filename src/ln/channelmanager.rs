@@ -161,6 +161,16 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
+	fn ignore_no_close(err: &'static str) -> Self {
+		Self {
+			err: HandleError {
+				err,
+				action: Some(msgs::ErrorAction::IgnoreError),
+			},
+			shutdown_finish: None,
+		}
+	}
+	#[inline]
 	fn from_no_close(err: msgs::HandleError) -> Self {
 		Self { err, shutdown_finish: None }
 	}
@@ -381,7 +391,7 @@ pub struct ChannelDetails {
 }
 
 macro_rules! handle_error {
-	($self: ident, $internal: expr, $their_node_id: expr) => {
+	($self: ident, $internal: expr) => {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, shutdown_finish }) => {
@@ -439,17 +449,10 @@ macro_rules! try_chan_entry {
 }
 
 macro_rules! return_monitor_err {
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, Vec::new(), Vec::new())
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
+		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new())
 	};
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $raa_first_dropped_cs: expr) => {
-		if $action_type != RAACommitmentOrder::RevokeAndACKFirst { panic!("Bad return_monitor_err call!"); }
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, Vec::new(), Vec::new(), $raa_first_dropped_cs)
-	};
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $failed_forwards: expr, $failed_fails: expr) => {
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, $failed_forwards, $failed_fails, false)
-	};
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $failed_forwards: expr, $failed_fails: expr, $raa_first_dropped_cs: expr) => {
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				let (channel_id, mut chan) = $entry.remove_entry();
@@ -468,7 +471,7 @@ macro_rules! return_monitor_err {
 				return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
-				$entry.get_mut().monitor_update_failed($action_type, $failed_forwards, $failed_fails, $raa_first_dropped_cs);
+				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
 				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()));
 			},
 		}
@@ -477,7 +480,7 @@ macro_rules! return_monitor_err {
 
 // Does not break in case of TemporaryFailure!
 macro_rules! maybe_break_monitor_err {
-	($self: expr, $err: expr, $channel_state: expr, $entry: expr, $action_type: path) => {
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				let (channel_id, mut chan) = $entry.remove_entry();
@@ -487,7 +490,7 @@ macro_rules! maybe_break_monitor_err {
 				break Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
-				$entry.get_mut().monitor_update_failed($action_type, Vec::new(), Vec::new(), false);
+				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new());
 			},
 		}
 	}
@@ -1018,7 +1021,7 @@ impl ChannelManager {
 				} {
 					Some((update_add, commitment_signed, chan_monitor)) => {
 						if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst);
+							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
 							// Note that MonitorUpdateFailed here indicates (per function docs)
 							// that we will resent the commitment update once we unfree monitor
 							// updating, so we have to take special care that we don't return
@@ -1044,7 +1047,7 @@ impl ChannelManager {
 			return Ok(());
 		};
 
-		match handle_error!(self, err, route.hops.first().unwrap().pubkey) {
+		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
 				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
@@ -1087,7 +1090,7 @@ impl ChannelManager {
 					None => return
 				}
 			};
-			match handle_error!(self, res, chan.get_their_node_id()) {
+			match handle_error!(self, res) {
 				Ok(funding_msg) => {
 					(chan, funding_msg.0, funding_msg.1)
 				},
@@ -1962,7 +1965,7 @@ impl ChannelManager {
 				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) =
 					try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &*self.fee_estimator), channel_state, chan);
 				if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, commitment_signed.is_some());
+					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
@@ -2037,10 +2040,16 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
+					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) =
 						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
 					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, pending_forwards, pending_failures);
+						if was_frozen_for_monitor {
+							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
+							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA"));
+						} else {
+							return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
+						}
 					}
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -2147,7 +2156,7 @@ impl ChannelManager {
 						if commitment_update.is_none() {
 							order = RAACommitmentOrder::RevokeAndACKFirst;
 						}
-						return_monitor_err!(self, e, channel_state, chan, order);
+						return_monitor_err!(self, e, channel_state, chan, order, revoke_and_ack.is_some(), commitment_update.is_some());
 						//TODO: Resend the funding_locked if needed once we get the monitor running again
 					}
 				}
@@ -2243,7 +2252,7 @@ impl ChannelManager {
 			return Ok(())
 		};
 
-		match handle_error!(self, err, their_node_id) {
+		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
 				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
@@ -2429,82 +2438,82 @@ impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_open_channel(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_open_channel(their_node_id, msg))
 	}
 
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_accept_channel(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_accept_channel(their_node_id, msg))
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_created(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_funding_created(their_node_id, msg))
 	}
 
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_signed(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_funding_signed(their_node_id, msg))
 	}
 
 	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_locked(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_funding_locked(their_node_id, msg))
 	}
 
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_shutdown(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_shutdown(their_node_id, msg))
 	}
 
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_closing_signed(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_closing_signed(their_node_id, msg))
 	}
 
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg))
 	}
 
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg))
 	}
 
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg))
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg))
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_commitment_signed(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_commitment_signed(their_node_id, msg))
 	}
 
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg))
 	}
 
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fee(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_update_fee(their_node_id, msg))
 	}
 
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg))
 	}
 
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), their_node_id)
+		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg))
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {

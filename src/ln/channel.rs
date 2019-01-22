@@ -2187,23 +2187,15 @@ impl Channel {
 	/// commitment update or a revoke_and_ack generation). The messages which were generated from
 	/// that original call must *not* have been sent to the remote end, and must instead have been
 	/// dropped. They will be regenerated when monitor_updating_restored is called.
-	pub fn monitor_update_failed(&mut self, order: RAACommitmentOrder, mut pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, raa_first_dropped_cs: bool) {
+	pub fn monitor_update_failed(&mut self, order: RAACommitmentOrder, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
-		match order {
-			RAACommitmentOrder::CommitmentFirst => {
-				self.monitor_pending_revoke_and_ack = false;
-				self.monitor_pending_commitment_signed = true;
-			},
-			RAACommitmentOrder::RevokeAndACKFirst => {
-				self.monitor_pending_revoke_and_ack = true;
-				self.monitor_pending_commitment_signed = raa_first_dropped_cs;
-			},
-		}
+		self.monitor_pending_revoke_and_ack = resend_raa;
+		self.monitor_pending_commitment_signed = resend_commitment;
+		self.monitor_pending_order = Some(order);
 		assert!(self.monitor_pending_forwards.is_empty());
 		mem::swap(&mut pending_forwards, &mut self.monitor_pending_forwards);
 		assert!(self.monitor_pending_failures.is_empty());
 		mem::swap(&mut pending_fails, &mut self.monitor_pending_failures);
-		self.monitor_pending_order = Some(order);
 		self.channel_state |= ChannelState::MonitorUpdateFailed as u32;
 	}
 
