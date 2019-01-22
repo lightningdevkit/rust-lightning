@@ -713,7 +713,7 @@ pub fn send_payment(origin: &Node, expected_route: &[&Node], recv_value: u64) {
 }
 
 pub fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: PaymentHash) {
-	assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, 0));
+	assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
 	expect_pending_htlcs_forwardable!(expected_route.last().unwrap());
 	check_added_monitors!(expected_route.last().unwrap(), 1);
 
