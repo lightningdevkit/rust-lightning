@@ -27,3 +27,6 @@ pub use self::rng::{reset_rng_state, fill_bytes};
 
 #[cfg(test)]
 pub(crate) mod test_utils;
+
+#[macro_use]
+pub(crate) mod fuzz_wrappers;

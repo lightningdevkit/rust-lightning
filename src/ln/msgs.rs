@@ -16,7 +16,7 @@
 //! track the network on the less-secure system.
 
 use secp256k1::key::PublicKey;
-use secp256k1::{Secp256k1, Signature};
+use secp256k1::Signature;
 use secp256k1;
 use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
@@ -908,7 +908,7 @@ impl<R: Read> Readable<R> for OnionPacket {
 			public_key: {
 				let mut buf = [0u8;33];
 				r.read_exact(&mut buf)?;
-				PublicKey::from_slice(&Secp256k1::without_caps(), &buf)
+				PublicKey::from_slice(&buf)
 			},
 			hop_data: Readable::read(r)?,
 			hmac: Readable::read(r)?,
@@ -1346,7 +1346,7 @@ mod tests {
 	fn encoding_channel_reestablish_with_secret() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&secp_ctx, &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
 		};
 
 		let cr = msgs::ChannelReestablish {

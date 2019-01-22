@@ -5,7 +5,6 @@ use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
 use lightning::util::reset_rng_state;
 
 use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::Secp256k1;
 
 #[inline]
 fn slice_to_be16(v: &[u8]) -> u16 {
@@ -31,14 +30,13 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
-	let secp_ctx = Secp256k1::new();
-	let our_network_key = match SecretKey::from_slice(&secp_ctx, get_slice!(32)) {
+	let our_network_key = match SecretKey::from_slice(get_slice!(32)) {
 		Ok(key) => key,
 		Err(_) => return,
 	};
 
 	let mut crypter = if get_slice!(1)[0] != 0 {
-		let their_pubkey = match PublicKey::from_slice(&secp_ctx, get_slice!(33)) {
+		let their_pubkey = match PublicKey::from_slice(get_slice!(33)) {
 			Ok(key) => key,
 			Err(_) => return,
 		};

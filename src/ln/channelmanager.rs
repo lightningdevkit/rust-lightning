@@ -20,7 +20,7 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::cmp::fixed_time_eq;
 
 use secp256k1::key::{SecretKey,PublicKey};
-use secp256k1::{Secp256k1,Message};
+use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
@@ -108,7 +108,7 @@ impl HTLCSource {
 	pub fn dummy() -> Self {
 		HTLCSource::OutboundRoute {
 			route: Route { hops: Vec::new() },
-			session_priv: SecretKey::from_slice(&::secp256k1::Secp256k1::without_caps(), &[1; 32]).unwrap(),
+			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 		}
 	}
@@ -733,7 +733,7 @@ impl ChannelManager {
 
 		let shared_secret = {
 			let mut arr = [0; 32];
-			arr.copy_from_slice(&SharedSecret::new(&self.secp_ctx, &msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
+			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
 			arr
 		};
 		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(&shared_secret);
@@ -827,10 +827,10 @@ impl ChannelManager {
 					let mut sha = Sha256::engine();
 					sha.input(&new_pubkey.serialize()[..]);
 					sha.input(&shared_secret);
-					SecretKey::from_slice(&self.secp_ctx, &Sha256::from_engine(sha).into_inner()).expect("SHA-256 is broken?")
+					Sha256::from_engine(sha).into_inner()
 				};
 
-				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor) {
+				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
 					Err(e)
 				} else { Ok(new_pubkey) };
 
@@ -937,7 +937,7 @@ impl ChannelManager {
 		};
 
 		let msg_hash = Sha256dHash::from_data(&unsigned.encode()[..]);
-		let sig = self.secp_ctx.sign(&Message::from_slice(&msg_hash[..]).unwrap(), &self.our_network_key);
+		let sig = self.secp_ctx.sign(&hash_to_message!(&msg_hash[..]), &self.our_network_key);
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -1130,7 +1130,7 @@ impl ChannelManager {
 			Ok(res) => res,
 			Err(_) => return None, // Only in case of state precondition violations eg channel is closing
 		};
-		let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
+		let msghash = hash_to_message!(&Sha256dHash::from_data(&announcement.encode()[..])[..]);
 		let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
 		Some(msgs::AnnouncementSignatures {
@@ -2101,7 +2101,7 @@ impl ChannelManager {
 					try_chan_entry!(self, chan.get_mut().get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone()), channel_state, chan);
 
 				let were_node_one = announcement.node_id_1 == our_node_id;
-				let msghash = Message::from_slice(&Sha256dHash::from_data(&announcement.encode()[..])[..]).unwrap();
+				let msghash = hash_to_message!(&Sha256dHash::from_data(&announcement.encode()[..])[..]);
 				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
 						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
 					try_chan_entry!(self, Err(ChannelError::Close("Bad announcement_signatures node_signature")), channel_state, chan);
