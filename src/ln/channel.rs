@@ -307,6 +307,9 @@ pub(super) struct Channel {
 	pub(super) our_dust_limit_satoshis: u64,
 	#[cfg(not(test))]
 	our_dust_limit_satoshis: u64,
+	#[cfg(test)]
+	pub(super) their_max_htlc_value_in_flight_msat: u64,
+	#[cfg(not(test))]
 	their_max_htlc_value_in_flight_msat: u64,
 	//get_our_max_htlc_value_in_flight_msat(): u64,
 	/// minimum channel reserve for **self** to maintain - set by them.
@@ -316,6 +319,9 @@ pub(super) struct Channel {
 	our_htlc_minimum_msat: u64,
 	their_to_self_delay: u16,
 	//implied by BREAKDOWN_TIMEOUT: our_to_self_delay: u16,
+	#[cfg(test)]
+	pub their_max_accepted_htlcs: u16,
+	#[cfg(not(test))]
 	their_max_accepted_htlcs: u16,
 	//implied by OUR_MAX_HTLCS: our_max_accepted_htlcs: u16,
 	minimum_depth: u32,
@@ -337,7 +343,7 @@ pub(super) struct Channel {
 	logger: Arc<Logger>,
 }
 
-const OUR_MAX_HTLCS: u16 = 50; //TODO
+pub const OUR_MAX_HTLCS: u16 = 50; //TODO
 /// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
 /// really allow for this, so instead we're stuck closing it out at that point.
@@ -1597,7 +1603,6 @@ impl Channel {
 			cltv_expiry: msg.cltv_expiry,
 			state: InboundHTLCState::RemoteAnnounced(pending_forward_state),
 		});
-
 		Ok(())
 	}
 
