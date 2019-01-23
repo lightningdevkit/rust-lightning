@@ -26,7 +26,7 @@ use std::{cmp, fmt};
 use std::io::Read;
 use std::result::Result;
 
-use util::{byte_utils, events};
+use util::events;
 use util::ser::{Readable, Writeable, Writer};
 
 use ln::channelmanager::{PaymentPreimage, PaymentHash};
@@ -47,7 +47,6 @@ pub enum DecodeError {
 	/// node_announcement included more than one address of a given type!
 	ExtraAddressesPerType,
 	/// A length descriptor in the packet didn't describe the later data correctly
-	/// (currently only generated in node_announcement)
 	BadLengthDescriptor,
 	/// Error from std::io
 	Io(::std::io::Error),
@@ -191,7 +190,7 @@ pub struct OpenChannel {
 	pub(crate) htlc_basepoint: PublicKey,
 	pub(crate) first_per_commitment_point: PublicKey,
 	pub(crate) channel_flags: u8,
-	pub(crate) shutdown_scriptpubkey: Option<Script>,
+	pub(crate) shutdown_scriptpubkey: OptionalField<Script>,
 }
 
 /// An accept_channel message to be sent or received from a peer
@@ -211,7 +210,7 @@ pub struct AcceptChannel {
 	pub(crate) delayed_payment_basepoint: PublicKey,
 	pub(crate) htlc_basepoint: PublicKey,
 	pub(crate) first_per_commitment_point: PublicKey,
-	pub(crate) shutdown_scriptpubkey: Option<Script>,
+	pub(crate) shutdown_scriptpubkey: OptionalField<Script>
 }
 
 /// A funding_created message to be sent or received from a peer
@@ -323,7 +322,7 @@ pub struct ChannelReestablish {
 	pub(crate) channel_id: [u8; 32],
 	pub(crate) next_local_commitment_number: u64,
 	pub(crate) next_remote_commitment_number: u64,
-	pub(crate) data_loss_protect: Option<DataLossProtect>,
+	pub(crate) data_loss_protect: OptionalField<DataLossProtect>,
 }
 
 /// An announcement_signatures message to be sent or received from a peer
@@ -336,7 +335,7 @@ pub struct AnnouncementSignatures {
 }
 
 /// An address which can be used to connect to a remote peer
-#[derive(Clone)]
+#[derive(PartialEq, Clone)]
 pub enum NetAddress {
 	/// An IPv4 address/port on which the peer is listenting.
 	IPv4 {
@@ -382,9 +381,84 @@ impl NetAddress {
 			&NetAddress::OnionV3 {..} => { 4 },
 		}
 	}
+
+	/// Strict byte-length of address descriptor, 1-byte type not recorded
+	fn len(&self) -> u16 {
+		match self {
+			&NetAddress::IPv4 { .. } => { 6 },
+			&NetAddress::IPv6 { .. } => { 18 },
+			&NetAddress::OnionV2 { .. } => { 12 },
+			&NetAddress::OnionV3 { .. } => { 37 },
+		}
+	}
 }
 
-#[derive(Clone)]
+impl Writeable for NetAddress {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&NetAddress::IPv4 { ref addr, ref port } => {
+				1u8.write(writer)?;
+				addr.write(writer)?;
+				port.write(writer)?;
+			},
+			&NetAddress::IPv6 { ref addr, ref port } => {
+				2u8.write(writer)?;
+				addr.write(writer)?;
+				port.write(writer)?;
+			},
+			&NetAddress::OnionV2 { ref addr, ref port } => {
+				3u8.write(writer)?;
+				addr.write(writer)?;
+				port.write(writer)?;
+			},
+			&NetAddress::OnionV3 { ref ed25519_pubkey, ref checksum, ref version, ref port } => {
+				4u8.write(writer)?;
+				ed25519_pubkey.write(writer)?;
+				checksum.write(writer)?;
+				version.write(writer)?;
+				port.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read>  Readable<R> for Result<NetAddress, u8> {
+	fn read(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
+		let byte = <u8 as Readable<R>>::read(reader)?;
+		match byte {
+			1 => {
+				Ok(Ok(NetAddress::IPv4 {
+					addr: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			2 => {
+				Ok(Ok(NetAddress::IPv6 {
+					addr: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			3 => {
+				Ok(Ok(NetAddress::OnionV2 {
+					addr: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			4 => {
+				Ok(Ok(NetAddress::OnionV3 {
+					ed25519_pubkey: Readable::read(reader)?,
+					checksum: Readable::read(reader)?,
+					version: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			_ => return Ok(Err(byte)),
+		}
+	}
+}
+
+#[derive(PartialEq, Clone)]
 // Only exposed as broadcast of node_announcement should be filtered by node_id
 /// The unsigned part of a node_announcement
 pub struct UnsignedNodeAnnouncement {
@@ -401,7 +475,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
-#[derive(Clone)]
+#[derive(PartialEq, Clone)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
 	pub(crate) signature: Signature,
@@ -516,6 +590,18 @@ pub enum HTLCFailChannelUpdate {
 		/// restored as new channel_update is received
 		is_permanent: bool,
 	}
+}
+
+/// Messages could have optional fields to use with extended features
+/// As we wish to serialize these differently from Option<T>s (Options get a tag byte, but
+/// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
+/// separate enum type for them.
+#[derive(Clone, PartialEq)]
+pub enum OptionalField<T> {
+	/// Optional field is included in message
+	Present(T),
+	/// Optional field is absent in message
+	Absent
 }
 
 /// A trait to describe an object which can receive channel messages.
@@ -696,8 +782,35 @@ impl From<::std::io::Error> for DecodeError {
 	}
 }
 
+impl Writeable for OptionalField<Script> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		match *self {
+			OptionalField::Present(ref script) => {
+				// Note that Writeable for script includes the 16-bit length tag for us
+				script.write(w)?;
+			},
+			OptionalField::Absent => {}
+		}
+		Ok(())
+	}
+}
+
+impl<R: Read> Readable<R> for OptionalField<Script> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		match <u16 as Readable<R>>::read(r) {
+			Ok(len) => {
+				let mut buf = vec![0; len as usize];
+				r.read_exact(&mut buf)?;
+				Ok(OptionalField::Present(Script::from(buf)))
+			},
+			Err(DecodeError::ShortRead) => Ok(OptionalField::Absent),
+			Err(e) => Err(e)
+		}
+	}
+}
+
 impl_writeable_len_match!(AcceptChannel, {
-		{AcceptChannel{ shutdown_scriptpubkey: Some(ref script), ..}, 270 + 2 + script.len()},
+		{AcceptChannel{ shutdown_scriptpubkey: OptionalField::Present(ref script), .. }, 270 + 2 + script.len()},
 		{_, 270}
 	}, {
 	temporary_channel_id,
@@ -726,13 +839,16 @@ impl_writeable!(AnnouncementSignatures, 32+8+64*2, {
 
 impl Writeable for ChannelReestablish {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(if self.data_loss_protect.is_some() { 32+2*8+33+32 } else { 32+2*8 });
+		w.size_hint(if let OptionalField::Present(..) = self.data_loss_protect { 32+2*8+33+32 } else { 32+2*8 });
 		self.channel_id.write(w)?;
 		self.next_local_commitment_number.write(w)?;
 		self.next_remote_commitment_number.write(w)?;
-		if let Some(ref data_loss_protect) = self.data_loss_protect {
-			data_loss_protect.your_last_per_commitment_secret.write(w)?;
-			data_loss_protect.my_current_per_commitment_point.write(w)?;
+		match self.data_loss_protect {
+			OptionalField::Present(ref data_loss_protect) => {
+				(*data_loss_protect).your_last_per_commitment_secret.write(w)?;
+				(*data_loss_protect).my_current_per_commitment_point.write(w)?;
+			},
+			OptionalField::Absent => {}
 		}
 		Ok(())
 	}
@@ -747,11 +863,11 @@ impl<R: Read> Readable<R> for ChannelReestablish{
 			data_loss_protect: {
 				match <[u8; 32] as Readable<R>>::read(r) {
 					Ok(your_last_per_commitment_secret) =>
-						Some(DataLossProtect {
+						OptionalField::Present(DataLossProtect {
 							your_last_per_commitment_secret,
 							my_current_per_commitment_point: Readable::read(r)?,
 						}),
-					Err(DecodeError::ShortRead) => None,
+					Err(DecodeError::ShortRead) => OptionalField::Absent,
 					Err(e) => return Err(e)
 				}
 			}
@@ -818,8 +934,8 @@ impl_writeable_len_match!(Init, {
 });
 
 impl_writeable_len_match!(OpenChannel, {
-		{ OpenChannel { shutdown_scriptpubkey: Some(ref script), .. }, 319 + 2 + script.len() },
-		{ OpenChannel { shutdown_scriptpubkey: None, .. }, 319 }
+		{ OpenChannel { shutdown_scriptpubkey: OptionalField::Present(ref script), .. }, 319 + 2 + script.len() },
+		{ _, 319 }
 	}, {
 	chain_hash,
 	temporary_channel_id,
@@ -1150,38 +1266,17 @@ impl Writeable for UnsignedNodeAnnouncement {
 		w.write_all(&self.rgb)?;
 		self.alias.write(w)?;
 
-		let mut addr_slice = Vec::with_capacity(self.addresses.len() * 18);
 		let mut addrs_to_encode = self.addresses.clone();
 		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
 		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
-		for addr in addrs_to_encode.iter() {
-			match addr {
-				&NetAddress::IPv4{addr, port} => {
-					addr_slice.push(1);
-					addr_slice.extend_from_slice(&addr);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::IPv6{addr, port} => {
-					addr_slice.push(2);
-					addr_slice.extend_from_slice(&addr);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::OnionV2{addr, port} => {
-					addr_slice.push(3);
-					addr_slice.extend_from_slice(&addr);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-				&NetAddress::OnionV3{ed25519_pubkey, checksum, version, port} => {
-					addr_slice.push(4);
-					addr_slice.extend_from_slice(&ed25519_pubkey);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(checksum));
-					addr_slice.push(version);
-					addr_slice.extend_from_slice(&byte_utils::be16_to_array(port));
-				},
-			}
+		let mut addr_len = 0;
+		for addr in &addrs_to_encode {
+			addr_len += 1 + addr.len();
 		}
-		((addr_slice.len() + self.excess_address_data.len()) as u16).write(w)?;
-		w.write_all(&addr_slice[..])?;
+		(addr_len + self.excess_address_data.len() as u16).write(w)?;
+		for addr in addrs_to_encode {
+			addr.write(w)?;
+		}
 		w.write_all(&self.excess_address_data[..])?;
 		w.write_all(&self.excess_data[..])?;
 		Ok(())
@@ -1200,112 +1295,77 @@ impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
 		r.read_exact(&mut rgb)?;
 		let alias: [u8; 32] = Readable::read(r)?;
 
-		let addrlen: u16 = Readable::read(r)?;
+		let addr_len: u16 = Readable::read(r)?;
+		let mut addresses: Vec<NetAddress> = Vec::with_capacity(4);
 		let mut addr_readpos = 0;
-		let mut addresses = Vec::with_capacity(4);
-		let mut f: u8 = 0;
-		let mut excess = 0;
+		let mut excess = false;
+		let mut excess_byte = 0;
 		loop {
-			if addrlen <= addr_readpos { break; }
-			f = Readable::read(r)?;
-			match f {
-				1 => {
-					if addresses.len() > 0 {
-						return Err(DecodeError::ExtraAddressesPerType);
-					}
-					if addrlen < addr_readpos + 1 + 6 {
-						return Err(DecodeError::BadLengthDescriptor);
-					}
-					addresses.push(NetAddress::IPv4 {
-						addr: {
-							let mut addr = [0; 4];
-							r.read_exact(&mut addr)?;
-							addr
+			if addr_len <= addr_readpos { break; }
+			match Readable::read(r) {
+				Ok(Ok(addr)) => {
+					match addr {
+						NetAddress::IPv4 { .. } => {
+							if addresses.len() > 0 {
+								return Err(DecodeError::ExtraAddressesPerType);
+							}
 						},
-						port: Readable::read(r)?,
-					});
-					addr_readpos += 1 + 6
-				},
-				2 => {
-					if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
-						return Err(DecodeError::ExtraAddressesPerType);
-					}
-					if addrlen < addr_readpos + 1 + 18 {
-						return Err(DecodeError::BadLengthDescriptor);
-					}
-					addresses.push(NetAddress::IPv6 {
-						addr: {
-							let mut addr = [0; 16];
-							r.read_exact(&mut addr)?;
-							addr
+						NetAddress::IPv6 { .. } => {
+							if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
+								return Err(DecodeError::ExtraAddressesPerType);
+							}
 						},
-						port: Readable::read(r)?,
-					});
-					addr_readpos += 1 + 18
-				},
-				3 => {
-					if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
-						return Err(DecodeError::ExtraAddressesPerType);
-					}
-					if addrlen < addr_readpos + 1 + 12 {
-						return Err(DecodeError::BadLengthDescriptor);
-					}
-					addresses.push(NetAddress::OnionV2 {
-						addr: {
-							let mut addr = [0; 10];
-							r.read_exact(&mut addr)?;
-							addr
+						NetAddress::OnionV2 { .. } => {
+							if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
+								return Err(DecodeError::ExtraAddressesPerType);
+							}
 						},
-						port: Readable::read(r)?,
-					});
-					addr_readpos += 1 + 12
-				},
-				4 => {
-					if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
-						return Err(DecodeError::ExtraAddressesPerType);
+						NetAddress::OnionV3 { .. } => {
+							if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
+								return Err(DecodeError::ExtraAddressesPerType);
+							}
+						},
 					}
-					if addrlen < addr_readpos + 1 + 37 {
+					if addr_len < addr_readpos + 1 + addr.len() {
 						return Err(DecodeError::BadLengthDescriptor);
 					}
-					addresses.push(NetAddress::OnionV3 {
-						ed25519_pubkey: Readable::read(r)?,
-						checksum: Readable::read(r)?,
-						version: Readable::read(r)?,
-						port: Readable::read(r)?,
-					});
-					addr_readpos += 1 + 37
+					addr_readpos += (1 + addr.len()) as u16;
+					addresses.push(addr);
 				},
-				_ => { excess = 1; break; }
+				Ok(Err(unknown_descriptor)) => {
+					excess = true;
+					excess_byte = unknown_descriptor;
+					break;
+				},
+				Err(DecodeError::ShortRead) => return Err(DecodeError::BadLengthDescriptor),
+				Err(e) => return Err(e),
 			}
 		}
 
 		let mut excess_data = vec![];
-		let excess_address_data = if addr_readpos < addrlen {
-			let mut excess_address_data = vec![0; (addrlen - addr_readpos) as usize];
-			r.read_exact(&mut excess_address_data[excess..])?;
-			if excess == 1 {
-				excess_address_data[0] = f;
+		let excess_address_data = if addr_readpos < addr_len {
+			let mut excess_address_data = vec![0; (addr_len - addr_readpos) as usize];
+			r.read_exact(&mut excess_address_data[if excess { 1 } else { 0 }..])?;
+			if excess {
+				excess_address_data[0] = excess_byte;
 			}
 			excess_address_data
 		} else {
-			if excess == 1 {
-				excess_data.push(f);
+			if excess {
+				excess_data.push(excess_byte);
 			}
 			Vec::new()
 		};
-
+		r.read_to_end(&mut excess_data)?;
 		Ok(UnsignedNodeAnnouncement {
-			features: features,
-			timestamp: timestamp,
-			node_id: node_id,
-			rgb: rgb,
-			alias: alias,
-			addresses: addresses,
-			excess_address_data: excess_address_data,
-			excess_data: {
-				r.read_to_end(&mut excess_data)?;
-				excess_data
-			},
+			features,
+			timestamp,
+			node_id,
+			rgb,
+			alias,
+			addresses,
+			excess_address_data,
+			excess_data,
 		})
 	}
 }
@@ -1322,6 +1382,7 @@ impl_writeable_len_match!(NodeAnnouncement, {
 mod tests {
 	use hex;
 	use ln::msgs;
+	use ln::msgs::OptionalField;
 	use util::ser::Writeable;
 	use secp256k1::key::{PublicKey,SecretKey};
 	use secp256k1::Secp256k1;
@@ -1332,7 +1393,7 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			data_loss_protect: None,
+			data_loss_protect: OptionalField::Absent,
 		};
 
 		let encoded_value = cr.encode();
@@ -1353,7 +1414,7 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			data_loss_protect: Some(msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key}),
+			data_loss_protect: OptionalField::Present(msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key}),
 		};
 
 		let encoded_value = cr.encode();

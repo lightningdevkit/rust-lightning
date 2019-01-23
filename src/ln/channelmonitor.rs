@@ -1960,13 +1960,6 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 				}
 			}
 		}
-		macro_rules! read_option { () => {
-			match <u8 as Readable<R>>::read(reader)? {
-				0 => None,
-				1 => Some(Readable::read(reader)?),
-				_ => return Err(DecodeError::InvalidValue),
-			}
-		} }
 
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
@@ -1983,16 +1976,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 				let delayed_payment_base_key = Readable::read(reader)?;
 				let payment_base_key = Readable::read(reader)?;
 				let shutdown_pubkey = Readable::read(reader)?;
-				let prev_latest_per_commitment_point = match <u8 as Readable<R>>::read(reader)? {
-					0 => None,
-					1 => Some(Readable::read(reader)?),
-					_ => return Err(DecodeError::InvalidValue),
-				};
-				let latest_per_commitment_point = match <u8 as Readable<R>>::read(reader)? {
-					0 => None,
-					1 => Some(Readable::read(reader)?),
-					_ => return Err(DecodeError::InvalidValue),
-				};
+				let prev_latest_per_commitment_point = Readable::read(reader)?;
+				let latest_per_commitment_point = Readable::read(reader)?;
 				// Technically this can fail and serialize fail a round-trip, but only for serialization of
 				// barely-init'd ChannelMonitors that we can't do anything with.
 				let outpoint = OutPoint {
@@ -2000,8 +1985,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					index: Readable::read(reader)?,
 				};
 				let funding_info = Some((outpoint, Readable::read(reader)?));
-				let current_remote_commitment_txid = read_option!();
-				let prev_remote_commitment_txid = read_option!();
+				let current_remote_commitment_txid = Readable::read(reader)?;
+				let prev_remote_commitment_txid = Readable::read(reader)?;
 				Storage::Local {
 					revocation_base_key,
 					htlc_base_key,
@@ -2052,7 +2037,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					let amount_msat: u64 = Readable::read(reader)?;
 					let cltv_expiry: u32 = Readable::read(reader)?;
 					let payment_hash: PaymentHash = Readable::read(reader)?;
-					let transaction_output_index: Option<u32> = read_option!();
+					let transaction_output_index: Option<u32> = Readable::read(reader)?;
 
 					HTLCOutputInCommitment {
 						offered, amount_msat, cltv_expiry, payment_hash, transaction_output_index
@@ -2068,7 +2053,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			let htlcs_count: u64 = Readable::read(reader)?;
 			let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
 			for _ in 0..htlcs_count {
-				htlcs.push((read_htlc_in_commitment!(), read_option!().map(|o: HTLCSource| Box::new(o))));
+				htlcs.push((read_htlc_in_commitment!(), <Option<HTLCSource> as Readable<R>>::read(reader)?.map(|o: HTLCSource| Box::new(o))));
 			}
 			if let Some(_) = remote_claimable_outpoints.insert(txid, htlcs) {
 				return Err(DecodeError::InvalidValue);
@@ -2131,7 +2116,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 							1 => Some((Readable::read(reader)?, Readable::read(reader)?)),
 							_ => return Err(DecodeError::InvalidValue),
 						};
-						htlcs.push((htlc, sigs, read_option!()));
+						htlcs.push((htlc, sigs, Readable::read(reader)?));
 					}
 
 					LocalSignedTx {

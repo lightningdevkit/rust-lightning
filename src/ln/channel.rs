@@ -15,7 +15,7 @@ use secp256k1::{Secp256k1,Signature};
 use secp256k1;
 
 use ln::msgs;
-use ln::msgs::DecodeError;
+use ln::msgs::{DecodeError, OptionalField};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -2943,7 +2943,7 @@ impl Channel {
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			channel_flags: if self.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: None,
+			shutdown_scriptpubkey: OptionalField::Absent
 		}
 	}
 
@@ -2975,7 +2975,7 @@ impl Channel {
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.delayed_payment_base_key),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
-			shutdown_scriptpubkey: None,
+			shutdown_scriptpubkey: OptionalField::Absent
 		}
 	}
 
@@ -3103,7 +3103,7 @@ impl Channel {
 			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
 			// overflow here.
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number - 1,
-			data_loss_protect: None,
+			data_loss_protect: OptionalField::Absent,
 		}
 	}
 
@@ -3688,14 +3688,6 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			});
 		}
 
-		macro_rules! read_option { () => {
-			match <u8 as Readable<R>>::read(reader)? {
-				0 => None,
-				1 => Some(Readable::read(reader)?),
-				_ => return Err(DecodeError::InvalidValue),
-			}
-		} }
-
 		let pending_outbound_htlc_count: u64 = Readable::read(reader)?;
 		let mut pending_outbound_htlcs = Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..pending_outbound_htlc_count {
@@ -3705,7 +3697,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 				cltv_expiry: Readable::read(reader)?,
 				payment_hash: Readable::read(reader)?,
 				source: Readable::read(reader)?,
-				fail_reason: read_option!(),
+				fail_reason: Readable::read(reader)?,
 				state: match <u8 as Readable<R>>::read(reader)? {
 					0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
 					1 => OutboundHTLCState::Committed,
@@ -3763,8 +3755,8 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			monitor_pending_failures.push((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?));
 		}
 
-		let pending_update_fee = read_option!();
-		let holding_cell_update_fee = read_option!();
+		let pending_update_fee = Readable::read(reader)?;
+		let holding_cell_update_fee = Readable::read(reader)?;
 
 		let next_local_htlc_id = Readable::read(reader)?;
 		let next_remote_htlc_id = Readable::read(reader)?;
@@ -3786,8 +3778,8 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let funding_tx_confirmed_in = read_option!();
-		let short_channel_id = read_option!();
+		let funding_tx_confirmed_in = Readable::read(reader)?;
+		let short_channel_id = Readable::read(reader)?;
 
 		let last_block_connected = Readable::read(reader)?;
 		let funding_tx_confirmations = Readable::read(reader)?;
@@ -3802,17 +3794,17 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let their_max_accepted_htlcs = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
-		let their_funding_pubkey = read_option!();
-		let their_revocation_basepoint = read_option!();
-		let their_payment_basepoint = read_option!();
-		let their_delayed_payment_basepoint = read_option!();
-		let their_htlc_basepoint = read_option!();
-		let their_cur_commitment_point = read_option!();
+		let their_funding_pubkey = Readable::read(reader)?;
+		let their_revocation_basepoint = Readable::read(reader)?;
+		let their_payment_basepoint = Readable::read(reader)?;
+		let their_delayed_payment_basepoint = Readable::read(reader)?;
+		let their_htlc_basepoint = Readable::read(reader)?;
+		let their_cur_commitment_point = Readable::read(reader)?;
 
-		let their_prev_commitment_point = read_option!();
+		let their_prev_commitment_point = Readable::read(reader)?;
 		let their_node_id = Readable::read(reader)?;
 
-		let their_shutdown_scriptpubkey = read_option!();
+		let their_shutdown_scriptpubkey = Readable::read(reader)?;
 		let (monitor_last_block, channel_monitor) = ReadableArgs::read(reader, logger.clone())?;
 		// We drop the ChannelMonitor's last block connected hash cause we don't actually bother
 		// doing full block connection operations on the internal CHannelMonitor copies
