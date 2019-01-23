@@ -80,6 +80,10 @@ pub trait KeysInterface: Send + Sync {
 	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys;
 	/// Get a secret for construting an onion packet
 	fn get_session_key(&self) -> SecretKey;
+	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
+	/// transaction is created, at which point they will use the outpoint in the funding
+	/// transaction.
+	fn get_channel_id(&self) -> [u8; 32];
 }
 
 /// Set of lightning keys needed to operate a channel as described in BOLT 3
@@ -124,6 +128,8 @@ pub struct KeysManager {
 	channel_child_index: AtomicUsize,
 	session_master_key: ExtendedPrivKey,
 	session_child_index: AtomicUsize,
+	channel_id_master_key: ExtendedPrivKey,
+	channel_id_child_index: AtomicUsize,
 
 	logger: Arc<Logger>,
 }
@@ -151,6 +157,7 @@ impl KeysManager {
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3)).expect("Your RNG is busted");
 				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4)).expect("Your RNG is busted");
+				let channel_id_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5)).expect("Your RNG is busted");
 				KeysManager {
 					secp_ctx,
 					node_secret,
@@ -160,6 +167,8 @@ impl KeysManager {
 					channel_child_index: AtomicUsize::new(0),
 					session_master_key,
 					session_child_index: AtomicUsize::new(0),
+					channel_id_master_key,
+					channel_id_child_index: AtomicUsize::new(0),
 
 					logger,
 				}
@@ -245,5 +254,19 @@ impl KeysInterface for KeysManager {
 		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
 		sha.input(&child_privkey.secret_key[..]);
 		SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted")
+	}
+
+	fn get_channel_id(&self) -> [u8; 32] {
+		let mut sha = Sha256::engine();
+
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
+		sha.input(&byte_utils::be32_to_array(now.subsec_nanos()));
+		sha.input(&byte_utils::be64_to_array(now.as_secs()));
+
+		let child_ix = self.channel_id_child_index.fetch_add(1, Ordering::AcqRel);
+		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
+		sha.input(&child_privkey.secret_key[..]);
+
+		(Sha256::from_engine(sha).into_inner())
 	}
 }
