@@ -302,29 +302,6 @@ impl<R: Read> Readable<R> for Script {
 	}
 }
 
-impl Writeable for Option<Script> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		if let &Some(ref script) = self {
-			script.write(w)?;
-		}
-		Ok(())
-	}
-}
-
-impl<R: Read> Readable<R> for Option<Script> {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		match <u16 as Readable<R>>::read(r) {
-			Ok(len) => {
-				let mut buf = vec![0; len as usize];
-				r.read_exact(&mut buf)?;
-				Ok(Some(Script::from(buf)))
-			},
-			Err(DecodeError::ShortRead) => Ok(None),
-			Err(e) => Err(e)
-		}
-	}
-}
-
 impl Writeable for PublicKey {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.serialize().write(w)
@@ -411,5 +388,31 @@ impl<R: Read> Readable<R> for PaymentHash {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentHash(buf))
+	}
+}
+
+impl<T: Writeable> Writeable for Option<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		match *self {
+			None => 0u8.write(w)?,
+			Some(ref data) => {
+				1u8.write(w)?;
+				data.write(w)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R, T> Readable<R> for Option<T>
+	where R: Read,
+	      T: Readable<R>
+{
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		match <u8 as Readable<R>>::read(r)? {
+			0 => Ok(None),
+			1 => Ok(Some(Readable::read(r)?)),
+			_ => return Err(DecodeError::InvalidValue),
+		}
 	}
 }

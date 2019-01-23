@@ -2612,12 +2612,7 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for PendingForwardHTLCInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		if let &Some(ref onion) = &self.onion_packet {
-			1u8.write(writer)?;
-			onion.write(writer)?;
-		} else {
-			0u8.write(writer)?;
-		}
+		self.onion_packet.write(writer)?;
 		self.incoming_shared_secret.write(writer)?;
 		self.payment_hash.write(writer)?;
 		self.short_channel_id.write(writer)?;
@@ -2629,13 +2624,8 @@ impl Writeable for PendingForwardHTLCInfo {
 
 impl<R: ::std::io::Read> Readable<R> for PendingForwardHTLCInfo {
 	fn read(reader: &mut R) -> Result<PendingForwardHTLCInfo, DecodeError> {
-		let onion_packet = match <u8 as Readable<R>>::read(reader)? {
-			0 => None,
-			1 => Some(msgs::OnionPacket::read(reader)?),
-			_ => return Err(DecodeError::InvalidValue),
-		};
 		Ok(PendingForwardHTLCInfo {
-			onion_packet,
+			onion_packet: Readable::read(reader)?,
 			incoming_shared_secret: Readable::read(reader)?,
 			payment_hash: Readable::read(reader)?,
 			short_channel_id: Readable::read(reader)?,
