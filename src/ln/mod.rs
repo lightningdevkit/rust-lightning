@@ -25,4 +25,6 @@ mod chan_utils;
 mod onion_utils;
 
 #[cfg(test)]
+#[macro_use] mod functional_test_utils;
+#[cfg(test)]
 mod functional_tests;
