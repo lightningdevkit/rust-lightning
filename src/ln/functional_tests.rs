@@ -5052,3 +5052,303 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1]);
 }
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
+	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
+
+	let mut nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+
+	let update_msg = msgs::UpdateFulfillHTLC{
+		channel_id: chan.2,
+		htlc_id: 0,
+		payment_preimage: our_payment_preimage,
+	};
+
+	let err = nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
+
+	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+		assert_eq!(err, "Remote tried to fulfill/fail HTLC before it had been committed");
+	} else {
+		assert!(false);
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0]);
+}
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
+	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
+
+	let mut nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+
+	let update_msg = msgs::UpdateFailHTLC{
+		channel_id: chan.2,
+		htlc_id: 0,
+		reason: msgs::OnionErrorPacket { data: Vec::new()},
+	};
+
+	let err = nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
+
+	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+		assert_eq!(err, "Remote tried to fulfill/fail HTLC before it had been committed");
+	} else {
+		assert!(false);
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0]);
+}
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment() {
+	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
+
+	let mut nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+
+	let update_msg = msgs::UpdateFailMalformedHTLC{
+		channel_id: chan.2,
+		htlc_id: 0,
+		sha256_of_onion: [1; 32],
+		failure_code: 0x8000,
+	};
+
+	let err = nodes[0].node.handle_update_fail_malformed_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
+
+	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+		assert_eq!(err, "Remote tried to fulfill/fail HTLC before it had been committed");
+	} else {
+		assert!(false);
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0]);
+}
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
+	//BOLT 2 Requirement: A receiving node:	if the id does not correspond to an HTLC in its current commitment transaction MUST fail the channel.
+
+	let nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
+
+	nodes[1].node.claim_funds(our_payment_preimage);
+	check_added_monitors!(nodes[1], 1);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut update_fulfill_msg: msgs::UpdateFulfillHTLC = {
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert!(update_fail_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert!(update_fee.is_none());
+				update_fulfill_htlcs[0].clone()
+			},
+			_ => panic!("Unexpected event"),
+		}
+	};
+
+	update_fulfill_msg.htlc_id = 1;
+
+	let err = nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_msg);
+	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+		assert_eq!(err, "Remote tried to fulfill/fail an HTLC we couldn't find");
+	} else {
+		assert!(false);
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0]);
+}
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
+	//BOLT 2 Requirement: A receiving node:	if the payment_preimage value in update_fulfill_htlc doesn't SHA256 hash to the corresponding HTLC payment_hash	MUST fail the channel.
+
+	let nodes = create_network(2);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
+
+	nodes[1].node.claim_funds(our_payment_preimage);
+	check_added_monitors!(nodes[1], 1);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut update_fulfill_msg: msgs::UpdateFulfillHTLC = {
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert!(update_fail_htlcs.is_empty());
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert!(update_fee.is_none());
+				update_fulfill_htlcs[0].clone()
+			},
+			_ => panic!("Unexpected event"),
+		}
+	};
+
+	update_fulfill_msg.payment_preimage = PaymentPreimage([1; 32]);
+
+	let err = nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_msg);
+	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+		assert_eq!(err, "Remote tried to fulfill HTLC with an incorrect preimage");
+	} else {
+		assert!(false);
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0]);
+}
+
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_message() {
+	//BOLT 2 Requirement: A receiving node: if the BADONION bit in failure_code is not set for update_fail_malformed_htlc MUST fail the channel.
+
+	let mut nodes = create_network(2);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	updates.update_add_htlcs[0].onion_routing_packet.version = 1; //Produce a malformed HTLC message
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false, true);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+
+	let mut update_msg: msgs::UpdateFailMalformedHTLC = {
+		match events[0] {
+			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fulfill_htlcs.is_empty());
+				assert!(update_fail_htlcs.is_empty());
+				assert_eq!(update_fail_malformed_htlcs.len(), 1);
+				assert!(update_fee.is_none());
+				update_fail_malformed_htlcs[0].clone()
+			},
+			_ => panic!("Unexpected event"),
+		}
+	};
+	update_msg.failure_code &= !0x8000;
+	let err = nodes[0].node.handle_update_fail_malformed_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
+	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+		assert_eq!(err, "Got update_fail_malformed_htlc with BADONION not set");
+	} else {
+		assert!(false);
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0]);
+}
+
+#[test]
+fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_update_fail_htlc() {
+	//BOLT 2 Requirement: a receiving node which has an outgoing HTLC canceled by update_fail_malformed_htlc:
+	//    * MUST return an error in the update_fail_htlc sent to the link which originally sent the HTLC, using the failure_code given and setting the data to sha256_of_onion.
+
+	let mut nodes = create_network(3);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1000000, 1000000);
+
+	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+
+	//First hop
+	let mut payment_event = {
+		nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	let mut events_2 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_2.len(), 1);
+	check_added_monitors!(nodes[1], 1);
+	payment_event = SendEvent::from_event(events_2.remove(0));
+	assert_eq!(payment_event.msgs.len(), 1);
+
+	//Second Hop
+	payment_event.msgs[0].onion_routing_packet.version = 1; //Produce a malformed HTLC message
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	check_added_monitors!(nodes[2], 0);
+	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+
+	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_3.len(), 1);
+	let update_msg : (msgs::UpdateFailMalformedHTLC, msgs::CommitmentSigned) = {
+		match events_3[0] {
+			MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fulfill_htlcs.is_empty());
+				assert!(update_fail_htlcs.is_empty());
+				assert_eq!(update_fail_malformed_htlcs.len(), 1);
+				assert!(update_fee.is_none());
+				(update_fail_malformed_htlcs[0].clone(), commitment_signed.clone())
+			},
+			_ => panic!("Unexpected event"),
+		}
+	};
+
+	nodes[1].node.handle_update_fail_malformed_htlc(&nodes[2].node.get_our_node_id(), &update_msg.0).unwrap();
+
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[2], update_msg.1, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_4.len(), 1);
+
+	//Confirm that handlinge the update_malformed_htlc message produces an update_fail_htlc message to be forwarded back along the route
+	match events_4[0] {
+		MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, .. } } => {
+			assert!(update_add_htlcs.is_empty());
+			assert!(update_fulfill_htlcs.is_empty());
+			assert_eq!(update_fail_htlcs.len(), 1);
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	check_added_monitors!(nodes[1], 1);
+}
