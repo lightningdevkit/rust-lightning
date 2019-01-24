@@ -1042,7 +1042,7 @@ fn fake_network_test() {
 #[test]
 fn duplicate_htlc_test() {
 	// Test that we accept duplicate payment_hash HTLCs across the network and that
-	// claiming/failing them are all separate and don't effect each other
+	// claiming/failing them are all separate and don't affect each other
 	let mut nodes = create_network(6);
 
 	// Create some initial channels to route via 3 to 4/5 from 0/1/2
@@ -1682,7 +1682,7 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(node_txn[2], node_txn[9]);
 		assert_eq!(node_txn[3], node_txn[10]);
 		assert_eq!(node_txn[4], node_txn[11]);
-		assert_eq!(node_txn[3], node_txn[5]); //local commitment tx + htlc timeout tx broadcated by ChannelManger
+		assert_eq!(node_txn[3], node_txn[5]); //local commitment tx + htlc timeout tx broadcasted by ChannelManger
 		assert_eq!(node_txn[4], node_txn[6]);
 
 		assert_eq!(node_txn[0].input.len(), 1);
@@ -1721,7 +1721,7 @@ fn claim_htlc_outputs_single_tx() {
 
 #[test]
 fn test_htlc_on_chain_success() {
-	// Test that in case of an unilateral close onchain, we detect the state of output thanks to
+	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
 	// ChainWatchInterface and pass the preimage backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// We test with two HTLCs simultaneously as that was not handled correctly in the past.
@@ -1750,7 +1750,7 @@ fn test_htlc_on_chain_success() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 
 	// Broadcast legit commitment tx from C on B's chain
-	// Broadcast HTLC Success transation by C on received output from C's commitment tx on B's chain
+	// Broadcast HTLC Success transaction by C on received output from C's commitment tx on B's chain
 	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
 	assert_eq!(commitment_tx.len(), 1);
 	check_spends!(commitment_tx[0], chan_2.3.clone());
@@ -1888,8 +1888,8 @@ fn test_htlc_on_chain_success() {
 
 #[test]
 fn test_htlc_on_chain_timeout() {
-	// Test that in case of an unilateral close onchain, we detect the state of output thanks to
-	// ChainWatchInterface and timeout the HTLC  bacward accordingly. So here we test that ChannelManager is
+	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
+	// ChainWatchInterface and timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// A ------------------> B ----------------------> C (timeout)
 	//    B's commitment tx 		C's commitment tx
@@ -1909,7 +1909,7 @@ fn test_htlc_on_chain_timeout() {
 	let (_payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 
-	// Brodacast legit commitment tx from C on B's chain
+	// Broadcast legit commitment tx from C on B's chain
 	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
 	check_spends!(commitment_tx[0], chan_2.3.clone());
 	nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
@@ -1936,7 +1936,7 @@ fn test_htlc_on_chain_timeout() {
 	check_spends!(node_txn[0], chan_2.3.clone());
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 71);
 
-	// Broadcast timeout transaction by B on received output fron C's commitment tx on B's chain
+	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
 	let timeout_tx;
@@ -2223,7 +2223,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 
 			let events = nodes[0].node.get_and_clear_pending_msg_events();
-			// If we delievered B's RAA we got an unknown preimage error, not something
+			// If we delivered B's RAA we got an unknown preimage error, not something
 			// that we should update our routing table for.
 			assert_eq!(events.len(), if deliver_bs_raa { 2 } else { 3 });
 			for event in events {
@@ -3037,7 +3037,7 @@ fn test_simple_manager_serialize_deserialize() {
 
 #[test]
 fn test_manager_serialize_deserialize_inconsistent_monitor() {
-	// Test deserializing a ChannelManager with a out-of-date ChannelMonitor
+	// Test deserializing a ChannelManager with an out-of-date ChannelMonitor
 	let mut nodes = create_network(4);
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 2, 0);
@@ -4056,7 +4056,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 
 	let _as_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
-	// As far as A is concerened, the HTLC is now present only in the latest remote commitment
+	// As far as A is concerned, the HTLC is now present only in the latest remote commitment
 	// transaction, however it is not in A's latest local commitment, so we can just broadcast that
 	// to "time out" the HTLC.
 
@@ -4156,12 +4156,12 @@ fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, 
 }
 
 // test_case
-// 0: node1 fail backward
-// 1: final node fail backward
-// 2: payment completed but the user reject the payment
-// 3: final node fail backward (but tamper onion payloads from node0)
-// 100: trigger error in the intermediate node and tamper returnning fail_htlc
-// 200: trigger error in the final node and tamper returnning fail_htlc
+// 0: node1 fails backward
+// 1: final node fails backward
+// 2: payment completed but the user rejects the payment
+// 3: final node fails backward (but tamper onion payloads from node0)
+// 100: trigger error in the intermediate node and tamper returning fail_htlc
+// 200: trigger error in the final node and tamper returning fail_htlc
 fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, mut callback_msg: F1, mut callback_fail: F2, mut callback_node: F3, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<HTLCFailChannelUpdate>)
 	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
@@ -4392,7 +4392,7 @@ fn test_onion_failure() {
 		// trigger error
 		msg.amount_msat -= 1;
 	}, |msg| {
-		// and tamper returing error message
+		// and tamper returning error message
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], NODE|2, &[0;0]);
@@ -4400,7 +4400,7 @@ fn test_onion_failure() {
 
 	// final node failure
 	run_onion_failure_test_with_fail_intercept("temporary_node_failure", 200, &nodes, &route, &payment_hash, |_msg| {}, |msg| {
-		// and tamper returing error message
+		// and tamper returning error message
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], NODE|2, &[0;0]);

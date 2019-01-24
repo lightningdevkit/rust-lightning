@@ -249,7 +249,7 @@ pub(super) struct ChannelHolder {
 	pub(super) next_forward: Instant,
 	/// short channel id -> forward infos. Key of 0 means payments received
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
-	/// guarantees are made about there existing a channel with the short id here, nor the short
+	/// guarantees are made about the existence of a channel with the short id here, nor the short
 	/// ids in the PendingForwardHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
@@ -344,7 +344,7 @@ pub struct ChannelManager {
 /// HTLC's CLTV. This should always be a few blocks greater than channelmonitor::CLTV_CLAIM_BUFFER,
 /// ie the node we forwarded the payment on to should always have enough room to reliably time out
 /// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
-/// CLTV_CLAIM_BUFFER point (we static assert that its at least 3 blocks more).
+/// CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
 const CLTV_EXPIRY_DELTA: u16 = 6 * 12; //TODO?
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
@@ -744,7 +744,7 @@ impl ChannelManager {
 		if msg.onion_routing_packet.version != 0 {
 			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
 			//sha256_of_onion error data packets), or the entire onion_routing_packet. Either way,
-			//the hash doesn't really serve any purpuse - in the case of hashing all data, the
+			//the hash doesn't really serve any purpose - in the case of hashing all data, the
 			//receiving node would have to brute force to figure out which version was put in the
 			//packet by the node that send us the message, in the case of hashing the hop_data, the
 			//node knows the HMAC matched, so they already know what is there...
@@ -1146,7 +1146,7 @@ impl ChannelManager {
 
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
-	/// Should only really ever be called in response to an PendingHTLCsForwardable event.
+	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -1251,7 +1251,7 @@ impl ChannelManager {
 										// messages when we can.
 										// We don't need any kind of timer here as they should fail
 										// the channel onto the chain if they can't get our
-										// update_fail_htlc in time, its not our problem.
+										// update_fail_htlc in time, it's not our problem.
 									}
 								}
 							},
@@ -1480,7 +1480,7 @@ impl ChannelManager {
 					None => {
 						// TODO: There is probably a channel manager somewhere that needs to
 						// learn the preimage as the channel already hit the chain and that's
-						// why its missing.
+						// why it's missing.
 						return
 					}
 				};
@@ -1490,7 +1490,7 @@ impl ChannelManager {
 					Ok((msgs, monitor_option)) => {
 						if let Some(chan_monitor) = monitor_option {
 							if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-								unimplemented!();// but def dont push the event...
+								unimplemented!();// but def don't push the event...
 							}
 						}
 						if let Some((msg, commitment_signed)) = msgs {
@@ -1548,7 +1548,7 @@ impl ChannelManager {
 								// knowledge of those gets moved into the appropriate in-memory
 								// ChannelMonitor and they get failed backwards once we get
 								// on-chain confirmations.
-								// Note I think #198 addresses this, so once its merged a test
+								// Note I think #198 addresses this, so once it's merged a test
 								// should be written.
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_id.remove(&short_id);
@@ -1848,7 +1848,7 @@ impl ChannelManager {
 		//
 		//TODO: There exists a further attack where a node may garble the onion data, forward it to
 		//us repeatedly garbled in different ways, and compare our error messages, which are
-		//encrypted with the same key. Its not immediately obvious how to usefully exploit that,
+		//encrypted with the same key. It's not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
 		let (mut pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
@@ -2272,7 +2272,7 @@ impl ChannelManager {
 
 impl events::MessageSendEventsProvider for ChannelManager {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
-		// TODO: Event release to users and serialization is currently race-y: its very easy for a
+		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
 		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
 		{
@@ -2297,7 +2297,7 @@ impl events::MessageSendEventsProvider for ChannelManager {
 
 impl events::EventsProvider for ChannelManager {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		// TODO: Event release to users and serialization is currently race-y: its very easy for a
+		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
 		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
 		{
@@ -2897,7 +2897,7 @@ pub struct ChannelManagerReadArgs<'a> {
 	/// value.get_funding_txo() should be the key).
 	///
 	/// If a monitor is inconsistent with the channel state during deserialization the channel will
-	/// be force-closed using the data in the channelmonitor and the Channel will be dropped. This
+	/// be force-closed using the data in the ChannelMonitor and the channel will be dropped. This
 	/// is true for missing channels as well. If there is a monitor missing for which we find
 	/// channel data Err(DecodeError::InvalidValue) will be returned.
 	///

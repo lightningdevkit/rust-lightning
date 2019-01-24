@@ -1084,7 +1084,7 @@ pub fn reconnect_nodes(node_a: &Node, node_b: &Node, send_funding_locked: (bool,
 		check_added_monitors!(node_a, 0);
 	}
 
-	// We dont yet support both needing updates, as that would require a different commitment dance:
+	// We don't yet support both needing updates, as that would require a different commitment dance:
 	assert!((pending_htlc_adds.0 == 0 && pending_htlc_claims.0 == 0 && pending_cell_htlc_claims.0 == 0 && pending_cell_htlc_fails.0 == 0) ||
 			(pending_htlc_adds.1 == 0 && pending_htlc_claims.1 == 0 && pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0));
 
