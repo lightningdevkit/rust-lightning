@@ -93,14 +93,14 @@ enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
 	/// we will promote to Committed (note that they may not accept it until the next time we
-	/// revoke, but we dont really care about that:
+	/// revoke, but we don't really care about that:
 	///  * they've revoked, so worst case we can announce an old state and get our (option on)
-	///    money back (though we wont), and,
+	///    money back (though we won't), and,
 	///  * we'll send them a revoke when they send a commitment_signed, and since only they're
 	///    allowed to remove it, the "can only be removed once committed on both sides" requirement
-	///    doesn't matter to us and its up to them to enforce it, worst-case they jump ahead but
+	///    doesn't matter to us and it's up to them to enforce it, worst-case they jump ahead but
 	///    we'll never get out of sync).
-	/// Note that we Box the OnionPacket as its rather large and we don't want to blow up
+	/// Note that we Box the OnionPacket as it's rather large and we don't want to blow up
 	/// OutboundHTLCOutput's size just for a temporary bit
 	LocalAnnounced(Box<msgs::OnionPacket>),
 	Committed,
@@ -292,7 +292,7 @@ pub(super) struct Channel {
 	last_sent_closing_fee: Option<(u64, u64)>, // (feerate, fee)
 
 	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
-	/// to detect unconfirmation after a serialize-unserialize roudtrip where we may not see a full
+	/// to detect unconfirmation after a serialize-unserialize roundtrip where we may not see a full
 	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
 	funding_tx_confirmed_in: Option<Sha256dHash>,
@@ -551,7 +551,7 @@ impl Channel {
 			return Err(ChannelError::Close("Bogus; channel reserve is less than dust limit"));
 		}
 		if msg.htlc_minimum_msat >= (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 {
-			return Err(ChannelError::Close("Miminum htlc value is full channel value"));
+			return Err(ChannelError::Close("Minimum htlc value is full channel value"));
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 
@@ -1113,7 +1113,7 @@ impl Channel {
 	}
 
 	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
-	/// HTLC-Success transaction (ie htlc.offered is false), preimate must be set!
+	/// HTLC-Success transaction (ie htlc.offered is false), preimage must be set!
 	fn sign_htlc_transaction(&self, tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Result<Signature, ChannelError> {
 		if tx.input.len() != 1 {
 			panic!("Tried to sign HTLC transaction that had input count != 1!");
@@ -1151,7 +1151,7 @@ impl Channel {
 	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
 	/// Ok(_) if debug assertions are turned on and preconditions are met.
 	fn get_update_fulfill_htlc(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitor>), ChannelError> {
-		// Either ChannelFunded got set (which means it wont bet unset) or there is no way any
+		// Either ChannelFunded got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
 		// either.
@@ -1274,7 +1274,7 @@ impl Channel {
 					},
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
-						return Err(ChannelError::Ignore("Unable to find a pending HTLC which matchd the given HTLC ID"));
+						return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 					}
 				}
 				pending_idx = idx;
@@ -1352,10 +1352,10 @@ impl Channel {
 			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
-			return Err(ChannelError::Close("0 max_accpted_htlcs makes for a useless channel"));
+			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel"));
 		}
 		if msg.max_accepted_htlcs > 483 {
-			return Err(ChannelError::Close("max_accpted_htlcs > 483"));
+			return Err(ChannelError::Close("max_accepted_htlcs > 483"));
 		}
 
 		// Now check against optional parameters as set by config...
@@ -1433,7 +1433,7 @@ impl Channel {
 		}
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
 			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
-			// remember the channel, so its safe to just send an error_message here and drop the
+			// remember the channel, so it's safe to just send an error_message here and drop the
 			// channel.
 			return Err(ChannelError::Close("Received funding_created after we got the channel!"));
 		}
@@ -1826,8 +1826,8 @@ impl Channel {
 			for htlc_update in htlc_updates.drain(..) {
 				// Note that this *can* fail, though it should be due to rather-rare conditions on
 				// fee races with adding too many outputs which push our total payments just over
-				// the limit. In case its less rare than I anticipate, we may want to revisit
-				// handling this case better and maybe fufilling some of the HTLCs while attempting
+				// the limit. In case it's less rare than I anticipate, we may want to revisit
+				// handling this case better and maybe fulfilling some of the HTLCs while attempting
 				// to rebalance channels.
 				if err.is_some() { // We're back to AwaitingRemoteRevoke (or are about to fail the channel)
 					self.holding_cell_htlc_updates.push(htlc_update);
@@ -1869,8 +1869,8 @@ impl Channel {
 					}
 				}
 			}
-			//TODO: Need to examine the type of err - if its a fee issue or similar we may want to
-			//fail it back the route, if its a temporary issue we can ignore it...
+			//TODO: Need to examine the type of err - if it's a fee issue or similar we may want to
+			//fail it back the route, if it's a temporary issue we can ignore it...
 			match err {
 				None => {
 					if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.holding_cell_update_fee.is_none() {
@@ -2022,7 +2022,7 @@ impl Channel {
 			}
 		} else {
 			if let Some(feerate) = self.pending_update_fee {
-				// Because a node cannot send two commitment_signed's in a row without getting a
+				// Because a node cannot send two commitment_signeds in a row without getting a
 				// revoke_and_ack from us (as it would otherwise not know the per_commitment_point
 				// it should use to create keys with) and because a node can't send a
 				// commitment_signed without changes, checking if the feerate is equal to the
@@ -2479,7 +2479,7 @@ impl Channel {
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		// BOLT 2 says we must only send a scriptpubkey of certain standard forms, which are up to
-		// 34 bytes in length, so dont let the remote peer feed us some super fee-heavy script.
+		// 34 bytes in length, so don't let the remote peer feed us some super fee-heavy script.
 		if self.channel_outbound && msg.scriptpubkey.len() > 34 {
 			return Err(ChannelError::Close("Got shutdown_scriptpubkey of absurd length from remote peer"));
 		}
@@ -3119,7 +3119,7 @@ impl Channel {
 	/// waiting on the remote peer to send us a revoke_and_ack during which time we cannot add new
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
 	/// You MUST call send_commitment prior to any other calls on this Channel
-	/// If an Err is returned, its a ChannelError::Ignore!
+	/// If an Err is returned, it's a ChannelError::Ignore!
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down"));
@@ -3376,7 +3376,7 @@ impl Channel {
 		}, dropped_outbound_htlcs))
 	}
 
-	/// Gets the latest commitment transaction and any dependant transactions for relay (forcing
+	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
 	/// shutdown of this channel - no more calls into this Channel may be made afterwards except
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
@@ -3930,7 +3930,7 @@ mod tests {
 	#[test]
 	fn test_max_funding_satoshis() {
 		assert!(MAX_FUNDING_SATOSHIS <= 21_000_000 * 100_000_000,
-		        "MAX_FUNDING_SATOSHIS is greater than all satoshis on existence");
+		        "MAX_FUNDING_SATOSHIS is greater than all satoshis in existence");
 	}
 
 	struct Keys {

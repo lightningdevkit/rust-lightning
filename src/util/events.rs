@@ -1,7 +1,7 @@
 //! Events are returned from various bits in the library which indicate some action must be taken
 //! by the client.
 //!
-//! Because we don't have a built-in runtime, its up to the client to call events at a time in the
+//! Because we don't have a built-in runtime, it's up to the client to call events at a time in the
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
 //!

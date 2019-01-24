@@ -569,8 +569,8 @@ mod tests {
 			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
-			// test vector doesn't specify the initiator static key, but its the same as the one
-			// from trasport-initiator successful handshake
+			// test vector doesn't specify the initiator static key, but it's the same as the one
+			// from transport-initiator successful handshake
 			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
 
 			match inbound_peer.noise_state {
@@ -695,8 +695,8 @@ mod tests {
 			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
-			// test vector doesn't specify the initiator static key, but its the same as the one
-			// from trasport-initiator successful handshake
+			// test vector doesn't specify the initiator static key, but it's the same as the one
+			// from transport-initiator successful handshake
 			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
 
 			match inbound_peer.noise_state {

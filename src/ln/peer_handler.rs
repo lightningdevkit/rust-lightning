@@ -113,7 +113,7 @@ struct Peer {
 }
 
 impl Peer {
-	/// Returns true if the the channel announcements/updates for the given channel should be
+	/// Returns true if the channel announcements/updates for the given channel should be
 	/// forwarded to this peer.
 	/// If we are sending our routing table to this peer and we have not yet sent channel
 	/// announcements/updates for the given channel_id then we will send it when we get to that
@@ -475,7 +475,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											match e {
 												msgs::DecodeError::UnknownVersion => return Err(PeerHandleError{ no_connection_possible: false }),
 												msgs::DecodeError::UnknownRequiredFeature => {
-													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to udpate!");
+													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to update!");
 													continue;
 												},
 												msgs::DecodeError::InvalidValue => {
@@ -1128,7 +1128,7 @@ mod tests {
 	#[test]
 	fn test_disconnect_peer() {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
-		// push an DisconnectPeer event to remove the node flagged by id
+		// push a DisconnectPeer event to remove the node flagged by id
 		let mut peers = create_network(2);
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);

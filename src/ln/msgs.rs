@@ -8,7 +8,7 @@
 //!
 //! Note that if you go with such an architecture (instead of passing raw socket events to a
 //! non-internet-facing system) you trust the frontend internet-facing system to not lie about the
-//! source node_id of the mssage, however this does allow you to significantly reduce bandwidth
+//! source node_id of the message, however this does allow you to significantly reduce bandwidth
 //! between the systems as routing messages can represent a significant chunk of bandwidth usage
 //! (especially for non-channel-publicly-announcing nodes). As an alternate design which avoids
 //! this issue, if you have sufficient bidirectional bandwidth between your systems, you may send
@@ -337,25 +337,25 @@ pub struct AnnouncementSignatures {
 /// An address which can be used to connect to a remote peer
 #[derive(PartialEq, Clone)]
 pub enum NetAddress {
-	/// An IPv4 address/port on which the peer is listenting.
+	/// An IPv4 address/port on which the peer is listening.
 	IPv4 {
 		/// The 4-byte IPv4 address
 		addr: [u8; 4],
-		/// The port on which the node is listenting
+		/// The port on which the node is listening
 		port: u16,
 	},
-	/// An IPv6 address/port on which the peer is listenting.
+	/// An IPv6 address/port on which the peer is listening.
 	IPv6 {
 		/// The 16-byte IPv6 address
 		addr: [u8; 16],
-		/// The port on which the node is listenting
+		/// The port on which the node is listening
 		port: u16,
 	},
 	/// An old-style Tor onion address/port on which the peer is listening.
 	OnionV2 {
 		/// The bytes (usually encoded in base32 with ".onion" appended)
 		addr: [u8; 10],
-		/// The port on which the node is listenting
+		/// The port on which the node is listening
 		port: u16,
 	},
 	/// A new-style Tor onion address/port on which the peer is listening.
@@ -368,7 +368,7 @@ pub enum NetAddress {
 		checksum: u16,
 		/// The version byte, as defined by the Tor Onion v3 spec.
 		version: u8,
-		/// The port on which the node is listenting
+		/// The port on which the node is listening
 		port: u16,
 	},
 }
