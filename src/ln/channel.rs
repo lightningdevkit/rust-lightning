@@ -1790,8 +1790,24 @@ impl Channel {
 		self.received_commitment_while_awaiting_raa = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) != 0;
 
 		if (self.channel_state & ChannelState::MonitorUpdateFailed as u32) != 0 {
+			// In case we initially failed monitor updating without requiring a response, we need
+			// to make sure the RAA gets sent first.
+			if !self.monitor_pending_commitment_signed {
+				self.monitor_pending_order = Some(RAACommitmentOrder::RevokeAndACKFirst);
+			}
 			self.monitor_pending_revoke_and_ack = true;
-			self.monitor_pending_commitment_signed |= need_our_commitment;
+			if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+				// If we were going to send a commitment_signed after the RAA, go ahead and do all
+				// the corresponding HTLC status updates so that get_last_commitment_update
+				// includes the right HTLCs.
+				// Note that this generates a monitor update that we ignore! This is OK since we
+				// won't actually send the commitment_signed that generated the update to the other
+				// side until the latest monitor has been pulled from us and stored.
+				self.monitor_pending_commitment_signed = true;
+				self.send_commitment_no_status_check()?;
+			}
+			// TODO: Call maybe_propose_first_closing_signed on restoration (or call it here and
+			// re-send the message on restoration)
 			return Err(ChannelError::Ignore("Previous monitor update failure prevented generation of RAA"));
 		}
 
@@ -2039,6 +2055,10 @@ impl Channel {
 			// cells) while we can't update the monitor, so we just return what we have.
 			if require_commitment {
 				self.monitor_pending_commitment_signed = true;
+				// When the monitor updating is restored we'll call get_last_commitment_update(),
+				// which does not update state, but we're definitely now awaiting a remote revoke
+				// before we can step forward any more, so set it here.
+				self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
@@ -2420,9 +2440,6 @@ impl Channel {
 			} else {
 				log_debug!(self, "Reconnected channel {} with only lost remote commitment tx", log_bytes!(self.channel_id()));
 			}
-
-			// If monitor_pending_order is set, it must be CommitmentSigned if we have no RAA
-			debug_assert!(self.monitor_pending_order != Some(RAACommitmentOrder::RevokeAndACKFirst) || required_revoke.is_some());
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
