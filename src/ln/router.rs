@@ -512,7 +512,7 @@ impl RoutingMessageHandler for Router {
 		match network.channels.entry(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
 			BtreeEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
-				//in the blockchain API, we need to handle it smartly here, though its unclear
+				//in the blockchain API, we need to handle it smartly here, though it's unclear
 				//exactly how...
 				if checked_utxo {
 					// Either our UTXO provider is busted, there was a reorg, or the UTXO provider
@@ -779,7 +779,7 @@ impl Router {
 	}
 
 	/// Marks a node as having failed a route. This will avoid re-using the node in routes for now,
-	/// with an expotnential decay in node "badness". Note that there is deliberately no
+	/// with an exponential decay in node "badness". Note that there is deliberately no
 	/// mark_channel_bad as a node may simply lie and suggest that an upstream channel from it is
 	/// what failed the route and not the node itself. Instead, setting the blamed_upstream_node
 	/// boolean will reduce the penalty, returning the node to usability faster. If the node is

@@ -219,7 +219,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 		res
 	}
 
-	/// Adds or udpates the monitor which monitors the channel referred to by the given key.
+	/// Adds or updates the monitor which monitors the channel referred to by the given key.
 	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor) -> Result<(), MonitorUpdateError> {
 		let mut monitors = self.monitors.lock().unwrap();
 		match monitors.get_mut(&key) {
@@ -299,7 +299,7 @@ pub(crate) const HTLC_FAIL_TIMEOUT_BLOCKS: u32 = 3;
 /// Number of blocks we wait on seeing a confirmed HTLC-Timeout or previous revoked commitment
 /// transaction before we fail corresponding inbound HTLCs. This prevents us from failing backwards
 /// and then getting a reorg resulting in us losing money.
-//TODO: We currently dont actually use this...we should
+//TODO: We currently don't actually use this...we should
 pub(crate) const HTLC_FAIL_ANTI_REORG_DELAY: u32 = 6;
 
 #[derive(Clone, PartialEq)]
@@ -642,7 +642,7 @@ impl ChannelMonitor {
 				let our_funding_info = funding_info;
 				if let Storage::Local { ref funding_info, .. } = other.key_storage {
 					if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
-					// We should be able to compare the entire funding_txo, but in fuzztarget its trivially
+					// We should be able to compare the entire funding_txo, but in fuzztarget it's trivially
 					// easy to collide the funding_txo hash and have a different scriptPubKey.
 					if funding_info.as_ref().unwrap().0 != our_funding_info.as_ref().unwrap().0 {
 						return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
@@ -1445,7 +1445,7 @@ impl ChannelMonitor {
 		(txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated)
 	}
 
-	/// Attempst to claim a remote HTLC-Success/HTLC-Timeout s outputs using the revocation key
+	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
 	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
 		if tx.input.len() != 1 || tx.output.len() != 1 {
 			return (None, None)
@@ -1615,7 +1615,7 @@ impl ChannelMonitor {
 	/// Should not be used if check_spend_revoked_transaction succeeds.
 	fn check_spend_local_transaction(&self, tx: &Transaction, _height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, (Sha256dHash, Vec<TxOut>)) {
 		let commitment_txid = tx.txid();
-		// TODO: If we find a match here we need to fail back HTLCs that were't included in the
+		// TODO: If we find a match here we need to fail back HTLCs that weren't included in the
 		// broadcast commitment transaction, either because they didn't meet dust or because they
 		// weren't yet included in our commitment transaction(s).
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
@@ -1669,7 +1669,7 @@ impl ChannelMonitor {
 				}
 				Storage::Watchtower { .. } => {
 					//TODO: we need to ensure an offline client will generate the event when it
-					// cames back online after only the watchtower saw the transaction
+					// comes back online after only the watchtower saw the transaction
 				}
 			}
 		}

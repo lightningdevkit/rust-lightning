@@ -2,7 +2,7 @@
 //! blockchain.
 //!
 //! Includes traits for monitoring and receiving notifications of new blocks and block
-//! disconnections, transactio broadcasting, and feerate information requests.
+//! disconnections, transaction broadcasting, and feerate information requests.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
@@ -143,7 +143,7 @@ impl ChainWatchedUtil {
 		}
 		#[cfg(not(test))]
 		{
-			let _tx_unused = txid; // Its used in cfg(test), though
+			let _tx_unused = txid; // It's used in cfg(test), though
 			self.watched_txn.insert(script_pub_key.clone())
 		}
 	}
@@ -155,7 +155,7 @@ impl ChainWatchedUtil {
 		self.watched_outpoints.insert(outpoint)
 	}
 
-	/// Sets us to match all transactions, returning true if this is a new setting anf false if
+	/// Sets us to match all transactions, returning true if this is a new setting and false if
 	/// we'd already been set to match everything.
 	pub fn watch_all(&mut self) -> bool {
 		if self.watch_all { return false; }
