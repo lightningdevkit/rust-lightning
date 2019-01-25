@@ -16,6 +16,7 @@
 
 use std::cmp;
 use std::fmt;
+use std::sync::Arc;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 
@@ -126,6 +127,8 @@ pub trait Logger: Sync + Send {
 	/// Logs the `Record`
 	fn log(&self, record: &Record);
 }
+
+pub(crate) struct LogHolder<'a> { pub(crate) logger: &'a Arc<Logger> }
 
 #[cfg(test)]
 mod tests {

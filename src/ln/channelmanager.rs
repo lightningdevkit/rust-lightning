@@ -457,6 +457,7 @@ macro_rules! handle_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
+				log_error!($self, "Closing channel {} due to monitor update PermanentFailure", log_bytes!($entry.key()[..]));
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -474,6 +475,18 @@ macro_rules! handle_monitor_err {
 				res
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
+				log_info!($self, "Disabling channel {} due to monitor update TemporaryFailure. On restore will send {} and process {} forwards and {} fails",
+						log_bytes!($entry.key()[..]),
+						if $resend_commitment && $resend_raa {
+								match $action_type {
+									RAACommitmentOrder::CommitmentFirst => { "commitment then RAA" },
+									RAACommitmentOrder::RevokeAndACKFirst => { "RAA then commitment" },
+								}
+							} else if $resend_commitment { "commitment" }
+							else if $resend_raa { "RAA" }
+							else { "nothing" },
+						(&$failed_forwards as &Vec<(PendingForwardHTLCInfo, u64)>).len(),
+						(&$failed_fails as &Vec<(HTLCSource, PaymentHash, HTLCFailReason)>).len());
 				if !$resend_commitment {
 					debug_assert!($action_type == RAACommitmentOrder::RevokeAndACKFirst || !$resend_raa);
 				}
