@@ -5590,6 +5590,8 @@ fn test_onchain_to_onchain_claim() {
 
 #[test]
 fn test_onchain_claim_after_reestablish_fail(){
+	//This test tries to claim after reestablishes fails and dataloss protect is on
+	//This means that peer A is behind and must not cleam as per bolt spec
 	let mut nodes = create_network(2);
 
 	// Create some initial channels
@@ -5639,18 +5641,21 @@ fn test_onchain_claim_after_reestablish_fail(){
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]); 
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
-	assert!(!nodes[1].node.get_and_clear_pending_msg_events().is_empty()); //this should not be empty as node B must notify A is is behind
+	assert!(!nodes[1].node.get_and_clear_pending_msg_events().is_empty()); //this should not be empty
 
-	let me =nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty()); 
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]); //throws an error do not publish error as expected
+	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty()); //this should not be empty
 
 	let commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
 	assert_eq!(commitment_tx[0].input.len(), 1);
 	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
 
+	// let A try and claim and fail as block limit has not passed
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
+	assert!(!nodes[0].node.claim_funds(payment_preimage));
 
 	// let B claim
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	assert!(nodes[1].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
@@ -5663,18 +5668,6 @@ fn test_onchain_claim_after_reestablish_fail(){
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexepected event"),
 	}
-
-	// Check B's monitor was able to send back output descriptor event for preimage tx on A's commitment tx
-	/*let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap(); // ChannelManager : 1 (local commitment tx), ChannelMonitor: 2 (1 preimage tx) * 2 (block-rescan)
-	check_spends!(node_txn[0], commitment_tx[0].clone());
-	assert_eq!(node_txn[0], node_txn[2]);
-	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(node_txn[1], chan_1.3.clone());
-
-	let spend_txn = check_spendable_outputs!(nodes[1], 1); // , 0, 0, 1, 1);
-	assert_eq!(spend_txn.len(), 2);
-	assert_eq!(spend_txn[0], spend_txn[1]);
-	check_spends!(spend_txn[0], node_txn[0].clone());*/
 }
 
 #[test]

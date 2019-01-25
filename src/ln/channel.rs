@@ -2343,12 +2343,12 @@ impl Channel {
 		if msg.next_remote_commitment_number > 0 {
 			if let Some(ref data_loss) = msg.data_loss_protect {
 				//check if provided signature is a valid signature from us
-				if chan_utils::build_commitment_secret(self.local_keys.commitment_seed, msg.next_remote_commitment_number-1) != data_loss.your_last_per_commitment_secret{
+				if chan_utils::build_commitment_secret(self.local_keys.commitment_seed, INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1) != data_loss.your_last_per_commitment_secret{
 					return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the  commitment height provided"));
 				}
 				//check if we have fallen beind
 				//We should not broadcast commitment transaction or continue
-				if msg.next_remote_commitment_number > self.cur_local_commitment_transaction_number{
+				if msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER- self.cur_local_commitment_transaction_number{
 					return Err(ChannelError::CloseNoPublish("We have fallen behind and we cannot catch up, need to close channel but not publish commitment"));
 				}
 			}
