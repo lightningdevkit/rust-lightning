@@ -30,7 +30,7 @@ impl Writer for VecWriter {
 #[inline]
 pub fn do_test(data: &[u8]) {
 	reset_rng_state();
-	let logger = Arc::new(test_logger::TestLogger{});
+	let logger = Arc::new(test_logger::TestLogger::new("".to_owned()));
 	if let Ok((latest_block_hash, monitor)) = <(Sha256dHash, channelmonitor::ChannelMonitor)>::read(&mut Cursor::new(data), logger.clone()) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();

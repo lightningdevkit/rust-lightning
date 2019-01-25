@@ -45,6 +45,10 @@ name = "full_stack_target"
 path = "fuzz_targets/full_stack_target.rs"
 
 [[bin]]
+name = "chanmon_fail_consistency"
+path = "fuzz_targets/chanmon_fail_consistency.rs"
+
+[[bin]]
 name = "router_target"
 path = "fuzz_targets/router_target.rs"
 

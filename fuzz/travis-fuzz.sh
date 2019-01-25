@@ -11,7 +11,14 @@ cargo install --force honggfuzz
 for TARGET in fuzz_targets/*.rs fuzz_targets/msg_targets/*_target.rs; do
 	FILENAME=$(basename $TARGET)
 	FILE="${FILENAME%.*}"
-	HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz" HFUZZ_RUN_ARGS="-N1000000 --exit_upon_crash -v" cargo hfuzz run $FILE
+	HFUZZ_RUN_ARGS="--exit_upon_crash -v -n2"
+	if [ "$FILE" = "chanmon_fail_consistency" ]; then
+		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N100000"
+	else
+		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N1000000"
+	fi
+	export HFUZZ_RUN_ARGS
+	HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz" cargo hfuzz run $FILE
 	if [ -f hfuzz_workspace/$FILE/HONGGFUZZ.REPORT.TXT ]; then
 		cat hfuzz_workspace/$FILE/HONGGFUZZ.REPORT.TXT
 		for CASE in hfuzz_workspace/$FILE/SIG*; do

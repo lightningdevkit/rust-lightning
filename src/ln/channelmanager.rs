@@ -448,9 +448,9 @@ macro_rules! try_chan_entry {
 	}
 }
 
-macro_rules! return_monitor_err {
+macro_rules! handle_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		return_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new())
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new())
 	};
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
 		match $err {
@@ -468,7 +468,8 @@ macro_rules! return_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()));
+				res
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
 				if !$resend_commitment {
@@ -478,26 +479,29 @@ macro_rules! return_monitor_err {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
 				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()));
+				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
 			},
 		}
+	}
+}
+
+macro_rules! return_monitor_err {
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
+		return handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment);
+	};
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
+		return handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
 	}
 }
 
 // Does not break in case of TemporaryFailure!
 macro_rules! maybe_break_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		match $err {
-			ChannelMonitorUpdateErr::PermanentFailure => {
-				let (channel_id, mut chan) = $entry.remove_entry();
-				if let Some(short_id) = chan.get_short_channel_id() {
-					$channel_state.short_to_id.remove(&short_id);
-				}
-				break Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+		match (handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment), $err) {
+			(e, ChannelMonitorUpdateErr::PermanentFailure) => {
+				break e;
 			},
-			ChannelMonitorUpdateErr::TemporaryFailure => {
-				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new());
-			},
+			(_, ChannelMonitorUpdateErr::TemporaryFailure) => { },
 		}
 	}
 }
@@ -1159,6 +1163,7 @@ impl ChannelManager {
 
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
+		let mut handle_errors = Vec::new();
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
@@ -1194,101 +1199,104 @@ impl ChannelManager {
 							continue;
 						}
 					};
-					let forward_chan = &mut channel_state.by_id.get_mut(&forward_chan_id).unwrap();
-
-					let mut add_htlc_msgs = Vec::new();
-					let mut fail_htlc_msgs = Vec::new();
-					for forward_info in pending_forwards.drain(..) {
-						match forward_info {
-							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
-								log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(forward_info.payment_hash.0), prev_short_channel_id, short_chan_id);
-								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-									short_channel_id: prev_short_channel_id,
-									htlc_id: prev_htlc_id,
-									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-								});
-								match forward_chan.send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
-									Err(e) => {
-										if let ChannelError::Ignore(msg) = e {
-											log_trace!(self, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(forward_info.payment_hash.0), msg);
-										} else {
-											panic!("Stated return value requirements in send_htlc() were not met");
-										}
-										let chan_update = self.get_channel_update(forward_chan).unwrap();
-										failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
-										continue;
-									},
-									Ok(update_add) => {
-										match update_add {
-											Some(msg) => { add_htlc_msgs.push(msg); },
-											None => {
-												// Nothing to do here...we're waiting on a remote
-												// revoke_and_ack before we can add anymore HTLCs. The Channel
-												// will automatically handle building the update_add_htlc and
-												// commitment_signed messages when we can.
-												// TODO: Do some kind of timer to set the channel as !is_live()
-												// as we don't really want others relying on us relaying through
-												// this channel currently :/.
+					if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(forward_chan_id) {
+						let mut add_htlc_msgs = Vec::new();
+						let mut fail_htlc_msgs = Vec::new();
+						for forward_info in pending_forwards.drain(..) {
+							match forward_info {
+								HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+									log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(forward_info.payment_hash.0), prev_short_channel_id, short_chan_id);
+									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+										short_channel_id: prev_short_channel_id,
+										htlc_id: prev_htlc_id,
+										incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+									});
+									match chan.get_mut().send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
+										Err(e) => {
+											if let ChannelError::Ignore(msg) = e {
+												log_trace!(self, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(forward_info.payment_hash.0), msg);
+											} else {
+												panic!("Stated return value requirements in send_htlc() were not met");
+											}
+											let chan_update = self.get_channel_update(chan.get()).unwrap();
+											failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
+											continue;
+										},
+										Ok(update_add) => {
+											match update_add {
+												Some(msg) => { add_htlc_msgs.push(msg); },
+												None => {
+													// Nothing to do here...we're waiting on a remote
+													// revoke_and_ack before we can add anymore HTLCs. The Channel
+													// will automatically handle building the update_add_htlc and
+													// commitment_signed messages when we can.
+													// TODO: Do some kind of timer to set the channel as !is_live()
+													// as we don't really want others relying on us relaying through
+													// this channel currently :/.
+												}
 											}
 										}
 									}
-								}
-							},
-							HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
-								log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
-								match forward_chan.get_update_fail_htlc(htlc_id, err_packet) {
-									Err(e) => {
-										if let ChannelError::Ignore(msg) = e {
-											log_trace!(self, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);
-										} else {
-											panic!("Stated return value requirements in get_update_fail_htlc() were not met");
+								},
+								HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
+									log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
+									match chan.get_mut().get_update_fail_htlc(htlc_id, err_packet) {
+										Err(e) => {
+											if let ChannelError::Ignore(msg) = e {
+												log_trace!(self, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);
+											} else {
+												panic!("Stated return value requirements in get_update_fail_htlc() were not met");
+											}
+											// fail-backs are best-effort, we probably already have one
+											// pending, and if not that's OK, if not, the channel is on
+											// the chain and sending the HTLC-Timeout is their problem.
+											continue;
+										},
+										Ok(Some(msg)) => { fail_htlc_msgs.push(msg); },
+										Ok(None) => {
+											// Nothing to do here...we're waiting on a remote
+											// revoke_and_ack before we can update the commitment
+											// transaction. The Channel will automatically handle
+											// building the update_fail_htlc and commitment_signed
+											// messages when we can.
+											// We don't need any kind of timer here as they should fail
+											// the channel onto the chain if they can't get our
+											// update_fail_htlc in time, it's not our problem.
 										}
-										// fail-backs are best-effort, we probably already have one
-										// pending, and if not that's OK, if not, the channel is on
-										// the chain and sending the HTLC-Timeout is their problem.
-										continue;
-									},
-									Ok(Some(msg)) => { fail_htlc_msgs.push(msg); },
-									Ok(None) => {
-										// Nothing to do here...we're waiting on a remote
-										// revoke_and_ack before we can update the commitment
-										// transaction. The Channel will automatically handle
-										// building the update_fail_htlc and commitment_signed
-										// messages when we can.
-										// We don't need any kind of timer here as they should fail
-										// the channel onto the chain if they can't get our
-										// update_fail_htlc in time, it's not our problem.
 									}
-								}
-							},
+								},
+							}
 						}
-					}
 
-					if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-						let (commitment_msg, monitor) = match forward_chan.send_commitment() {
-							Ok(res) => res,
-							Err(e) => {
-								if let ChannelError::Ignore(_) = e {
-									panic!("Stated return value requirements in send_commitment() were not met");
-								}
-								//TODO: Handle...this is bad!
+						if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
+							let (commitment_msg, monitor) = match chan.get_mut().send_commitment() {
+								Ok(res) => res,
+								Err(e) => {
+									if let ChannelError::Ignore(_) = e {
+										panic!("Stated return value requirements in send_commitment() were not met");
+									}
+									//TODO: Handle...this is bad!
+									continue;
+								},
+							};
+							if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+								handle_errors.push((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
-							},
-						};
-						if let Err(_e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
-							unimplemented!();
+							}
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+								node_id: chan.get().get_their_node_id(),
+								updates: msgs::CommitmentUpdate {
+									update_add_htlcs: add_htlc_msgs,
+									update_fulfill_htlcs: Vec::new(),
+									update_fail_htlcs: fail_htlc_msgs,
+									update_fail_malformed_htlcs: Vec::new(),
+									update_fee: None,
+									commitment_signed: commitment_msg,
+								},
+							});
 						}
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: forward_chan.get_their_node_id(),
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: add_htlc_msgs,
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: fail_htlc_msgs,
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: None,
-								commitment_signed: commitment_msg,
-							},
-						});
+					} else {
+						unreachable!();
 					}
 				} else {
 					for forward_info in pending_forwards.drain(..) {
@@ -1322,6 +1330,22 @@ impl ChannelManager {
 				None => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code, data: Vec::new() }),
 				Some(chan_update) => self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code, data: chan_update.encode_with_len() }),
 			};
+		}
+
+		for (their_node_id, err) in handle_errors.drain(..) {
+			match handle_error!(self, err) {
+				Ok(_) => {},
+				Err(e) => {
+					if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+					} else {
+						let mut channel_state = self.channel_state.lock().unwrap();
+						channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+							node_id: their_node_id,
+							action: e.action,
+						});
+					}
+				},
+			}
 		}
 
 		if new_events.is_empty() { return }
@@ -1469,56 +1493,79 @@ impl ChannelManager {
 		} else { false }
 	}
 	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_preimage: PaymentPreimage) {
-		match source {
-			HTLCSource::OutboundRoute { .. } => {
-				mem::drop(channel_state_lock);
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::PaymentSent {
-					payment_preimage
-				});
-			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, .. }) => {
-				//TODO: Delay the claimed_funds relaying just like we do outbound relay!
-				let channel_state = channel_state_lock.borrow_parts();
+		let (their_node_id, err) = loop {
+			match source {
+				HTLCSource::OutboundRoute { .. } => {
+					mem::drop(channel_state_lock);
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(events::Event::PaymentSent {
+						payment_preimage
+					});
+				},
+				HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, .. }) => {
+					//TODO: Delay the claimed_funds relaying just like we do outbound relay!
+					let channel_state = channel_state_lock.borrow_parts();
 
-				let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
-					Some(chan_id) => chan_id.clone(),
-					None => {
-						// TODO: There is probably a channel manager somewhere that needs to
-						// learn the preimage as the channel already hit the chain and that's
-						// why it's missing.
-						return
-					}
-				};
-
-				let chan = channel_state.by_id.get_mut(&chan_id).unwrap();
-				match chan.get_update_fulfill_htlc_and_commit(htlc_id, payment_preimage) {
-					Ok((msgs, monitor_option)) => {
-						if let Some(chan_monitor) = monitor_option {
-							if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-								unimplemented!();// but def don't push the event...
-							}
+					let chan_id = match channel_state.short_to_id.get(&short_channel_id) {
+						Some(chan_id) => chan_id.clone(),
+						None => {
+							// TODO: There is probably a channel manager somewhere that needs to
+							// learn the preimage as the channel already hit the chain and that's
+							// why it's missing.
+							return
 						}
-						if let Some((msg, commitment_signed)) = msgs {
-							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-								node_id: chan.get_their_node_id(),
-								updates: msgs::CommitmentUpdate {
-									update_add_htlcs: Vec::new(),
-									update_fulfill_htlcs: vec![msg],
-									update_fail_htlcs: Vec::new(),
-									update_fail_malformed_htlcs: Vec::new(),
-									update_fee: None,
-									commitment_signed,
+					};
+
+					if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(chan_id) {
+						let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
+						match chan.get_mut().get_update_fulfill_htlc_and_commit(htlc_id, payment_preimage) {
+							Ok((msgs, monitor_option)) => {
+								if let Some(chan_monitor) = monitor_option {
+									if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+										if was_frozen_for_monitor {
+											assert!(msgs.is_none());
+										} else {
+											break (chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()));
+										}
+									}
 								}
-							});
+								if let Some((msg, commitment_signed)) = msgs {
+									channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+										node_id: chan.get().get_their_node_id(),
+										updates: msgs::CommitmentUpdate {
+											update_add_htlcs: Vec::new(),
+											update_fulfill_htlcs: vec![msg],
+											update_fail_htlcs: Vec::new(),
+											update_fail_malformed_htlcs: Vec::new(),
+											update_fee: None,
+											commitment_signed,
+										}
+									});
+								}
+							},
+							Err(_e) => {
+								// TODO: There is probably a channel manager somewhere that needs to
+								// learn the preimage as the channel may be about to hit the chain.
+								//TODO: Do something with e?
+								return
+							},
 						}
-					},
-					Err(_e) => {
-						// TODO: There is probably a channel manager somewhere that needs to
-						// learn the preimage as the channel may be about to hit the chain.
-						//TODO: Do something with e?
-						return
-					},
+					} else { unreachable!(); }
+				},
+			}
+			return;
+		};
+
+		match handle_error!(self, err) {
+			Ok(_) => {},
+			Err(e) => {
+				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				} else {
+					let mut channel_state = self.channel_state.lock().unwrap();
+					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+						node_id: their_node_id,
+						action: e.action,
+					});
 				}
 			},
 		}
@@ -2569,6 +2616,25 @@ impl ChannelMessageHandler for ChannelManager {
 					true
 				})
 			}
+			pending_msg_events.retain(|msg| {
+				match msg {
+					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendFundingLocked { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
+					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
+				}
+			});
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);

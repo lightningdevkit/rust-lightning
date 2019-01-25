@@ -554,7 +554,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 #[cfg(feature = "afl")]
 fn main() {
 	fuzz!(|data| {
-		let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+		let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
 		do_test(data, &logger);
 	});
 }
@@ -565,7 +565,7 @@ fn main() {
 fn main() {
 	loop {
 		fuzz!(|data| {
-			let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+			let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
 			do_test(data, &logger);
 		});
 	}
@@ -575,7 +575,7 @@ fn main() {
 #[macro_use] extern crate libfuzzer_sys;
 #[cfg(feature = "libfuzzer_fuzz")]
 fuzz_target!(|data: &[u8]| {
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
 	do_test(data, &logger);
 });
 
@@ -589,7 +589,7 @@ mod tests {
 
 	#[test]
 	fn duplicate_crash() {
-		let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+		let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
 		super::do_test(&::hex::decode("00").unwrap(), &logger);
 	}
 
