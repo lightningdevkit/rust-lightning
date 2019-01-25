@@ -451,7 +451,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 					// fulfill this HTLC, but if they are, we can just take the first byte and
 					// place that anywhere in our preimage.
 					if &payment.0[1..] != &[0; 31] {
-						channelmanager.fail_htlc_backwards(&payment, 0);
+						channelmanager.fail_htlc_backwards(&payment);
 					} else {
 						let mut payment_preimage = PaymentPreimage([0; 32]);
 						payment_preimage.0[0] = payment.0[0];
@@ -461,7 +461,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 			},
 			9 => {
 				for payment in payments_received.drain(..) {
-					channelmanager.fail_htlc_backwards(&payment, 0);
+					channelmanager.fail_htlc_backwards(&payment);
 				}
 			},
 			10 => {

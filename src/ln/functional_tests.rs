@@ -2038,7 +2038,7 @@ fn test_htlc_on_chain_timeout() {
 	// Broadcast legit commitment tx from C on B's chain
 	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
 	check_spends!(commitment_tx[0], chan_2.3.clone());
-	nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
+	nodes[2].node.fail_htlc_backwards(&payment_hash);
 	check_added_monitors!(nodes[2], 0);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
@@ -2219,7 +2219,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let (_, second_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
 	let (_, third_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
 
-	assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash, 0));
+	assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -2232,7 +2232,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let bs_raa = commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true, false, true);
 	// Drop the last RAA from 3 -> 2
 
-	assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash, 0));
+	assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -2249,7 +2249,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa).unwrap();
 	check_added_monitors!(nodes[2], 1);
 
-	assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash, 0));
+	assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -3895,10 +3895,10 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	// Now fail back three of the over-dust-limit and three of the under-dust-limit payments in one go.
 	// Fail 0th below-dust, 4th above-dust, 8th above-dust, 10th below-dust HTLCs
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_1, ds_dust_limit*1000));
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_3, 1000000));
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_5, 1000000));
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_6, ds_dust_limit*1000));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_1));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_3));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_5));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_6));
 	check_added_monitors!(nodes[4], 0);
 	expect_pending_htlcs_forwardable!(nodes[4]);
 	check_added_monitors!(nodes[4], 1);
@@ -3911,8 +3911,8 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	commitment_signed_dance!(nodes[3], nodes[4], four_removes.commitment_signed, false);
 
 	// Fail 3rd below-dust and 7th above-dust HTLCs
-	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_2, ds_dust_limit*1000));
-	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_4, 1000000));
+	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_2));
+	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_4));
 	check_added_monitors!(nodes[5], 0);
 	expect_pending_htlcs_forwardable!(nodes[5]);
 	check_added_monitors!(nodes[5], 1);
@@ -4205,7 +4205,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	// actually revoked.
 	let htlc_value = if use_dust { 50000 } else { 3000000 };
 	let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], htlc_value);
-	assert!(nodes[1].node.fail_htlc_backwards(&our_payment_hash, htlc_value));
+	assert!(nodes[1].node.fail_htlc_backwards(&our_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
 
@@ -4531,7 +4531,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], NODE|2, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[1].pubkey, is_permanent: false}));
 
 	// intermediate node failure
@@ -4549,7 +4549,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|2, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[1].pubkey, is_permanent: true}));
 
 	// intermediate node failure
@@ -4560,7 +4560,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|NODE|3, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[0].pubkey, is_permanent: true}));
 
 	// final node failure
@@ -4569,7 +4569,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|3, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.hops[1].pubkey, is_permanent: true}));
 
 	run_onion_failure_test("invalid_onion_version", 0, &nodes, &route, &payment_hash, |msg| { msg.onion_routing_packet.version = 1; }, ||{}, true,
@@ -4636,7 +4636,7 @@ fn test_onion_failure() {
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, |_| {}, || {
-		nodes[2].node.fail_htlc_backwards(&payment_hash, 0);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|15), None);
 
 	run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, |msg| {
