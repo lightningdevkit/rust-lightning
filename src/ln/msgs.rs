@@ -1382,7 +1382,7 @@ impl_writeable_len_match!(NodeAnnouncement, {
 mod tests {
 	use hex;
 	use ln::msgs;
-	use ln::msgs::{GlobalFeatures, OptionalField, OnionErrorPacket};
+	use ln::msgs::{GlobalFeatures, LocalFeatures, OptionalField, OnionErrorPacket};
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use util::ser::Writeable;
 
@@ -1985,6 +1985,74 @@ mod tests {
 		};
 		let encoded_value = update_fee.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202013413a7").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	fn do_encoding_init(unknown_global_bits: bool, initial_routing_sync: bool) {
+		let mut global = GlobalFeatures::new();
+		if unknown_global_bits {
+			global.flags = vec![0xFF, 0xFF];
+		}
+		let mut local = LocalFeatures::new();
+		if initial_routing_sync {
+			local.set_initial_routing_sync();
+		}
+		let init = msgs::Init {
+			global_features: global,
+			local_features: local,
+		};
+		let encoded_value = init.encode();
+		let mut target_value = Vec::new();
+		if unknown_global_bits {
+			target_value.append(&mut hex::decode("0002ffff").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("0000").unwrap());
+		}
+		if initial_routing_sync {
+			target_value.append(&mut hex::decode("000108").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("0000").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_init() {
+		do_encoding_init(false, false);
+		do_encoding_init(true, false);
+		do_encoding_init(false, true);
+		do_encoding_init(true, true);
+	}
+
+	#[test]
+	fn encoding_error() {
+		let error = msgs::ErrorMessage {
+			channel_id: [2; 32],
+			data: String::from("rust-lightning"),
+		};
+		let encoded_value = error.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000e727573742d6c696768746e696e67").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_ping() {
+		let ping = msgs::Ping {
+			ponglen: 64,
+			byteslen: 64
+		};
+		let encoded_value = ping.encode();
+		let target_value = hex::decode("0040004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_pong() {
+		let pong = msgs::Pong {
+			byteslen: 64
+		};
+		let encoded_value = pong.encode();
+		let target_value = hex::decode("004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 }
