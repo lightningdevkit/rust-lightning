@@ -5735,7 +5735,7 @@ fn test_onchain_claim_after_reestablish_fail_before_htlc_expire(){
 	assert!(!nodes[0].node.claim_funds(payment_preimage));
 
 	//let time pass
-	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 100000 + (6*24*7) {
+	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 1 + (6*24*7) {
 		nodes[0].chain_monitor.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
 		header.prev_blockhash = header.bitcoin_hash();
 	}
