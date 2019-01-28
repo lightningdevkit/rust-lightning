@@ -5671,6 +5671,90 @@ fn test_onchain_claim_after_reestablish_fail(){
 }
 
 #[test]
+fn test_onchain_claim_after_reestablish_fail_before_htlc_expire(){
+	//This test tries to claim after reestablishes fails and dataloss protect is on
+	//This means that peer A is behind and must not cleam as per bolt spec
+	let mut nodes = create_network(2);
+
+	// Create some initial channels
+	let mut features  = msgs::LocalFeatures::new();
+	features.set_supports_data_loss_protect();
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, &Some(features));
+	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 1000000).0;
+	//save old copy of node 0
+	let nodes_0_serialized = nodes[0].node.encode();
+	let mut chan_0_monitor_serialized = VecWriter(Vec::new());
+	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+	let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+
+	let mut nodes_0_read = &nodes_0_serialized[..];
+	let config = UserConfig::new();
+	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let (_, nodes_0_deserialized) = {
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
+		<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+			default_config: config,
+			keys_manager,
+			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+			monitor: nodes[0].chan_monitor.clone(),
+			chain_monitor: nodes[0].chain_monitor.clone(),
+			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+			logger: Arc::new(test_utils::TestLogger::new()),
+			channel_monitors: &channel_monitors,
+		}).unwrap()
+	};
+
+	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+	//disconnect node_0
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+
+	//restore old state of node_0
+	nodes[0].node = Arc::new(nodes_0_deserialized);
+
+	let commitment_tx_a = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+	//reconnect handling
+
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]); 
+
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+	assert!(!nodes[1].node.get_and_clear_pending_msg_events().is_empty()); //this should not be empty
+
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]); //throws an error do not publish error as expected
+	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty()); //this should not be empty
+	let commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+
+	// let A try and claim and fail as block limit has not passed
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
+	assert!(!nodes[0].node.claim_funds(payment_preimage));
+
+	//let time pass
+	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 100000 + (6*24*7) {
+		nodes[0].chain_monitor.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
+		header.prev_blockhash = header.bitcoin_hash();
+	}
+	// let A try again
+	assert!(nodes[0].node.claim_funds(payment_preimage));
+	check_added_monitors!(nodes[0], 1);
+	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexepected event"),
+	}
+}
+
+#[test]
 fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Topology : A --> B --> C
 	// We route 2 payments with same hash between B and C, one will be timeout, the other successfully claim
@@ -6134,7 +6218,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 
 	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3000000 });
 
-	// Claim the payment, but don't deliver A's commitment_signed, resulting in the HTLC only being
+	// Claim the p
 	// present in B's local commitment transaction, but none of A's commitment transactions.
 	assert!(nodes[1].node.claim_funds(our_payment_preimage));
 	check_added_monitors!(nodes[1], 1);

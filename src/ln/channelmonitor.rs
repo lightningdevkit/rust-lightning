@@ -1705,7 +1705,7 @@ impl ChannelMonitor {
 	}
 
 	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
-		if self.blockheight_block >= height //we dont need to check for 0, because if blockheight_block > height, 0 will be too
+		if (height > 0)&&(self.blockheight_block >= height) //we dont need to check for 0, because if blockheight_block > height, 0 will be too
 		{
 			let transactions = self.get_latest_local_commitment_txn();
 			let mut ref_transactions = Vec::new();
