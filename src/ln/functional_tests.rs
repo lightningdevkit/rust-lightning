@@ -5734,6 +5734,9 @@ fn test_onchain_claim_after_reestablish_fail_before_htlc_expire(){
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
 	assert!(!nodes[0].node.claim_funds(payment_preimage));
 
+	//add delay to chain_monitor
+	nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().get_channel_monitor().broadcast_transaction_at_height(100);
+
 	//let time pass
 	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 1 + (6*24*7) {
 		nodes[0].chain_monitor.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
