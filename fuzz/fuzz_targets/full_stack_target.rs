@@ -209,8 +209,8 @@ impl<'a> MoneyLossDetector<'a> {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
 			self.height -= 1;
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			self.manager.block_disconnected(&header);
-			self.monitor.block_disconnected(&header);
+			self.manager.block_disconnected(&header, self.height as u32);
+			self.monitor.block_disconnected(&header, self.height as u32);
 			let removal_height = self.height;
 			self.txids_confirmed.retain(|_, height| {
 				removal_height != *height
