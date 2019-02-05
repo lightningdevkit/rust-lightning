@@ -201,7 +201,13 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 		pending_events.append(&mut new_events);
 	}
 
-	fn block_disconnected(&self, _: &BlockHeader) { }
+	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
+		let block_hash = header.bitcoin_hash();
+		let mut monitors = self.monitors.lock().unwrap();
+		for monitor in monitors.values_mut() {
+			monitor.block_disconnected(disconnected_height, &block_hash);
+		}
+	}
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
@@ -1910,6 +1916,13 @@ impl ChannelMonitor {
 		}
 		self.last_block_hash = block_hash.clone();
 		(watch_outputs, spendable_outputs, htlc_updated)
+	}
+
+	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash) {
+		if let Some(_) = self.htlc_updated_waiting_threshold_conf.remove(&(height + HTLC_FAIL_ANTI_REORG_DELAY - 1)) {
+			//We discard htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
+		}
+		self.last_block_hash = block_hash.clone();
 	}
 
 	pub(super) fn would_broadcast_at_height(&self, height: u32) -> bool {

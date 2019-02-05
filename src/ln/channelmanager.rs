@@ -2474,7 +2474,7 @@ impl ChainListener for ChannelManager {
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
-	fn block_disconnected(&self, header: &BlockHeader) {
+	fn block_disconnected(&self, header: &BlockHeader, _: u32) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{
