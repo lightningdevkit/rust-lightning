@@ -5513,3 +5513,92 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 
 	check_added_monitors!(nodes[1], 1);
 }
+
+fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
+	// Dust-HTLC failure updates must be delayed until failure-trigger tx (in this case local commitment) reach HTLC_FAIL_ANTI_REORG_DELAY
+	// We can have at most two valid local commitment tx, so both cases must be covered, and both txs must be checked to get them all as
+	// HTLC could have been removed from lastest local commitment tx but still valid until we get remote RAA
+
+	let nodes = create_network(2);
+	let chan =create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+
+	// We route 2 dust-HTLCs between A and B
+	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_, payment_hash_2) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	// Cache one local commitment tx as previous
+	let as_prev_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	// Fail one HTLC to prune it in the will-be-latest-local commitment tx 
+	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash_2));
+	check_added_monitors!(nodes[1], 0);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+
+	let remove = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &remove.update_fail_htlcs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &remove.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	// Cache one local commitment tx as lastest
+	let as_last_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	match events[0] {
+		MessageSendEvent::SendRevokeAndACK { node_id, .. } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		MessageSendEvent::UpdateHTLCs { node_id, .. } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert_ne!(as_prev_commitment_tx, as_last_commitment_tx);
+	// Fail the 2 dust-HTLCs, move their failure in maturation buffer (htlc_updated_waiting_threshold_conf)
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	if announce_latest {
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&as_last_commitment_tx[0]], &[1; 1]);
+	} else {
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&as_prev_commitment_tx[0]], &[1; 1]);
+	}
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+	connect_blocks(&nodes[0].chain_monitor, HTLC_FAIL_ANTI_REORG_DELAY, 1, true,  header.bitcoin_hash());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	// Only 2 PaymentFailed events should show up, over-dust HTLC has to be failed by timeout tx
+	assert_eq!(events.len(), 2);
+	let mut first_failed = false;
+	for event in events {
+		match event {
+			Event::PaymentFailed { payment_hash, .. } => {
+				if payment_hash == payment_hash_1 {
+					assert!(!first_failed);
+					first_failed = true;
+				} else {
+					assert_eq!(payment_hash, payment_hash_2);
+				}
+			}
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[test]
+fn test_failure_delay_dust_htlc_local_commitment() {
+	do_test_failure_delay_dust_htlc_local_commitment(true);
+	do_test_failure_delay_dust_htlc_local_commitment(false);
+}
