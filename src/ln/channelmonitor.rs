@@ -1738,42 +1738,90 @@ impl ChannelMonitor {
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in local_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_local_transaction(&self, tx: &Transaction, _height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, (Sha256dHash, Vec<TxOut>)) {
+	fn check_spend_local_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, (Sha256dHash, Vec<TxOut>)) {
 		let commitment_txid = tx.txid();
-		// TODO: If we find a match here we need to fail back HTLCs that weren't included in the
-		// broadcast commitment transaction, either because they didn't meet dust or because they
-		// weren't yet included in our commitment transaction(s).
+		let mut local_txn = Vec::new();
+		let mut spendable_outputs = Vec::new();
+		let mut watch_outputs = Vec::new();
+
+		macro_rules! wait_threshold_conf {
+			($height: expr, $source: expr, $update: expr, $commitment_tx: expr, $payment_hash: expr) => {
+				log_info!(self, "Failing HTLC with payment_hash {} from {} local commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
+				match self.htlc_updated_waiting_threshold_conf.entry($height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+					hash_map::Entry::Occupied(mut entry) => {
+						let e = entry.get_mut();
+						e.retain(|ref update| update.0 != $source);
+						e.push(($source, $update, $payment_hash));
+					}
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec![($source, $update, $payment_hash)]);
+					}
+				}
+			}
+		}
+
+		macro_rules! append_onchain_update {
+			($updates: expr) => {
+				local_txn.append(&mut $updates.0);
+				spendable_outputs.append(&mut $updates.1);
+				watch_outputs.append(&mut $updates.2);
+			}
+		}
+
+		// HTLCs set may differ between last and previous local commitment txn, in case of one them hitting chain, ensure we cancel all HTLCs backward
+		let mut is_local_tx = false;
+
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
+				is_local_tx = true;
 				log_trace!(self, "Got latest local commitment tx broadcast, searching for available HTLCs to claim");
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
-						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key));
-						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
+						append_onchain_update!(self.broadcast_by_local_state(local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key)));
 					},
 					Storage::Watchtower { .. } => {
-						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, &None, &None);
-						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
+						append_onchain_update!(self.broadcast_by_local_state(local_tx, &None, &None));
 					}
 				}
 			}
 		}
 		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
+				is_local_tx = true;
 				log_trace!(self, "Got previous local commitment tx broadcast, searching for available HTLCs to claim");
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref prev_latest_per_commitment_point, .. } => {
-						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key));
-						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
+						append_onchain_update!(self.broadcast_by_local_state(local_tx, prev_latest_per_commitment_point, &Some(*delayed_payment_base_key)));
 					},
 					Storage::Watchtower { .. } => {
-						let (local_txn, spendable_outputs, watch_outputs) = self.broadcast_by_local_state(local_tx, &None, &None);
-						return (local_txn, spendable_outputs, (commitment_txid, watch_outputs));
+						append_onchain_update!(self.broadcast_by_local_state(local_tx, &None, &None));
 					}
 				}
 			}
 		}
-		(Vec::new(), Vec::new(), (commitment_txid, Vec::new()))
+
+		macro_rules! fail_dust_htlcs_after_threshold_conf {
+			($local_tx: expr) => {
+				for &(ref htlc, _, ref source) in &$local_tx.htlc_outputs {
+					if htlc.transaction_output_index.is_none() {
+						if let &Some(ref source) = source {
+							wait_threshold_conf!(height, source.clone(), None, "lastest", htlc.payment_hash.clone());
+						}
+					}
+				}
+			}
+		}
+
+		if is_local_tx {
+			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
+				fail_dust_htlcs_after_threshold_conf!(local_tx);
+			}
+			if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
+				fail_dust_htlcs_after_threshold_conf!(local_tx);
+			}
+		}
+
+		(local_txn, spendable_outputs, (commitment_txid, watch_outputs))
 	}
 
 	/// Generate a spendable output event when closing_transaction get registered onchain.
