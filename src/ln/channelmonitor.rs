@@ -1876,7 +1876,7 @@ impl ChannelMonitor {
 			// While all commitment/HTLC-Success/HTLC-Timeout transactions have one input, HTLCs
 			// can also be resolved in a few other ways which can have more than one output. Thus,
 			// we call is_resolving_htlc_output here outside of the tx.input.len() == 1 check.
-			let mut updated = self.is_resolving_htlc_output(tx);
+			let mut updated = self.is_resolving_htlc_output(tx, height);
 			if updated.len() > 0 {
 				htlc_updated.append(&mut updated);
 			}
@@ -1994,7 +1994,7 @@ impl ChannelMonitor {
 
 	/// Check if any transaction broadcasted is resolving HTLC output by a success or timeout on a local
 	/// or remote commitment tx, if so send back the source, preimage if found and payment_hash of resolved HTLC
-	fn is_resolving_htlc_output(&mut self, tx: &Transaction) -> Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)> {
+	fn is_resolving_htlc_output(&mut self, tx: &Transaction, height: u32) -> Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)> {
 		let mut htlc_updated = Vec::new();
 
 		'outer_loop: for input in &tx.input {
@@ -2101,7 +2101,17 @@ impl ChannelMonitor {
 					payment_preimage.0.copy_from_slice(&input.witness[1]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else {
-					htlc_updated.push((source, None, payment_hash));
+					log_info!(self, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
+					match self.htlc_updated_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+						hash_map::Entry::Occupied(mut entry) => {
+							let e = entry.get_mut();
+							e.retain(|ref update| update.0 != source);
+							e.push((source, None, payment_hash.clone()));
+						}
+						hash_map::Entry::Vacant(entry) => {
+							entry.insert(vec![(source, None, payment_hash)]);
+						}
+					}
 				}
 			}
 		}
