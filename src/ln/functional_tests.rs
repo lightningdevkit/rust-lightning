@@ -5631,3 +5631,71 @@ fn test_failure_delay_dust_htlc_local_commitment() {
 	do_test_failure_delay_dust_htlc_local_commitment(true);
 	do_test_failure_delay_dust_htlc_local_commitment(false);
 }
+
+fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
+	// Outbound HTLC-failure updates must be cancelled if we get a reorg before we reach HTLC_FAIL_ANTI_REORG_DELAY.
+	// Broadcast of revoked remote commitment tx, trigger failure-update of dust/non-dust HTLCs
+	// Broadcast of remote commitment tx, trigger failure-update of dust-HTLCs
+	// Broadcast of timeout tx on remote commitment tx, trigger failure-udate of non-dust HTLCs
+	// Broadcast of local commitment tx, trigger failure-update of dust-HTLCs
+	// Broadcast of HTLC-timeout tx on local commitment tx, trigger failure-update of non-dust HTLCs
+
+	let nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+
+	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (payment_preimage_2, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	let as_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+	let bs_commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	// We revoked bs_commitment_tx
+	if revoked {
+		let (payment_preimage_3, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
+	}
+
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let header_2  = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut timeout_tx = Vec::new();
+	if local {
+		// We fail dust-HTLC 1 by broadcast of local commitment tx
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&as_commitment_tx[0]], &[1; 1]);
+		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
+		assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		// We fail dust-HTLC 2 by broadcast of local HTLC-timeout tx on local commitment tx
+		nodes[0].chain_monitor.block_connected_checked(&header_2, 1, &[&timeout_tx[0]], &[1; 1]);
+	} else {
+		// We fail dust-HTLC 1 by broadcast of remote commitment tx. If revoked, fail also non-dust HTLC
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&bs_commitment_tx[0]], &[1; 1]);
+		if !revoked {
+			timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
+			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+			// We fail non-dust-HTLC 2 by broadcast of local timeout tx on remote commitment tx
+			nodes[0].chain_monitor.block_connected_checked(&header_2, 1, &[&timeout_tx[0]], &[1; 1]);
+		}
+	}
+
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+	// We connect 3 blocks, not enough to reach HTLC_FAIL_ANTI_REORG_DELAY
+	connect_blocks(&nodes[0].chain_monitor, 3, 2, true, header.bitcoin_hash());
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+
+	// We disconnect 5 blocks, updates should have been cancelled and HTLC still claimable
+	disconnect_blocks(&nodes[0].chain_monitor, 3, 5, true, header.bitcoin_hash());
+	nodes[0].chain_monitor.block_disconnected(&Block { header: header_2, txdata: if !revoked { timeout_tx } else { vec![] } }, 2);
+	nodes[0].chain_monitor.block_disconnected(&Block { header, txdata: vec![if local { as_commitment_tx[0].clone() } else { bs_commitment_tx[0].clone() }] }, 1);
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_2);
+}
+
+#[test]
+fn test_sweep_outbound_htlc_failure_update() {
+	do_test_sweep_outbound_htlc_failure_update(false, true);
+	do_test_sweep_outbound_htlc_failure_update(false, false);
+	do_test_sweep_outbound_htlc_failure_update(true, false);
+}

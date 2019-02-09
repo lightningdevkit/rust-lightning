@@ -15,7 +15,7 @@ use util::logger::Logger;
 use util::config::UserConfig;
 
 use bitcoin::util::hash::BitcoinHash;
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{BlockHeader, Block};
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
 
@@ -53,6 +53,20 @@ pub fn connect_blocks(chain: &chaininterface::ChainWatchInterfaceUtil, depth: u3
 	for i in 2..depth {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		chain.block_connected_checked(&header, height + i, &Vec::new(), &Vec::new());
+	}
+}
+
+pub fn disconnect_blocks(chain: &chaininterface::ChainWatchInterfaceUtil, depth: u32, height: u32, parent: bool, prev_blockhash: Sha256d) {
+	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut blocks = Vec::new();
+	for _ in 0..depth {
+		blocks.push(Block { header, txdata: Vec::new() });
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	}
+	let mut height = height;
+	for block in blocks.pop() {
+		chain.block_disconnected(&block, height);
+		height -= 1;
 	}
 }
 
