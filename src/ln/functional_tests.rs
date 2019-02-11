@@ -4806,7 +4806,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	for i in 0..max_accepted_htlcs {
 		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 		let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-		let mut payment_event = {
+		let payment_event = {
 			nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 			check_added_monitors!(nodes[0], 1);
 
