@@ -1590,10 +1590,9 @@ impl Channel {
 		if inbound_htlc_count + 1 > OUR_MAX_HTLCS as u32 {
 			return Err(ChannelError::Close("Remote tried to push more than our max accepted HTLCs"));
 		}
-		//TODO: Spec is unclear if this is per-direction or in total (I assume per direction):
 		// Check our_max_htlc_value_in_flight_msat
 		if htlc_inbound_value_msat + msg.amount_msat > Channel::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis) {
-			return Err(ChannelError::Close("Remote HTLC add would put them over their max HTLC value in flight"));
+			return Err(ChannelError::Close("Remote HTLC add would put them over our max HTLC value"));
 		}
 		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
@@ -3214,16 +3213,15 @@ impl Channel {
 		if outbound_htlc_count + 1 > self.their_max_accepted_htlcs as u32 {
 			return Err(ChannelError::Ignore("Cannot push more than their max accepted HTLCs"));
 		}
-		//TODO: Spec is unclear if this is per-direction or in total (I assume per direction):
 		// Check their_max_htlc_value_in_flight_msat
 		if htlc_outbound_value_msat + amount_msat > self.their_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Ignore("Cannot send value that would put us over the max HTLC value in flight"));
+			return Err(ChannelError::Ignore("Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 		}
 
 		// Check self.their_channel_reserve_satoshis (the amount we must keep as
 		// reserve for them to have something to claim if we misbehave)
 		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
-			return Err(ChannelError::Ignore("Cannot send value that would put us over the reserve value"));
+			return Err(ChannelError::Ignore("Cannot send value that would put us over their reserve value"));
 		}
 
 		//TODO: Check cltv_expiry? Do this in channel manager?
