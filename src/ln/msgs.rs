@@ -1382,10 +1382,15 @@ impl_writeable_len_match!(NodeAnnouncement, {
 mod tests {
 	use hex;
 	use ln::msgs;
-	use ln::msgs::{GlobalFeatures, OptionalField};
+	use ln::msgs::{GlobalFeatures, OptionalField, OnionErrorPacket};
+	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use util::ser::Writeable;
 
 	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin::util::address::Address;
+	use bitcoin::network::constants::Network;
+	use bitcoin::blockdata::script::Builder;
+	use bitcoin::blockdata::opcodes;
 
 	use secp256k1::key::{PublicKey,SecretKey};
 	use secp256k1::{Secp256k1, Message};
@@ -1678,5 +1683,308 @@ mod tests {
 		do_encoding_channel_update(false, false, true, false);
 		do_encoding_channel_update(false, false, false, true);
 		do_encoding_channel_update(true, true, true, true);
+	}
+
+	fn do_encoding_open_channel(non_bitcoin_chain_hash: bool, random_bit: bool, shutdown: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
+		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
+		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
+		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
+		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
+		let open_channel = msgs::OpenChannel {
+			chain_hash: if !non_bitcoin_chain_hash { Sha256dHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { Sha256dHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			temporary_channel_id: [2; 32],
+			funding_satoshis: 1311768467284833366,
+			push_msat: 2536655962884945560,
+			dust_limit_satoshis: 3608586615801332854,
+			max_htlc_value_in_flight_msat: 8517154655701053848,
+			channel_reserve_satoshis: 8665828695742877976,
+			htlc_minimum_msat: 2316138423780173,
+			feerate_per_kw: 821716,
+			to_self_delay: 49340,
+			max_accepted_htlcs: 49340,
+			funding_pubkey: pubkey_1,
+			revocation_basepoint: pubkey_2,
+			payment_basepoint: pubkey_3,
+			delayed_payment_basepoint: pubkey_4,
+			htlc_basepoint: pubkey_5,
+			first_per_commitment_point: pubkey_6,
+			channel_flags: if random_bit { 1 << 5 } else { 0 },
+			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&pubkey_1, Network::Testnet).script_pubkey()) } else { OptionalField::Absent }
+		};
+		let encoded_value = open_channel.encode();
+		let mut target_value = Vec::new();
+		if non_bitcoin_chain_hash {
+			target_value.append(&mut hex::decode("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
+		}
+		target_value.append(&mut hex::decode("02020202020202020202020202020202020202020202020202020202020202021234567890123456233403289122369832144668701144767633030896203198784335490624111800083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
+		if random_bit {
+			target_value.append(&mut hex::decode("20").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("00").unwrap());
+		}
+		if shutdown {
+			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_open_channel() {
+		do_encoding_open_channel(false, false, false);
+		do_encoding_open_channel(true, false, false);
+		do_encoding_open_channel(false, true, false);
+		do_encoding_open_channel(false, false, true);
+		do_encoding_open_channel(true, true, true);
+	}
+
+	fn do_encoding_accept_channel(shutdown: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
+		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
+		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
+		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
+		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
+		let accept_channel = msgs::AcceptChannel {
+			temporary_channel_id: [2; 32],
+			dust_limit_satoshis: 1311768467284833366,
+			max_htlc_value_in_flight_msat: 2536655962884945560,
+			channel_reserve_satoshis: 3608586615801332854,
+			htlc_minimum_msat: 2316138423780173,
+			minimum_depth: 821716,
+			to_self_delay: 49340,
+			max_accepted_htlcs: 49340,
+			funding_pubkey: pubkey_1,
+			revocation_basepoint: pubkey_2,
+			payment_basepoint: pubkey_3,
+			delayed_payment_basepoint: pubkey_4,
+			htlc_basepoint: pubkey_5,
+			first_per_commitment_point: pubkey_6,
+			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&pubkey_1, Network::Testnet).script_pubkey()) } else { OptionalField::Absent }
+		};
+		let encoded_value = accept_channel.encode();
+		let mut target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020212345678901234562334032891223698321446687011447600083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap();
+		if shutdown {
+			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_accept_channel() {
+		do_encoding_accept_channel(false);
+		do_encoding_accept_channel(true);
+	}
+
+	#[test]
+	fn encoding_funding_created() {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let funding_created = msgs::FundingCreated {
+			temporary_channel_id: [2; 32],
+			funding_txid: Sha256dHash::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
+			funding_output_index: 255,
+			signature: sig_1,
+		};
+		let encoded_value = funding_created.encode();
+		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c200ffd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_funding_signed() {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let funding_signed = msgs::FundingSigned {
+			channel_id: [2; 32],
+			signature: sig_1,
+		};
+		let encoded_value = funding_signed.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_funding_locked() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let funding_locked = msgs::FundingLocked {
+			channel_id: [2; 32],
+			next_per_commitment_point: pubkey_1,
+		};
+		let encoded_value = funding_locked.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	fn do_encoding_shutdown(script_type: u8) {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		let shutdown = msgs::Shutdown {
+			channel_id: [2; 32],
+			scriptpubkey: if script_type == 1 { Address::p2pkh(&pubkey_1, Network::Testnet).script_pubkey() } else if script_type == 2 { Address::p2sh(&script, Network::Testnet).script_pubkey() } else if script_type == 3 { Address::p2wpkh(&pubkey_1, Network::Testnet).script_pubkey() } else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
+		};
+		let encoded_value = shutdown.encode();
+		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		if script_type == 1 {
+			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+		} else if script_type == 2 {
+			target_value.append(&mut hex::decode("0017a914da1745e9b549bd0bfa1a569971c77eba30cd5a4b87").unwrap());
+		} else if script_type == 3 {
+			target_value.append(&mut hex::decode("0016001479b000887626b294a914501a4cd226b58b235983").unwrap());
+		} else if script_type == 4 {
+			target_value.append(&mut hex::decode("002200204ae81572f06e1b88fd5ced7a1a000945432e83e1551e6f721ee9c00b8cc33260").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_shutdown() {
+		do_encoding_shutdown(1);
+		do_encoding_shutdown(2);
+		do_encoding_shutdown(3);
+		do_encoding_shutdown(4);
+	}
+
+	#[test]
+	fn encoding_closing_signed() {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let closing_signed = msgs::ClosingSigned {
+			channel_id: [2; 32],
+			fee_satoshis: 2316138423780173,
+			signature: sig_1,
+		};
+		let encoded_value = closing_signed.encode();
+		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_update_add_htlc() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let onion_routing_packet = msgs::OnionPacket {
+			version: 255,
+			public_key: Ok(pubkey_1),
+			hop_data: [1; 20*65],
+			hmac: [2; 32]
+		};
+		let update_add_htlc = msgs::UpdateAddHTLC {
+			channel_id: [2; 32],
+			htlc_id: 2316138423780173,
+			amount_msat: 3608586615801332854,
+			payment_hash: PaymentHash([1; 32]),
+			cltv_expiry: 821716,
+			onion_routing_packet
+		};
+		let encoded_value = update_add_htlc.encode();
+		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d32144668701144760101010101010101010101010101010101010101010101010101010101010101000c89d4ff031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_update_fulfill_htlc() {
+		let update_fulfill_htlc = msgs::UpdateFulfillHTLC {
+			channel_id: [2; 32],
+			htlc_id: 2316138423780173,
+			payment_preimage: PaymentPreimage([1; 32]),
+		};
+		let encoded_value = update_fulfill_htlc.encode();
+		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_update_fail_htlc() {
+		let reason = OnionErrorPacket {
+			data: [1; 32].to_vec(),
+		};
+		let update_fail_htlc = msgs::UpdateFailHTLC {
+			channel_id: [2; 32],
+			htlc_id: 2316138423780173,
+			reason
+		};
+		let encoded_value = update_fail_htlc.encode();
+		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_update_fail_malformed_htlc() {
+		let update_fail_malformed_htlc = msgs::UpdateFailMalformedHTLC {
+			channel_id: [2; 32],
+			htlc_id: 2316138423780173,
+			sha256_of_onion: [1; 32],
+			failure_code: 255
+		};
+		let encoded_value = update_fail_malformed_htlc.encode();
+		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034d010101010101010101010101010101010101010101010101010101010101010100ff").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	fn do_encoding_commitment_signed(htlcs: bool) {
+		let secp_ctx = Secp256k1::new();
+		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (privkey_2, _) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
+		let (privkey_3, _) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
+		let (privkey_4, _) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
+		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
+		let commitment_signed = msgs::CommitmentSigned {
+			channel_id: [2; 32],
+			signature: sig_1,
+			htlc_signatures: if htlcs { vec![sig_2, sig_3, sig_4] } else { Vec::new() },
+		};
+		let encoded_value = commitment_signed.encode();
+		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		if htlcs {
+			target_value.append(&mut hex::decode("00031735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
+		} else {
+			target_value.append(&mut hex::decode("0000").unwrap());
+		}
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_commitment_signed() {
+		do_encoding_commitment_signed(true);
+		do_encoding_commitment_signed(false);
+	}
+
+	#[test]
+	fn encoding_revoke_and_ack() {
+		let secp_ctx = Secp256k1::new();
+		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let raa = msgs::RevokeAndACK {
+			channel_id: [2; 32],
+			per_commitment_secret: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+			next_per_commitment_point: pubkey_1,
+		};
+		let encoded_value = raa.encode();
+		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_update_fee() {
+		let update_fee = msgs::UpdateFee {
+			channel_id: [2; 32],
+			feerate_per_kw: 20190119,
+		};
+		let encoded_value = update_fee.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202013413a7").unwrap();
+		assert_eq!(encoded_value, target_value);
 	}
 }
