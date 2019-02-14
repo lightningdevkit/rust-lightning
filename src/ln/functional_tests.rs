@@ -1234,7 +1234,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		assert!(route.hops.iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 		let err = nodes[0].node.send_payment(route, our_payment_hash).err().unwrap();
 		match err {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -1270,7 +1270,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
 		let err = nodes[0].node.send_payment(route.clone(), our_payment_hash).err().unwrap();
 		match err {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the reserve value"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over their reserve value"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -1295,7 +1295,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 		match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the reserve value"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over their reserve value"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -1359,7 +1359,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
 		match nodes[0].node.send_payment(route, our_payment_hash).err().unwrap() {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the reserve value"),
+			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over their reserve value"),
 			_ => panic!("Unknown error variants"),
 		}
 	}
@@ -5017,7 +5017,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let err = nodes[0].node.send_payment(route, our_payment_hash);
 
 	if let Err(APIError::ChannelUnavailable{err}) = err {
-		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight");
+		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept");
 	} else {
 		assert!(false);
 	}
@@ -5141,7 +5141,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
-		assert_eq!(err,"Remote HTLC add would put them over their max HTLC value in flight");
+		assert_eq!(err,"Remote HTLC add would put them over our max HTLC value");
 	} else {
 		assert!(false);
 	}
