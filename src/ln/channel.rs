@@ -3295,7 +3295,7 @@ impl Channel {
 			if have_updates { break; }
 		}
 		if !have_updates {
-			panic!("Cannot create commitment tx until we have some updates to send");
+			return Err(ChannelError::Ignore("Cannot create commitment tx until we have some updates to send"));
 		}
 		self.send_commitment_no_status_check()
 	}

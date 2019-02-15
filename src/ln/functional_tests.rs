@@ -7,7 +7,7 @@ use chain::chaininterface::{ChainListener, ChainWatchInterface};
 use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 use chain::keysinterface;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, BREAKDOWN_TIMEOUT};
-use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, HTLCSource, RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
 use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use ln::onion_utils;
@@ -5351,4 +5351,262 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	};
 
 	check_added_monitors!(nodes[1], 1);
+}
+
+#[test]
+fn test_commitment_signed_bolt2_sending_node_must_not_send_commitment_signed_no_updates() {
+	//BOLT 2 Requirement: A sending node:
+	//    * MUST NOT send a commitment_signed message that does not include any updates
+
+	let nodes = create_network(2);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let mut chan_state_lock = nodes[0].node.channel_state.lock().unwrap();
+	let chan_state = chan_state_lock.borrow_parts();
+
+	let chan = chan_state.by_id.get_mut(&channel_id).unwrap();
+	if let Err(super::channel::ChannelError::Ignore(msg)) = chan.send_commitment() {
+		assert_eq!(msg, "Cannot create commitment tx until we have some updates to send");
+	} else {
+		panic!("send_commitment did not return expected error with no updates")
+	}
+}
+
+#[test]
+fn test_commitment_signed_bolt2_sending_node_may_send_commitment_signed_new_revocation_number() {
+	//BOLT 2 Requirement: A sending node:
+	//    * MAY send a commitment_signed message that doesn't change the commitment transaction aside from the new revocation number (due to dust, identical HTLC replacement, or insignificant or multiple fee changes).
+
+	const VALUE_DUST: u64 = 10000;
+
+	let mut nodes = create_network(2);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, VALUE_DUST, 10001);
+	route_payment(&nodes[0], &[&nodes[1]], VALUE_DUST);
+
+	let node_a_output_value = {
+		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
+		let last_local_commitment_txn = &chan_lock.by_id.get(&channel_id).unwrap().last_local_commitment_txn;
+		last_local_commitment_txn[0].output[0].value
+	};
+
+	let node_b_output_value = {
+		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
+		let last_local_commitment_txn = &chan_lock.by_id.get(&channel_id).unwrap().last_local_commitment_txn;
+		last_local_commitment_txn[0].output[0].value
+	};
+
+	assert!(node_a_output_value < VALUE_DUST);
+	assert_eq!(node_a_output_value, node_b_output_value);
+
+	nodes[1].node.get_and_clear_pending_events();
+}
+
+#[test]
+fn test_commitment_signed_bolt2_sending_node_must_include_htlc_signature_corresponding_commitment_txn() {
+	//BOLT 2 Requirement: A receiving node:
+	//    * MUST include one htlc_signature for every HTLC transaction corresponding to the ordering of the commitment transaction (see BOLT #3).
+
+	let mut nodes = create_network(2);
+	let (chan_update_1, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+
+	let mut htlcs = vec![];
+
+	let session_priv = SecretKey::from_slice(&{
+		let mut session_key = [0; 32];
+		rng::fill_bytes(&mut session_key);
+		session_key
+	}).expect("RNG is bad!");
+
+	const NUM_HTLCS: u32 = 3;
+
+	for i in 0..NUM_HTLCS {
+		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + i;
+
+		let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route, &session_priv).unwrap();
+		let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+
+		{
+			let mut chan_state_lock = nodes[0].node.channel_state.lock().unwrap();
+			let chan_state = chan_state_lock.borrow_parts();
+			let chan = chan_state.by_id.get_mut(&channel_id).unwrap();
+
+			let update_add_htlc = chan.send_htlc(1000000, payment_hash, htlc_cltv, HTLCSource::OutboundRoute {
+				route: route.clone(),
+				session_priv: session_priv.clone(),
+				first_hop_htlc_msat: 1000,
+			}, onion_packet).unwrap().unwrap();
+
+			htlcs.push(update_add_htlc.clone());
+		}
+	}
+
+	{
+		let mut chan_state_lock = nodes[0].node.channel_state.lock().unwrap();
+		let chan_state = chan_state_lock.borrow_parts();
+		let chan = chan_state.by_id.get_mut(&channel_id).unwrap();
+
+		let (commitment_signed, _) = chan.send_commitment().unwrap();
+		assert_eq!(commitment_signed.htlc_signatures.len() as u32, NUM_HTLCS);
+	}
+}
+
+#[test]
+fn test_commitment_signed_bolt2_sending_node_may_send_commitment_signed_alter_fees() {
+	//BOLT 2 Requirement: A sending node:
+	//    * MAY send a commitment_signed message that only alters the fee.
+
+	let nodes = create_network(2);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	nodes[0].node.update_fee(channel_id, 260).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_0.len(), 1);
+
+	let (update_msg, commitment_signed) = match events_0[0] {
+		MessageSendEvent::UpdateHTLCs { node_id: _, ref updates } => {
+			match *updates {
+				msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. } =>
+					(update_fee.as_ref(), commitment_signed),
+			}
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	assert!(update_msg.is_some());
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_msg.unwrap()).unwrap();
+	commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
+
+	// Outbound
+	let mut chan_state_lock = nodes[0].node.channel_state.lock().unwrap();
+	let chan_state = chan_state_lock.borrow_parts();
+	let chan = chan_state.by_id.get(&channel_id).unwrap();
+	assert_eq!(chan.get_feerate(), 260u64);
+
+	// Inbound
+	let mut chan_state_lock = nodes[1].node.channel_state.lock().unwrap();
+	let chan_state = chan_state_lock.borrow_parts();
+	let chan = chan_state.by_id.get(&channel_id).unwrap();
+	assert_eq!(chan.get_feerate(), 260u64);
+}
+
+#[test]
+fn test_commitment_signed_bolt2_receiving_node_pending_updates_applied_invalid_sig_fail_channel() {
+	//BOLT 2 Requirement: A receiving node:
+	//    * once all pending updates are applied: if signature is not valid for its local commitment transaction: MUST fail the channel.
+
+	use secp256k1::ffi::Signature as FFISignature;
+	use secp256k1::Signature;
+
+	let mut nodes = create_network(2);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+
+	let mut invalid_commitment = updates.commitment_signed.clone();
+	invalid_commitment.signature = Signature::from(FFISignature::new());
+
+	if let Err(err) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &invalid_commitment) {
+		check_added_monitors!(nodes[1], 0);
+		if let msgs::ErrorAction::SendErrorMessage { msg } = err.action.unwrap() {
+			assert_eq!(msg.channel_id, channel_id);
+			assert_eq!(msg.data, "Invalid commitment tx signature from peer");
+		} else {
+			panic!("Unexpected ErrorAction");
+		}
+	} else {
+		panic!("Expected channel failure but that did not happen");
+	}
+
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[1]);
+}
+
+#[test]
+fn test_commitment_signed_bolt2_receiving_node_pending_updates_applied_num_htlc_output_incorrect_fail_channel() {
+	//BOLT 2 Requirement: A receiving node:
+	//    * once all pending updates are applied: if num_htlcs is not equal to the number of HTLC outputs in the local commitment transaction: MUST fail the channel.
+
+	let mut nodes = create_network(2);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+
+	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+
+	let mut invalid_commitment = updates.commitment_signed.clone();
+	invalid_commitment.htlc_signatures.pop();
+
+	if let Err(err) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &invalid_commitment) {
+		check_added_monitors!(nodes[1], 0);
+		if let msgs::ErrorAction::SendErrorMessage { msg } = err.action.unwrap() {
+			assert_eq!(msg.channel_id, channel_id);
+			assert_eq!(msg.data, "Got wrong number of HTLC signatures from remote");
+		} else {
+			panic!("Unexpected ErrorAction");
+		}
+	} else {
+		panic!("Expected channel failure but that did not happen");
+	}
+
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[1]);
+}
+
+#[test]
+fn test_commitment_signed_bolt2_receiving_node_any_htlc_signature_invalid_fail_channel() {
+	//BOLT 2 Requirement: A receiving node:
+	//    * if any htlc_signature is not valid for the corresponding HTLC transaction: MUST fail the channel.
+
+	use secp256k1::ffi::Signature as FFISignature;
+	use secp256k1::Signature;
+
+	let mut nodes = create_network(2);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let route_0 = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
+
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[0].node.send_payment(route_0, our_payment_hash).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]).unwrap();
+
+	let mut invalid_commitment = updates.commitment_signed.clone();
+	invalid_commitment.htlc_signatures[0] = Signature::from(FFISignature::new());
+
+	if let Err(err) = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &invalid_commitment) {
+		check_added_monitors!(nodes[1], 0);
+		if let msgs::ErrorAction::SendErrorMessage { msg } = err.action.unwrap() {
+			assert_eq!(msg.channel_id, channel_id);
+			assert_eq!(msg.data, "Invalid HTLC tx signature from peer");
+		} else {
+			panic!("Unexpected ErrorAction");
+		}
+	} else {
+		panic!("Expected channel failure but that did not happen");
+	}
+
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[1]);
 }
