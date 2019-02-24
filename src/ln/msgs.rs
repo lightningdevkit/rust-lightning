@@ -91,25 +91,15 @@ impl LocalFeatures {
 	}
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
-		for (idx, &byte) in self.flags.iter().enumerate() {
-			if idx != 0 && (byte & 0x55) != 0 {
-				return true;
-			} else if idx == 0 && (byte & 0x14) != 0 {
-				return true;
-			}
-		}
-		return false;
+		self.flags.iter().enumerate().any(|(idx, &byte)| {
+			( idx != 0 && (byte & 0x55) != 0 ) || ( idx == 0 && (byte & 0x14) != 0 )
+		})
 	}
 
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
-		for (idx, &byte) in self.flags.iter().enumerate() {
-			if idx != 0 && byte != 0 {
-				return true;
-			} else if idx == 0 && (byte & 0xc4) != 0 {
-				return true;
-			}
-		}
-		return false;
+		self.flags.iter().enumerate().any(|(idx, &byte)| {
+			( idx != 0 && byte != 0 ) || ( idx == 0 && (byte & 0xc4) != 0 )
+		})
 	}
 }
 
