@@ -1451,6 +1451,153 @@ fn channel_reserve_test() {
 }
 
 #[test]
+fn channel_reserve_in_flight_removes() {
+	// In cases where one side claims an HTLC, it thinks it has additional available funds that it
+	// can send to its counterparty, but due to update ordering, the other side may not yet have
+	// considered those HTLCs fully removed.
+	// This tests that we don't count HTLCs which will not be included in the next remote
+	// commitment transaction towards the reserve value (as it implies no commitment transaction
+	// will be generated which violates the remote reserve value).
+	// This was broken previously, and discovered by the chanmon_fail_consistency fuzz test.
+	// To test this we:
+	//  * route two HTLCs from A to B (note that, at a high level, this test is checking that, when
+	//    you consider the values of both of these HTLCs, B may not send an HTLC back to A, but if
+	//    you only consider the value of the first HTLC, it may not),
+	//  * start routing a third HTLC from A to B,
+	//  * claim the first two HTLCs (though B will generate an update_fulfill for one, and put
+	//    the other claim in its holding cell, as it immediately goes into AwaitingRAA),
+	//  * deliver the first fulfill from B
+	//  * deliver the update_add and an RAA from A, resulting in B freeing the second holding cell
+	//    claim,
+	//  * deliver A's response CS and RAA.
+	//    This results in A having the second HTLC in AwaitingRemovedRemoteRevoke, but B having
+	//    removed it fully. B now has the push_msat plus the first two HTLCs in value.
+	//  * Now B happily sends another HTLC, potentially violating its reserve value from A's point
+	//    of view (if A counts the AwaitingRemovedRemoteRevoke HTLC).
+	let mut nodes = create_network(2);
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let b_chan_values = get_channel_value_stat!(nodes[1], chan_1.2);
+	// Route the first two HTLCs.
+	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], b_chan_values.channel_reserve_msat - b_chan_values.value_to_self_msat - 10000);
+	let (payment_preimage_2, _) = route_payment(&nodes[0], &[&nodes[1]], 20000);
+
+	// Start routing the third HTLC (this is just used to get everyone in the right state).
+	let (payment_preimage_3, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
+	let send_1 = {
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+		nodes[0].node.send_payment(route, payment_hash_3).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	// Now claim both of the first two HTLCs on B's end, putting B in AwaitingRAA and generating an
+	// initial fulfill/CS.
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
+	check_added_monitors!(nodes[1], 1);
+	let bs_removes = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	// This claim goes in B's holding cell, allowing us to have a pending B->A RAA which does not
+	// remove the second HTLC when we send the HTLC back from B to A.
+	assert!(nodes[1].node.claim_funds(payment_preimage_2));
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_removes.update_fulfill_htlcs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_removes.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	expect_payment_sent!(nodes[0], payment_preimage_1);
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_1.msgs[0]).unwrap();
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_1.commitment_msg).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	// B is already AwaitingRAA, so cant generate a CS here
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_cs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_cs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs.commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	// The second HTLCis removed, but as A is in AwaitingRAA it can't generate a CS here, so the
+	// RAA that B generated above doesn't fully resolve the second HTLC from A's point of view.
+	// However, the RAA A generates here *does* fully resolve the HTLC from B's point of view (as A
+	// can no longer broadcast a commitment transaction with it and B has the preimage so can go
+	// on-chain as necessary).
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_cs.update_fulfill_htlcs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	expect_payment_sent!(nodes[0], payment_preimage_2);
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_3, 100000);
+
+	// Note that as this RAA was generated before the delivery of the update_fulfill it shouldn't
+	// resolve the second HTLC from A's point of view.
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_cs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	// Now that B doesn't have the second RAA anymore, but A still does, send a payment from B back
+	// to A to ensure that A doesn't count the almost-removed HTLC in update_add processing.
+	let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[1]);
+	let send_2 = {
+		let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &[], 10000, TEST_FINAL_CLTV).unwrap();
+		nodes[1].node.send_payment(route, payment_hash_4).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_2.msgs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_2.commitment_msg).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+	// Now just resolve all the outstanding messages/HTLCs for completeness...
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs.commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_cs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs.commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[0]);
+	expect_payment_received!(nodes[0], payment_hash_4, 10000);
+
+	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_4);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
+}
+
+#[test]
 fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that ChannelMonitor is able to recover from various states.

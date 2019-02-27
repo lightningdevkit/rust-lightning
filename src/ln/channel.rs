@@ -1595,7 +1595,24 @@ impl Channel {
 		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
 		// something if we punish them for broadcasting an old state).
-		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 {
+		// Note that we don't really care about having a small/no to_remote output in our local
+		// commitment transactions, as the purpose of the channel reserve is to ensure we can
+		// punish *them* if they misbehave, so we discount any outbound HTLCs which will not be
+		// present in the next commitment transaction we send them (at least for fulfilled ones,
+		// failed ones won't modify value_to_self).
+		// Note that we will send HTLCs which another instance of rust-lightning would think
+		// violate the reserve value if we do not do this (as we forget inbound HTLCs from the
+		// Channel state once they will not be present in the next received commitment
+		// transaction).
+		let mut removed_outbound_total_msat = 0;
+		for ref htlc in self.pending_outbound_htlcs.iter() {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(None) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(None) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			}
+		}
+		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 + removed_outbound_total_msat {
 			return Err(ChannelError::Close("Remote HTLC add would put them over their reserve value"));
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
