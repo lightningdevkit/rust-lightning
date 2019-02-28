@@ -615,6 +615,12 @@ mod tests {
 		// What each byte represents is broken down below, and then everything is concatenated into
 		// one large test at the end (you want %s/ -.*//g %s/\n\| \|\t\|\///g).
 
+		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length + 
+		// 16-byte MAC of the encrypted message length + encrypted Lightning message + 16-byte MAC
+		// of the Lightning message
+		// I.e 2nd inbound read, len 18 : 0006 (encrypted message length) + 03000000000000000000000000000000 (MAC of the encrypted message length)
+		// Len 22 : 0010 00000000 (encrypted lightning message) + 03000000000000000000000000000000 (MAC of the Lightning message)
+
 		// 0000000000000000000000000000000000000000000000000000000000000000 - our network key
 		// 00000000 - fee_proportional_millionths
 		// 01 - announce_channels_publicly
@@ -627,7 +633,7 @@ mod tests {
 		// 030012 - inbound read from peer id 0 of len 18
 		// 0006 03000000000000000000000000000000 - message header indicating message length 6
 		// 030016 - inbound read from peer id 0 of len 22
-		// 0010 00000000 03000000000000000000000000000000 - init message with no features (type 16)
+		// 0010 00000000 03000000000000000000000000000000 - init message with no features (type 16) and mac
 		//
 		// 030012 - inbound read from peer id 0 of len 18
 		// 0141 03000000000000000000000000000000 - message header indicating message length 321
@@ -636,7 +642,7 @@ mod tests {
 		// 030053 - inbound read from peer id 0 of len 83
 		// 030000000000000000000000000000000000000000000000000000000000000005 030000000000000000000000000000000000000000000000000000000000000000 01 03000000000000000000000000000000 - rest of open_channel and mac
 		//
-		// 00fd00fd00fd - Three feerate requests (all returning min feerate, which our open_channel also uses)
+		// 00fd00fd00fd - Three feerate requests (all returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
 		// - client should now respond with accept_channel (CHECK 1: type 33 to peer 03000000)
 		//
 		// 030012 - inbound read from peer id 0 of len 18
@@ -678,7 +684,7 @@ mod tests {
 		// 0010 00000000 01000000000000000000000000000000 - init message with no features (type 16)
 		//
 		// 05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8 - create outbound channel to peer 1 for 50k sat
-		// 00fd00fd00fd - Three feerate requests (all returning min feerate)
+		// 00fd00fd00fd - Three feerate requests (all returning min feerate) (gonna be ingested by FuzzEstimator)
 		//
 		// 030112 - inbound read from peer id 1 of len 18
 		// 0110 01000000000000000000000000000000 - message header indicating message length 272
@@ -717,7 +723,7 @@ mod tests {
 		// 0300c1 - inbound read from peer id 0 of len 193
 		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ef00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
 		//
-		// 00fd - A feerate request (returning min feerate, which our open_channel also uses)
+		// 00fd - A feerate request (returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
 		//
 		// 030012 - inbound read from peer id 0 of len 18
 		// 0064 03000000000000000000000000000000 - message header indicating message length 100
@@ -776,7 +782,7 @@ mod tests {
 		// 0300c1 - inbound read from peer id 0 of len 193
 		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ef00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
 		//
-		// 00fd - A feerate request (returning min feerate, which our open_channel also uses)
+		// 00fd - A feerate request (returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
 		//
 		// - now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
 		// 030012 - inbound read from peer id 0 of len 18
@@ -854,7 +860,7 @@ mod tests {
 		// 0300c1 - inbound read from peer id 0 of len 193
 		// ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ef00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - end of update_add_htlc from 0 to 1 via client and mac
 		//
-		// 00fd - A feerate request (returning min feerate, which our open_channel also uses)
+		// 00fd - A feerate request (returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
 		//
 		// 030012 - inbound read from peer id 0 of len 18
 		// 00a4 03000000000000000000000000000000 - message header indicating message length 164
@@ -871,10 +877,10 @@ mod tests {
 		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 		//
 		// 0c007d - connect a block with one transaction of len 125
-		// 02000000013f00000000000000000000000000000000000000000000000000000000000000000000000000000080020001000000000000220020e2000000000000000000000000000000000000000000000000000000000000006cc10000000000001600142e0000000000000000000000000000000000000005000020 - the funding transaction
-		// 00fd - A feerate request (returning min feerate, which our open_channel also uses)
+		// 02000000013f00000000000000000000000000000000000000000000000000000000000000000000000000000080020001000000000000220020e2000000000000000000000000000000000000000000000000000000000000006cc10000000000001600142e0000000000000000000000000000000000000005000020 - the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
+		// 00fd - A feerate request (returning min feerate, which our open_channel also uses) (gonna be ingested by FuzzEstimator)
 		// 0c005e - connect a block with one transaction of len 94
-		// 0200000001fb00000000000000000000000000000000000000000000000000000000000000000000000000000000014f00000000000000220020f60000000000000000000000000000000000000000000000000000000000000000000000 - the funding transaction
+		// 0200000001fb00000000000000000000000000000000000000000000000000000000000000000000000000000000014f00000000000000220020f60000000000000000000000000000000000000000000000000000000000000000000000 - the commitment transaction for channel 3d00000000000000000000000000000000000000000000000000000000000000
 		//
 		// 07 - process the now-pending HTLC forward
 		// - client now fails the HTLC backwards as it was unable to extract the payment preimage (CHECK 9 duplicate and CHECK 10)
