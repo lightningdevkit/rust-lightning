@@ -1851,6 +1851,8 @@ impl Channel {
 	fn free_holding_cell_htlcs(&mut self) -> Result<Option<(msgs::CommitmentUpdate, ChannelMonitor)>, ChannelError> {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
 		if self.holding_cell_htlc_updates.len() != 0 || self.holding_cell_update_fee.is_some() {
+			log_trace!(self, "Freeing holding cell with {} HTLC updates{}", self.holding_cell_htlc_updates.len(), if self.holding_cell_update_fee.is_some() { " and a fee update" } else { "" });
+
 			let mut htlc_updates = Vec::new();
 			mem::swap(&mut htlc_updates, &mut self.holding_cell_htlc_updates);
 			let mut update_add_htlcs = Vec::with_capacity(htlc_updates.len());
