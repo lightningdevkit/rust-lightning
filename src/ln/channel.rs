@@ -881,9 +881,14 @@ impl Channel {
 			}
 		}
 
-
 		let value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
-		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000 - self.value_to_self_msat - remote_htlc_total_msat) as i64 - value_to_self_msat_offset;
+		assert!(value_to_self_msat >= 0);
+		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
+		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
+		// "violate" their reserve value by couting those against it. Thus, we have to convert
+		// everything to i64 before subtracting as otherwise we can overflow.
+		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
+		assert!(value_to_remote_msat >= 0);
 
 		#[cfg(debug_assertions)]
 		{
