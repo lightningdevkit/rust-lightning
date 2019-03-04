@@ -17,12 +17,13 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
-use bitcoin::util::hash::{BitcoinHash,Sha256dHash};
+use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::bip143;
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::hash160::Hash as Hash160;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use secp256k1::{Secp256k1,Signature};
 use secp256k1::key::{SecretKey,PublicKey};
@@ -1179,7 +1180,7 @@ impl ChannelMonitor {
 				// on-chain claims, so we can do that at the same time.
 				macro_rules! check_htlc_fails {
 					($txid: expr, $commitment_tx: expr) => {
-						if let Some(ref outpoints) = self.remote_claimable_outpoints.get(&$txid) {
+						if let Some(ref outpoints) = self.remote_claimable_outpoints.get($txid) {
 							for &(ref htlc, ref source_option) in outpoints.iter() {
 								if let &Some(ref source) = source_option {
 									log_trace!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of revoked remote commitment transaction", log_bytes!(htlc.payment_hash.0), $commitment_tx);
@@ -1243,7 +1244,7 @@ impl ChannelMonitor {
 			// on-chain claims, so we can do that at the same time.
 			macro_rules! check_htlc_fails {
 				($txid: expr, $commitment_tx: expr, $id: tt) => {
-					if let Some(ref latest_outpoints) = self.remote_claimable_outpoints.get(&$txid) {
+					if let Some(ref latest_outpoints) = self.remote_claimable_outpoints.get($txid) {
 						$id: for &(ref htlc, ref source_option) in latest_outpoints.iter() {
 							if let &Some(ref source) = source_option {
 								// Check if the HTLC is present in the commitment transaction that was

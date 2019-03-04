@@ -2,9 +2,10 @@
 // To modify it, modify msg_target_template.txt and run gen_target.sh instead.
 
 extern crate bitcoin;
+extern crate bitcoin_hashes;
 extern crate lightning;
 
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use lightning::ln::channelmonitor;
 use lightning::util::reset_rng_state;

@@ -7,7 +7,8 @@ use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
 use secp256k1;
 
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin_hashes::Hash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 
@@ -410,7 +411,7 @@ macro_rules! secp_verify_sig {
 
 impl RoutingMessageHandler for Router {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
-		let msg_hash = hash_to_message!(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]);
+		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
 		if msg.contents.features.requires_unknown_bits() {
@@ -443,7 +444,7 @@ impl RoutingMessageHandler for Router {
 			return Err(HandleError{err: "Channel announcement node had a channel with itself", action: Some(ErrorAction::IgnoreError)});
 		}
 
-		let msg_hash = hash_to_message!(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]);
+		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
@@ -619,7 +620,7 @@ impl RoutingMessageHandler for Router {
 						};
 					}
 				}
-				let msg_hash = hash_to_message!(&Sha256dHash::from_data(&msg.contents.encode()[..])[..]);
+				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 				if msg.contents.flags & 1 == 1 {
 					dest_node_id = channel.one_to_two.src_node_id.clone();
 					secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &channel.two_to_one.src_node_id);
@@ -1020,7 +1021,8 @@ mod tests {
 	use util::logger::Logger;
 	use util::ser::{Writeable, Readable};
 
-	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin_hashes::Hash;
 	use bitcoin::network::constants::Network;
 
 	use hex;
@@ -1104,7 +1106,7 @@ mod tests {
 		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap());
 		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap());
 
-		let zero_hash = Sha256dHash::from_data(&[0; 32]);
+		let zero_hash = Sha256dHash::hash(&[0; 32]);
 
 		{
 			let mut network = router.network_map.write().unwrap();
