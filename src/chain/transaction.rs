@@ -1,6 +1,6 @@
 //! Contains simple structs describing parts of transactions on the chain.
 
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 
 /// A reference to a transaction output.
