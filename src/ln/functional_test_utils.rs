@@ -542,6 +542,33 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
+macro_rules! expect_payment_received {
+	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentReceived { ref payment_hash, amt } => {
+				assert_eq!($expected_payment_hash, *payment_hash);
+				assert_eq!($expected_recv_value, amt);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+macro_rules! expect_payment_sent {
+	($node: expr, $expected_payment_preimage: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentSent { ref payment_preimage } => {
+				assert_eq!($expected_payment_preimage, *payment_preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
 pub fn send_along_route_with_hash(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64, our_payment_hash: PaymentHash) {
 	let mut payment_event = {
 		origin_node.node.send_payment(route, our_payment_hash).unwrap();
@@ -664,14 +691,7 @@ pub fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], s
 
 	if !skip_last {
 		last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
-		let events = origin_node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentSent { payment_preimage } => {
-				assert_eq!(payment_preimage, our_payment_preimage);
-			},
-			_ => panic!("Unexpected event"),
-		}
+		expect_payment_sent!(origin_node, our_payment_preimage);
 	}
 }
 
@@ -932,20 +952,6 @@ pub fn get_announce_close_broadcast_events(nodes: &Vec<Node>, a: usize, b: usize
 	for node in nodes {
 		node.router.handle_channel_update(&as_update).unwrap();
 		node.router.handle_channel_update(&bs_update).unwrap();
-	}
-}
-
-macro_rules! expect_payment_received {
-	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
-		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentReceived { ref payment_hash, amt } => {
-				assert_eq!($expected_payment_hash, *payment_hash);
-				assert_eq!($expected_recv_value, amt);
-			},
-			_ => panic!("Unexpected event"),
-		}
 	}
 }
 
