@@ -8,8 +8,8 @@ use std::hash::Hash;
 
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
-use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::channelmanager::{PaymentPreimage, PaymentHash};
@@ -342,14 +342,16 @@ impl<R: Read> Readable<R> for SecretKey {
 
 impl Writeable for Sha256dHash {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		self.as_bytes().write(w)
+		w.write_all(&self[..])
 	}
 }
 
 impl<R: Read> Readable<R> for Sha256dHash {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin_hashes::Hash;
+
 		let buf: [u8; 32] = Readable::read(r)?;
-		Ok(From::from(&buf[..]))
+		Ok(Sha256dHash::from_slice(&buf[..]).unwrap())
 	}
 }
 

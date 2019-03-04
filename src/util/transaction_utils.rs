@@ -1,36 +1,34 @@
 use bitcoin::blockdata::transaction::{TxIn, TxOut};
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use std::cmp::Ordering;
 
 pub fn sort_outputs<T>(outputs: &mut Vec<(TxOut, T)>) {
 	outputs.sort_unstable_by(|a, b| {
-		if a.0.value < b.0.value {
-			Ordering::Less
-		} else if b.0.value < a.0.value {
-			Ordering::Greater
-		} else if a.0.script_pubkey[..] < b.0.script_pubkey[..] {
-			Ordering::Less
-		} else if b.0.script_pubkey[..] < a.0.script_pubkey[..] {
-			Ordering::Greater
-		} else {
-			Ordering::Equal
-		}
+		a.0.value.cmp(&b.0.value).then(
+			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..])
+		)
 	});
+}
+
+fn cmp(a: &Sha256dHash, b: &Sha256dHash) -> Ordering {
+	use bitcoin_hashes::Hash;
+
+	let av = a.into_inner();
+	let bv = b.into_inner();
+	for i in (0..32).rev() {
+		let cmp = av[i].cmp(&bv[i]);
+		if cmp != Ordering::Equal {
+			return cmp;
+		}
+	}
+	Ordering::Equal
 }
 
 pub fn sort_inputs<T>(inputs: &mut Vec<(TxIn, T)>) {
 	inputs.sort_unstable_by(|a, b| {
-		if a.0.previous_output.txid.into_le() < b.0.previous_output.txid.into_le() {
-			Ordering::Less
-		} else if b.0.previous_output.txid.into_le() < a.0.previous_output.txid.into_le() {
-			Ordering::Greater
-		} else if a.0.previous_output.vout < b.0.previous_output.vout {
-			Ordering::Less
-		} else if b.0.previous_output.vout < a.0.previous_output.vout {
-			Ordering::Greater
-		} else {
-			Ordering::Equal
-		}
+		cmp( &a.0.previous_output.txid, &b.0.previous_output.txid).then(
+		a.0.previous_output.vout.cmp(&b.0.previous_output.vout))
 	});
 }
 
@@ -40,7 +38,8 @@ mod tests {
 
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::transaction::{TxOut, OutPoint};
-	use bitcoin::util::hash::Sha256dHash;
+	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin_hashes::hex::FromHex;
 
 	use hex::decode;
 

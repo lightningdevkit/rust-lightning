@@ -141,23 +141,23 @@ impl KeysManager {
 		let secp_ctx = Secp256k1::signing_only();
 		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {
-				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0)).expect("Your RNG is busted").secret_key;
-				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1)) {
+				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0).unwrap()).expect("Your RNG is busted").private_key.key;
+				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1).unwrap()) {
 					Ok(destination_key) => {
-						let pubkey_hash160 = Hash160::hash(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.serialize()[..]);
+						let pubkey_hash160 = Hash160::hash(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.key.serialize()[..]);
 						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
 						              .push_slice(&pubkey_hash160.into_inner())
 						              .into_script()
 					},
 					Err(_) => panic!("Your RNG is busted"),
 				};
-				let shutdown_pubkey = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(2)) {
-					Ok(shutdown_key) => ExtendedPubKey::from_private(&secp_ctx, &shutdown_key).public_key,
+				let shutdown_pubkey = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(2).unwrap()) {
+					Ok(shutdown_key) => ExtendedPubKey::from_private(&secp_ctx, &shutdown_key).public_key.key,
 					Err(_) => panic!("Your RNG is busted"),
 				};
-				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3)).expect("Your RNG is busted");
-				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4)).expect("Your RNG is busted");
-				let channel_id_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5)).expect("Your RNG is busted");
+				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
+				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
+				let channel_id_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted");
 				KeysManager {
 					secp_ctx,
 					node_secret,
@@ -207,8 +207,8 @@ impl KeysInterface for KeysManager {
 		sha.input(&byte_utils::be64_to_array(now.as_secs()));
 
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
-		sha.input(&child_privkey.secret_key[..]);
+		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		sha.input(&child_privkey.private_key.key[..]);
 
 		seed = Sha256::from_engine(sha).into_inner();
 
@@ -251,8 +251,8 @@ impl KeysInterface for KeysManager {
 		sha.input(&byte_utils::be64_to_array(now.as_secs()));
 
 		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
-		sha.input(&child_privkey.secret_key[..]);
+		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		sha.input(&child_privkey.private_key.key[..]);
 		SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted")
 	}
 
@@ -264,8 +264,8 @@ impl KeysInterface for KeysManager {
 		sha.input(&byte_utils::be64_to_array(now.as_secs()));
 
 		let child_ix = self.channel_id_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32)).expect("Your RNG is busted");
-		sha.input(&child_privkey.secret_key[..]);
+		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		sha.input(&child_privkey.private_key.key[..]);
 
 		(Sha256::from_engine(sha).into_inner())
 	}

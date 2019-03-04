@@ -1,6 +1,6 @@
 use chain::transaction::OutPoint;
 
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use secp256k1::key::PublicKey;
 
 use ln::router::Route;
