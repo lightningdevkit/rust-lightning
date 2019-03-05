@@ -2336,7 +2336,12 @@ impl Channel {
 
 		self.monitor_pending_revoke_and_ack = false;
 		self.monitor_pending_commitment_signed = false;
-		(raa, commitment_update, self.monitor_pending_order.clone().unwrap(), forwards, failures)
+		let order = self.monitor_pending_order.clone().unwrap();
+		log_trace!(self, "Restored monitor updating resulting in {} commitment update and {} RAA, with {} first",
+			if commitment_update.is_some() { "a" } else { "no" },
+			if raa.is_some() { "an" } else { "no" },
+			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
+		(raa, commitment_update, order, forwards, failures)
 	}
 
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), ChannelError> {
