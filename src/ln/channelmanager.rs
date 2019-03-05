@@ -494,7 +494,7 @@ macro_rules! handle_monitor_err {
 				if !$resend_raa {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
-				$entry.get_mut().monitor_update_failed($action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
+				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
 				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
 			},
 		}
