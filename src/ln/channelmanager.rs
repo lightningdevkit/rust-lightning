@@ -1830,7 +1830,10 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (shutdown, closing_signed, dropped_htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg), channel_state, chan_entry);
+					let (shutdown, closing_signed, dropped_htlcs, chan_monitor) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg), channel_state, chan_entry);
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: their_node_id.clone(),
@@ -1877,7 +1880,10 @@ impl ChannelManager {
 						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg), channel_state, chan_entry);
+					let (closing_signed, tx, chan_monitor) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg), channel_state, chan_entry);
+					if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						unimplemented!();
+					}
 					if let Some(msg) = closing_signed {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 							node_id: their_node_id.clone(),

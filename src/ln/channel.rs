@@ -1832,15 +1832,15 @@ impl Channel {
 			return Err(ChannelError::Ignore("Previous monitor update failure prevented generation of RAA"));
 		}
 
-		let (our_commitment_signed, monitor_update, closing_signed) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+		let (our_commitment_signed, closing_signed, monitor_update) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
 			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
 			// we'll send one right away when we get the revoke_and_ack when we
 			// free_holding_cell_htlcs().
 			let (msg, monitor) = self.send_commitment_no_status_check()?;
-			(Some(msg), monitor, None)
+			(Some(msg), None, monitor)
 		} else if !need_our_commitment {
-			(None, self.channel_monitor.clone(), self.maybe_propose_first_closing_signed(fee_estimator))
-		} else { (None, self.channel_monitor.clone(), None) };
+			(None, self.maybe_propose_first_closing_signed(fee_estimator), self.channel_monitor.clone())
+		} else { (None, None, self.channel_monitor.clone()) };
 
 		Ok((msgs::RevokeAndACK {
 			channel_id: self.channel_id,
@@ -2522,6 +2522,7 @@ impl Channel {
 		let sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
 
 		self.last_sent_closing_fee = Some((proposed_feerate, total_fee_satoshis));
+		self.channel_monitor.provide_latest_closing_tx_info(&closing_tx);
 		Some(msgs::ClosingSigned {
 			channel_id: self.channel_id,
 			fee_satoshis: total_fee_satoshis,
@@ -2529,7 +2530,7 @@ impl Channel {
 		})
 	}
 
-	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError> {
+	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>, ChannelMonitor), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish"));
 		}
@@ -2599,10 +2600,10 @@ impl Channel {
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		self.channel_update_count += 1;
-		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
+		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs, self.channel_monitor.clone()))
 	}
 
-	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError> {
+	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, ChannelMonitor), ChannelError> {
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
 			return Err(ChannelError::Close("Remote end sent us a closing_signed before both sides provided a shutdown"));
 		}
@@ -2639,7 +2640,8 @@ impl Channel {
 				self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
 				self.channel_state = ChannelState::ShutdownComplete as u32;
 				self.channel_update_count += 1;
-				return Ok((None, Some(closing_tx)));
+				self.channel_monitor.provide_latest_closing_tx_info(&closing_tx);
+				return Ok((None, Some(closing_tx), self.channel_monitor.clone()));
 			}
 		}
 
@@ -2650,11 +2652,12 @@ impl Channel {
 				sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
 				let our_sig = self.secp_ctx.sign(&sighash, &self.local_keys.funding_key);
 				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee));
+				self.channel_monitor.provide_latest_closing_tx_info(&closing_tx);
 				return Ok((Some(msgs::ClosingSigned {
 					channel_id: self.channel_id,
 					fee_satoshis: used_total_fee,
 					signature: our_sig,
-				}), None))
+				}), None, self.channel_monitor.clone()))
 			}
 		}
 
@@ -2684,12 +2687,13 @@ impl Channel {
 		let our_sig = self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.channel_update_count += 1;
+		self.channel_monitor.provide_latest_closing_tx_info(&closing_tx);
 
 		Ok((Some(msgs::ClosingSigned {
 			channel_id: self.channel_id,
 			fee_satoshis: msg.fee_satoshis,
 			signature: our_sig,
-		}), Some(closing_tx)))
+		}), Some(closing_tx), self.channel_monitor.clone()))
 	}
 
 	// Public utilities:

@@ -315,6 +315,7 @@ enum Storage {
 		funding_info: Option<(OutPoint, Script)>,
 		current_remote_commitment_txid: Option<Sha256dHash>,
 		prev_remote_commitment_txid: Option<Sha256dHash>,
+		closing_txid: Option<Sha256dHash>,
 	},
 	Watchtower {
 		revocation_base_key: PublicKey,
@@ -444,6 +445,7 @@ impl ChannelMonitor {
 				funding_info: None,
 				current_remote_commitment_txid: None,
 				prev_remote_commitment_txid: None,
+				closing_txid: None,
 			},
 			their_htlc_base_key: None,
 			their_delayed_payment_base_key: None,
@@ -626,6 +628,14 @@ impl ChannelMonitor {
 		}
 	}
 
+	pub(super) fn provide_latest_closing_tx_info(&mut self, closing_tx: &Transaction) {
+		if let Storage::Local { ref mut closing_txid, .. } = self.key_storage {
+			*closing_txid = Some(closing_tx.txid());
+		} else {
+			panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
+		}
+	}
+
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
 	pub(super) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
@@ -789,7 +799,7 @@ impl ChannelMonitor {
 		}
 
 		match self.key_storage {
-			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
+			Storage::Local { ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref prev_latest_per_commitment_point, ref latest_per_commitment_point, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid, ref closing_txid } => {
 				writer.write_all(&[0; 1])?;
 				writer.write_all(&revocation_base_key[..])?;
 				writer.write_all(&htlc_base_key[..])?;
@@ -820,6 +830,7 @@ impl ChannelMonitor {
 				}
 				write_option!(current_remote_commitment_txid);
 				write_option!(prev_remote_commitment_txid);
+				write_option!(closing_txid);
 			},
 			Storage::Watchtower { .. } => unimplemented!(),
 		}
@@ -1014,7 +1025,7 @@ impl ChannelMonitor {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked remote commitment tx
-	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>)  {
+	fn check_spend_remote_transaction(&mut self, tx: &Transaction, commitment_txid: Sha256dHash, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>)  {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
@@ -1022,7 +1033,6 @@ impl ChannelMonitor {
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
 
-		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.remote_claimable_outpoints.get(&commitment_txid);
 
 		macro_rules! ignore_error {
@@ -1676,6 +1686,44 @@ impl ChannelMonitor {
 		None
 	}
 
+	/// Return true if spending tx wasn't expected, i.e isn't a previous/current local commitment tx,
+	/// a remote commitment tx (revoked or valid) or mutual closing tx
+	fn check_rogue_tx(&self, commitment_txid: Sha256dHash) -> bool {
+		macro_rules! verify_if_legit_commitment_tx {
+			($commitment_txid: expr, $expected_txid: expr) => {
+				if commitment_txid == $expected_txid {
+					return false;
+				}
+			}
+		}
+		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
+			verify_if_legit_commitment_tx!(commitment_txid, local_tx.txid);
+		}
+		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
+			verify_if_legit_commitment_tx!(commitment_txid, local_tx.txid);
+		}
+		match self.key_storage {
+			Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, ref closing_txid, .. } => {
+				if let &Some(ref remote_commitment_txid) = current_remote_commitment_txid {
+					verify_if_legit_commitment_tx!(commitment_txid, *remote_commitment_txid);
+				}
+				if let &Some(ref remote_commitment_txid) = prev_remote_commitment_txid {
+					verify_if_legit_commitment_tx!(commitment_txid, *remote_commitment_txid);
+				}
+				if let &Some(ref closing_txid) = closing_txid {
+					verify_if_legit_commitment_tx!(commitment_txid, *closing_txid);
+				}
+			}
+			Storage::Watchtower { .. } => {
+
+			}
+		}
+		if let Some(_) = self.remote_claimable_outpoints.get(&commitment_txid) {
+			return false;
+		}
+		return true;
+	}
+
 	/// Used by ChannelManager deserialization to broadcast the latest local state if it's copy of
 	/// the Channel was out-of-date.
 	pub(super) fn get_latest_local_commitment_txn(&self) -> Vec<Transaction> {
@@ -1697,6 +1745,14 @@ impl ChannelMonitor {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
+		let funding_txo = match self.key_storage {
+			Storage::Local { ref funding_info, .. } => {
+				funding_info.clone()
+			}
+			Storage::Watchtower { .. } => {
+				unimplemented!();
+			}
+		};
 		for tx in txn_matched {
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
@@ -1705,16 +1761,9 @@ impl ChannelMonitor {
 				// filters.
 				let prevout = &tx.input[0].previous_output;
 				let mut txn: Vec<Transaction> = Vec::new();
-				let funding_txo = match self.key_storage {
-					Storage::Local { ref funding_info, .. } => {
-						funding_info.clone()
-					}
-					Storage::Watchtower { .. } => {
-						unimplemented!();
-					}
-				};
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
-					let (remote_txn, new_outputs, mut spendable_output, mut updated) = self.check_spend_remote_transaction(tx, height);
+					let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers
+					let (remote_txn, new_outputs, mut spendable_output, mut updated) = self.check_spend_remote_transaction(tx, commitment_txid, height);
 					txn = remote_txn;
 					spendable_outputs.append(&mut spendable_output);
 					if !new_outputs.1.is_empty() {
@@ -1735,6 +1784,9 @@ impl ChannelMonitor {
 					}
 					if updated.len() > 0 {
 						htlc_updated.append(&mut updated);
+					}
+					if self.check_rogue_tx(commitment_txid) {
+						panic!("Got rogue commitment tx {}, YOUR KEYS HAVE LEAKED or a WATCHTOWER CHEATED ON YOUR BEHALF!!", commitment_txid);
 					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
@@ -1987,6 +2039,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 				let funding_info = Some((outpoint, Readable::read(reader)?));
 				let current_remote_commitment_txid = Readable::read(reader)?;
 				let prev_remote_commitment_txid = Readable::read(reader)?;
+				let closing_txid = Readable::read(reader)?;
 				Storage::Local {
 					revocation_base_key,
 					htlc_base_key,
@@ -1998,6 +2051,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 					funding_info,
 					current_remote_commitment_txid,
 					prev_remote_commitment_txid,
+					closing_txid,
 				}
 			},
 			_ => return Err(DecodeError::InvalidValue),

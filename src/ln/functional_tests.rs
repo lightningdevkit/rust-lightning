@@ -494,6 +494,8 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	send_payment(&nodes[1], &vec!(&nodes[0])[..], 800000);
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 800000);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
+	check_added_monitors!(nodes[0], 2);
+	check_added_monitors!(nodes[1], 2);
 }
 
 #[test]
@@ -594,6 +596,8 @@ fn test_update_fee() {
 	assert_eq!(get_feerate!(nodes[0], channel_id), feerate + 30);
 	assert_eq!(get_feerate!(nodes[1], channel_id), feerate + 30);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
+	check_added_monitors!(nodes[0], 2);
+	check_added_monitors!(nodes[1], 2);
 }
 
 #[test]
@@ -608,13 +612,17 @@ fn pre_funding_lock_shutdown_test() {
 	nodes[0].node.close_channel(&OutPoint::new(tx.txid(), 0).to_channel_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+	check_added_monitors!(nodes[1], 1);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+	check_added_monitors!(nodes[0], 1);
 
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
 	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+	check_added_monitors!(nodes[0], 1);
 	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
 	assert!(node_0_none.is_none());
 
@@ -636,8 +644,10 @@ fn updates_shutdown_wait() {
 	nodes[0].node.close_channel(&chan_1.2).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+	check_added_monitors!(nodes[1], 1);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+	check_added_monitors!(nodes[0], 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -680,8 +690,10 @@ fn updates_shutdown_wait() {
 
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
 	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+	check_added_monitors!(nodes[0], 1);
 	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
 	assert!(node_0_none.is_none());
 
@@ -690,6 +702,8 @@ fn updates_shutdown_wait() {
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+	check_added_monitors!(nodes[1], 2);
+	check_added_monitors!(nodes[2], 2);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
 }
@@ -721,6 +735,8 @@ fn htlc_fail_async_shutdown() {
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	check_added_monitors!(nodes[1], 1);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
 
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -761,8 +777,10 @@ fn htlc_fail_async_shutdown() {
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
 	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+	check_added_monitors!(nodes[0], 1);
 	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
 	assert!(node_0_none.is_none());
 
@@ -771,6 +789,8 @@ fn htlc_fail_async_shutdown() {
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+	check_added_monitors!(nodes[1], 2);
+	check_added_monitors!(nodes[2], 2);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
 }
@@ -788,9 +808,11 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	if recv_count > 0 {
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown).unwrap();
+		check_added_monitors!(nodes[0], 1);
 		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 		if recv_count > 1 {
 			nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown).unwrap();
+			check_added_monitors!(nodes[1], 1);
 		}
 	}
 
@@ -810,13 +832,16 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let node_0_2nd_shutdown = if recv_count > 0 {
 		let node_0_2nd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown).unwrap();
+		check_added_monitors!(nodes[0], 1);
 		node_0_2nd_shutdown
 	} else {
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown).unwrap();
+		check_added_monitors!(nodes[0], 1);
 		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id())
 	};
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown).unwrap();
+	check_added_monitors!(nodes[1], 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -854,6 +879,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	if recv_count > 0 {
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
 		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 		assert!(node_1_closing_signed.is_some());
 	}
@@ -877,15 +903,19 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		assert!(node_1_3rd_shutdown == node_1_2nd_shutdown);
 
 		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_3rd_shutdown).unwrap();
+		check_added_monitors!(nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_3rd_shutdown).unwrap();
+		check_added_monitors!(nodes[0], 1);
 		let node_0_2nd_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 		assert!(node_0_closing_signed == node_0_2nd_closing_signed);
 
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed).unwrap();
+		check_added_monitors!(nodes[1], 1);
 		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap()).unwrap();
+		check_added_monitors!(nodes[0], 1);
 		let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
 		assert!(node_0_none.is_none());
 	} else {
@@ -916,6 +946,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, true);
+	check_added_monitors!(nodes[1], 2);
+	check_added_monitors!(nodes[2], 2);
 	assert!(nodes[1].node.list_channels().is_empty());
 	assert!(nodes[2].node.list_channels().is_empty());
 }
@@ -1037,6 +1069,10 @@ fn fake_network_test() {
 	close_channel(&nodes[2], &nodes[3], &chan_3.2, chan_3.3, true);
 	close_channel(&nodes[1], &nodes[3], &chan_4.2, chan_4.3, false);
 	close_channel(&nodes[1], &nodes[3], &chan_5.2, chan_5.3, false);
+	check_added_monitors!(nodes[0], 2);
+	check_added_monitors!(nodes[1], 8);
+	check_added_monitors!(nodes[2], 4);
+	check_added_monitors!(nodes[3], 6);
 }
 
 #[test]
@@ -1687,9 +1723,33 @@ fn revoked_output_claim() {
 	check_spends!(node_txn[0], revoked_local_txn[0].clone());
 	check_spends!(node_txn[1], chan_1.3.clone());
 
-	// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	};
+}
+
+#[test]
+#[should_panic]
+fn rogue_watchtower() {
+	// Simple test to ensure a node will panic if watchtower cheated on its behalf by broadcasting a revoked local tx
+	let nodes = create_network(2);
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
+	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+	assert_eq!(revoked_local_txn.len(), 1);
+	// Only output is the full channel value back to nodes[0]:
+	assert_eq!(revoked_local_txn[0].output.len(), 1);
+	// Send a payment through, updating everyone's latest commitment txn
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5000000);
+
+	// Inform nodes[1] that nodes[0] broadcast a stale tx
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+
+	// Inform nodes[0] that a watchtower cheated on its behalf
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-	get_announce_close_broadcast_events(&nodes, 0, 1);
 }
 
 #[test]
@@ -4121,6 +4181,8 @@ fn test_static_output_closing_tx() {
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 	let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
+	check_added_monitors!(nodes[0], 2);
+	check_added_monitors!(nodes[1], 2);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
