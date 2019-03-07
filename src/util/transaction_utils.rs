@@ -3,11 +3,13 @@ use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use std::cmp::Ordering;
 
-pub fn sort_outputs<T>(outputs: &mut Vec<(TxOut, T)>) {
+pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
 	outputs.sort_unstable_by(|a, b| {
-		a.0.value.cmp(&b.0.value).then(
-			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..])
-		)
+		a.0.value.cmp(&b.0.value).then_with(|| {
+			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| {
+				tie_breaker(&a.1, &b.1)
+			})
+		})
 	});
 }
 
@@ -58,7 +60,7 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs);
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
@@ -81,7 +83,7 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs);
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
@@ -105,7 +107,7 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs);
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 		assert_eq!(&outputs, &vec![(txout1_, "ignore"), (txout2_, "ignore")]);
 	}
@@ -131,7 +133,7 @@ mod tests {
 					outputs.reverse(); // prep it
 
 					// actually do the work!
-					sort_outputs(&mut outputs);
+					sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 					assert_eq!(outputs, expected);
 				}
