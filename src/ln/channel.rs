@@ -934,7 +934,19 @@ impl Channel {
 			}, None));
 		}
 
-		transaction_utils::sort_outputs(&mut txouts);
+		transaction_utils::sort_outputs(&mut txouts, |a, b| {
+			if let &Some(ref a_htlc) = a {
+				if let &Some(ref b_htlc) = b {
+					a_htlc.0.cltv_expiry.cmp(&b_htlc.0.cltv_expiry)
+						// Note that due to hash collisions, we have to have a fallback comparison
+						// here for fuzztarget mode (otherwise at least chanmon_fail_consistency
+						// may fail)!
+						.then(a_htlc.0.payment_hash.0.cmp(&b_htlc.0.payment_hash.0))
+				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
+				// close the channel due to mismatches - they're doing something dumb:
+				} else { cmp::Ordering::Equal }
+			} else { cmp::Ordering::Equal }
+		});
 
 		let mut outputs: Vec<TxOut> = Vec::with_capacity(txouts.len());
 		let mut htlcs_included: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(txouts.len() + included_dust_htlcs.len());
@@ -1010,7 +1022,7 @@ impl Channel {
 			}, ()));
 		}
 
-		transaction_utils::sort_outputs(&mut txouts);
+		transaction_utils::sort_outputs(&mut txouts, |_, _| { cmp::Ordering::Equal }); // Ordering doesnt matter if they used our pubkey...
 
 		let mut outputs: Vec<TxOut> = Vec::new();
 		for out in txouts.drain(..) {
