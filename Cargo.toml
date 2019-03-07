@@ -22,13 +22,13 @@ max_level_info = []
 max_level_debug = []
 
 [dependencies]
-bitcoin = "0.16"
+bitcoin = "0.17"
 bitcoin_hashes = "0.3"
 rand = "0.4"
 secp256k1 = "0.12"
 
 [dev-dependencies.bitcoin]
-version = "0.16"
+version = "0.17"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]

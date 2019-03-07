@@ -21,7 +21,8 @@ use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
 use util::rng;
 
-use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
+use bitcoin::util::hash::BitcoinHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::util::bip143;
 use bitcoin::util::address::Address;
 use bitcoin::util::bip32::{ChildNumber, ExtendedPubKey, ExtendedPrivKey};
@@ -2486,7 +2487,7 @@ fn test_force_close_fail_back() {
 	// Now check that if we add the preimage to ChannelMonitor it broadcasts our HTLC-Success..
 	{
 		let mut monitors = nodes[2].chan_monitor.simple_monitor.monitors.lock().unwrap();
-		monitors.get_mut(&OutPoint::new(Sha256dHash::from(&payment_event.commitment_msg.channel_id[..]), 0)).unwrap()
+		monitors.get_mut(&OutPoint::new(Sha256dHash::from_slice(&payment_event.commitment_msg.channel_id[..]).unwrap(), 0)).unwrap()
 			.provide_payment_preimage(&our_payment_hash, &our_payment_preimage);
 	}
 	nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&tx], &[1]);
@@ -3018,7 +3019,7 @@ fn test_invalid_channel_announcement() {
 
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
-			let msghash = Message::from_slice(&Sha256dHash::from_data(&$unsigned_msg.encode()[..])[..]).unwrap();
+			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
 			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().funding_key);
 			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().funding_key);
 			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
@@ -3045,7 +3046,7 @@ fn test_invalid_channel_announcement() {
 	assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
 
 	let mut unsigned_msg = dummy_unsigned_msg!();
-	unsigned_msg.chain_hash = Sha256dHash::from_data(&[1,2,3,4,5,6,7,8,9]);
+	unsigned_msg.chain_hash = Sha256dHash::hash(&[1,2,3,4,5,6,7,8,9]);
 	sign_msg!(unsigned_msg);
 	assert!(nodes[0].router.handle_channel_announcement(&chan_announcement).is_err());
 }
@@ -3267,7 +3268,7 @@ macro_rules! check_spendable_outputs {
 									};
 									let secp_ctx = Secp256k1::new();
 									let remotepubkey = PublicKey::from_secret_key(&secp_ctx, &key);
-									let witness_script = Address::p2pkh(&remotepubkey, Network::Testnet).script_pubkey();
+									let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
 									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
 									let remotesig = secp_ctx.sign(&sighash, key);
 									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
@@ -3322,7 +3323,7 @@ macro_rules! check_spendable_outputs {
 									let secret = {
 										match ExtendedPrivKey::new_master(Network::Testnet, &$node.node_seed) {
 											Ok(master_key) => {
-												match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx)) {
+												match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx).expect("key space exhausted")) {
 													Ok(key) => key,
 													Err(_) => panic!("Your RNG is busted"),
 												}
@@ -3333,10 +3334,10 @@ macro_rules! check_spendable_outputs {
 									let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
 									let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
 									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
-									let sig = secp_ctx.sign(&sighash, &secret.secret_key);
+									let sig = secp_ctx.sign(&sighash, &secret.private_key.key);
 									spend_tx.input[0].witness.push(sig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-									spend_tx.input[0].witness.push(pubkey.serialize().to_vec());
+									spend_tx.input[0].witness.push(pubkey.key.serialize().to_vec());
 									txn.push(spend_tx);
 								},
 							}
@@ -4456,7 +4457,7 @@ impl msgs::ChannelUpdate {
 		msgs::ChannelUpdate {
 			signature: Signature::from(FFISignature::new()),
 			contents: msgs::UnsignedChannelUpdate {
-				chain_hash: Sha256dHash::from_data(&vec![0u8][..]),
+				chain_hash: Sha256dHash::hash(&vec![0u8][..]),
 				short_channel_id: 0,
 				timestamp: 0,
 				flags: 0,

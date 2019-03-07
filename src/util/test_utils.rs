@@ -12,7 +12,7 @@ use util::ser::{ReadableArgs, Writer};
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
 
 use secp256k1::{SecretKey, PublicKey};

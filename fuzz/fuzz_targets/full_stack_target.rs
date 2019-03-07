@@ -18,12 +18,13 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
+use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin_hashes::Hash as TraitImport;
 use bitcoin_hashes::HashEngine as TraitImportEngine;
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::hash160::Hash as Hash160;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
