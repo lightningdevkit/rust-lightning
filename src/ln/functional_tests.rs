@@ -1907,6 +1907,8 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(node_txn[0].lock_time, 0);
 	assert_eq!(node_txn[1].lock_time, 0);
 
+	// BOLT5: A node if the commitment transaction HTLC output is spent using the payment preimage
+	// 	* MUST extract the payment preimage from the HTLC-success transaction input witness
 	// Verify that B's ChannelManager is able to extract preimage from HTLC Success tx and pass it backward
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: node_txn}, 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -1983,6 +1985,8 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(node_txn[0], node_txn[2]);
 	check_spends!(node_txn[0], commitment_tx[0].clone());
 	assert_eq!(node_txn[0].input.len(), 2);
+	// BOTL5: A node, if it receives (or already possesses) a payment preimage for an unresolved HTLC output that it was offered AND for which it has committed to an outgoing HTLC
+	// 	* MUST resolve the output by spending it to a convenient address
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert_eq!(node_txn[0].input[1].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert_eq!(node_txn[0].lock_time, 0);
@@ -2115,6 +2119,8 @@ fn test_htlc_on_chain_timeout() {
 		assert_eq!(node_txn[1], node_txn[6]);
 		assert_eq!(node_txn[2], node_txn[7]);
 		check_spends!(node_txn[0], commitment_tx[0].clone());
+		// BOLT5: if the commitment transaction HTLC output has timed out AND NOT been resolved:
+		// 	* MUST resolve the output, by spending it to a convenient address
 		assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(node_txn[1], chan_2.3.clone());
 		check_spends!(node_txn[2], node_txn[1].clone());
@@ -2139,6 +2145,7 @@ fn test_htlc_on_chain_timeout() {
 	match events[0] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 			assert!(update_add_htlcs.is_empty());
+			//TODO: (ariard)  rebased on #305 to get failure of dust-htlc from broadcast of remote commitment tx
 			assert!(!update_fail_htlcs.is_empty());
 			assert!(update_fulfill_htlcs.is_empty());
 			assert!(update_fail_malformed_htlcs.is_empty());
@@ -3437,6 +3444,14 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	assert_eq!(spend_txn.len(), 2);
 	assert_eq!(spend_txn[0], spend_txn[1]);
 	check_spends!(spend_txn[0], node_txn[0].clone());
+
+	// A node, upon discovering a valid commitment transaction broadcast by a remote node
+	// 	* MAY take no action in regard to associated to_remote, which is simply a P2WPKH output to a local node
+	// 	* MAY take no action in regard to the associated to_local, which is a payment output to the remote node
+	// Here, we test it by checking that we broadcast only our own commitment tx, and Drop don't throw us superflous events
+	let bs_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert_eq!(bs_txn.len(), 1);
+	check_spends!(bs_txn[0], chan.3.clone());
 }
 
 #[test]
