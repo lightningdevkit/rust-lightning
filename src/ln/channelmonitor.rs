@@ -607,9 +607,11 @@ impl ChannelMonitor {
 	/// case of onchain HTLC tx
 	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, signed_commitment_tx: Transaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<(Signature, Signature)>, Option<HTLCSource>)>) {
 		assert!(self.their_to_self_delay.is_some());
+		let signed_commitment_txid = signed_commitment_tx.txid();
+		log_trace!(self, "Provide latest local commitment tx {} with {} htlc outputs", signed_commitment_txid, htlc_outputs.len());
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
-			txid: signed_commitment_tx.txid(),
+			txid: signed_commitment_txid,
 			tx: signed_commitment_tx,
 			revocation_key: local_keys.revocation_key,
 			a_htlc_key: local_keys.a_htlc_key,
