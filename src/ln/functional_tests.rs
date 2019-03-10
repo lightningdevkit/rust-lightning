@@ -1898,6 +1898,8 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(node_txn[2], commitment_tx[0]);
 	check_spends!(node_txn[0], commitment_tx[0].clone());
 	check_spends!(node_txn[1], commitment_tx[0].clone());
+	// BOLT5: A node, if it receives (or already possesses) a payment preimage for an unresolved HTLC output that it has been offered AND for which it has committed to an outgoing HTLC
+	// 	* MUST resolve the output by spending it, using the HTLC-success transaction
 	assert_eq!(node_txn[0].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	assert_eq!(node_txn[1].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	assert!(node_txn[0].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
@@ -1990,6 +1992,8 @@ fn test_htlc_on_chain_success() {
 	// We don't bother to check that B can claim the HTLC output on its commitment tx here as
 	// we already checked the same situation with A.
 
+	// BOLT5: A node, if commitment transaction HTLC output is spent using the payment preimage, the output is considered irrevocably resolved
+	// 	* MUST extract the payment preimage from the transaction input witness
 	// Verify that A's ChannelManager is able to extract preimage from preimage tx and generate PaymentSent
 	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone(), node_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[0]);
@@ -2017,23 +2021,61 @@ fn test_htlc_on_chain_timeout() {
 	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
 	// ChainWatchInterface and timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
-	// A ------------------> B ----------------------> C (timeout)
-	//    B's commitment tx 		C's commitment tx
-	//    	      \                                  \
-	//    	   B's HTLC timeout tx		     B's timeout tx
+	// A ------------------> B ----------------------> C <-----------------------------> D
+	//    B's commitment tx           C's commitment tx           C's commitment tx
+	//    	      \                           \                           \
+	//    	   B's HTLC timeout tx	       B's timeout tx              C's HTLC timeout tx
 
-	let nodes = create_network(3);
+	let nodes = create_network(4);
 
 	// Create some intial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+	let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 3);
 
-	// Rebalance the network a bit by relaying one payment thorugh all the channels...
-	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
-	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
+	// Rebalance the network a bit by relaying one payment through all the channels...
+	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000);
+	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000);
 
-	let (_payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
+	let cs_dust_limit = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_3.2).unwrap().our_dust_limit_satoshis;
+	let (_payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3]), 3000000);
+	route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3]), cs_dust_limit * 1000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+
+	// Broadcast legit commitment tx from C, spending funding_output chan3, on C's chain
+	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_3.2).unwrap().last_local_commitment_txn.clone();
+	check_spends!(commitment_tx[0], chan_3.3.clone());
+	// BOLT5: if the commitment transaction HTLC output has timed out and hasn't been resolved
+	// 	* MUST resolve the output by spending it using the HTLC-timeout transaction
+	nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
+	let htlc_timeout_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	assert_eq!(htlc_timeout_txn[0].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	check_spends!(htlc_timeout_txn[0], commitment_tx[0].clone());
+	let events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	};
+	//Broadcast legit HTLC-timeoout from C on C's commmitment tx, on C's chain, generating an update for backward channel
+	nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![htlc_timeout_txn[0].clone()]}, 201);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	check_added_monitors!(nodes[2], 1);
+
+	//	* MUST fail the corresponding incoming HTLC (if any)
+	let events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+			assert!(update_add_htlcs.is_empty());
+			//TODO: (ariard) rebased on #305 to get failure of dust-htlc on local commitment tx
+			assert_eq!(update_fail_htlcs.len(), 1);
+			assert!(update_fulfill_htlcs.is_empty());
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+		},
+		_ => panic!("Unexpected event"),
+	};
 
 	// Broadcast legit commitment tx from C on B's chain
 	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().last_local_commitment_txn.clone();
@@ -3365,6 +3407,8 @@ fn test_claim_sizeable_push_msat() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+	// BOLT5 : A node upon discovering its local commitment transaction
+	// 	* SHOULD spend the to_local output to a convenient address
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0].clone());
@@ -3822,6 +3866,8 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	check_spends!(node_txn[0], local_txn[0].clone());
 
+	// A node, if it receives (or already possesses) a payment preimage for an unresolved HTLC output that it has been offered AND for which it has committed to an outgoing HTLC
+	// 	* MUST resolve the output of that HTLC-success transaction
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 2);
@@ -4100,6 +4146,8 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	check_spends!(node_txn[0], local_txn[0].clone());
 
+	// BOLT5: if the commitment transaction HTLC output has timed out hasn't been resolved:
+	// 	* SHOULD resolve the HTLC-timeout transaction by spending it to a convenient address
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
 	assert_eq!(spend_txn.len(), 8);
@@ -4115,6 +4163,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 #[test]
 fn test_static_output_closing_tx() {
+	// BOLT5 : In the case of a mutual close, a node need not do anything else, as it has already agreed to the output, which is sent to its specified scriptpubkey
 	let nodes = create_network(2);
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
