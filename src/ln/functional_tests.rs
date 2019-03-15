@@ -1684,6 +1684,8 @@ fn revoked_output_claim() {
 
 	assert_eq!(node_txn[0], node_txn[2]);
 
+	// BOLT5: A node, upon discovering a commitment transaction for which it has a revocation private key:
+	// 	* MUST resolve the remote node's main output by spending it using the revocation private key
 	check_spends!(node_txn[0], revoked_local_txn[0].clone());
 	check_spends!(node_txn[1], chan_1.3.clone());
 
@@ -1736,6 +1738,12 @@ fn claim_htlc_outputs_shared_tx() {
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 4);
 
+		// BOTL5: A node, upon discovering a commitment transaction for which it has a revocation private key:
+		// 	* MUST resolve the remote node's offered HTLCs in one of three ways:
+		// 		* spend the commitment tx using the payment revocation private key
+		// 	* MUST resolve the local node's offered HTLCs in one of three ways:
+		// 		* spend the commitment tx using the payment revocation private key
+		// 	* MAY use a single transaction to resolve all the outputs
 		assert_eq!(node_txn[0].input.len(), 3); // Claim the revoked output + both revoked HTLC outputs
 		check_spends!(node_txn[0], revoked_local_txn[0].clone());
 
@@ -3473,6 +3481,9 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	check_closed_broadcast!(nodes[1]);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	// A node, upon discovering a commitment transaction for which it has a revocation private key:
+	// 	* MAY take no action regarding the local node's main output, as this is a simple P2WPKh output to itself
+	// Here we test it by noting output for later spend
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 4);
 	assert_eq!(spend_txn[0], spend_txn[2]); // to_remote output on revoked remote commitment_tx
@@ -3586,6 +3597,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 4);
 	assert_eq!(node_txn[3].input.len(), 1);
+	// BOLT5: A node, upon discovering a commitment transaction for which it has a revocation private key, the funding transaction output is resolved:
+	//	* MUST resolve the remote node's HTLC-timeout transaction by spending it using the revocation private key
 	check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
@@ -3629,6 +3642,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 4);
 	assert_eq!(node_txn[3].input.len(), 1);
+	// BOLT5: A node, upon discovering a commitment transaction for which it has a revocation private key, the funding transaction output is resolved:
+	// 	* MUST resolve the remote node's HTLC-success transaction by spending it using the revocation private key
 	check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
