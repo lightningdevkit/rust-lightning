@@ -862,9 +862,13 @@ pub fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::Channe
 				false
 			} else { true }
 		});
-		assert!(res.len() == 2 || res.len() == 3);
+		assert!(res.len() == 2 || res.len() == 3 || res.len() == 5);
 		if res.len() == 3 {
 			assert_eq!(res[1], res[2]);
+		}
+		if res.len() == 5 {
+			assert_eq!(res[1], res[3]);
+			assert_eq!(res[2], res[4]);
 		}
 	}
 
@@ -872,16 +876,19 @@ pub fn test_txn_broadcast(node: &Node, chan: &(msgs::ChannelUpdate, msgs::Channe
 	res
 }
 
-/// Tests that the given node has broadcast a claim transaction against the provided revoked
-/// HTLC transaction.
-pub fn test_revoked_htlc_claim_txn_broadcast(node: &Node, revoked_tx: Transaction) {
+/// Tests that the given node has broadcast a claim transaction against one of the provided revoked
+/// HTLC transactions.
+pub fn test_revoked_htlc_claim_txn_broadcast(node: &Node, revoked_txn: Vec<Transaction>, expected: usize) {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 1);
+	assert_eq!(node_txn.len(), expected);
 	node_txn.retain(|tx| {
-		if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.txid() {
-			check_spends!(tx, revoked_tx.clone());
-			false
-		} else { true }
+		for revoked_tx in &revoked_txn {
+			if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.txid() {
+				check_spends!(tx, revoked_tx.clone());
+				return false
+			}
+		}
+		true
 	});
 	assert!(node_txn.is_empty());
 }

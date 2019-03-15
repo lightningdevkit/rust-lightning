@@ -1580,24 +1580,25 @@ fn channel_monitor_network_test() {
 #[test]
 fn test_justice_tx() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
+	// Also, test we're able to extract payment preimage cleanly from revoked HTLC-Success tx and pass it backward
 
-	let nodes = create_network(2);
+	let nodes = create_network(3);
 	// Create some new channels:
-	let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// A pending HTLC which will be revoked:
-	let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	// Get the will-be-revoked local txn from nodes[0]
 	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.iter().next().unwrap().1.last_local_commitment_txn.clone();
 	assert_eq!(revoked_local_txn.len(), 2); // First commitment tx, then HTLC tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_5.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
 	assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to 0 are present
 	assert_eq!(revoked_local_txn[1].input.len(), 1);
 	assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
 	assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC-Timeout
 	// Revoke the old state
-	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
 
 	{
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -1611,56 +1612,113 @@ fn test_justice_tx() {
 			check_spends!(node_txn[0], revoked_local_txn[0].clone());
 			node_txn.swap_remove(0);
 		}
-		test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
+		test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
 
 		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-		let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
+		let node_txn = test_txn_broadcast(&nodes[0], &chan_1, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
-		test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone());
+		test_revoked_htlc_claim_txn_broadcast(&nodes[1], vec![node_txn[1].clone()], 1);
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 
-	// We test justice_tx build by A on B's revoked HTLC-Success tx
+	// We test justice_tx build by B on C's revoked HTLC-Success tx
 	// Create some new channels:
-	let chan_6 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_3 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// A pending HTLC which will be revoked:
-	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	// Get the will-be-revoked local txn from B
-	let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.iter().next().unwrap().1.last_local_commitment_txn.clone();
+	let payment_preimage_2 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 3000000).0;
+	let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 3000000).0;
+	// Get the will-be-revoked local txn from C
+	let revoked_local_txn = nodes[2].node.channel_state.lock().unwrap().by_id.iter().next().unwrap().1.last_local_commitment_txn.clone();
 	assert_eq!(revoked_local_txn.len(), 1); // Only commitment tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_6.3.txid());
-	assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to A are present
-	// Revoke the old state
-	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_4);
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_3.3.txid());
+	assert_eq!(revoked_local_txn[0].output.len(), 3); // Only 2 HTLC and output back to B are present
+
+	// Revoke the old state - but only between B and C as we test update_fulfill_htlc to A generation from B ability to extract preimage from C's revoked HTLC-success
+	//claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], payment_preimage_2);
+	nodes[2].node.claim_funds(payment_preimage_2);
+	check_added_monitors!(nodes[2], 1);
+	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fulfill_htlcs[0]).unwrap();
+	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentSent { payment_preimage } => {
+			assert_eq!(payment_preimage, payment_preimage_2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	nodes[2].node.claim_funds(payment_preimage_3);
+	check_added_monitors!(nodes[2], 1);
+	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	{
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		{
-			let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-			assert_eq!(node_txn.len(), 3);
+			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			assert_eq!(node_txn.len(), 4);
 			assert_eq!(node_txn.pop().unwrap(), node_txn[0]); // An outpoint registration will result in a 2nd block_connected
-			assert_eq!(node_txn[0].input.len(), 1); // We claim the received HTLC output
+			assert_eq!(node_txn[0].input.len(), 2); // We claim the received HTLC output
 
 			check_spends!(node_txn[0], revoked_local_txn[0].clone());
+			check_spends!(node_txn[1], chan_3.3.clone()); // Local commitment tx
+			check_spends!(node_txn[2], node_txn[1].clone()); // HTLC-Timeout tx on local
 			node_txn.swap_remove(0);
 		}
-		test_txn_broadcast(&nodes[0], &chan_6, None, HTLCType::NONE);
+		test_txn_broadcast(&nodes[1], &chan_3, None, HTLCType::TIMEOUT);
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PendingHTLCsForwardable { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
 
-		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-		let node_txn = test_txn_broadcast(&nodes[1], &chan_6, Some(revoked_local_txn[0].clone()), HTLCType::SUCCESS);
+		nodes[2].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		let events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, Some(revoked_local_txn[0].clone()), HTLCType::SUCCESS);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
-		test_revoked_htlc_claim_txn_broadcast(&nodes[0], node_txn[1].clone());
+		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[1].clone(), node_txn[2].clone()] }, 1);
+		test_revoked_htlc_claim_txn_broadcast(&nodes[1], vec![node_txn[1].clone(), node_txn[2].clone()], 2);
+		let updates_3 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		check_added_monitors!(nodes[1], 1);
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates_3.update_fulfill_htlcs[0]).unwrap();
+		commitment_signed_dance!(nodes[0], nodes[1], updates_3.commitment_signed, false);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentSent { payment_preimage } => {
+				assert_eq!(payment_preimage, payment_preimage_3);
+			},
+			_ => panic!("Unexpected event"),
+		}
 	}
-	get_announce_close_broadcast_events(&nodes, 0, 1);
-	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	assert_eq!(nodes[1].node.list_channels().len(), 0);
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	assert_eq!(nodes[2].node.list_channels().len(), 0);
 }
 
 #[test]
