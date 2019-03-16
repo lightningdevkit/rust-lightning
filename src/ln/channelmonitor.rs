@@ -1144,6 +1144,7 @@ impl ChannelMonitor {
 						if transaction_output_index as usize >= tx.output.len() ||
 								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
 								tx.output[transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
+							log_error!(self, "Per_commitment_data corrupted at HTLC {} for remote commitment {} YOUR LOOSING FUNDS DUE TO DEFAULTING STORAGE SUBSYSTEM !", transaction_output_index, commitment_txid);
 							return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); // Corrupted per_commitment_data, fuck this user
 						}
 						let input = TxIn {
@@ -1359,6 +1360,7 @@ impl ChannelMonitor {
 							if transaction_output_index as usize >= tx.output.len() ||
 									tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
 									tx.output[transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
+								log_error!(self, "Per_commitment_data corrupted at HTLC {} for remote commitment tx {} YOUR LOOSING FUNDS DUE TO DEFAULTING STORAGE SUBSYSTEM !", transaction_output_index, commitment_txid);
 								return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated); // Corrupted per_commitment_data, fuck this user
 							}
 							if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
