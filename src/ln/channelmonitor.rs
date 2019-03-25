@@ -48,8 +48,8 @@ use std::{hash,cmp, mem};
 /// An error enum representing a failure to persist a channel monitor update.
 #[derive(Clone)]
 pub enum ChannelMonitorUpdateErr {
-	/// Used to indicate a temporary failure (eg connection to a watchtower failed, but is expected
-	/// to succeed at some point in the future).
+	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
+	/// our state failed, but is expected to succeed at some point in the future).
 	///
 	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
 	/// submitting new commitment transactions to the remote party.
@@ -71,6 +71,10 @@ pub enum ChannelMonitorUpdateErr {
 	/// Note that even if updates made after TemporaryFailure succeed you must still call
 	/// test_restore_channel_monitor to ensure you have the latest monitor and re-enable normal
 	/// channel operation.
+	///
+	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
+	/// remote location (with local copies persisted immediately), it is anticipated that all
+	/// updates will return TemporaryFailure until the remote copies could be updated.
 	TemporaryFailure,
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed
