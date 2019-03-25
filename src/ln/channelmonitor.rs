@@ -1873,8 +1873,9 @@ impl ChannelMonitor {
 			macro_rules! log_claim {
 				($tx_info: expr, $local_tx: expr, $htlc: expr, $source_avail: expr) => {
 					// We found the output in question, but aren't failing it backwards
-					// as we have no corresponding source. This implies either it is an
-					// inbound HTLC or an outbound HTLC on a revoked transaction.
+					// as we have no corresponding source and no valid remote commitment txid
+					// to try a weak source binding with same-hash, same-value still-valid offered HTLC.
+					// This implies either it is an inbound HTLC or an outbound HTLC on a revoked transaction.
 					let outbound_htlc = $local_tx == $htlc.offered;
 					if ($local_tx && revocation_sig_claim) ||
 							(outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
@@ -1891,6 +1892,22 @@ impl ChannelMonitor {
 				}
 			}
 
+			macro_rules! check_htlc_valid_remote {
+				($remote_txid: expr, $htlc_output: expr) => {
+					if let &Some(txid) = $remote_txid {
+						for &(ref pending_htlc, ref pending_source) in self.remote_claimable_outpoints.get(&txid).unwrap() {
+							if pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
+								if let &Some(ref source) = pending_source {
+									log_claim!("revoked remote commitment tx", false, pending_htlc, true);
+									payment_data = Some(((**source).clone(), $htlc_output.payment_hash));
+									break;
+								}
+							}
+						}
+					}
+				}
+			}
+
 			macro_rules! scan_commitment {
 				($htlcs: expr, $tx_info: expr, $local_tx: expr) => {
 					for (ref htlc_output, source_option) in $htlcs {
@@ -1903,7 +1920,17 @@ impl ChannelMonitor {
 								// has timed out, or we screwed up. In any case, we should now
 								// resolve the source HTLC with the original sender.
 								payment_data = Some(((*source).clone(), htlc_output.payment_hash));
-							} else {
+							} else if !$local_tx {
+								if let Storage::Local { ref current_remote_commitment_txid, .. } = self.key_storage {
+									check_htlc_valid_remote!(current_remote_commitment_txid, htlc_output);
+								}
+								if payment_data.is_none() {
+									if let Storage::Local { ref prev_remote_commitment_txid, .. } = self.key_storage {
+										check_htlc_valid_remote!(prev_remote_commitment_txid, htlc_output);
+									}
+								}
+							}
+							if payment_data.is_none() {
 								log_claim!($tx_info, $local_tx, htlc_output, false);
 								continue 'outer_loop;
 							}
