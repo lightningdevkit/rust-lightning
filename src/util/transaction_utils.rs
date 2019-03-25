@@ -1,34 +1,14 @@
-use bitcoin::blockdata::transaction::{TxIn, TxOut};
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::blockdata::transaction::TxOut;
 
 use std::cmp::Ordering;
 
-pub fn sort_outputs<T>(outputs: &mut Vec<(TxOut, T)>) {
+pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
 	outputs.sort_unstable_by(|a, b| {
-		a.0.value.cmp(&b.0.value).then(
-			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..])
-		)
-	});
-}
-
-fn cmp(a: &Sha256dHash, b: &Sha256dHash) -> Ordering {
-	use bitcoin_hashes::Hash;
-
-	let av = a.into_inner();
-	let bv = b.into_inner();
-	for i in (0..32).rev() {
-		let cmp = av[i].cmp(&bv[i]);
-		if cmp != Ordering::Equal {
-			return cmp;
-		}
-	}
-	Ordering::Equal
-}
-
-pub fn sort_inputs<T>(inputs: &mut Vec<(TxIn, T)>) {
-	inputs.sort_unstable_by(|a, b| {
-		cmp( &a.0.previous_output.txid, &b.0.previous_output.txid).then(
-		a.0.previous_output.vout.cmp(&b.0.previous_output.vout))
+		a.0.value.cmp(&b.0.value).then_with(|| {
+			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| {
+				tie_breaker(&a.1, &b.1)
+			})
+		})
 	});
 }
 
@@ -37,9 +17,7 @@ mod tests {
 	use super::*;
 
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::{TxOut, OutPoint};
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::hex::FromHex;
+	use bitcoin::blockdata::transaction::TxOut;
 
 	use hex::decode;
 
@@ -58,7 +36,7 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs);
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
@@ -81,7 +59,7 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs);
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
@@ -105,7 +83,7 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs);
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 		assert_eq!(&outputs, &vec![(txout1_, "ignore"), (txout2_, "ignore")]);
 	}
@@ -131,7 +109,7 @@ mod tests {
 					outputs.reverse(); // prep it
 
 					// actually do the work!
-					sort_outputs(&mut outputs);
+					sort_outputs(&mut outputs, |_, _| { unreachable!(); });
 
 					assert_eq!(outputs, expected);
 				}
@@ -150,64 +128,5 @@ mod tests {
 	bip_txout_tests! {
 		bip69_txout_test_1: TXOUT1.to_vec(),
 		bip69_txout_test_2: TXOUT2.to_vec(),
-	}
-
-	macro_rules! bip_txin_tests {
-		($($name:ident: $value:expr,)*) => {
-			$(
-				#[test]
-				fn $name() {
-					let expected_raw: Vec<(&str, u32)> = $value;
-					let expected: Vec<(TxIn, &str)> = expected_raw.iter().map(
-						|txin_raw| TxIn {
-							previous_output: OutPoint {
-								txid: Sha256dHash::from_hex(txin_raw.0).unwrap(),
-								vout: txin_raw.1,
-							},
-							script_sig: Script::new(),
-							sequence: 0,
-							witness: vec![]
-						}
-						).map(|txin| (txin, "ignore")).collect();
-
-					let mut inputs = expected.clone();
-					inputs.reverse();
-
-					sort_inputs(&mut inputs);
-
-					assert_eq!(expected, inputs);
-				}
-			)*
-		}
-	}
-
-	const TXIN1_BIP69: [(&str, u32); 17] = [
-		("0e53ec5dfb2cb8a71fec32dc9a634a35b7e24799295ddd5278217822e0b31f57", 0),
-		("26aa6e6d8b9e49bb0630aac301db6757c02e3619feb4ee0eea81eb1672947024", 1),
-		("28e0fdd185542f2c6ea19030b0796051e7772b6026dd5ddccd7a2f93b73e6fc2", 0),
-		("381de9b9ae1a94d9c17f6a08ef9d341a5ce29e2e60c36a52d333ff6203e58d5d", 1),
-		("3b8b2f8efceb60ba78ca8bba206a137f14cb5ea4035e761ee204302d46b98de2", 0),
-		("402b2c02411720bf409eff60d05adad684f135838962823f3614cc657dd7bc0a", 1),
-		("54ffff182965ed0957dba1239c27164ace5a73c9b62a660c74b7b7f15ff61e7a", 1),
-		("643e5f4e66373a57251fb173151e838ccd27d279aca882997e005016bb53d5aa", 0),
-		("6c1d56f31b2de4bfc6aaea28396b333102b1f600da9c6d6149e96ca43f1102b1", 1),
-		("7a1de137cbafb5c70405455c49c5104ca3057a1f1243e6563bb9245c9c88c191", 0),
-		("7d037ceb2ee0dc03e82f17be7935d238b35d1deabf953a892a4507bfbeeb3ba4", 1),
-		("a5e899dddb28776ea9ddac0a502316d53a4a3fca607c72f66c470e0412e34086", 0),
-		("b4112b8f900a7ca0c8b0e7c4dfad35c6be5f6be46b3458974988e1cdb2fa61b8", 0),
-		("bafd65e3c7f3f9fdfdc1ddb026131b278c3be1af90a4a6ffa78c4658f9ec0c85", 0),
-		("de0411a1e97484a2804ff1dbde260ac19de841bebad1880c782941aca883b4e9", 1),
-		("f0a130a84912d03c1d284974f563c5949ac13f8342b8112edff52971599e6a45", 0),
-		("f320832a9d2e2452af63154bc687493484a0e7745ebd3aaf9ca19eb80834ad60", 0),
-	];
-
-
-	const TXIN2_BIP69: [(&str, u32); 2] = [
-		("35288d269cee1941eaebb2ea85e32b42cdb2b04284a56d8b14dcc3f5c65d6055", 0),
-		("35288d269cee1941eaebb2ea85e32b42cdb2b04284a56d8b14dcc3f5c65d6055", 1),
-	];
-	bip_txin_tests! {
-		bip69_txin_test_1: TXIN1_BIP69.to_vec(),
-		bip69_txin_test_2: TXIN2_BIP69.to_vec(),
 	}
 }
