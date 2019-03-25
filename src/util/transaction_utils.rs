@@ -88,6 +88,26 @@ mod tests {
 		assert_eq!(&outputs, &vec![(txout1_, "ignore"), (txout2_, "ignore")]);
 	}
 
+	#[test]
+	fn sort_output_tie_breaker_test() {
+		let txout1 = TxOut {
+			value:  100,
+			script_pubkey: Builder::new().push_int(1).push_int(2).into_script()
+		};
+		let txout1_ = txout1.clone();
+
+		let txout2 = txout1.clone();
+		let txout2_ = txout1.clone();
+
+		let mut outputs = vec![(txout1, 420), (txout2, 69)];
+		sort_outputs(&mut outputs, |a, b| { a.cmp(b) });
+
+		assert_eq!(
+			&outputs,
+			&vec![(txout2_, 69), (txout1_, 420)]
+		);
+	}
+
 	fn script_from_hex(hex_str: &str) -> Script {
 		Script::from(decode(hex_str).unwrap())
 	}
