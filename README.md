@@ -1,6 +1,9 @@
 Rust-Lightning, not Rusty's Lightning!
+=====
 
-Currently somewhere near 15% towards usable, published to see if there is any
+Documentation can be found at [docs.rs](https://docs.rs/lightning/)
+
+Currently somewhere near 20% towards usable, published to see if there is any
 real interest from folks in using a lightning rust library.
 
 The goal is to provide a full-featured but also incredibly flexible lightning
