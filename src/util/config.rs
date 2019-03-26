@@ -4,8 +4,10 @@
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
 #[derive(Clone, Debug)]
 pub struct UserConfig {
+	/// Channel config that we propose on receiving a channel opening request
+	pub own_inbound_channel_config: ChannelHandshakeConfig,
 	/// Limits applied during channel creation.
-	pub channel_limits: ChannelHandshakeLimits,
+	pub peer_channel_config_limits: ChannelHandshakeLimits,
 	/// Channel config which affects behavior during channel lifetime.
 	pub channel_options: ChannelConfig,
 }
@@ -14,8 +16,25 @@ impl UserConfig {
 	/// Provides sane defaults for most configurations (but with 0 relay fees!)
 	pub fn new() -> Self{
 		UserConfig {
-			channel_limits: ChannelHandshakeLimits::new(),
+			own_inbound_channel_config: ChannelHandshakeConfig::new(),
+			peer_channel_config_limits: ChannelHandshakeLimits::new(),
 			channel_options: ChannelConfig::new(),
+		}
+	}
+}
+
+/// Configuration we want to opening channels
+#[derive(Clone, Debug)]
+pub struct ChannelHandshakeConfig {
+	/// Confirmations we will wait for before considering the channel locked in
+	pub minimum_depth: u32,
+}
+
+impl ChannelHandshakeConfig {
+	/// Provides sane defaults for `ChannelHandshakeConfig`
+	pub fn new() -> ChannelHandshakeConfig {
+		ChannelHandshakeConfig {
+			minimum_depth: 6,
 		}
 	}
 }
