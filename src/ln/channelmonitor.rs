@@ -327,6 +327,22 @@ struct LocalSignedTx {
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<(Signature, Signature)>, Option<HTLCSource>)>,
 }
 
+/// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it 
+/// once they mature to enough confirmations (HTLC_FAIL_ANTI_REORG_DELAY)
+#[derive(Clone, PartialEq)]
+enum OnchainEvent {
+	/// Outpoint under claim process by our own tx, at maturation we remote it from our_claim_txn_waiting_first_conf
+	Claim {
+		outpoint: BitcoinOutPoint,
+	},
+	/// HTLC output getting solved by a timeout, at maturation we pass upstream payment source information to solve
+	/// inbound HTLC in backward channel. Note, in case of preimage, we pass info to upstream without delay as we can
+	/// only win from it, so it's never an OnchainEvent
+	HTLCUpdate {
+		htlc_update: (HTLCSource, PaymentHash),
+	},
+}
+
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
@@ -377,7 +393,8 @@ pub struct ChannelMonitor {
 
 	destination_script: Script,
 
-	htlc_updated_waiting_threshold_conf: HashMap<u32, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>>,
+
+	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
 
 	// We simply modify last_block_hash in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
@@ -409,7 +426,7 @@ impl PartialEq for ChannelMonitor {
 			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
 			self.payment_preimages != other.payment_preimages ||
 			self.destination_script != other.destination_script ||
-			self.htlc_updated_waiting_threshold_conf != other.htlc_updated_waiting_threshold_conf
+			self.onchain_events_waiting_threshold_conf != other.onchain_events_waiting_threshold_conf
 		{
 			false
 		} else {
@@ -459,7 +476,7 @@ impl ChannelMonitor {
 			payment_preimages: HashMap::new(),
 			destination_script: destination_script,
 
-			htlc_updated_waiting_threshold_conf: HashMap::new(),
+			onchain_events_waiting_threshold_conf: HashMap::new(),
 
 			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
@@ -948,14 +965,22 @@ impl ChannelMonitor {
 		self.last_block_hash.write(writer)?;
 		self.destination_script.write(writer)?;
 
-		writer.write_all(&byte_utils::be64_to_array(self.htlc_updated_waiting_threshold_conf.len() as u64))?;
-		for (ref target, ref updates) in self.htlc_updated_waiting_threshold_conf.iter() {
+		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
+		for (ref target, ref events) in self.onchain_events_waiting_threshold_conf.iter() {
 			writer.write_all(&byte_utils::be32_to_array(**target))?;
-			writer.write_all(&byte_utils::be64_to_array(updates.len() as u64))?;
-			for ref update in updates.iter() {
-				update.0.write(writer)?;
-				update.1.write(writer)?;
-				update.2.write(writer)?;
+			writer.write_all(&byte_utils::be64_to_array(events.len() as u64))?;
+			for ev in events.iter() {
+				match *ev {
+					OnchainEvent::Claim { ref outpoint } => {
+						writer.write_all(&[0; 1])?;
+						outpoint.write(writer)?;
+					},
+					OnchainEvent::HTLCUpdate { ref htlc_update } => { 
+						writer.write_all(&[1; 1])?;
+						htlc_update.0.write(writer)?;
+						htlc_update.1.write(writer)?;
+					}
+				}
 			}
 		}
 
@@ -1187,14 +1212,21 @@ impl ChannelMonitor {
 							for &(ref htlc, ref source_option) in outpoints.iter() {
 								if let &Some(ref source) = source_option {
 									log_trace!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of revoked remote commitment transaction, waiting confirmation until {} height", log_bytes!(htlc.payment_hash.0), $commitment_tx, height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
-									match self.htlc_updated_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+									match self.onchain_events_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
 										hash_map::Entry::Occupied(mut entry) => {
 											let e = entry.get_mut();
-											e.retain(|ref update| update.0 != **source);
-											e.push(((**source).clone(), None, htlc.payment_hash.clone()));
+											e.retain(|ref event| {
+												match **event {
+													OnchainEvent::HTLCUpdate { ref htlc_update } => {
+														return htlc_update.0 != **source
+													},
+													_ => return true
+												}
+											});
+											e.push(OnchainEvent::HTLCUpdate { htlc_update: ((**source).clone(), htlc.payment_hash.clone())});
 										}
 										hash_map::Entry::Vacant(entry) => {
-											entry.insert(vec![((**source).clone(), None, htlc.payment_hash.clone())]);
+											entry.insert(vec![OnchainEvent::HTLCUpdate { htlc_update: ((**source).clone(), htlc.payment_hash.clone())}]);
 										}
 									}
 								}
@@ -1271,14 +1303,21 @@ impl ChannelMonitor {
 									}
 								}
 								log_trace!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of remote commitment transaction", log_bytes!(htlc.payment_hash.0), $commitment_tx);
-								match self.htlc_updated_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+								match self.onchain_events_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
 									hash_map::Entry::Occupied(mut entry) => {
 										let e = entry.get_mut();
-										e.retain(|ref update| update.0 != **source);
-										e.push(((**source).clone(), None, htlc.payment_hash.clone()));
+										e.retain(|ref event| {
+											match **event {
+												OnchainEvent::HTLCUpdate { ref htlc_update } => {
+													return htlc_update.0 != **source
+												},
+												_ => return true
+											}
+										});
+										e.push(OnchainEvent::HTLCUpdate { htlc_update: ((**source).clone(), htlc.payment_hash.clone())});
 									}
 									hash_map::Entry::Vacant(entry) => {
-										entry.insert(vec![((**source).clone(), None, htlc.payment_hash.clone())]);
+										entry.insert(vec![OnchainEvent::HTLCUpdate { htlc_update: ((**source).clone(), htlc.payment_hash.clone())}]);
 									}
 								}
 							}
@@ -1639,16 +1678,23 @@ impl ChannelMonitor {
 		let mut watch_outputs = Vec::new();
 
 		macro_rules! wait_threshold_conf {
-			($height: expr, $source: expr, $update: expr, $commitment_tx: expr, $payment_hash: expr) => {
+			($height: expr, $source: expr, $commitment_tx: expr, $payment_hash: expr) => {
 				log_trace!(self, "Failing HTLC with payment_hash {} from {} local commitment tx due to broadcast of transaction, waiting confirmation until {} height", log_bytes!($payment_hash.0), $commitment_tx, height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
-				match self.htlc_updated_waiting_threshold_conf.entry($height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+				match self.onchain_events_waiting_threshold_conf.entry($height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
 					hash_map::Entry::Occupied(mut entry) => {
 						let e = entry.get_mut();
-						e.retain(|ref update| update.0 != $source);
-						e.push(($source, $update, $payment_hash));
+						e.retain(|ref event| {
+							match **event {
+								OnchainEvent::HTLCUpdate { ref htlc_update } => {
+									return htlc_update.0 != $source
+								},
+								_ => return true
+							}
+						});
+						e.push(OnchainEvent::HTLCUpdate { htlc_update: ($source, $payment_hash)});
 					}
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![($source, $update, $payment_hash)]);
+						entry.insert(vec![OnchainEvent::HTLCUpdate { htlc_update: ($source, $payment_hash)}]);
 					}
 				}
 			}
@@ -1666,7 +1712,7 @@ impl ChannelMonitor {
 			for &(ref htlc, _, ref source) in &local_tx.htlc_outputs {
 				if htlc.transaction_output_index.is_none() {
 					if let &Some(ref source) = source {
-						wait_threshold_conf!(height, source.clone(), None, "lastest", htlc.payment_hash.clone());
+						wait_threshold_conf!(height, source.clone(), "lastest", htlc.payment_hash.clone());
 					}
 				}
 			}
@@ -1686,7 +1732,7 @@ impl ChannelMonitor {
 			for &(ref htlc, _, ref source) in &local_tx.htlc_outputs {
 				if htlc.transaction_output_index.is_none() {
 					if let &Some(ref source) = source {
-						wait_threshold_conf!(height, source.clone(), None, "previous", htlc.payment_hash.clone());
+						wait_threshold_conf!(height, source.clone(), "previous", htlc.payment_hash.clone());
 					}
 				}
 			}
@@ -1837,10 +1883,18 @@ impl ChannelMonitor {
 				}
 			}
 		}
-		if let Some(updates) = self.htlc_updated_waiting_threshold_conf.remove(&height) {
-			for update in updates {
-				log_trace!(self, "HTLC {} failure update has get enough confirmation to be pass upstream", log_bytes!((update.2).0));
-				htlc_updated.push(update);
+		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&height) {
+			for ev in events {
+				match ev {
+					OnchainEvent::Claim { outpoint } => {
+					},
+					OnchainEvent::HTLCUpdate { htlc_update } => {
+						log_trace!(self, "HTLC {} failure update has get enough confirmation to be pass upstream", log_bytes!((htlc_update.1).0));
+						htlc_updated.push((htlc_update.0, None, htlc_update.1));
+					},
+				}
+			}
+		}
 			}
 		}
 		self.last_block_hash = block_hash.clone();
@@ -1848,8 +1902,10 @@ impl ChannelMonitor {
 	}
 
 	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash) {
-		if let Some(_) = self.htlc_updated_waiting_threshold_conf.remove(&(height + HTLC_FAIL_ANTI_REORG_DELAY - 1)) {
-			//We discard htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
+		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + HTLC_FAIL_ANTI_REORG_DELAY - 1)) {
+			//We may discard:
+			//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
+			//- our claim tx on a commitment tx output
 		}
 		self.last_block_hash = block_hash.clone();
 	}
@@ -2031,14 +2087,21 @@ impl ChannelMonitor {
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else {
 					log_trace!(self, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting confirmation until {} height", log_bytes!(payment_hash.0), height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
-					match self.htlc_updated_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+					match self.onchain_events_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
 						hash_map::Entry::Occupied(mut entry) => {
 							let e = entry.get_mut();
-							e.retain(|ref update| update.0 != source);
-							e.push((source, None, payment_hash.clone()));
+							e.retain(|ref event| {
+								match **event {
+									OnchainEvent::HTLCUpdate { ref htlc_update } => {
+										return htlc_update.0 != source
+									},
+									_ => return true
+								}
+							});
+							e.push(OnchainEvent::HTLCUpdate { htlc_update: (source, payment_hash)});
 						}
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec![(source, None, payment_hash)]);
+							entry.insert(vec![OnchainEvent::HTLCUpdate { htlc_update: (source, payment_hash)}]);
 						}
 					}
 				}
@@ -2261,18 +2324,31 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 		let destination_script = Readable::read(reader)?;
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
-		let mut htlc_updated_waiting_threshold_conf = HashMap::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut onchain_events_waiting_threshold_conf = HashMap::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
 			let height_target = Readable::read(reader)?;
-			let updates_len: u64 = Readable::read(reader)?;
-			let mut updates = Vec::with_capacity(cmp::min(updates_len as usize, MAX_ALLOC_SIZE / 128));
-			for _ in 0..updates_len {
-				let htlc_source = Readable::read(reader)?;
-				let preimage = Readable::read(reader)?;
-				let hash = Readable::read(reader)?;
-				updates.push((htlc_source, preimage, hash));
+			let events_len: u64 = Readable::read(reader)?;
+			let mut events = Vec::with_capacity(cmp::min(events_len as usize, MAX_ALLOC_SIZE / 128));
+			for _ in 0..events_len {
+				let ev = match <u8 as Readable<R>>::read(reader)? {
+					0 => {
+						let outpoint = Readable::read(reader)?;
+						OnchainEvent::Claim {
+							outpoint
+						}
+					},
+					1 => {
+						let htlc_source = Readable::read(reader)?;
+						let hash = Readable::read(reader)?;
+						OnchainEvent::HTLCUpdate {
+							htlc_update: (htlc_source, hash)
+						}
+					},
+					_ => return Err(DecodeError::InvalidValue),
+				};
+				events.push(ev);
 			}
-			htlc_updated_waiting_threshold_conf.insert(height_target, updates);
+			onchain_events_waiting_threshold_conf.insert(height_target, events);
 		}
 
 		Ok((last_block_hash.clone(), ChannelMonitor {
@@ -2299,7 +2375,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 			destination_script,
 
-			htlc_updated_waiting_threshold_conf,
+			onchain_events_waiting_threshold_conf,
 
 			last_block_hash,
 			secp_ctx,
