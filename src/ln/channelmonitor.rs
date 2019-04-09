@@ -1500,7 +1500,7 @@ impl ChannelMonitor {
 	}
 
 	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
+	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64, fee_estimator: &FeeEstimator) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
 		if tx.input.len() != 1 || tx.output.len() != 1 {
 			return (None, None)
 		}
@@ -1552,7 +1552,7 @@ impl ChannelMonitor {
 		if !inputs.is_empty() {
 			let outputs = vec!(TxOut {
 				script_pubkey: self.destination_script.clone(),
-				value: amount, //TODO: - fee
+				value: amount
 			});
 
 			let mut spend_tx = Transaction {
@@ -1561,6 +1561,7 @@ impl ChannelMonitor {
 				input: inputs,
 				output: outputs,
 			};
+			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (spend_tx.get_weight() + Self::get_witnesses_weight(&vec![InputDescriptors::RevokedOutput])) / 1000;
 
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
 
@@ -1792,7 +1793,7 @@ impl ChannelMonitor {
 					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
-						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, commitment_number);
+						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, commitment_number, fee_estimator);
 						if let Some(tx) = tx {
 							txn.push(tx);
 						}
