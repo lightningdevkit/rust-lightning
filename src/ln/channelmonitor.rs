@@ -34,7 +34,7 @@ use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
-use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface};
+use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator, ConfirmationTarget};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::logger::Logger;
@@ -143,6 +143,7 @@ pub struct SimpleManyChannelMonitor<Key> {
 	pending_events: Mutex<Vec<events::Event>>,
 	pending_htlc_updated: Mutex<HashMap<PaymentHash, Vec<(HTLCSource, Option<PaymentPreimage>)>>>,
 	logger: Arc<Logger>,
+	fee_estimator: Arc<FeeEstimator>
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
@@ -153,7 +154,7 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 		{
 			let mut monitors = self.monitors.lock().unwrap();
 			for monitor in monitors.values_mut() {
-				let (txn_outputs, spendable_outputs, mut htlc_updated) = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster);
+				let (txn_outputs, spendable_outputs, mut htlc_updated) = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster, &*self.fee_estimator);
 				if spendable_outputs.len() > 0 {
 					new_events.push(events::Event::SpendableOutputs {
 						outputs: spendable_outputs,
@@ -210,7 +211,7 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>) -> Arc<SimpleManyChannelMonitor<Key>> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> Arc<SimpleManyChannelMonitor<Key>> {
 		let res = Arc::new(SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
@@ -218,6 +219,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 			pending_events: Mutex::new(Vec::new()),
 			pending_htlc_updated: Mutex::new(HashMap::new()),
 			logger,
+			fee_estimator: feeest,
 		});
 		let weak_res = Arc::downgrade(&res);
 		res.chain_monitor.register_listener(weak_res);
@@ -338,6 +340,14 @@ struct LocalSignedTx {
 	delayed_payment_key: PublicKey,
 	feerate_per_kw: u64,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<(Signature, Signature)>, Option<HTLCSource>)>,
+}
+
+enum InputDescriptors {
+	RevokedOfferedHTLC,
+	RevokedReceivedHTLC,
+	OfferedHTLC,
+	ReceivedHTLC,
+	RevokedOutput, // either a revoked to_local output on commitment tx, a revoked HTLC-Timeout output or a revoked HTLC-Success output
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
@@ -473,6 +483,36 @@ impl ChannelMonitor {
 			secp_ctx: Secp256k1::new(),
 			logger,
 		}
+	}
+
+	fn get_witnesses_weight(inputs: &[InputDescriptors]) -> u64 {
+		let mut tx_weight = 2; // count segwit flags
+		for inp in inputs {
+			// We use expected weight (and not actual) as signatures and time lock delays may vary
+			tx_weight +=  match inp {
+				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+				&InputDescriptors::RevokedOfferedHTLC => {
+					1 + 1 + 73 + 1 + 33 + 1 + 133
+				},
+				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+				&InputDescriptors::RevokedReceivedHTLC => {
+					1 + 1 + 73 + 1 + 33 + 1 + 139
+				},
+				// number_of_witness_elements + sig_length + remotehtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
+				&InputDescriptors::OfferedHTLC => {
+					1 + 1 + 73 + 1 + 32 + 1 + 133
+				},
+				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+				&InputDescriptors::ReceivedHTLC => {
+					1 + 1 + 73 + 1 + 1 + 1 + 139
+				},
+				// number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
+				&InputDescriptors::RevokedOutput => {
+					1 + 1 + 73 + 1 + 1 + 1 + 77
+				},
+			};
+		}
+		tx_weight
 	}
 
 	#[inline]
@@ -1019,7 +1059,7 @@ impl ChannelMonitor {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked remote commitment tx
-	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>)  {
+	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32, fee_estimator: &FeeEstimator) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>)  {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
@@ -1077,6 +1117,7 @@ impl ChannelMonitor {
 			let mut values = Vec::new();
 			let mut inputs = Vec::new();
 			let mut htlc_idxs = Vec::new();
+			let mut input_descriptors = Vec::new();
 
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
@@ -1092,6 +1133,7 @@ impl ChannelMonitor {
 					htlc_idxs.push(None);
 					values.push(outp.value);
 					total_value += outp.value;
+					input_descriptors.push(InputDescriptors::RevokedOutput);
 				} else if Some(&outp.script_pubkey) == local_payment_p2wpkh.as_ref() {
 					spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
 						outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 },
@@ -1155,6 +1197,7 @@ impl ChannelMonitor {
 							htlc_idxs.push(Some(idx));
 							values.push(tx.output[transaction_output_index as usize].value);
 							total_value += htlc.amount_msat / 1000;
+							input_descriptors.push(if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC });
 						} else {
 							let mut single_htlc_tx = Transaction {
 								version: 2,
@@ -1162,9 +1205,10 @@ impl ChannelMonitor {
 								input: vec![input],
 								output: vec!(TxOut {
 									script_pubkey: self.destination_script.clone(),
-									value: htlc.amount_msat / 1000, //TODO: - fee
+									value: htlc.amount_msat / 1000,
 								}),
 							};
+							single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }])) / 1000;
 							let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 							sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
 							txn_to_broadcast.push(single_htlc_tx);
@@ -1208,7 +1252,7 @@ impl ChannelMonitor {
 
 			let outputs = vec!(TxOut {
 				script_pubkey: self.destination_script.clone(),
-				value: total_value, //TODO: - fee
+				value: total_value,
 			});
 			let mut spend_tx = Transaction {
 				version: 2,
@@ -1216,6 +1260,7 @@ impl ChannelMonitor {
 				input: inputs,
 				output: outputs,
 			};
+			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..])) / 1000;
 
 			let mut values_drain = values.drain(..);
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
@@ -1324,6 +1369,7 @@ impl ChannelMonitor {
 					let mut total_value = 0;
 					let mut values = Vec::new();
 					let mut inputs = Vec::new();
+					let mut input_descriptors = Vec::new();
 
 					macro_rules! sign_input {
 						($sighash_parts: expr, $input: expr, $amount: expr, $preimage: expr) => {
@@ -1370,6 +1416,7 @@ impl ChannelMonitor {
 									inputs.push(input);
 									values.push((tx.output[transaction_output_index as usize].value, payment_preimage));
 									total_value += htlc.amount_msat / 1000;
+									input_descriptors.push(if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC });
 								} else {
 									let mut single_htlc_tx = Transaction {
 										version: 2,
@@ -1377,9 +1424,10 @@ impl ChannelMonitor {
 										input: vec![input],
 										output: vec!(TxOut {
 											script_pubkey: self.destination_script.clone(),
-											value: htlc.amount_msat / 1000, //TODO: - fee
+											value: htlc.amount_msat / 1000,
 										}),
 									};
+									single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }])) / 1000;
 									let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 									sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
 									spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
@@ -1421,7 +1469,7 @@ impl ChannelMonitor {
 
 					let outputs = vec!(TxOut {
 						script_pubkey: self.destination_script.clone(),
-						value: total_value, //TODO: - fee
+						value: total_value
 					});
 					let mut spend_tx = Transaction {
 						version: 2,
@@ -1429,6 +1477,7 @@ impl ChannelMonitor {
 						input: inputs,
 						output: outputs,
 					};
+					spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..])) / 1000;
 
 					let mut values_drain = values.drain(..);
 					let sighash_parts = bip143::SighashComponents::new(&spend_tx);
@@ -1698,7 +1747,7 @@ impl ChannelMonitor {
 		}
 	}
 
-	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
+	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
@@ -1719,7 +1768,7 @@ impl ChannelMonitor {
 					}
 				};
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
-					let (remote_txn, new_outputs, mut spendable_output, mut updated) = self.check_spend_remote_transaction(tx, height);
+					let (remote_txn, new_outputs, mut spendable_output, mut updated) = self.check_spend_remote_transaction(tx, height, fee_estimator);
 					txn = remote_txn;
 					spendable_outputs.append(&mut spendable_output);
 					if !new_outputs.1.is_empty() {

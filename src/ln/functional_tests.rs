@@ -3210,7 +3210,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-	nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new())));
+	nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 })));
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
@@ -3276,7 +3276,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-	nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new())));
+	nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 })));
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
@@ -3336,7 +3336,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		node_0_monitors_serialized.push(writer.0);
 	}
 
-	nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new())));
+	nodes[0].chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 })));
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];

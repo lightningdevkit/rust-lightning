@@ -821,7 +821,7 @@ pub fn create_network(node_count: usize) -> Vec<Node> {
 		let mut seed = [0; 32];
 		rng.fill_bytes(&mut seed);
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet, Arc::clone(&logger)));
-		let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone()));
+		let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
 		let mut config = UserConfig::new();
 		config.channel_options.announced_channel = true;
 		config.channel_limits.force_announced_channel_preference = false;
