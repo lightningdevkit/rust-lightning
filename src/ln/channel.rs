@@ -410,13 +410,6 @@ impl Channel {
 		1000 // TODO
 	}
 
-	fn derive_minimum_depth(_channel_value_satoshis_msat: u64, _value_to_self_msat: u64) -> u32 {
-		// Note that in order to comply with BOLT 7 announcement_signatures requirements this must
-		// be at least 6.
-		const CONF_TARGET: u32 = 12; //TODO: Should be much higher
-		CONF_TARGET
-	}
-
 	// Constructors:
 	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, APIError> {
 		let chan_keys = keys_provider.get_channel_keys(false);
@@ -565,32 +558,32 @@ impl Channel {
 		}
 
 		// Now check against optional parameters as set by config...
-		if msg.funding_satoshis < config.channel_limits.min_funding_satoshis {
+		if msg.funding_satoshis < config.peer_channel_config_limits.min_funding_satoshis {
 			return Err(ChannelError::Close("funding satoshis is less than the user specified limit"));
 		}
-		if msg.htlc_minimum_msat > config.channel_limits.max_htlc_minimum_msat {
+		if msg.htlc_minimum_msat > config.peer_channel_config_limits.max_htlc_minimum_msat {
 			return Err(ChannelError::Close("htlc minimum msat is higher than the user specified limit"));
 		}
-		if msg.max_htlc_value_in_flight_msat < config.channel_limits.min_max_htlc_value_in_flight_msat {
+		if msg.max_htlc_value_in_flight_msat < config.peer_channel_config_limits.min_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::Close("max htlc value in flight msat is less than the user specified limit"));
 		}
-		if msg.channel_reserve_satoshis > config.channel_limits.max_channel_reserve_satoshis {
+		if msg.channel_reserve_satoshis > config.peer_channel_config_limits.max_channel_reserve_satoshis {
 			return Err(ChannelError::Close("channel reserve satoshis is higher than the user specified limit"));
 		}
-		if msg.max_accepted_htlcs < config.channel_limits.min_max_accepted_htlcs {
+		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close("max accepted htlcs is less than the user specified limit"));
 		}
-		if msg.dust_limit_satoshis < config.channel_limits.min_dust_limit_satoshis {
+		if msg.dust_limit_satoshis < config.peer_channel_config_limits.min_dust_limit_satoshis {
 			return Err(ChannelError::Close("dust limit satoshis is less than the user specified limit"));
 		}
-		if msg.dust_limit_satoshis > config.channel_limits.max_dust_limit_satoshis {
+		if msg.dust_limit_satoshis > config.peer_channel_config_limits.max_dust_limit_satoshis {
 			return Err(ChannelError::Close("dust limit satoshis is greater than the user specified limit"));
 		}
 
 		// Convert things into internal flags and prep our state:
 
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
-		if config.channel_limits.force_announced_channel_preference {
+		if config.peer_channel_config_limits.force_announced_channel_preference {
 			if local_config.announced_channel != their_announce {
 				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours"));
 			}
@@ -687,7 +680,7 @@ impl Channel {
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(msg.feerate_per_kw as u64),
 			their_to_self_delay: msg.to_self_delay,
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
-			minimum_depth: Channel::derive_minimum_depth(msg.funding_satoshis*1000, msg.push_msat),
+			minimum_depth: config.own_channel_config.minimum_depth,
 
 			their_funding_pubkey: Some(msg.funding_pubkey),
 			their_revocation_basepoint: Some(msg.revocation_basepoint),
@@ -1383,25 +1376,25 @@ impl Channel {
 		}
 
 		// Now check against optional parameters as set by config...
-		if msg.htlc_minimum_msat > config.channel_limits.max_htlc_minimum_msat {
+		if msg.htlc_minimum_msat > config.peer_channel_config_limits.max_htlc_minimum_msat {
 			return Err(ChannelError::Close("htlc minimum msat is higher than the user specified limit"));
 		}
-		if msg.max_htlc_value_in_flight_msat < config.channel_limits.min_max_htlc_value_in_flight_msat {
+		if msg.max_htlc_value_in_flight_msat < config.peer_channel_config_limits.min_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::Close("max htlc value in flight msat is less than the user specified limit"));
 		}
-		if msg.channel_reserve_satoshis > config.channel_limits.max_channel_reserve_satoshis {
+		if msg.channel_reserve_satoshis > config.peer_channel_config_limits.max_channel_reserve_satoshis {
 			return Err(ChannelError::Close("channel reserve satoshis is higher than the user specified limit"));
 		}
-		if msg.max_accepted_htlcs < config.channel_limits.min_max_accepted_htlcs {
+		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close("max accepted htlcs is less than the user specified limit"));
 		}
-		if msg.dust_limit_satoshis < config.channel_limits.min_dust_limit_satoshis {
+		if msg.dust_limit_satoshis < config.peer_channel_config_limits.min_dust_limit_satoshis {
 			return Err(ChannelError::Close("dust limit satoshis is less than the user specified limit"));
 		}
-		if msg.dust_limit_satoshis > config.channel_limits.max_dust_limit_satoshis {
+		if msg.dust_limit_satoshis > config.peer_channel_config_limits.max_dust_limit_satoshis {
 			return Err(ChannelError::Close("dust limit satoshis is greater than the user specified limit"));
 		}
-		if msg.minimum_depth > config.channel_limits.max_minimum_depth {
+		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
 			return Err(ChannelError::Close("We consider the minimum depth to be unreasonably large"));
 		}
 
