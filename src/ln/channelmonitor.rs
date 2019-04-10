@@ -801,18 +801,8 @@ impl ChannelMonitor {
 				writer.write_all(&delayed_payment_base_key[..])?;
 				writer.write_all(&payment_base_key[..])?;
 				writer.write_all(&shutdown_pubkey.serialize())?;
-				if let Some(ref prev_latest_per_commitment_point) = *prev_latest_per_commitment_point {
-					writer.write_all(&[1; 1])?;
-					writer.write_all(&prev_latest_per_commitment_point.serialize())?;
-				} else {
-					writer.write_all(&[0; 1])?;
-				}
-				if let Some(ref latest_per_commitment_point) = *latest_per_commitment_point {
-					writer.write_all(&[1; 1])?;
-					writer.write_all(&latest_per_commitment_point.serialize())?;
-				} else {
-					writer.write_all(&[0; 1])?;
-				}
+				prev_latest_per_commitment_point.write(writer)?;
+				latest_per_commitment_point.write(writer)?;
 				match funding_info  {
 					&Some((ref outpoint, ref script)) => {
 						writer.write_all(&outpoint.txid[..])?;
@@ -823,8 +813,8 @@ impl ChannelMonitor {
 						debug_assert!(false, "Try to serialize a useless Local monitor !");
 					},
 				}
-				write_option!(current_remote_commitment_txid);
-				write_option!(prev_remote_commitment_txid);
+				current_remote_commitment_txid.write(writer)?;
+				prev_remote_commitment_txid.write(writer)?;
 			},
 			Storage::Watchtower { .. } => unimplemented!(),
 		}
@@ -864,7 +854,7 @@ impl ChannelMonitor {
 				writer.write_all(&byte_utils::be64_to_array($htlc_output.amount_msat))?;
 				writer.write_all(&byte_utils::be32_to_array($htlc_output.cltv_expiry))?;
 				writer.write_all(&$htlc_output.payment_hash.0[..])?;
-				write_option!(&$htlc_output.transaction_output_index);
+				$htlc_output.transaction_output_index.write(writer)?;
 			}
 		}
 
