@@ -342,6 +342,7 @@ struct LocalSignedTx {
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<(Signature, Signature)>, Option<HTLCSource>)>,
 }
 
+#[derive(PartialEq)]
 enum InputDescriptors {
 	RevokedOfferedHTLC,
 	RevokedReceivedHTLC,
@@ -2274,13 +2275,19 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::script::Script;
-	use bitcoin::blockdata::transaction::Transaction;
+	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::opcodes;
+	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
+	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
+	use bitcoin::util::bip143;
 	use bitcoin_hashes::Hash;
 	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin_hashes::hex::FromHex;
 	use hex;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
-	use ln::channelmonitor::ChannelMonitor;
+	use ln::channelmonitor::{ChannelMonitor, InputDescriptors};
+	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys};
 	use util::test_utils::TestLogger;
 	use secp256k1::key::{SecretKey,PublicKey};
@@ -2755,6 +2762,118 @@ mod tests {
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 5);
 		test_preimages_exist!(&preimages[0..5], monitor);
+	}
+
+	#[test]
+	fn test_claim_txn_weight_computation() {
+		// We test Claim txn weight, knowing that we want expected weigth and
+		// not actual case to avoid sigs and time-lock delays hell variances.
+
+		let secp_ctx = Secp256k1::new();
+		let privkey = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+		let pubkey = PublicKey::from_secret_key(&secp_ctx, &privkey);
+		let mut sum_actual_sigs: u64 = 0;
+
+		macro_rules! sign_input {
+			($sighash_parts: expr, $input: expr, $idx: expr, $amount: expr, $input_type: expr, $sum_actual_sigs: expr) => {
+				let htlc = HTLCOutputInCommitment {
+					offered: if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::OfferedHTLC { true } else { false },
+					amount_msat: 0,
+					cltv_expiry: 2 << 16,
+					payment_hash: PaymentHash([1; 32]),
+					transaction_output_index: Some($idx),
+				};
+				let redeem_script = if *$input_type == InputDescriptors::RevokedOutput { chan_utils::get_revokeable_redeemscript(&pubkey, 256, &pubkey) } else { chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &pubkey, &pubkey, &pubkey) };
+				let sighash = hash_to_message!(&$sighash_parts.sighash_all(&$input, &redeem_script, $amount)[..]);
+				let sig = secp_ctx.sign(&sighash, &privkey);
+				$input.witness.push(sig.serialize_der().to_vec());
+				$input.witness[0].push(SigHashType::All as u8);
+				sum_actual_sigs += $input.witness[0].len() as u64;
+				if *$input_type == InputDescriptors::RevokedOutput {
+					$input.witness.push(vec!(1));
+				} else if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::RevokedReceivedHTLC {
+					$input.witness.push(pubkey.clone().serialize().to_vec());
+				} else if *$input_type == InputDescriptors::ReceivedHTLC {
+					$input.witness.push(vec![0]);
+				} else {
+					$input.witness.push(PaymentPreimage([1; 32]).0.to_vec());
+				}
+				$input.witness.push(redeem_script.into_bytes());
+				println!("witness[0] {}", $input.witness[0].len());
+				println!("witness[1] {}", $input.witness[1].len());
+				println!("witness[2] {}", $input.witness[2].len());
+			}
+		}
+
+		let script_pubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script();
+		let txid = Sha256dHash::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
+
+		// Justice tx with 1 to_local, 2 revoked offered HTLCs, 1 revoked received HTLCs
+		let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+		for i in 0..4 {
+			claim_tx.input.push(TxIn {
+				previous_output: BitcoinOutPoint {
+					txid,
+					vout: i,
+				},
+				script_sig: Script::new(),
+				sequence: 0xfffffffd,
+				witness: Vec::new(),
+			});
+		}
+		claim_tx.output.push(TxOut {
+			script_pubkey: script_pubkey.clone(),
+			value: 0,
+		});
+		let base_weight = claim_tx.get_weight();
+		let sighash_parts = bip143::SighashComponents::new(&claim_tx);
+		let inputs_des = vec![InputDescriptors::RevokedOutput, InputDescriptors::RevokedOfferedHTLC, InputDescriptors::RevokedOfferedHTLC, InputDescriptors::RevokedReceivedHTLC];
+		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
+			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
+		}
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+
+		// Claim tx with 1 offered HTLCs, 3 received HTLCs
+		claim_tx.input.clear();
+		sum_actual_sigs = 0;
+		for i in 0..4 {
+			claim_tx.input.push(TxIn {
+				previous_output: BitcoinOutPoint {
+					txid,
+					vout: i,
+				},
+				script_sig: Script::new(),
+				sequence: 0xfffffffd,
+				witness: Vec::new(),
+			});
+		}
+		let base_weight = claim_tx.get_weight();
+		let sighash_parts = bip143::SighashComponents::new(&claim_tx);
+		let inputs_des = vec![InputDescriptors::OfferedHTLC, InputDescriptors::ReceivedHTLC, InputDescriptors::ReceivedHTLC, InputDescriptors::ReceivedHTLC];
+		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
+			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
+		}
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+
+		// Justice tx with 1 revoked HTLC-Success tx output
+		claim_tx.input.clear();
+		sum_actual_sigs = 0;
+		claim_tx.input.push(TxIn {
+			previous_output: BitcoinOutPoint {
+				txid,
+				vout: 0,
+			},
+			script_sig: Script::new(),
+			sequence: 0xfffffffd,
+			witness: Vec::new(),
+		});
+		let base_weight = claim_tx.get_weight();
+		let sighash_parts = bip143::SighashComponents::new(&claim_tx);
+		let inputs_des = vec![InputDescriptors::RevokedOutput];
+		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
+			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
+		}
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
