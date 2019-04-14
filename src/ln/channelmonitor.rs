@@ -1209,9 +1209,11 @@ impl ChannelMonitor {
 									value: htlc.amount_msat / 1000,
 								}),
 							};
-							single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }])) / 1000;
+							let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }]);
+							single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
 							let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 							sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
+							assert!(predicted_weight >= single_htlc_tx.get_weight());
 							txn_to_broadcast.push(single_htlc_tx);
 						}
 					}
@@ -1261,7 +1263,8 @@ impl ChannelMonitor {
 				input: inputs,
 				output: outputs,
 			};
-			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..])) / 1000;
+			let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..]);
+			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
 
 			let mut values_drain = values.drain(..);
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
@@ -1270,6 +1273,7 @@ impl ChannelMonitor {
 				let value = values_drain.next().unwrap();
 				sign_input!(sighash_parts, input, htlc_idx, value);
 			}
+			assert!(predicted_weight >= spend_tx.get_weight());
 
 			spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 				outpoint: BitcoinOutPoint { txid: spend_tx.txid(), vout: 0 },
@@ -1428,9 +1432,11 @@ impl ChannelMonitor {
 											value: htlc.amount_msat / 1000,
 										}),
 									};
-									single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }])) / 1000;
+									let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }]);
+									single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
 									let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 									sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
+									assert!(predicted_weight >= single_htlc_tx.get_weight());
 									spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 										outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
 										output: single_htlc_tx.output[0].clone(),
@@ -1478,7 +1484,8 @@ impl ChannelMonitor {
 						input: inputs,
 						output: outputs,
 					};
-					spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..])) / 1000;
+					let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..]);
+					spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
 
 					let mut values_drain = values.drain(..);
 					let sighash_parts = bip143::SighashComponents::new(&spend_tx);
@@ -1488,6 +1495,7 @@ impl ChannelMonitor {
 						sign_input!(sighash_parts, input, value.0, (value.1).0.to_vec());
 					}
 
+					assert!(predicted_weight >= spend_tx.get_weight());
 					spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 						outpoint: BitcoinOutPoint { txid: spend_tx.txid(), vout: 0 },
 						output: spend_tx.output[0].clone(),
@@ -1562,7 +1570,8 @@ impl ChannelMonitor {
 				input: inputs,
 				output: outputs,
 			};
-			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * (spend_tx.get_weight() + Self::get_witnesses_weight(&vec![InputDescriptors::RevokedOutput])) / 1000;
+			let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&[InputDescriptors::RevokedOutput]);
+			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
 
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
 
@@ -1581,6 +1590,7 @@ impl ChannelMonitor {
 			spend_tx.input[0].witness.push(vec!(1));
 			spend_tx.input[0].witness.push(redeemscript.into_bytes());
 
+			assert!(predicted_weight >= spend_tx.get_weight());
 			let outpoint = BitcoinOutPoint { txid: spend_tx.txid(), vout: 0 };
 			let output = spend_tx.output[0].clone();
 			(Some(spend_tx), Some(SpendableOutputDescriptor::StaticOutput { outpoint, output }))
@@ -2831,7 +2841,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -2853,7 +2863,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -2873,7 +2883,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
