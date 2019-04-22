@@ -237,19 +237,21 @@ pub(super) struct Channel {
 	cur_local_commitment_transaction_number: u64,
 	cur_remote_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
-	/// Upon receipt of a channel_reestablish we have to figure out whether to send a
-	/// revoke_and_ack first or a commitment update first. Generally, we prefer to send
-	/// revoke_and_ack first, but if we had a pending commitment update of our own waiting on a
-	/// remote revoke when we received the latest commitment update from the remote we have to make
-	/// sure that commitment update gets resent first.
-	received_commitment_while_awaiting_raa: bool,
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
 
+	/// When resending CS/RAA messages on channel monitor restoration or on reconnect, we always
+	/// need to ensure we resend them in the order we originally generated them. Note that because
+	/// there can only ever be one in-flight CS and/or one in-flight RAA at any time, it is
+	/// sufficient to simply set this to the opposite of any message we are generating as we
+	/// generate it. ie when we generate a CS, we set this to RAAFirst as, if there is a pending
+	/// in-flight RAA to resend, it will have been the first thing we generated, and thus we should
+	/// send it first.
+	resend_order: RAACommitmentOrder,
+
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
-	monitor_pending_order: Option<RAACommitmentOrder>,
 	monitor_pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 
@@ -450,7 +452,6 @@ impl Channel {
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
-			received_commitment_while_awaiting_raa: false,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -461,9 +462,10 @@ impl Channel {
 			next_remote_htlc_id: 0,
 			channel_update_count: 1,
 
+			resend_order: RAACommitmentOrder::CommitmentFirst,
+
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
-			monitor_pending_order: None,
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 
@@ -639,7 +641,6 @@ impl Channel {
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_remote_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat: msg.push_msat,
-			received_commitment_while_awaiting_raa: false,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -650,9 +651,10 @@ impl Channel {
 			next_remote_htlc_id: 0,
 			channel_update_count: 1,
 
+			resend_order: RAACommitmentOrder::CommitmentFirst,
+
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
-			monitor_pending_order: None,
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 
@@ -1805,12 +1807,6 @@ impl Channel {
 			}
 		}
 
-		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-			// This is a response to our post-monitor-failed unfreeze messages, so we can clear the
-			// monitor_pending_order requirement as we won't re-send the monitor_pending messages.
-			self.monitor_pending_order = None;
-		}
-
 		self.channel_monitor.provide_latest_local_commitment_tx_info(local_commitment_tx.0, local_keys, self.feerate_per_kw, htlcs_and_sigs);
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
@@ -1833,14 +1829,13 @@ impl Channel {
 
 		self.cur_local_commitment_transaction_number -= 1;
 		self.last_local_commitment_txn = new_local_commitment_txn;
-		self.received_commitment_while_awaiting_raa = (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) != 0;
+		// Note that if we need_our_commitment & !AwaitingRemoteRevoke we'll call
+		// send_commitment_no_status_check() next which will reset this to RAAFirst.
+		self.resend_order = RAACommitmentOrder::CommitmentFirst;
 
 		if (self.channel_state & ChannelState::MonitorUpdateFailed as u32) != 0 {
 			// In case we initially failed monitor updating without requiring a response, we need
 			// to make sure the RAA gets sent first.
-			if !self.monitor_pending_commitment_signed {
-				self.monitor_pending_order = Some(RAACommitmentOrder::RevokeAndACKFirst);
-			}
 			self.monitor_pending_revoke_and_ack = true;
 			if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
 				// If we were going to send a commitment_signed after the RAA, go ahead and do all
@@ -2014,12 +2009,6 @@ impl Channel {
 		self.their_prev_commitment_point = self.their_cur_commitment_point;
 		self.their_cur_commitment_point = Some(msg.next_per_commitment_point);
 		self.cur_remote_commitment_transaction_number -= 1;
-		self.received_commitment_while_awaiting_raa = false;
-		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-			// This is a response to our post-monitor-failed unfreeze messages, so we can clear the
-			// monitor_pending_order requirement as we won't re-send the monitor_pending messages.
-			self.monitor_pending_order = None;
-		}
 
 		log_trace!(self, "Updating HTLCs on receipt of RAA...");
 		let mut to_forward_infos = Vec::new();
@@ -2137,7 +2126,7 @@ impl Channel {
 				// When the monitor updating is restored we'll call get_last_commitment_update(),
 				// which does not update state, but we're definitely now awaiting a remote revoke
 				// before we can step forward any more, so set it here.
-				self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
+				self.send_commitment_no_status_check()?;
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
@@ -2285,15 +2274,13 @@ impl Channel {
 	/// Indicates that a ChannelMonitor update failed to be stored by the client and further
 	/// updates are partially paused.
 	/// This must be called immediately after the call which generated the ChannelMonitor update
-	/// which failed, with the order argument set to the type of call it represented (ie a
-	/// commitment update or a revoke_and_ack generation). The messages which were generated from
-	/// that original call must *not* have been sent to the remote end, and must instead have been
-	/// dropped. They will be regenerated when monitor_updating_restored is called.
-	pub fn monitor_update_failed(&mut self, order: RAACommitmentOrder, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
+	/// which failed. The messages which were generated from that call which generated the
+	/// monitor update failure must *not* have been sent to the remote end, and must instead
+	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
+	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
 		self.monitor_pending_revoke_and_ack = resend_raa;
 		self.monitor_pending_commitment_signed = resend_commitment;
-		self.monitor_pending_order = Some(order);
 		assert!(self.monitor_pending_forwards.is_empty());
 		mem::swap(&mut pending_forwards, &mut self.monitor_pending_forwards);
 		assert!(self.monitor_pending_failures.is_empty());
@@ -2314,7 +2301,6 @@ impl Channel {
 		mem::swap(&mut failures, &mut self.monitor_pending_failures);
 
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
-			// Leave monitor_pending_order so we can order our channel_reestablish responses
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
 			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures);
@@ -2329,7 +2315,12 @@ impl Channel {
 
 		self.monitor_pending_revoke_and_ack = false;
 		self.monitor_pending_commitment_signed = false;
-		(raa, commitment_update, self.monitor_pending_order.clone().unwrap(), forwards, failures)
+		let order = self.resend_order.clone();
+		log_trace!(self, "Restored monitor updating resulting in {} commitment update and {} RAA, with {} first",
+			if commitment_update.is_some() { "a" } else { "no" },
+			if raa.is_some() { "an" } else { "no" },
+			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
+		(raa, commitment_update, order, forwards, failures)
 	}
 
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), ChannelError> {
@@ -2487,12 +2478,6 @@ impl Channel {
 			})
 		} else { None };
 
-		let order = self.monitor_pending_order.clone().unwrap_or(if self.received_commitment_while_awaiting_raa {
-				RAACommitmentOrder::CommitmentFirst
-			} else {
-				RAACommitmentOrder::RevokeAndACKFirst
-			});
-
 		if msg.next_local_commitment_number == our_next_remote_commitment_number {
 			if required_revoke.is_some() {
 				log_debug!(self, "Reconnected channel {} with only lost outbound RAA", log_bytes!(self.channel_id()));
@@ -2500,8 +2485,7 @@ impl Channel {
 				log_debug!(self, "Reconnected channel {} with no loss", log_bytes!(self.channel_id()));
 			}
 
-			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 &&
-					self.monitor_pending_order.is_none() { // monitor_pending_order indicates we're waiting on a response to a unfreeze
+			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
 				// We're up-to-date and not waiting on a remote revoke (if we are our
 				// channel_reestablish should result in them sending a revoke_and_ack), but we may
 				// have received some updates while we were disconnected. Free the holding cell
@@ -2509,11 +2493,11 @@ impl Channel {
 				match self.free_holding_cell_htlcs() {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
 					Err(ChannelError::Ignore(_)) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
-					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), order, shutdown_msg)),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg)),
+					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), self.resend_order.clone(), shutdown_msg)),
+					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg)),
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None, order, shutdown_msg));
+				return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg));
 			}
 		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -2524,10 +2508,10 @@ impl Channel {
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
-				return Ok((resend_funding_locked, None, None, None, order, shutdown_msg));
+				return Ok((resend_funding_locked, None, None, None, self.resend_order.clone(), shutdown_msg));
 			}
 
-			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, order, shutdown_msg));
+			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, self.resend_order.clone(), shutdown_msg));
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
 		}
@@ -3348,6 +3332,7 @@ impl Channel {
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
 			}
 		}
+		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
 		let (res, remote_commitment_tx, htlcs) = match self.send_commitment_no_state_update() {
 			Ok((res, (remote_commitment_tx, mut htlcs))) => {
@@ -3558,8 +3543,6 @@ impl Writeable for Channel {
 		self.cur_remote_commitment_transaction_number.write(writer)?;
 		self.value_to_self_msat.write(writer)?;
 
-		self.received_commitment_while_awaiting_raa.write(writer)?;
-
 		let mut dropped_inbound_htlcs = 0;
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
@@ -3659,13 +3642,13 @@ impl Writeable for Channel {
 			}
 		}
 
+		match self.resend_order {
+			RAACommitmentOrder::CommitmentFirst => 0u8.write(writer)?,
+			RAACommitmentOrder::RevokeAndACKFirst => 1u8.write(writer)?,
+		}
+
 		self.monitor_pending_revoke_and_ack.write(writer)?;
 		self.monitor_pending_commitment_signed.write(writer)?;
-		match self.monitor_pending_order {
-			None => 0u8.write(writer)?,
-			Some(RAACommitmentOrder::CommitmentFirst) => 1u8.write(writer)?,
-			Some(RAACommitmentOrder::RevokeAndACKFirst) => 2u8.write(writer)?,
-		}
 
 		(self.monitor_pending_forwards.len() as u64).write(writer)?;
 		for &(ref pending_forward, ref htlc_id) in self.monitor_pending_forwards.iter() {
@@ -3763,8 +3746,6 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let cur_remote_commitment_transaction_number = Readable::read(reader)?;
 		let value_to_self_msat = Readable::read(reader)?;
 
-		let received_commitment_while_awaiting_raa = Readable::read(reader)?;
-
 		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
 		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..pending_inbound_htlc_count {
@@ -3827,15 +3808,14 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			});
 		}
 
-		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
-		let monitor_pending_commitment_signed = Readable::read(reader)?;
-
-		let monitor_pending_order = match <u8 as Readable<R>>::read(reader)? {
-			0 => None,
-			1 => Some(RAACommitmentOrder::CommitmentFirst),
-			2 => Some(RAACommitmentOrder::RevokeAndACKFirst),
+		let resend_order = match <u8 as Readable<R>>::read(reader)? {
+			0 => RAACommitmentOrder::CommitmentFirst,
+			1 => RAACommitmentOrder::RevokeAndACKFirst,
 			_ => return Err(DecodeError::InvalidValue),
 		};
+
+		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
+		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
 		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
 		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, OUR_MAX_HTLCS as usize));
@@ -3923,14 +3903,14 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			cur_remote_commitment_transaction_number,
 			value_to_self_msat,
 
-			received_commitment_while_awaiting_raa,
 			pending_inbound_htlcs,
 			pending_outbound_htlcs,
 			holding_cell_htlc_updates,
 
+			resend_order,
+
 			monitor_pending_revoke_and_ack,
 			monitor_pending_commitment_signed,
-			monitor_pending_order,
 			monitor_pending_forwards,
 			monitor_pending_failures,
 

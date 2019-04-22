@@ -49,6 +49,8 @@ use utils::test_logger;
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::{Arc,Mutex};
 use std::io::Cursor;
 
@@ -435,13 +437,36 @@ pub fn do_test(data: &[u8]) {
 
 		macro_rules! process_events {
 			($node: expr, $fail: expr) => { {
-				for event in nodes[$node].get_and_clear_pending_events() {
+				// In case we get 256 payments we may have a hash collision, resulting in the
+				// second claim/fail call not finding the duplicate-hash HTLC, so we have to
+				// deduplicate the calls here.
+				let mut claim_set = HashSet::new();
+				let mut events = nodes[$node].get_and_clear_pending_events();
+				// Sort events so that PendingHTLCsForwardable get processed last. This avoids a
+				// case where we first process a PendingHTLCsForwardable, then claim/fail on a
+				// PaymentReceived, claiming/failing two HTLCs, but leaving a just-generated
+				// PaymentReceived event for the second HTLC in our pending_events (and breaking
+				// our claim_set deduplication).
+				events.sort_by(|a, b| {
+					if let events::Event::PaymentReceived { .. } = a {
+						if let events::Event::PendingHTLCsForwardable { .. } = b {
+							Ordering::Less
+						} else { Ordering::Equal }
+					} else if let events::Event::PendingHTLCsForwardable { .. } = a {
+						if let events::Event::PaymentReceived { .. } = b {
+							Ordering::Greater
+						} else { Ordering::Equal }
+					} else { Ordering::Equal }
+				});
+				for event in events.drain(..) {
 					match event {
 						events::Event::PaymentReceived { payment_hash, .. } => {
-							if $fail {
-								assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
-							} else {
-								assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0)));
+							if claim_set.insert(payment_hash.0) {
+								if $fail {
+									assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
+								} else {
+									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0)));
+								}
 							}
 						},
 						events::Event::PaymentSent { .. } => {},
