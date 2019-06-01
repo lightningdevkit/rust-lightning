@@ -1581,6 +1581,16 @@ impl Channel {
 		(htlc_outbound_count as u32, htlc_outbound_value_msat)
 	}
 
+	/// Get the available (ie not including pending HTLCs) inbound and outbound balance in msat.
+	/// Doesn't bother handling the
+	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
+	/// corner case properly.
+	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
+		// Note that we have to handle overflow due to the above case.
+		(cmp::min(self.channel_value_satoshis as i64 * 1000 - self.value_to_self_msat as i64 - self.get_inbound_pending_htlc_stats().1 as i64, 0) as u64,
+		cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
+	}
+
 	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state"));
