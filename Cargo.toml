@@ -1,6 +1,6 @@
 [package]
 name = "lightning"
-version = "0.0.8"
+version = "0.0.9"
 authors = ["Matt Corallo"]
 license = "Apache-2.0"
 repository = "https://github.com/rust-bitcoin/rust-lightning/"
@@ -22,13 +22,13 @@ max_level_info = []
 max_level_debug = []
 
 [dependencies]
-bitcoin = "0.17"
+bitcoin = "0.18"
 bitcoin_hashes = "0.3"
 rand = "0.4"
 secp256k1 = "0.12"
 
 [dev-dependencies.bitcoin]
-version = "0.17"
+version = "0.18"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]
