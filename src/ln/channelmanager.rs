@@ -391,6 +391,20 @@ pub struct ChannelDetails {
 	pub channel_value_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
 	pub user_id: u64,
+	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
+	/// any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
+	/// available for inclusion in new outbound HTLCs). This further does not include any pending
+	/// outgoing HTLCs which are awaiting some other resolution to be sent.
+	pub outbound_capacity_msat: u64,
+	/// The available inbound capacity for the remote peer to send HTLCs to us. This does not
+	/// include any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
+	/// available for inclusion in new inbound HTLCs).
+	/// Note that there are some corner cases not fully handled here, so the actual available
+	/// inbound capacity may be slightly higher than this.
+	pub inbound_capacity_msat: u64,
+	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
+	/// the peer is connected, and (c) no monitor update failure is pending resolution.
+	pub is_live: bool,
 }
 
 macro_rules! handle_error {
@@ -613,12 +627,16 @@ impl ChannelManager {
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut res = Vec::with_capacity(channel_state.by_id.len());
 		for (channel_id, channel) in channel_state.by_id.iter() {
+			let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
 			res.push(ChannelDetails {
 				channel_id: (*channel_id).clone(),
 				short_channel_id: channel.get_short_channel_id(),
 				remote_network_id: channel.get_their_node_id(),
 				channel_value_satoshis: channel.get_value_satoshis(),
+				inbound_capacity_msat,
+				outbound_capacity_msat,
 				user_id: channel.get_user_id(),
+				is_live: channel.is_live(),
 			});
 		}
 		res
@@ -626,6 +644,9 @@ impl ChannelManager {
 
 	/// Gets the list of usable channels, in random order. Useful as an argument to
 	/// Router::get_route to ensure non-announced channels are used.
+	///
+	/// These are guaranteed to have their is_live value set to true, see the documentation for
+	/// ChannelDetails::is_live for more info on exactly what the criteria are.
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut res = Vec::with_capacity(channel_state.by_id.len());
@@ -634,12 +655,16 @@ impl ChannelManager {
 			// internal/external nomenclature, but that's ok cause that's probably what the user
 			// really wanted anyway.
 			if channel.is_live() {
+				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
 					short_channel_id: channel.get_short_channel_id(),
 					remote_network_id: channel.get_their_node_id(),
 					channel_value_satoshis: channel.get_value_satoshis(),
+					inbound_capacity_msat,
+					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
+					is_live: true,
 				});
 			}
 		}
