@@ -411,6 +411,38 @@ pub struct ChannelMonitor {
 	logger: Arc<Logger>,
 }
 
+macro_rules! subtract_high_prio_fee {
+	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $spent_txid: expr) => {
+		{
+			let mut fee = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * $predicted_weight / 1000;
+			if $value <= fee {
+				fee = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) * $predicted_weight / 1000;
+				if $value <= fee {
+					fee = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) * $predicted_weight / 1000;
+					if $value <= fee {
+						log_error!($self, "Failed to generate an on-chain punishment tx spending {} as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
+							$spent_txid, fee, $value);
+						false
+					} else {
+						log_warn!($self, "Used low priority fee for on-chain punishment tx spending {} as high priority fee was more than the entire claim balance ({} sat)",
+							$spent_txid, $value);
+						$value -= fee;
+						true
+					}
+				} else {
+					log_warn!($self, "Used medium priority fee for on-chain punishment tx spending {} as high priority fee was more than the entire claim balance ({} sat)",
+						$spent_txid, $value);
+					$value -= fee;
+					true
+				}
+			} else {
+				$value -= fee;
+				true
+			}
+		}
+	}
+}
+
 #[cfg(any(test, feature = "fuzztarget"))]
 /// Used only in testing and fuzztarget to check serialization roundtrips don't change the
 /// underlying object
@@ -1200,11 +1232,12 @@ impl ChannelMonitor {
 								}),
 							};
 							let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }]);
-							single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
-							let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
-							sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
-							assert!(predicted_weight >= single_htlc_tx.get_weight());
-							txn_to_broadcast.push(single_htlc_tx);
+							if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, tx.txid()) {
+								let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
+								sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
+								assert!(predicted_weight >= single_htlc_tx.get_weight());
+								txn_to_broadcast.push(single_htlc_tx);
+							}
 						}
 					}
 				}
@@ -1254,7 +1287,10 @@ impl ChannelMonitor {
 				output: outputs,
 			};
 			let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..]);
-			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
+
+			if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid()) {
+				return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated);
+			}
 
 			let mut values_drain = values.drain(..);
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
@@ -1423,15 +1459,16 @@ impl ChannelMonitor {
 										}),
 									};
 									let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }]);
-									single_htlc_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
-									let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
-									sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
-									assert!(predicted_weight >= single_htlc_tx.get_weight());
-									spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-										outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
-										output: single_htlc_tx.output[0].clone(),
-									});
-									txn_to_broadcast.push(single_htlc_tx);
+									if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, tx.txid()) {
+										let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
+										sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
+										assert!(predicted_weight >= single_htlc_tx.get_weight());
+										spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
+											outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
+											output: single_htlc_tx.output[0].clone(),
+										});
+										txn_to_broadcast.push(single_htlc_tx);
+									}
 								}
 							}
 							if !htlc.offered {
@@ -1475,7 +1512,9 @@ impl ChannelMonitor {
 						output: outputs,
 					};
 					let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&input_descriptors[..]);
-					spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
+					if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid()) {
+						return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs, htlc_updated);
+					}
 
 					let mut values_drain = values.drain(..);
 					let sighash_parts = bip143::SighashComponents::new(&spend_tx);
@@ -1561,7 +1600,9 @@ impl ChannelMonitor {
 				output: outputs,
 			};
 			let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&[InputDescriptors::RevokedOutput]);
-			spend_tx.output[0].value -= fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * predicted_weight / 1000;
+			if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid()) {
+				return (None, None);
+			}
 
 			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
 
