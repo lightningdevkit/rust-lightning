@@ -314,10 +314,10 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 pub struct ChannelManager {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
-	fee_estimator: Arc<FeeEstimator>,
-	monitor: Arc<ManyChannelMonitor>,
-	chain_monitor: Arc<ChainWatchInterface>,
-	tx_broadcaster: Arc<BroadcasterInterface>,
+	fee_estimator: Arc<dyn FeeEstimator>,
+	monitor: Arc<dyn ManyChannelMonitor>,
+	chain_monitor: Arc<dyn ChainWatchInterface>,
+	tx_broadcaster: Arc<dyn BroadcasterInterface>,
 
 	#[cfg(test)]
 	pub(super) latest_block_height: AtomicUsize,
@@ -338,9 +338,9 @@ pub struct ChannelManager {
 	/// Taken first everywhere where we are making changes before any other locks.
 	total_consistency_lock: RwLock<()>,
 
-	keys_manager: Arc<KeysInterface>,
+	keys_manager: Arc<dyn KeysInterface>,
 
-	logger: Arc<Logger>,
+	logger: Arc<dyn Logger>,
 }
 
 /// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
@@ -531,7 +531,7 @@ impl ChannelManager {
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<dyn FeeEstimator>, monitor: Arc<dyn ManyChannelMonitor>, chain_monitor: Arc<dyn ChainWatchInterface>, tx_broadcaster: Arc<dyn BroadcasterInterface>, logger: Arc<dyn Logger>,keys_manager: Arc<dyn KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -2959,29 +2959,29 @@ impl Writeable for ChannelManager {
 pub struct ChannelManagerReadArgs<'a> {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
-	pub keys_manager: Arc<KeysInterface>,
+	pub keys_manager: Arc<dyn KeysInterface>,
 
 	/// The fee_estimator for use in the ChannelManager in the future.
 	///
 	/// No calls to the FeeEstimator will be made during deserialization.
-	pub fee_estimator: Arc<FeeEstimator>,
+	pub fee_estimator: Arc<dyn FeeEstimator>,
 	/// The ManyChannelMonitor for use in the ChannelManager in the future.
 	///
 	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
 	/// you have deserialized ChannelMonitors separately and will add them to your
 	/// ManyChannelMonitor after deserializing this ChannelManager.
-	pub monitor: Arc<ManyChannelMonitor>,
+	pub monitor: Arc<dyn ManyChannelMonitor>,
 	/// The ChainWatchInterface for use in the ChannelManager in the future.
 	///
 	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface>,
+	pub chain_monitor: Arc<dyn ChainWatchInterface>,
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
-	pub tx_broadcaster: Arc<BroadcasterInterface>,
+	pub tx_broadcaster: Arc<dyn BroadcasterInterface>,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
-	pub logger: Arc<Logger>,
+	pub logger: Arc<dyn Logger>,
 	/// Default settings used for new channels. Any existing channels will continue to use the
 	/// runtime settings which were stored when the ChannelManager was serialized.
 	pub default_config: UserConfig,

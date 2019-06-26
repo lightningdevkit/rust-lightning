@@ -138,12 +138,12 @@ pub struct SimpleManyChannelMonitor<Key> {
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor>>,
 	#[cfg(not(test))]
 	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
-	chain_monitor: Arc<ChainWatchInterface>,
-	broadcaster: Arc<BroadcasterInterface>,
+	chain_monitor: Arc<dyn ChainWatchInterface>,
+	broadcaster: Arc<dyn BroadcasterInterface>,
 	pending_events: Mutex<Vec<events::Event>>,
 	pending_htlc_updated: Mutex<HashMap<PaymentHash, Vec<(HTLCSource, Option<PaymentPreimage>)>>>,
-	logger: Arc<Logger>,
-	fee_estimator: Arc<FeeEstimator>
+	logger: Arc<dyn Logger>,
+	fee_estimator: Arc<dyn FeeEstimator>
 }
 
 impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
@@ -211,7 +211,7 @@ impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonit
 impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> Arc<SimpleManyChannelMonitor<Key>> {
+	pub fn new(chain_monitor: Arc<dyn ChainWatchInterface>, broadcaster: Arc<dyn BroadcasterInterface>, logger: Arc<dyn Logger>, feeest: Arc<dyn FeeEstimator>) -> Arc<SimpleManyChannelMonitor<Key>> {
 		let res = Arc::new(SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
@@ -408,7 +408,7 @@ pub struct ChannelMonitor {
 	// the full block_connected).
 	pub(crate) last_block_hash: Sha256dHash,
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
-	logger: Arc<Logger>,
+	logger: Arc<dyn Logger>,
 }
 
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -445,7 +445,7 @@ impl PartialEq for ChannelMonitor {
 }
 
 impl ChannelMonitor {
-	pub(super) fn new(revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, payment_base_key: &SecretKey, shutdown_pubkey: &PublicKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<Logger>) -> ChannelMonitor {
+	pub(super) fn new(revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, payment_base_key: &SecretKey, shutdown_pubkey: &PublicKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<dyn Logger>) -> ChannelMonitor {
 		ChannelMonitor {
 			commitment_transaction_number_obscure_factor: 0,
 
@@ -1050,7 +1050,7 @@ impl ChannelMonitor {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked remote commitment tx
-	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32, fee_estimator: &FeeEstimator) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>)  {
+	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32, fee_estimator: &dyn FeeEstimator) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>)  {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
@@ -1499,7 +1499,7 @@ impl ChannelMonitor {
 	}
 
 	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64, fee_estimator: &FeeEstimator) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
+	fn check_spend_remote_htlc(&self, tx: &Transaction, commitment_number: u64, fee_estimator: &dyn FeeEstimator) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
 		if tx.input.len() != 1 || tx.output.len() != 1 {
 			return (None, None)
 		}
@@ -1749,7 +1749,7 @@ impl ChannelMonitor {
 		}
 	}
 
-	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
+	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &dyn BroadcasterInterface, fee_estimator: &dyn FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
@@ -2032,8 +2032,8 @@ impl ChannelMonitor {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelMonitor) {
-	fn read(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+impl<R: ::std::io::Read> ReadableArgs<R, Arc<dyn Logger>> for (Sha256dHash, ChannelMonitor) {
+	fn read(reader: &mut R, logger: Arc<dyn Logger>) -> Result<Self, DecodeError> {
 		let secp_ctx = Secp256k1::new();
 		macro_rules! unwrap_obj {
 			($key: expr) => {

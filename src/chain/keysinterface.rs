@@ -131,13 +131,13 @@ pub struct KeysManager {
 	channel_id_master_key: ExtendedPrivKey,
 	channel_id_child_index: AtomicUsize,
 
-	logger: Arc<Logger>,
+	logger: Arc<dyn Logger>,
 }
 
 impl KeysManager {
 	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
 	/// RNG is busted) this may panic.
-	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> KeysManager {
+	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<dyn Logger>) -> KeysManager {
 		let secp_ctx = Secp256k1::signing_only();
 		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {

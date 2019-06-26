@@ -47,7 +47,7 @@ pub trait ChainWatchInterface: Sync + Send {
 
 	/// Register the given listener to receive events. Only a weak pointer is provided and the
 	/// registration should be freed once that pointer expires.
-	fn register_listener(&self, listener: Weak<ChainListener>);
+	fn register_listener(&self, listener: Weak<dyn ChainListener>);
 	//TODO: unregister
 
 	/// Gets the script and value in satoshis for a given unspent transaction output given a
@@ -203,9 +203,9 @@ impl ChainWatchedUtil {
 pub struct ChainWatchInterfaceUtil {
 	network: Network,
 	watched: Mutex<ChainWatchedUtil>,
-	listeners: Mutex<Vec<Weak<ChainListener>>>,
+	listeners: Mutex<Vec<Weak<dyn ChainListener>>>,
 	reentered: AtomicUsize,
-	logger: Arc<Logger>,
+	logger: Arc<dyn Logger>,
 }
 
 /// Register listener
@@ -231,7 +231,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		}
 	}
 
-	fn register_listener(&self, listener: Weak<ChainListener>) {
+	fn register_listener(&self, listener: Weak<dyn ChainListener>) {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
 	}
@@ -246,7 +246,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 
 impl ChainWatchInterfaceUtil {
 	/// Creates a new ChainWatchInterfaceUtil for the given network
-	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
+	pub fn new(network: Network, logger: Arc<dyn Logger>) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
 			network: network,
 			watched: Mutex::new(ChainWatchedUtil::new()),

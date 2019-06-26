@@ -24,10 +24,10 @@ use std::{cmp,error,hash,fmt};
 pub struct MessageHandler {
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// ChannelManager object.
-	pub chan_handler: Arc<msgs::ChannelMessageHandler>,
+	pub chan_handler: Arc<dyn msgs::ChannelMessageHandler>,
 	/// A message handler which handles messages updating our knowledge of the network channel
 	/// graph. Usually this is just a Router object.
-	pub route_handler: Arc<msgs::RoutingMessageHandler>,
+	pub route_handler: Arc<dyn msgs::RoutingMessageHandler>,
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -158,7 +158,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor> {
 	peers: Mutex<PeerHolder<Descriptor>>,
 	our_node_secret: SecretKey,
 	initial_syncs_sent: AtomicUsize,
-	logger: Arc<Logger>,
+	logger: Arc<dyn Logger>,
 }
 
 struct VecWriter(Vec<u8>);
@@ -188,7 +188,7 @@ const INITIAL_SYNCS_TO_SEND: usize = 5;
 /// PeerIds may repeat, but only after disconnect_event() has been called.
 impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
-	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, logger: Arc<Logger>) -> PeerManager<Descriptor> {
+	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, logger: Arc<dyn Logger>) -> PeerManager<Descriptor> {
 		PeerManager {
 			message_handler: message_handler,
 			peers: Mutex::new(PeerHolder {

@@ -351,8 +351,8 @@ pub struct RouteHint {
 pub struct Router {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
-	chain_monitor: Arc<ChainWatchInterface>,
-	logger: Arc<Logger>,
+	chain_monitor: Arc<dyn ChainWatchInterface>,
+	logger: Arc<dyn Logger>,
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
@@ -377,10 +377,10 @@ pub struct RouterReadArgs {
 	/// The ChainWatchInterface for use in the Router in the future.
 	///
 	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface>,
+	pub chain_monitor: Arc<dyn ChainWatchInterface>,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
-	pub logger: Arc<Logger>,
+	pub logger: Arc<dyn Logger>,
 }
 
 impl<R: ::std::io::Read> ReadableArgs<R, RouterReadArgs> for Router {
@@ -742,7 +742,7 @@ struct DummyDirectionalChannelInfo {
 
 impl Router {
 	/// Creates a new router with the given node_id to be used as the source for get_route()
-	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
+	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<dyn ChainWatchInterface>, logger: Arc<dyn Logger>) -> Router {
 		let mut nodes = BTreeMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
 			channels: Vec::new(),

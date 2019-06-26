@@ -268,7 +268,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
-pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, logger: &Arc<Logger>, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>) {
+pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, logger: &Arc<dyn Logger>, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>) {
 	if let &HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;

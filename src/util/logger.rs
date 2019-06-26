@@ -121,7 +121,7 @@ pub trait Logger: Sync + Send {
 	fn log(&self, record: &Record);
 }
 
-pub(crate) struct LogHolder<'a> { pub(crate) logger: &'a Arc<Logger> }
+pub(crate) struct LogHolder<'a> { pub(crate) logger: &'a Arc<dyn Logger> }
 
 #[cfg(test)]
 mod tests {
