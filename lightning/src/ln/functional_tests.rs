@@ -6329,3 +6329,103 @@ fn test_announce_disable_channels() {
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 0);
 }
+
+#[test]
+fn test_bump_penalty_txn_on_revoked_commitment() {
+	// In case of penalty txn with too low feerates for getting into mempools, RBF-bump them to be sure
+	// we're able to claim outputs on revoked commitment transaction before timelocks expiration
+
+	let nodes = create_network(2, &[None, None]);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, LocalFeatures::new(), LocalFeatures::new());
+	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 3000000, 30).unwrap();
+	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
+
+	let revoked_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+	// Revoked commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
+	assert_eq!(revoked_txn[0].output.len(), 4);
+	assert_eq!(revoked_txn[0].input.len(), 1);
+	assert_eq!(revoked_txn[0].input[0].previous_output.txid, chan.3.txid());
+	let revoked_txid = revoked_txn[0].txid();
+
+	let mut penalty_sum = 0;
+	for outp in revoked_txn[0].output.iter() {
+		if outp.script_pubkey.is_v0_p2wsh() {
+			penalty_sum += outp.value;
+		}
+	}
+
+	// Connect blocks to change height_timer range to see if we use right soonest_timelock
+	let header_114 = connect_blocks(&nodes[1].block_notifier, 114, 0, false, Default::default());
+
+	// Actually revoke tx by claiming a HTLC
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: header_114, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_txn[0].clone()] }, 115);
+
+	// One or more justice tx should have been broadcast, check it
+	let penalty_1;
+	let feerate_1;
+	{
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 4); // justice tx (broadcasted from ChannelMonitor) * 2 (block-reparsing) + local commitment tx + local HTLC-timeout (broadcasted from ChannelManager)
+		assert_eq!(node_txn[0], node_txn[3]);
+		assert_eq!(node_txn[0].input.len(), 3); // Penalty txn claims to_local, offered_htlc and received_htlc outputs
+		assert_eq!(node_txn[0].output.len(), 1);
+		check_spends!(node_txn[0], revoked_txn[0].clone());
+		let fee_1 = penalty_sum - node_txn[0].output[0].value;
+		feerate_1 = fee_1 * 1000 / node_txn[0].get_weight() as u64;
+		penalty_1 = node_txn[0].txid();
+		node_txn.clear();
+	};
+
+	// After exhaustion of height timer, a new bumped justice tx should have been broadcast, check it
+	let header = connect_blocks(&nodes[1].block_notifier, 3, 115,  true, header.bitcoin_hash());
+	let mut penalty_2 = penalty_1;
+	let mut feerate_2 = 0;
+	{
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		if node_txn[0].input[0].previous_output.txid == revoked_txid {
+			assert_eq!(node_txn[0].input.len(), 3); // Penalty txn claims to_local, offered_htlc and received_htlc outputs
+			assert_eq!(node_txn[0].output.len(), 1);
+			check_spends!(node_txn[0], revoked_txn[0].clone());
+			penalty_2 = node_txn[0].txid();
+			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
+			assert_ne!(penalty_2, penalty_1);
+			let fee_2 = penalty_sum - node_txn[0].output[0].value;
+			feerate_2 = fee_2 * 1000 / node_txn[0].get_weight() as u64;
+			// Verify 25% bump heuristic
+			assert!(feerate_2 * 100 >= feerate_1 * 125);
+			node_txn.clear();
+		}
+	}
+	assert_ne!(feerate_2, 0);
+
+	// After exhaustion of height timer for a 2nd time, a new bumped justice tx should have been broadcast, check it
+	connect_blocks(&nodes[1].block_notifier, 3, 118, true, header);
+	let penalty_3;
+	let mut feerate_3 = 0;
+	{
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		if node_txn[0].input[0].previous_output.txid == revoked_txid {
+			assert_eq!(node_txn[0].input.len(), 3); // Penalty txn claims to_local, offered_htlc and received_htlc outputs
+			assert_eq!(node_txn[0].output.len(), 1);
+			check_spends!(node_txn[0], revoked_txn[0].clone());
+			penalty_3 = node_txn[0].txid();
+			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
+			assert_ne!(penalty_3, penalty_2);
+			let fee_3 = penalty_sum - node_txn[0].output[0].value;
+			feerate_3 = fee_3 * 1000 / node_txn[0].get_weight() as u64;
+			// Verify 25% bump heuristic
+			assert!(feerate_3 * 100 >= feerate_2 * 125);
+			node_txn.clear();
+		}
+	}
+	assert_ne!(feerate_3, 0);
+
+	nodes[1].node.get_and_clear_pending_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+}
