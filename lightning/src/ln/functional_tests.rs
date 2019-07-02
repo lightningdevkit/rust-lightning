@@ -1884,6 +1884,7 @@ fn test_justice_tx() {
 
 			check_spends!(node_txn[0], revoked_local_txn[0].clone());
 			node_txn.swap_remove(0);
+			node_txn.truncate(1);
 		}
 		test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
 
@@ -1901,6 +1902,10 @@ fn test_justice_tx() {
 	// We test justice_tx build by A on B's revoked HTLC-Success tx
 	// Create some new channels:
 	let chan_6 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
+	{
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		node_txn.clear();
+	}
 
 	// A pending HTLC which will be revoked:
 	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
@@ -2078,7 +2083,7 @@ fn claim_htlc_outputs_single_tx() {
 		}
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 22); // ChannelManager : 2, ChannelMontitor: 8 (1 standard revoked output, 2 revocation htlc tx, 1 local commitment tx + 1 htlc timeout tx) * 2 (block-rescan) + 5 * (1 local commitment tx + 1 htlc timeout tx)
+		assert_eq!(node_txn.len(), 29); // ChannelManager : 2, ChannelMontitor: 8 (1 standard revoked output, 2 revocation htlc tx, 1 local commitment tx + 1 htlc timeout tx) * 2 (block-rescan) + 5 * (1 local commitment tx + 1 htlc timeout tx)
 
 		assert_eq!(node_txn[0], node_txn[7]);
 		assert_eq!(node_txn[1], node_txn[8]);
@@ -2087,10 +2092,6 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(node_txn[4], node_txn[11]);
 		assert_eq!(node_txn[3], node_txn[5]); //local commitment tx + htlc timeout tx broadcasted by ChannelManger
 		assert_eq!(node_txn[4], node_txn[6]);
-
-		for i in 12..22 {
-			if i % 2 == 0 { assert_eq!(node_txn[3], node_txn[i]); } else { assert_eq!(node_txn[4], node_txn[i]); }
-		}
 
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(node_txn[1].input.len(), 1);

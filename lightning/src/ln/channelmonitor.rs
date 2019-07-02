@@ -34,7 +34,7 @@ use ln::chan_utils;
 use ln::chan_utils::HTLCOutputInCommitment;
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
-use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator, ConfirmationTarget};
+use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::logger::Logger;
@@ -636,7 +636,7 @@ pub struct ChannelMonitor {
 }
 
 macro_rules! subtract_high_prio_fee {
-	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $spent_txid: expr, $used_feerate: expr) => {
+	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
 		{
 			$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority);
 			let mut fee = $used_feerate * ($predicted_weight as u64) / 1000;
@@ -647,18 +647,18 @@ macro_rules! subtract_high_prio_fee {
 					$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 					fee = $used_feerate * ($predicted_weight as u64) / 1000;
 					if $value <= fee {
-						log_error!($self, "Failed to generate an on-chain punishment tx spending {} as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
-							$spent_txid, fee, $value);
+						log_error!($self, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
+							fee, $value);
 						false
 					} else {
-						log_warn!($self, "Used low priority fee for on-chain punishment tx spending {} as high priority fee was more than the entire claim balance ({} sat)",
-							$spent_txid, $value);
+						log_warn!($self, "Used low priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
+							$value);
 						$value -= fee;
 						true
 					}
 				} else {
-					log_warn!($self, "Used medium priority fee for on-chain punishment tx spending {} as high priority fee was more than the entire claim balance ({} sat)",
-						$spent_txid, $value);
+					log_warn!($self, "Used medium priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
+						$value);
 					$value -= fee;
 					true
 				}
@@ -1534,7 +1534,7 @@ impl ChannelMonitor {
 							let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }]);
 							let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
 							let mut used_feerate;
-							if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+							if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, used_feerate) {
 								let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 								let (redeemscript, revocation_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
 								assert!(predicted_weight >= single_htlc_tx.get_weight());
@@ -1612,7 +1612,7 @@ impl ChannelMonitor {
 			let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&inputs_desc[..]);
 
 			let mut used_feerate;
-			if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+			if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, used_feerate) {
 				return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs);
 			}
 
@@ -1816,7 +1816,7 @@ impl ChannelMonitor {
 										let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }]);
 										let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
 										let mut used_feerate;
-										if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+										if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, used_feerate) {
 											let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 											let (redeemscript, htlc_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
 											assert!(predicted_weight >= single_htlc_tx.get_weight());
@@ -1860,7 +1860,7 @@ impl ChannelMonitor {
 								let predicted_weight = timeout_tx.get_weight() + Self::get_witnesses_weight(&[InputDescriptors::ReceivedHTLC]);
 								let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
 								let mut used_feerate;
-								if subtract_high_prio_fee!(self, fee_estimator, timeout_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+								if subtract_high_prio_fee!(self, fee_estimator, timeout_tx.output[0].value, predicted_weight, used_feerate) {
 									let sighash_parts = bip143::SighashComponents::new(&timeout_tx);
 									let (redeemscript, htlc_key) = sign_input!(sighash_parts, timeout_tx.input[0], htlc.amount_msat / 1000, vec![0]);
 									assert!(predicted_weight >= timeout_tx.get_weight());
@@ -1894,7 +1894,7 @@ impl ChannelMonitor {
 					let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&inputs_desc[..]);
 
 					let mut used_feerate;
-					if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+					if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, used_feerate) {
 						return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs);
 					}
 
@@ -2004,7 +2004,7 @@ impl ChannelMonitor {
 			};
 			let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&[InputDescriptors::RevokedOutput]);
 			let mut used_feerate;
-			if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+			if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, used_feerate) {
 				return (None, None);
 			}
 
@@ -2288,6 +2288,7 @@ impl ChannelMonitor {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
+		let mut bump_candidates = Vec::new();
 		for tx in txn_matched {
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
@@ -2354,20 +2355,17 @@ impl ChannelMonitor {
 			for inp in &tx.input {
 				if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&inp.previous_output) {
 					// If outpoint has claim request pending on it...
-					if let Some(claim_material) = self.pending_claim_requests.get(&ancestor_claimable_txid.0) {
+					if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
-						let mut set_equality = true;
-						if claim_material.per_input_material.len() != tx.input.len() {
-							set_equality = false;
-						}
+						let mut claimed_outpoints = Vec::new();
 						for (claim_inp, tx_inp) in claim_material.per_input_material.keys().zip(tx.input.iter()) {
 							if *claim_inp != tx_inp.previous_output {
-								set_equality = false;
+								claimed_outpoints.push(tx_inp.previous_output.clone());
 							}
 						}
-						if set_equality { // If true, register claim request to be removed after reaching a block security height
+						if claimed_outpoints.len() == 0 && claim_material.per_input_material.len() == tx.input.len() { // If true, register claim request to be removed after reaching a block security height
 							match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 								hash_map::Entry::Occupied(_) => {},
 								hash_map::Entry::Vacant(entry) => {
@@ -2375,7 +2373,13 @@ impl ChannelMonitor {
 								}
 							}
 						} else { // If false, generate new claim request with update outpoint set
-							//TODO: use bump engine
+							for already_claimed in claimed_outpoints {
+								claim_material.per_input_material.remove(&already_claimed);
+							}
+							// Avoid bump engine using inaccurate feerate due to new transaction size
+							claim_material.feerate_previous = 0;
+							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
+							bump_candidates.push((ancestor_claimable_txid.0.clone(), claim_material.clone()));
 						}
 					} else {
 						panic!("Inconsistencies between pending_claim_requests map and claimable_outpoints map");
@@ -2426,6 +2430,21 @@ impl ChannelMonitor {
 					},
 				}
 			}
+		}
+		for (ancestor_claim_txid, ref mut cached_claim_datas) in self.pending_claim_requests.iter_mut() {
+			if cached_claim_datas.height_timer == height {
+				bump_candidates.push((ancestor_claim_txid.clone(), cached_claim_datas.clone()));
+			}
+		}
+		for &mut (_, ref mut cached_claim_datas) in bump_candidates.iter_mut() {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &cached_claim_datas, fee_estimator) {
+				cached_claim_datas.height_timer = new_timer;
+				cached_claim_datas.feerate_previous = new_feerate;
+				broadcaster.broadcast_transaction(&bump_tx);
+			}
+		}
+		for (ancestor_claim_txid, cached_claim_datas) in bump_candidates.drain(..) {
+			self.pending_claim_requests.insert(ancestor_claim_txid, cached_claim_datas);
 		}
 		self.last_block_hash = block_hash.clone();
 		(watch_outputs, spendable_outputs, htlc_updated)
@@ -2639,6 +2658,126 @@ impl ChannelMonitor {
 			}
 		}
 		htlc_updated
+	}
+
+	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
+	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
+	fn bump_claim_tx(&self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: &FeeEstimator) -> Option<(u32, u64, Transaction)> {
+		if cached_claim_datas.per_input_material.len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
+		let mut inputs = Vec::new();
+		for outp in cached_claim_datas.per_input_material.keys() {
+			inputs.push(TxIn {
+				previous_output: *outp,
+				script_sig: Script::new(),
+				sequence: 0xfffffffd,
+				witness: Vec::new(),
+			});
+		}
+		let mut bumped_tx = Transaction {
+			version: 2,
+			lock_time: 0,
+			input: inputs,
+			output: vec![TxOut {
+				script_pubkey: self.destination_script.clone(),
+				value: 0
+			}],
+		};
+
+		macro_rules! RBF_bump {
+			($amount: expr, $old_feerate: expr, $fee_estimator: expr, $predicted_weight: expr) => {
+				{
+					let mut used_feerate;
+					// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
+					let new_fee = if $old_feerate < $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) {
+						let mut value = $amount;
+						if subtract_high_prio_fee!(self, $fee_estimator, value, $predicted_weight, used_feerate) {
+							// Overflow check is done in subtract_high_prio_fee
+							$amount - value
+						} else {
+							log_trace!(self, "Can't new-estimation bump new claiming tx, amount {} is too small", $amount);
+							return None;
+						}
+					// ...else just increase the previous feerate by 25% (because that's a nice number)
+					} else {
+						let fee = $old_feerate * $predicted_weight / 750;
+						if $amount <= fee {
+							log_trace!(self, "Can't 25% bump new claiming tx, amount {} is too small", $amount);
+							return None;
+						}
+						fee
+					};
+
+					let previous_fee = $old_feerate * $predicted_weight / 1000;
+					let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * $predicted_weight / 1000;
+					// BIP 125 Opt-in Full Replace-by-Fee Signaling
+					// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
+					//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
+					let new_fee = if new_fee < previous_fee + min_relay_fee {
+						new_fee + previous_fee + min_relay_fee - new_fee
+					} else {
+						new_fee
+					};
+					Some((new_fee, new_fee * 1000 / $predicted_weight))
+				}
+			}
+		}
+
+		let new_timer = Self::get_height_timer(height, cached_claim_datas.soonest_timelock);
+		let mut inputs_witnesses_weight = 0;
+		let mut amt = 0;
+		for per_outp_material in cached_claim_datas.per_input_material.values() {
+			match per_outp_material {
+				&InputMaterial::Revoked { ref script, ref is_htlc, ref amount, .. } => {
+					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if script.len() == OFFERED_HTLC_SCRIPT_WEIGHT { &[InputDescriptors::RevokedOfferedHTLC] } else if script.len() == ACCEPTED_HTLC_SCRIPT_WEIGHT { &[InputDescriptors::RevokedReceivedHTLC] } else { &[] });
+					amt += *amount;
+				},
+				&InputMaterial::RemoteHTLC { .. } => { },
+				&InputMaterial::LocalHTLC { .. } => { return None; }
+			}
+		}
+
+		let predicted_weight = bumped_tx.get_weight() + inputs_witnesses_weight;
+		let new_feerate;
+		if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight as u64) {
+			// If new computed fee is superior at the whole claimable amount burn all in fees
+			if new_fee > amt {
+				bumped_tx.output[0].value = 0;
+			} else {
+				bumped_tx.output[0].value = amt - new_fee;
+			}
+			new_feerate = feerate;
+		} else {
+			return None;
+		}
+		assert!(new_feerate != 0);
+
+		for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
+			match per_outp_material {
+				&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref amount } => {
+					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *amount)[..]);
+					let sig = self.secp_ctx.sign(&sighash, &key);
+					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+					if *is_htlc {
+						bumped_tx.input[i].witness.push(pubkey.unwrap().clone().serialize().to_vec());
+					} else {
+						bumped_tx.input[i].witness.push(vec!(1));
+					}
+					bumped_tx.input[i].witness.push(script.clone().into_bytes());
+					log_trace!(self, "Going to broadcast bumped Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}", bumped_tx.txid(), if !is_htlc { "to_local" } else if script.len() == OFFERED_HTLC_SCRIPT_WEIGHT { "offered" } else if script.len() == ACCEPTED_HTLC_SCRIPT_WEIGHT { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
+				},
+				&InputMaterial::RemoteHTLC { .. } => {},
+				&InputMaterial::LocalHTLC { .. } => {
+					//TODO : Given that Local Commitment Transaction and HTLC-Timeout/HTLC-Success are counter-signed by peer, we can't
+					// RBF them. Need a Lightning specs change and package relay modification :
+					// https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
+					return None;
+				}
+			}
+		}
+		assert!(predicted_weight >= bumped_tx.get_weight());
+		Some((new_timer, new_feerate, bumped_tx))
 	}
 }
 
