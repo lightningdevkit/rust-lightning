@@ -913,6 +913,7 @@ impl Channel {
 		let value_to_b = if local { value_to_remote } else { value_to_self };
 
 		if value_to_a >= (dust_limit_satoshis as i64) {
+			log_trace!(self, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
 			txouts.push((TxOut {
 				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
 				                                                       if local { self.their_to_self_delay } else { BREAKDOWN_TIMEOUT },
@@ -922,6 +923,7 @@ impl Channel {
 		}
 
 		if value_to_b >= (dust_limit_satoshis as i64) {
+			log_trace!(self, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
 			txouts.push((TxOut {
 				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
 				                             .push_slice(&Hash160::hash(&keys.b_payment_key.serialize())[..])
