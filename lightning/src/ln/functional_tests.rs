@@ -1783,8 +1783,10 @@ fn channel_monitor_network_test() {
 	// nodes[3] gets the preimage, but nodes[2] already disconnected, resulting in a nodes[2]
 	// HTLC-Timeout and a nodes[3] claim against it (+ its own announces)
 	nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id(), true);
+	let node2_commitment_txid;
 	{
 		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
+		node2_commitment_txid = node_txn[0].txid();
 
 		// Claim the payment on nodes[3], giving it knowledge of the preimage
 		claim_funds!(nodes[3], nodes[2], payment_preimage_1, 3_000_000);
@@ -1816,6 +1818,16 @@ fn channel_monitor_network_test() {
 		for i in 3..TEST_FINAL_CLTV + 2 + LATENCY_GRACE_PERIOD_BLOCKS + 1 {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[3].block_notifier.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
+		}
+
+		// Clear bumped claiming txn spending node 2 commitment tx. Bumped txn are generated after reaching some height timer.
+		{
+			let mut node_txn = nodes[3].tx_broadcaster.txn_broadcasted.lock().unwrap();
+			node_txn.retain(|tx| {
+				if tx.input[0].previous_output.txid == node2_commitment_txid {
+					false
+				} else { true }
+			});
 		}
 
 		let node_txn = test_txn_broadcast(&nodes[3], &chan_4, None, HTLCType::TIMEOUT);
