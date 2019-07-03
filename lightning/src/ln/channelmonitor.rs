@@ -387,6 +387,7 @@ enum InputMaterial {
 		key: SecretKey,
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
+		locktime: u32,
 	},
 	LocalHTLC {
 		script: Script,
@@ -411,12 +412,13 @@ impl Writeable for InputMaterial  {
 				}
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
-			&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount } => {
+			&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
 				writer.write_all(&[1; 1])?;
 				script.write(writer)?;
 				key.write(writer)?;
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+				writer.write_all(&byte_utils::be32_to_array(*locktime))?;
 			},
 			&InputMaterial::LocalHTLC { ref script, ref sigs, ref preimage, ref amount } => {
 				writer.write_all(&[2; 1])?;
@@ -457,11 +459,13 @@ impl<R: ::std::io::Read> Readable<R> for InputMaterial {
 				let key = Readable::read(reader)?;
 				let preimage = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
+				let locktime = Readable::read(reader)?;
 				InputMaterial::RemoteHTLC {
 					script,
 					key,
 					preimage,
-					amount
+					amount,
+					locktime
 				}
 			},
 			2 => {
@@ -1826,7 +1830,7 @@ impl ChannelMonitor {
 											});
 											log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", single_htlc_tx.input[0].previous_output.txid, single_htlc_tx.input[0].previous_output.vout, height_timer);
 											let mut per_input_material = HashMap::with_capacity(1);
-											per_input_material.insert(single_htlc_tx.input[0].previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000 });
+											per_input_material.insert(single_htlc_tx.input[0].previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000, locktime: 0 });
 											match self.pending_claim_requests.entry(single_htlc_tx.txid()) {
 												hash_map::Entry::Occupied(_) => {},
 												hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock: htlc.cltv_expiry, per_input_material}); }
@@ -1867,7 +1871,7 @@ impl ChannelMonitor {
 									//TODO: track SpendableOutputDescriptor
 									log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", timeout_tx.input[0].previous_output.txid, timeout_tx.input[0].previous_output.vout, height_timer);
 									let mut per_input_material = HashMap::with_capacity(1);
-									per_input_material.insert(timeout_tx.input[0].previous_output, InputMaterial::RemoteHTLC { script : redeemscript, key: htlc_key, preimage: None, amount: htlc.amount_msat / 1000 });
+									per_input_material.insert(timeout_tx.input[0].previous_output, InputMaterial::RemoteHTLC { script : redeemscript, key: htlc_key, preimage: None, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry });
 									match self.pending_claim_requests.entry(timeout_tx.txid()) {
 										hash_map::Entry::Occupied(_) => {},
 										hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock: htlc.cltv_expiry, per_input_material }); }
@@ -1911,7 +1915,7 @@ impl ChannelMonitor {
 					for (input, info) in spend_tx.input.iter_mut().zip(inputs_info.iter()) {
 						let (redeemscript, htlc_key) = sign_input!(sighash_parts, input, info.1, (info.0).0.to_vec());
 						log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", input.previous_output.txid, input.previous_output.vout, height_timer);
-						per_input_material.insert(input.previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*(info.0)), amount: info.1});
+						per_input_material.insert(input.previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*(info.0)), amount: info.1, locktime: 0});
 					}
 					match self.pending_claim_requests.entry(spend_tx.txid()) {
 						hash_map::Entry::Occupied(_) => {},
@@ -2731,7 +2735,10 @@ impl ChannelMonitor {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if script.len() == OFFERED_HTLC_SCRIPT_WEIGHT { &[InputDescriptors::RevokedOfferedHTLC] } else if script.len() == ACCEPTED_HTLC_SCRIPT_WEIGHT { &[InputDescriptors::RevokedReceivedHTLC] } else { &[] });
 					amt += *amount;
 				},
-				&InputMaterial::RemoteHTLC { .. } => { },
+				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
+					inputs_witnesses_weight += Self::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
+					amt += *amount;
+				},
 				&InputMaterial::LocalHTLC { .. } => { return None; }
 			}
 		}
@@ -2767,7 +2774,21 @@ impl ChannelMonitor {
 					bumped_tx.input[i].witness.push(script.clone().into_bytes());
 					log_trace!(self, "Going to broadcast bumped Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}", bumped_tx.txid(), if !is_htlc { "to_local" } else if script.len() == OFFERED_HTLC_SCRIPT_WEIGHT { "offered" } else if script.len() == ACCEPTED_HTLC_SCRIPT_WEIGHT { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 				},
-				&InputMaterial::RemoteHTLC { .. } => {},
+				&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
+					if !preimage.is_some() { bumped_tx.lock_time = *locktime };
+					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *amount)[..]);
+					let sig = self.secp_ctx.sign(&sighash, &key);
+					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+					if let &Some(preimage) = preimage {
+						bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
+					} else {
+						bumped_tx.input[i].witness.push(vec![0]);
+					}
+					bumped_tx.input[i].witness.push(script.clone().into_bytes());
+					log_trace!(self, "Going to broadcast bumped Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
+				},
 				&InputMaterial::LocalHTLC { .. } => {
 					//TODO : Given that Local Commitment Transaction and HTLC-Timeout/HTLC-Success are counter-signed by peer, we can't
 					// RBF them. Need a Lightning specs change and package relay modification :
