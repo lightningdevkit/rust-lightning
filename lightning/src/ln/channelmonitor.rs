@@ -1415,6 +1415,7 @@ impl ChannelMonitor {
 								let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
 								let (redeemscript, revocation_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], Some(idx), htlc.amount_msat / 1000);
 								assert!(predicted_weight >= single_htlc_tx.get_weight());
+								log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", single_htlc_tx.input[0].previous_output.txid, single_htlc_tx.input[0].previous_output.vout, height_timer);
 								match self.our_claim_txn_waiting_first_conf.entry(single_htlc_tx.input[0].previous_output.clone()) {
 									hash_map::Entry::Occupied(_) => {},
 									hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::Revoked { script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: true, amount: htlc.amount_msat / 1000 }, used_feerate, htlc.cltv_expiry, height)); }
@@ -1495,6 +1496,7 @@ impl ChannelMonitor {
 			for (input, info) in spend_tx.input.iter_mut().zip(inputs_info.iter()) {
 				let (redeemscript, revocation_key) = sign_input!(sighash_parts, input, info.0, info.1);
 				let height_timer = Self::get_height_timer(height, info.2);
+				log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", input.previous_output.txid, input.previous_output.vout, height_timer);
 				match self.our_claim_txn_waiting_first_conf.entry(input.previous_output.clone()) {
 					hash_map::Entry::Occupied(_) => {},
 					hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::Revoked { script: redeemscript, pubkey: if info.0.is_some() { Some(revocation_pubkey) } else { None }, key: revocation_key, is_htlc: if info.0.is_some() { true } else { false }, amount: info.1 }, used_feerate, if !info.0.is_some() { height + info.2 } else { info.2 }, height)); }
@@ -1685,6 +1687,7 @@ impl ChannelMonitor {
 												outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
 												output: single_htlc_tx.output[0].clone(),
 											});
+											log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", single_htlc_tx.input[0].previous_output.txid, single_htlc_tx.input[0].previous_output.vout, height_timer);
 											match self.our_claim_txn_waiting_first_conf.entry(single_htlc_tx.input[0].previous_output.clone()) {
 												hash_map::Entry::Occupied(_) => {},
 												hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000 }, used_feerate, htlc.cltv_expiry, height)); }
@@ -1723,6 +1726,7 @@ impl ChannelMonitor {
 									let (redeemscript, htlc_key) = sign_input!(sighash_parts, timeout_tx.input[0], htlc.amount_msat / 1000, vec![0]);
 									assert!(predicted_weight >= timeout_tx.get_weight());
 									//TODO: track SpendableOutputDescriptor
+									log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", timeout_tx.input[0].previous_output.txid, timeout_tx.input[0].previous_output.vout, height_timer);
 									match self.our_claim_txn_waiting_first_conf.entry(timeout_tx.input[0].previous_output.clone()) {
 										hash_map::Entry::Occupied(_) => {},
 										hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::RemoteHTLC { script : redeemscript, key: htlc_key, preimage: None, amount: htlc.amount_msat / 1000 }, used_feerate, htlc.cltv_expiry, height)); }
@@ -1758,6 +1762,7 @@ impl ChannelMonitor {
 					for (input, info) in spend_tx.input.iter_mut().zip(inputs_info.iter()) {
 						let (redeemscript, htlc_key) = sign_input!(sighash_parts, input, info.1, (info.0).0.to_vec());
 						let height_timer = Self::get_height_timer(height, info.2);
+						log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", input.previous_output.txid, input.previous_output.vout, height_timer);
 						match self.our_claim_txn_waiting_first_conf.entry(input.previous_output.clone()) {
 							hash_map::Entry::Occupied(_) => {},
 							hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*(info.0)), amount: info.1}, used_feerate, info.2, height)); }
@@ -1875,6 +1880,7 @@ impl ChannelMonitor {
 			let outpoint = BitcoinOutPoint { txid: spend_tx.txid(), vout: 0 };
 			let output = spend_tx.output[0].clone();
 			let height_timer = Self::get_height_timer(height, self.their_to_self_delay.unwrap() as u32); // We can safely unwrap given we are past channel opening
+			log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", spend_tx.input[0].previous_output.txid, spend_tx.input[0].previous_output.vout, height_timer);
 			match self.our_claim_txn_waiting_first_conf.entry(spend_tx.input[0].previous_output.clone()) {
 				hash_map::Entry::Occupied(_) => {},
 				hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::Revoked { script: redeemscript, pubkey: None, key: revocation_key, is_htlc: false, amount: tx.output[0].value }, used_feerate, height + self.our_to_self_delay as u32, height)); }
