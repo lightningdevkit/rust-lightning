@@ -13,7 +13,7 @@ use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate};
+use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, LocalFeatures};
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -4861,7 +4861,7 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	let push_msat=10001;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).unwrap();
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &node0_to_1_send_open_channel).unwrap();
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), LocalFeatures::new(), &node0_to_1_send_open_channel).unwrap();
 
 	//Create a second channel with a channel_id collision
 	assert!(nodes[0].node.create_channel(nodes[0].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());

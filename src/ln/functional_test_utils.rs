@@ -7,7 +7,7 @@ use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::router::{Route, Router};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
+use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler, LocalFeatures};
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -174,8 +174,8 @@ macro_rules! get_feerate {
 
 pub fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64) -> Transaction {
 	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
-	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id())).unwrap();
-	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id())).unwrap();
+	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), LocalFeatures::new(), &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id())).unwrap();
+	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), LocalFeatures::new(), &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id())).unwrap();
 
 	let chan_id = *node_a.network_chan_count.borrow();
 	let tx;

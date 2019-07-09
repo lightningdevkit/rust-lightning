@@ -4,6 +4,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::channelmonitor;
 use ln::msgs;
+use ln::msgs::LocalFeatures;
 use ln::msgs::{HandleError};
 use ln::channelmonitor::HTLCUpdate;
 use util::events;
@@ -96,10 +97,10 @@ impl TestChannelMessageHandler {
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::OpenChannel) -> Result<(), HandleError> {
+	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
+	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<(), HandleError> {

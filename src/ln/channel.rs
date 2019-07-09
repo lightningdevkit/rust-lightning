@@ -16,7 +16,7 @@ use secp256k1::{Secp256k1,Signature};
 use secp256k1;
 
 use ln::msgs;
-use ln::msgs::{DecodeError, OptionalField};
+use ln::msgs::{DecodeError, OptionalField, LocalFeatures};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -522,7 +522,7 @@ impl Channel {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, _their_local_features: LocalFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, ChannelError> {
 		let chan_keys = keys_provider.get_channel_keys(true);
 		let mut local_config = (*config).channel_options.clone();
 
@@ -1341,7 +1341,7 @@ impl Channel {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, _their_local_features: LocalFeatures) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer"));
