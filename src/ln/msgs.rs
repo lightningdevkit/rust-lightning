@@ -60,9 +60,16 @@ pub struct LocalFeatures {
 
 impl LocalFeatures {
 	/// Create a blank LocalFeatures flags (visibility extended for fuzz tests)
+	#[cfg(not(feature = "fuzztarget"))]
+	pub(crate) fn new() -> LocalFeatures {
+		LocalFeatures {
+			flags: vec![1 << 4],
+		}
+	}
+	#[cfg(feature = "fuzztarget")]
 	pub fn new() -> LocalFeatures {
 		LocalFeatures {
-			flags: Vec::new(),
+			flags: vec![1 << 4],
 		}
 	}
 
@@ -87,8 +94,8 @@ impl LocalFeatures {
 	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (3 << 4)) != 0
 	}
-	pub(crate) fn requires_upfront_shutdown_script(&self) -> bool {
-		self.flags.len() > 0 && (self.flags[0] & (1 << 4)) != 0
+	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
+		self.flags[0] ^= 1 << 4;
 	}
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
@@ -2011,9 +2018,9 @@ mod tests {
 			target_value.append(&mut hex::decode("0000").unwrap());
 		}
 		if initial_routing_sync {
-			target_value.append(&mut hex::decode("000108").unwrap());
+			target_value.append(&mut hex::decode("000118").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("0000").unwrap());
+			target_value.append(&mut hex::decode("000110").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}

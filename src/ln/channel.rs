@@ -522,7 +522,7 @@ impl Channel {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, _their_local_features: LocalFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface>, their_node_id: PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel, ChannelError> {
 		let chan_keys = keys_provider.get_channel_keys(true);
 		let mut local_config = (*config).channel_options.clone();
 
@@ -625,6 +625,27 @@ impl Channel {
 		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
 
+		let their_shutdown_scriptpubkey = if their_local_features.supports_upfront_shutdown_script() {
+			match &msg.shutdown_scriptpubkey {
+				&OptionalField::Present(ref script) => {
+					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. We enforce it while receiving shutdown msg
+					if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wsh() || script.is_v0_p2wpkh() {
+						Some(script.clone())
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					} else if script.len() == 0 {
+						None
+					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
+					} else {
+						return Err(ChannelError::Close("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format"));
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&OptionalField::Absent => {
+					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"));
+				}
+			}
+		} else { None };
+
 		let mut chan = Channel {
 			user_id: user_id,
 			config: local_config,
@@ -692,7 +713,7 @@ impl Channel {
 			their_prev_commitment_point: None,
 			their_node_id: their_node_id,
 
-			their_shutdown_scriptpubkey: None,
+			their_shutdown_scriptpubkey,
 
 			channel_monitor: channel_monitor,
 
@@ -1341,7 +1362,7 @@ impl Channel {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, _their_local_features: LocalFeatures) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_local_features: LocalFeatures) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer"));
@@ -1400,6 +1421,27 @@ impl Channel {
 			return Err(ChannelError::Close("We consider the minimum depth to be unreasonably large"));
 		}
 
+		let their_shutdown_scriptpubkey = if their_local_features.supports_upfront_shutdown_script() {
+			match &msg.shutdown_scriptpubkey {
+				&OptionalField::Present(ref script) => {
+					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. We enforce it while receiving shutdown msg
+					if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wsh() || script.is_v0_p2wpkh() {
+						Some(script.clone())
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					} else if script.len() == 0 {
+						None
+					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
+					} else {
+						return Err(ChannelError::Close("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format"));
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&OptionalField::Absent => {
+					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"));
+				}
+			}
+		} else { None };
+
 		self.channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
@@ -1415,6 +1457,7 @@ impl Channel {
 		self.their_delayed_payment_basepoint = Some(msg.delayed_payment_basepoint);
 		self.their_htlc_basepoint = Some(msg.htlc_basepoint);
 		self.their_cur_commitment_point = Some(msg.first_per_commitment_point);
+		self.their_shutdown_scriptpubkey = their_shutdown_scriptpubkey;
 
 		let obscure_factor = self.get_commitment_transaction_number_obscure_factor();
 		self.channel_monitor.set_commitment_obscure_factor(obscure_factor);
