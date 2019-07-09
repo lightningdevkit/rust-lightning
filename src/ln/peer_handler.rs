@@ -587,10 +587,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													log_info!(self, "Peer local features required data_loss_protect");
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
-												if msg.local_features.requires_upfront_shutdown_script() {
-													log_info!(self, "Peer local features required upfront_shutdown_script");
-													return Err(PeerHandleError{ no_connection_possible: true });
-												}
 												if peer.their_global_features.is_some() {
 													return Err(PeerHandleError{ no_connection_possible: false });
 												}
