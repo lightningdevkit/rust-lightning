@@ -129,6 +129,14 @@ pub struct ChannelConfig {
 	///
 	/// This cannot be changed after the initial channel handshake.
 	pub announced_channel: bool,
+	/// Set to commit to an upfront shutdown_pubkey at channel opening. In case of mutual
+	/// closing, the other peer will check that our closing transction output is encumbered
+	/// by the provided script.
+	///
+	/// We set it by default as this ensure greater security to the user funds.
+	///
+	/// This cannot be changed after channel opening.
+	pub commit_upfront_shutdown_pubkey: bool
 }
 
 impl ChannelConfig {
@@ -137,12 +145,14 @@ impl ChannelConfig {
 		ChannelConfig {
 			fee_proportional_millionths: 0,
 			announced_channel: false,
+			commit_upfront_shutdown_pubkey: true,
 		}
 	}
 }
 
 //Add write and readable traits to channelconfig
-impl_writeable!(ChannelConfig, 8+1, {
+impl_writeable!(ChannelConfig, 8+1+1, {
 	fee_proportional_millionths,
-	announced_channel
+	announced_channel,
+	commit_upfront_shutdown_pubkey
 });

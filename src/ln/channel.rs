@@ -3081,7 +3081,7 @@ impl Channel {
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			channel_flags: if self.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: OptionalField::Absent
+			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
 		}
 	}
 
@@ -3113,7 +3113,7 @@ impl Channel {
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.delayed_payment_base_key),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.htlc_base_key),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
-			shutdown_scriptpubkey: OptionalField::Absent
+			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
 		}
 	}
 
