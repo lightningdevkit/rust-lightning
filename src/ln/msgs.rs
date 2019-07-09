@@ -59,7 +59,8 @@ pub struct LocalFeatures {
 }
 
 impl LocalFeatures {
-	pub(crate) fn new() -> LocalFeatures {
+	/// Create a blank LocalFeatures flags (visibility extended for fuzz tests)
+	pub fn new() -> LocalFeatures {
 		LocalFeatures {
 			flags: Vec::new(),
 		}
@@ -611,9 +612,9 @@ pub enum OptionalField<T> {
 pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel) -> Result<(), HandleError>;
+	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &OpenChannel) -> Result<(), HandleError>;
 	/// Handle an incoming accept_channel message from the given peer.
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel) -> Result<(), HandleError>;
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &AcceptChannel) -> Result<(), HandleError>;
 	/// Handle an incoming funding_created message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<(), HandleError>;
 	/// Handle an incoming funding_signed message from the given peer.
