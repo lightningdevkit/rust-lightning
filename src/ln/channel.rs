@@ -32,7 +32,7 @@ use util::config::{UserConfig,ChannelConfig};
 
 use std;
 use std::default::Default;
-use std::{cmp,mem};
+use std::{cmp,mem,fmt};
 use std::sync::{Arc};
 
 #[cfg(test)]
@@ -366,10 +366,23 @@ pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
 /// channel_id in ChannelManager.
-#[derive(Debug)]
 pub(super) enum ChannelError {
 	Ignore(&'static str),
 	Close(&'static str),
+	CloseDelayBroadcast {
+		msg: &'static str,
+		update: Option<ChannelMonitor>
+	},
+}
+
+impl fmt::Debug for ChannelError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			&ChannelError::Ignore(e) => write!(f, "Ignore : {}", e),
+			&ChannelError::Close(e) => write!(f, "Close : {}", e),
+			&ChannelError::CloseDelayBroadcast { msg, .. } => write!(f, "CloseDelayBroadcast : {}", msg)
+		}
+	}
 }
 
 macro_rules! secp_check {
@@ -2500,6 +2513,22 @@ impl Channel {
 			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish"));
 		}
 
+		if msg.next_remote_commitment_number > 0 {
+			match msg.data_loss_protect {
+				OptionalField::Present(ref data_loss) => {
+					if chan_utils::build_commitment_secret(self.local_keys.commitment_seed, INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1) != data_loss.your_last_per_commitment_secret {
+						return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided"));
+					}
+					if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
+						self.channel_monitor.provide_rescue_remote_commitment_tx_info(data_loss.my_current_per_commitment_point);
+						return Err(ChannelError::CloseDelayBroadcast { msg: "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can't do any automated broadcasting", update: Some(self.channel_monitor.clone())
+					});
+					}
+				},
+				OptionalField::Absent => {}
+			}
+		}
+
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
@@ -2576,7 +2605,7 @@ impl Channel {
 				// now!
 				match self.free_holding_cell_htlcs() {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
-					Err(ChannelError::Ignore(_)) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
+					Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast { .. }) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok(Some((commitment_update, channel_monitor))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(channel_monitor), self.resend_order.clone(), shutdown_msg)),
 					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg)),
 				}
