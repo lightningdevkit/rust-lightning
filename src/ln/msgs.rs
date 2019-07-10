@@ -63,23 +63,19 @@ impl LocalFeatures {
 	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) fn new() -> LocalFeatures {
 		LocalFeatures {
-			flags: vec![1 << 5],
+			flags: vec![2 | 1 << 5],
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
 	pub fn new() -> LocalFeatures {
 		LocalFeatures {
-			flags: vec![1 << 5],
+			flags: vec![2 | 1 << 5],
 		}
 	}
 
 	pub(crate) fn supports_data_loss_protect(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & 3) != 0
 	}
-	pub(crate) fn requires_data_loss_protect(&self) -> bool {
-		self.flags.len() > 0 && (self.flags[0] & 1) != 0
-	}
-
 	pub(crate) fn initial_routing_sync(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
 	}
@@ -2018,9 +2014,9 @@ mod tests {
 			target_value.append(&mut hex::decode("0000").unwrap());
 		}
 		if initial_routing_sync {
-			target_value.append(&mut hex::decode("000128").unwrap());
+			target_value.append(&mut hex::decode("00012a").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("000120").unwrap());
+			target_value.append(&mut hex::decode("000122").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
