@@ -16,7 +16,7 @@ use secp256k1::{Secp256k1,Signature};
 use secp256k1;
 
 use ln::msgs;
-use ln::msgs::{DecodeError, OptionalField, LocalFeatures};
+use ln::msgs::{DecodeError, OptionalField, LocalFeatures, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -3256,6 +3256,20 @@ impl Channel {
 	pub fn get_channel_reestablish(&self) -> msgs::ChannelReestablish {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
 		assert_ne!(self.cur_remote_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
+		let data_loss_protect = if self.cur_remote_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
+			let remote_last_secret = self.channel_monitor.get_secret(self.cur_remote_commitment_transaction_number + 2).unwrap();
+			log_trace!(self, "Enough info to generate a Data Loss Protect with per_commitment_secret {}", log_bytes!(remote_last_secret));
+			OptionalField::Present(DataLossProtect {
+				your_last_per_commitment_secret: remote_last_secret,
+				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
+			})
+		} else {
+			log_debug!(self, "We don't seen yet any revoked secret, if this channnel has already been updated it means we are fallen-behind, you should wait for other peer closing");
+			OptionalField::Present(DataLossProtect {
+				your_last_per_commitment_secret: [0;32],
+				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number))
+			})
+		};
 		msgs::ChannelReestablish {
 			channel_id: self.channel_id(),
 			// The protocol has two different commitment number concepts - the "commitment
@@ -3276,7 +3290,7 @@ impl Channel {
 			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
 			// overflow here.
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number - 1,
-			data_loss_protect: OptionalField::Absent,
+			data_loss_protect,
 		}
 	}
 
