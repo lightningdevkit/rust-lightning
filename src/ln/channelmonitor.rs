@@ -763,6 +763,9 @@ impl ChannelMonitor {
 		}
 	}
 
+	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
+	}
+
 	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
 	/// monitor watches for timeouts and may broadcast it if we approach such a timeout. Thus, it
 	/// is important that any clones of this channel monitor (including remote clones) by kept
