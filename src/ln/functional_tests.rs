@@ -13,7 +13,7 @@ use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, LocalFeatures};
+use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, LocalFeatures, ErrorAction};
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -5515,8 +5515,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	// We can have at most two valid local commitment tx, so both cases must be covered, and both txs must be checked to get them all as
 	// HTLC could have been removed from lastest local commitment tx but still valid until we get remote RAA
 
-	let nodes = create_network(2);
-	let chan =create_announced_chan_between_nodes(&nodes, 0, 1);
+	let nodes = create_network(2, &[None, None]);
+	let chan =create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
 
@@ -5604,8 +5604,8 @@ fn test_no_failure_dust_htlc_local_commitment() {
 	// Transaction filters for failing back dust htlc based on local commitment txn infos has been
 	// prone to error, we test here that a dummy transaction don't fail them.
 
-	let nodes = create_network(2);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let nodes = create_network(2, &[None, None]);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	// Rebalance a bit
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
@@ -5658,8 +5658,8 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	// Broadcast of local commitment tx, trigger failure-update of dust-HTLCs
 	// Broadcast of HTLC-timeout tx on local commitment tx, trigger failure-update of non-dust HTLCs
 
-	let nodes = create_network(3);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let nodes = create_network(3, &[None, None, None]);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
 
@@ -5777,4 +5777,104 @@ fn test_sweep_outbound_htlc_failure_update() {
 	do_test_sweep_outbound_htlc_failure_update(false, true);
 	do_test_sweep_outbound_htlc_failure_update(false, false);
 	do_test_sweep_outbound_htlc_failure_update(true, false);
+}
+
+#[test]
+fn test_upfront_shutdown_script() {
+	// BOLT 2 : Option upfront shutdown script, if peer commit its closing_script at channel opening
+	// enforce it at shutdown message
+
+	let mut config = UserConfig::new();
+	config.channel_options.announced_channel = true;
+	config.peer_channel_config_limits.force_announced_channel_preference = false;
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	let nodes = create_network(3, &[None, Some(config), None]);
+
+	// We test that in case of peer committing upfront to a script, if it changes at closing, we refuse to sign
+	let flags = LocalFeatures::new();
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
+	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	let mut node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	// Test we enforce upfront_scriptpbukey if by providing a diffrent one at closing that  we disconnect peer
+	if let Err(error) = nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown) {
+		if let Some(error) = error.action {
+			match error {
+				ErrorAction::SendErrorMessage { msg } => {
+					assert_eq!(msg.data,"Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey");
+				},
+				_ => { assert!(false); }
+			}
+		} else { assert!(false); }
+	} else { assert!(false); }
+	let events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// We test that in case of peer committing upfront to a script, if it doesn't change at closing, we sign
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
+	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+	// We test that in case of peer committing upfront to a script, if it oesn't change at closing, we sign
+	if let Ok(_) = nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown) {}
+	else { assert!(false) }
+	let events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::SendShutdown { node_id, .. } => { assert_eq!(node_id, nodes[0].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
+
+	// We test that if case of peer non-signaling we don't enforce committed script at channel opening
+	let mut flags_no = LocalFeatures::new();
+	flags_no.unset_upfront_shutdown_script();
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags_no, flags.clone());
+	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	let mut node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	node_1_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	if let Ok(_) = nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_1_shutdown) {}
+	else { assert!(false) }
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::SendShutdown { node_id, .. } => { assert_eq!(node_id, nodes[0].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
+
+	// We test that if user opt-out, we provide a zero-length script at channel opening and we are able to close
+	// channel smoothly, opt-out is from channel initiator here
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 1000000, 1000000, flags.clone(), flags.clone());
+	nodes[1].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	if let Ok(_) = nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown) {}
+	else { assert!(false) }
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::SendShutdown { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
+
+	//// We test that if user opt-out, we provide a zero-length script at channel opening and we are able to close
+	//// channel smoothly
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags.clone(), flags.clone());
+	nodes[1].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	if let Ok(_) = nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown) {}
+	else { assert!(false) }
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		MessageSendEvent::SendShutdown { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		MessageSendEvent::SendClosingSigned { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
 }
