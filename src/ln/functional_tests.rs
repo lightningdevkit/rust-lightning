@@ -49,7 +49,7 @@ use ln::functional_test_utils::*;
 
 #[test]
 fn test_async_inbound_update_fee() {
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
 
@@ -159,7 +159,7 @@ fn test_async_inbound_update_fee() {
 fn test_update_fee_unordered_raa() {
 	// Just the intro to the previous test followed by an out-of-order RAA (which caused a
 	// crash in an earlier version of the update_fee patch)
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
 
@@ -209,7 +209,7 @@ fn test_update_fee_unordered_raa() {
 
 #[test]
 fn test_multi_flight_update_fee() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
 
@@ -313,7 +313,7 @@ fn test_multi_flight_update_fee() {
 
 #[test]
 fn test_update_fee_vanilla() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
 
@@ -351,7 +351,7 @@ fn test_update_fee_vanilla() {
 
 #[test]
 fn test_update_fee_that_funder_cannot_afford() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let channel_value = 1888;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
@@ -404,7 +404,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 #[test]
 fn test_update_fee_with_fundee_update_add_htlc() {
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
 
@@ -498,7 +498,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 
 #[test]
 fn test_update_fee() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let channel_id = chan.2;
 
@@ -599,7 +599,7 @@ fn test_update_fee() {
 #[test]
 fn pre_funding_lock_shutdown_test() {
 	// Test sending a shutdown prior to funding_locked after funding generation
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 8000000, 0, LocalFeatures::new(), LocalFeatures::new());
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&tx; 1], &[1; 1]);
@@ -625,7 +625,7 @@ fn pre_funding_lock_shutdown_test() {
 #[test]
 fn updates_shutdown_wait() {
 	// Test sending a shutdown with outstanding updates pending
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
 	let route_1 = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
@@ -697,7 +697,7 @@ fn updates_shutdown_wait() {
 #[test]
 fn htlc_fail_async_shutdown() {
 	// Test HTLCs fail if shutdown starts even if messages are delivered out-of-order
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
 
@@ -778,7 +778,7 @@ fn htlc_fail_async_shutdown() {
 fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	// Test that shutdown/closing_signed is re-sent on reconnect with a variable number of
 	// messages delivered prior to disconnect
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
 
@@ -931,7 +931,7 @@ fn test_shutdown_rebroadcast() {
 fn fake_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that payments get routed and transactions broadcast in semi-reasonable ways.
-	let nodes = create_network(4);
+	let nodes = create_network(4, &[None, None, None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -1044,7 +1044,7 @@ fn holding_cell_htlc_counting() {
 	// Tests that HTLCs in the holding cell count towards the pending HTLC limits on outbound HTLCs
 	// to ensure we don't end up with HTLCs sitting around in our holding cell for several
 	// commitment dance rounds.
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
 
@@ -1169,7 +1169,7 @@ fn holding_cell_htlc_counting() {
 fn duplicate_htlc_test() {
 	// Test that we accept duplicate payment_hash HTLCs across the network and that
 	// claiming/failing them are all separate and don't affect each other
-	let mut nodes = create_network(6);
+	let mut nodes = create_network(6, &[None, None, None, None, None, None]);
 
 	// Create some initial channels to route via 3 to 4/5 from 0/1/2
 	create_announced_chan_between_nodes(&nodes, 0, 3, LocalFeatures::new(), LocalFeatures::new());
@@ -1196,7 +1196,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	use std::sync::atomic::Ordering;
 	use ln::msgs::HandleError;
 
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001, LocalFeatures::new(), LocalFeatures::new());
 	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1900, 1001, LocalFeatures::new(), LocalFeatures::new());
 
@@ -1473,7 +1473,7 @@ fn channel_reserve_in_flight_removes() {
 	//    removed it fully. B now has the push_msat plus the first two HTLCs in value.
 	//  * Now B happily sends another HTLC, potentially violating its reserve value from A's point
 	//    of view (if A counts the AwaitingRemovedRemoteRevoke HTLC).
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let b_chan_values = get_channel_value_stat!(nodes[1], chan_1.2);
@@ -1600,7 +1600,7 @@ fn channel_reserve_in_flight_removes() {
 fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that ChannelMonitor is able to recover from various states.
-	let nodes = create_network(5);
+	let nodes = create_network(5, &[None, None, None, None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -1727,7 +1727,7 @@ fn channel_monitor_network_test() {
 fn test_justice_tx() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
 
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	// Create some new channels:
 	let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
@@ -1813,7 +1813,7 @@ fn test_justice_tx() {
 fn revoked_output_claim() {
 	// Simple test to ensure a node will claim a revoked output when a stale remote commitment
 	// transaction is broadcast by its counterparty
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
 	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
@@ -1842,7 +1842,7 @@ fn revoked_output_claim() {
 #[test]
 fn claim_htlc_outputs_shared_tx() {
 	// Node revoked old state, htlcs haven't time out yet, claim them in shared justice tx
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some new channel:
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -1917,7 +1917,7 @@ fn claim_htlc_outputs_shared_tx() {
 #[test]
 fn claim_htlc_outputs_single_tx() {
 	// Node revoked old state, htlcs have timed out, claim each of them in separated justice tx
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
@@ -2014,7 +2014,7 @@ fn test_htlc_on_chain_success() {
 	// the HTLC outputs via the preimage it learned (which, once confirmed should generate a
 	// PaymentSent event).
 
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -2175,7 +2175,7 @@ fn test_htlc_on_chain_timeout() {
 	//    	      \                                  \
 	//    	   B's HTLC timeout tx		     B's timeout tx
 
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 
 	// Create some intial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -2283,7 +2283,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 	// Test that in case of a revoked commitment tx, we detect the resolution of output by justice tx
 	// and fail backward accordingly.
 
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 
 	// Create some initial channels
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -2351,7 +2351,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	// * Once they remove it, we will send a (the first) commitment_signed without the HTLC,
 	//   and once they revoke the previous commitment transaction (allowing us to send a new
 	//   commitment_signed) we will be free to fail/fulfill the HTLC backwards.
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 
 	// Create some initial channels
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -2562,7 +2562,7 @@ fn test_commitment_revoked_fail_backward_exhaustive_b() {
 fn test_htlc_ignore_latest_remote_commitment() {
 	// Test that HTLC transactions spending the latest remote commitment transaction are simply
 	// ignored if we cannot claim them. This originally tickled an invalid unwrap().
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
@@ -2584,7 +2584,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 #[test]
 fn test_force_close_fail_back() {
 	// Check which HTLCs are failed-backwards on channel force-closure
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
 
@@ -2658,7 +2658,7 @@ fn test_force_close_fail_back() {
 #[test]
 fn test_unconf_chan() {
 	// After creating a chan between nodes, we disconnect all blocks previously seen to force a channel close on nodes[0] side
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -2687,7 +2687,7 @@ fn test_unconf_chan() {
 #[test]
 fn test_simple_peer_disconnect() {
 	// Test that we can reconnect when there are no lost messages
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
 
@@ -2740,7 +2740,7 @@ fn test_simple_peer_disconnect() {
 
 fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	// Test that we can reconnect when in-flight HTLC updates get dropped
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	if messages_delivered == 0 {
 		create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, LocalFeatures::new(), LocalFeatures::new());
 		// nodes[1] doesn't receive the funding_locked message (it'll be re-sent on reconnect)
@@ -2946,7 +2946,7 @@ fn test_drop_messages_peer_disconnect_b() {
 #[test]
 fn test_funding_peer_disconnect() {
 	// Test that we can lock in our funding tx while disconnected
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, LocalFeatures::new(), LocalFeatures::new());
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
@@ -2997,7 +2997,7 @@ fn test_funding_peer_disconnect() {
 fn test_drop_messages_peer_disconnect_dual_htlc() {
 	// Test that we can handle reconnecting when both sides of a channel have pending
 	// commitment_updates when we disconnect.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -3136,7 +3136,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 fn test_invalid_channel_announcement() {
 	//Test BOLT 7 channel_announcement msg requirement for final node, gather data to build customed channel_announcement msgs
 	let secp_ctx = Secp256k1::new();
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	let chan_announcement = create_chan_between_nodes(&nodes[0], &nodes[1], LocalFeatures::new(), LocalFeatures::new());
 
@@ -3208,7 +3208,7 @@ fn test_invalid_channel_announcement() {
 
 #[test]
 fn test_no_txn_manager_serialize_deserialize() {
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, LocalFeatures::new(), LocalFeatures::new());
 
@@ -3272,7 +3272,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 #[test]
 fn test_simple_manager_serialize_deserialize() {
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -3320,7 +3320,7 @@ fn test_simple_manager_serialize_deserialize() {
 #[test]
 fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// Test deserializing a ChannelManager with an out-of-date ChannelMonitor
-	let mut nodes = create_network(4);
+	let mut nodes = create_network(4, &[None, None, None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	create_announced_chan_between_nodes(&nodes, 2, 0, LocalFeatures::new(), LocalFeatures::new());
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3, LocalFeatures::new(), LocalFeatures::new());
@@ -3509,7 +3509,7 @@ macro_rules! check_spendable_outputs {
 #[test]
 fn test_claim_sizeable_push_msat() {
 	// Incidentally test SpendableOutput event generation due to detection of to_local output on commitment tx
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, LocalFeatures::new(), LocalFeatures::new());
 	nodes[1].node.force_close_channel(&chan.2);
@@ -3531,7 +3531,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	// Same test as previous, just test on remote commitment tx, as per_commitment_point registration changes following you're funder/fundee and
 	// to_remote output is encumbered by a P2WPKH
 
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, LocalFeatures::new(), LocalFeatures::new());
 	nodes[0].node.force_close_channel(&chan.2);
@@ -3556,7 +3556,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	// Same test as previous, just test on remote revoked commitment tx, as per_commitment_point registration changes following you're funder/fundee and
 	// to_remote output is encumbered by a P2WPKH
 
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 59000000, LocalFeatures::new(), LocalFeatures::new());
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
@@ -3580,7 +3580,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 
 #[test]
 fn test_static_spendable_outputs_preimage_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -3621,7 +3621,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -3651,7 +3651,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -3695,7 +3695,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -3748,7 +3748,7 @@ fn test_onchain_to_onchain_claim() {
 	// Finally, check that B will claim the HTLC output if A's latest commitment transaction
 	// gets broadcast.
 
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -3836,7 +3836,7 @@ fn test_onchain_to_onchain_claim() {
 fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Topology : A --> B --> C
 	// We route 2 payments with same hash between B and C, one will be timeout, the other successfully claim
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
@@ -3950,7 +3950,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 #[test]
 fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -3999,7 +3999,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	//    - C - D -
 	// B /         \ F
 	// And test where C fails back to A/B when D announces its latest commitment transaction
-	let nodes = create_network(6);
+	let nodes = create_network(6, &[None, None, None, None, None, None]);
 
 	create_announced_chan_between_nodes(&nodes, 0, 2, LocalFeatures::new(), LocalFeatures::new());
 	create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new());
@@ -4238,7 +4238,7 @@ fn test_fail_backwards_previous_remote_announce() {
 
 #[test]
 fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
@@ -4273,7 +4273,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 #[test]
 fn test_static_output_closing_tx() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
@@ -4293,7 +4293,7 @@ fn test_static_output_closing_tx() {
 }
 
 fn do_htlc_claim_local_commitment_only(use_dust: bool) {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3000000 });
@@ -4330,7 +4330,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 }
 
 fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), if use_dust { 50000 } else { 3000000 }, TEST_FINAL_CLTV).unwrap();
@@ -4354,7 +4354,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 }
 
 fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no_close: bool) {
-	let nodes = create_network(3);
+	let nodes = create_network(3, &[None, None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	// Fail the payment, but don't deliver A's final RAA, resulting in the HTLC only being present
@@ -4638,7 +4638,7 @@ fn test_onion_failure() {
 	const NODE: u16 = 0x2000;
 	const UPDATE: u16 = 0x1000;
 
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	for node in nodes.iter() {
 		*node.keys_manager.override_session_priv.lock().unwrap() = Some(SecretKey::from_slice(&[3; 32]).unwrap());
 	}
@@ -4850,7 +4850,7 @@ fn test_onion_failure() {
 #[test]
 #[should_panic]
 fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on its own as we are catching a panic
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	//Force duplicate channel ids
 	for node in nodes.iter() {
 		*node.keys_manager.override_channel_id_priv.lock().unwrap() = Some([0; 32]);
@@ -4869,7 +4869,7 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 
 #[test]
 fn bolt2_open_channel_sending_node_checks_part2() {
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 
 	// BOLT #2 spec: Sending node must set funding_satoshis to less than 2^24 satoshis
 	let channel_value_satoshis=2^24;
@@ -4917,7 +4917,7 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	//BOLT2 Requirement: MUST offer amount_msat greater than 0.
 	//BOLT2 Requirement: MUST NOT offer amount_msat below the receiving node's htlc_minimum_msat (same validation check catches both of these)
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, LocalFeatures::new(), LocalFeatures::new());
 	let mut route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -4937,7 +4937,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	//BOLT 2 Requirement: MUST set cltv_expiry less than 500000000.
 	//It is enforced when constructing a route.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000000, 500000001).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -4956,7 +4956,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	//BOLT 2 Requirement: if result would be offering more than the remote's max_accepted_htlcs HTLCs, in the remote commitment transaction: MUST NOT add an HTLC.
 	//BOLT 2 Requirement: for the first HTLC it offers MUST set id to 0.
 	//BOLT 2 Requirement: MUST increase the value of id by 1 for each successive offer.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, LocalFeatures::new(), LocalFeatures::new());
 	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_accepted_htlcs as u64;
 
@@ -4997,7 +4997,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 #[test]
 fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	//BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let channel_value = 100000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0, LocalFeatures::new(), LocalFeatures::new());
 	let max_in_flight = get_channel_value_stat!(nodes[0], chan.2).their_max_htlc_value_in_flight_msat;
@@ -5021,7 +5021,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	//BOLT2 Requirement: receiving an amount_msat equal to 0, OR less than its own htlc_minimum_msat -> SHOULD fail the channel.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, LocalFeatures::new(), LocalFeatures::new());
 	let htlc_minimum_msat: u64;
 	{
@@ -5048,7 +5048,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 #[test]
 fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	//BOLT2 Requirement: receiving an amount_msat that the sending node cannot afford at the current feerate_per_kw (while maintaining its channel reserve): SHOULD fail the channel
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, LocalFeatures::new(), LocalFeatures::new());
 
 	let their_channel_reserve = get_channel_value_stat!(nodes[0], chan.2).channel_reserve_msat;
@@ -5076,7 +5076,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	//BOLT 2 Requirement: if a sending node adds more than its max_accepted_htlcs HTLCs to its local commitment transaction: SHOULD fail the channel
 	//BOLT 2 Requirement: MUST allow multiple HTLCs with the same payment_hash.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -5121,7 +5121,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	//OR adds more than its max_htlc_value_in_flight_msat worth of offered HTLCs to its local commitment transaction: SHOULD fail the channel
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -5144,7 +5144,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	//BOLT2 Requirement: if sending node sets cltv_expiry to greater or equal to 500000000: SHOULD fail the channel.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -5169,7 +5169,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	//BOLT 2 requirement: if the sender did not previously acknowledge the commitment of that HTLC: MUST ignore a repeated id value after a reconnection.
 	// We test this by first testing that that repeated HTLCs pass commitment signature checks
 	// after disconnect and that non-sequential htlc_ids result in a channel failure.
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -5214,7 +5214,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
 
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
@@ -5246,7 +5246,7 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
 
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
@@ -5278,7 +5278,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment() {
 	//BOLT 2 Requirement: until the corresponding HTLC is irrevocably committed in both sides' commitment transactions:	MUST NOT send an update_fulfill_htlc, update_fail_htlc, or update_fail_malformed_htlc.
 
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
@@ -5311,7 +5311,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	//BOLT 2 Requirement: A receiving node:	if the id does not correspond to an HTLC in its current commitment transaction MUST fail the channel.
 
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
@@ -5352,7 +5352,7 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	//BOLT 2 Requirement: A receiving node:	if the payment_preimage value in update_fulfill_htlc doesn't SHA256 hash to the corresponding HTLC payment_hash	MUST fail the channel.
 
-	let nodes = create_network(2);
+	let nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
 	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
@@ -5394,7 +5394,7 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_message() {
 	//BOLT 2 Requirement: A receiving node: if the BADONION bit in failure_code is not set for update_fail_malformed_htlc MUST fail the channel.
 
-	let mut nodes = create_network(2);
+	let mut nodes = create_network(2, &[None, None]);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -5440,7 +5440,7 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	//BOLT 2 Requirement: a receiving node which has an outgoing HTLC canceled by update_fail_malformed_htlc:
 	//    * MUST return an error in the update_fail_htlc sent to the link which originally sent the HTLC, using the failure_code given and setting the data to sha256_of_onion.
 
-	let mut nodes = create_network(3);
+	let mut nodes = create_network(3, &[None, None, None]);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, LocalFeatures::new(), LocalFeatures::new());
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1000000, 1000000, LocalFeatures::new(), LocalFeatures::new());
 

@@ -827,7 +827,7 @@ pub fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_ha
 	fail_payment_along_route(origin_node, expected_route, false, our_payment_hash);
 }
 
-pub fn create_network(node_count: usize) -> Vec<Node> {
+pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> Vec<Node> {
 	let mut nodes = Vec::new();
 	let mut rng = thread_rng();
 	let secp_ctx = Secp256k1::new();
@@ -844,10 +844,10 @@ pub fn create_network(node_count: usize) -> Vec<Node> {
 		rng.fill_bytes(&mut seed);
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet, Arc::clone(&logger)));
 		let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
-		let mut config = UserConfig::new();
-		config.channel_options.announced_channel = true;
-		config.peer_channel_config_limits.force_announced_channel_preference = false;
-		let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), config).unwrap();
+		let mut default_config = UserConfig::new();
+		default_config.channel_options.announced_channel = true;
+		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
+		let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), chain_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }).unwrap();
 		let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
 		nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, keys_manager, node_seed: seed,
 			network_payment_count: payment_count.clone(),
