@@ -303,12 +303,24 @@ const CLTV_SHARED_CLAIM_BUFFER: u32 = 12;
 pub(crate) const CLTV_CLAIM_BUFFER: u32 = 6;
 /// Number of blocks by which point we expect our counterparty to have seen new blocks on the
 /// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
-/// copies of ChannelMonitors, including watchtowers).
-pub(crate) const HTLC_FAIL_TIMEOUT_BLOCKS: u32 = 3;
-/// Number of blocks we wait on seeing a confirmed HTLC-Timeout or previous revoked commitment
-/// transaction before we fail corresponding inbound HTLCs. This prevents us from failing backwards
-/// and then getting a reorg resulting in us losing money.
-pub(crate) const HTLC_FAIL_ANTI_REORG_DELAY: u32 = 6;
+/// copies of ChannelMonitors, including watchtowers). We could enforce the contract by failing
+/// at CLTV expiration height but giving a grace period to our peer may be profitable for us if he
+/// can provide an over-late preimage. Nevertheless, grace period has to be accounted in our
+/// CLTV_EXPIRY_DELTA to be secure. Following this policy we may decrease the rate of channel failures
+/// due to expiration but increase the cost of funds being locked longuer in case of failure.
+/// This delay also cover a low-power peer being slow to process blocks and so being behind us on
+/// accurate block height.
+/// In case of onchain failure to be pass backward we may see the last block of ANTI_REORG_DELAY
+/// with at worst this delay, so we are not only using this value as a mercy for them but also
+/// us as a safeguard to delay with enough time.
+pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
+/// Number of blocks we wait on seeing a HTLC output being solved before we fail corresponding inbound
+/// HTLCs. This prevents us from failing backwards and then getting a reorg resulting in us losing money.
+/// We use also this delay to be sure we can remove our in-flight claim txn from bump candidates buffer.
+/// It may cause spurrious generation of bumped claim txn but that's allright given the outpoint is already
+/// solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
+/// keeping bumping another claim tx to solve the outpoint.
+pub(crate) const ANTI_REORG_DELAY: u32 = 6;
 
 #[derive(Clone, PartialEq)]
 enum Storage {
@@ -353,7 +365,7 @@ enum InputDescriptors {
 }
 
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
-/// once they mature to enough confirmations (HTLC_FAIL_ANTI_REORG_DELAY)
+/// once they mature to enough confirmations (ANTI_REORG_DELAY)
 #[derive(Clone, PartialEq)]
 enum OnchainEvent {
 	/// Outpoint under claim process by our own tx, once this one get enough confirmations, we remove it from
@@ -1298,8 +1310,8 @@ impl ChannelMonitor {
 						if let Some(ref outpoints) = self.remote_claimable_outpoints.get($txid) {
 							for &(ref htlc, ref source_option) in outpoints.iter() {
 								if let &Some(ref source) = source_option {
-									log_info!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of revoked remote commitment transaction, waiting for confirmation (at height {})", log_bytes!(htlc.payment_hash.0), $commitment_tx, height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
-									match self.onchain_events_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+									log_info!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of revoked remote commitment transaction, waiting for confirmation (at height {})", log_bytes!(htlc.payment_hash.0), $commitment_tx, height + ANTI_REORG_DELAY - 1);
+									match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 										hash_map::Entry::Occupied(mut entry) => {
 											let e = entry.get_mut();
 											e.retain(|ref event| {
@@ -1396,7 +1408,7 @@ impl ChannelMonitor {
 									}
 								}
 								log_trace!(self, "Failing HTLC with payment_hash {} from {} remote commitment tx due to broadcast of remote commitment transaction", log_bytes!(htlc.payment_hash.0), $commitment_tx);
-								match self.onchain_events_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+								match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 									hash_map::Entry::Occupied(mut entry) => {
 										let e = entry.get_mut();
 										e.retain(|ref event| {
@@ -1788,8 +1800,8 @@ impl ChannelMonitor {
 
 		macro_rules! wait_threshold_conf {
 			($height: expr, $source: expr, $commitment_tx: expr, $payment_hash: expr) => {
-				log_trace!(self, "Failing HTLC with payment_hash {} from {} local commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
-				match self.onchain_events_waiting_threshold_conf.entry($height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+				log_trace!(self, "Failing HTLC with payment_hash {} from {} local commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, height + ANTI_REORG_DELAY - 1);
+				match self.onchain_events_waiting_threshold_conf.entry($height + ANTI_REORG_DELAY - 1) {
 					hash_map::Entry::Occupied(mut entry) => {
 						let e = entry.get_mut();
 						e.retain(|ref event| {
@@ -2022,7 +2034,7 @@ impl ChannelMonitor {
 	}
 
 	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash) {
-		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + HTLC_FAIL_ANTI_REORG_DELAY - 1)) {
+		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
 			//We may discard:
 			//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 			//- our claim tx on a commitment tx output
@@ -2059,16 +2071,16 @@ impl ChannelMonitor {
 					// from us until we've reached the point where we go on-chain with the
 					// corresponding inbound HTLC, we must ensure that outbound HTLCs go on chain at
 					// least CLTV_CLAIM_BUFFER blocks prior to the inbound HTLC.
-					//  aka outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS == height - CLTV_CLAIM_BUFFER
+					//  aka outbound_cltv + LATENCY_GRACE_PERIOD_BLOCKS == height - CLTV_CLAIM_BUFFER
 					//      inbound_cltv == height + CLTV_CLAIM_BUFFER
-					//      outbound_cltv + HTLC_FAIL_TIMEOUT_BLOCKS + CLTV_CLAIM_BUFFER <= inbound_cltv - CLTV_CLAIM_BUFFER
-					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFFER <= inbound_cltv - outbound_cltv
+					//      outbound_cltv + LATENCY_GRACE_PERIOD_BLOCKS + CLTV_CLAIM_BUFFER <= inbound_cltv - CLTV_CLAIM_BUFFER
+					//      LATENCY_GRACE_PERIOD_BLOCKS + 2*CLTV_CLAIM_BUFFER <= inbound_cltv - outbound_cltv
 					//      CLTV_EXPIRY_DELTA <= inbound_cltv - outbound_cltv (by check in ChannelManager::decode_update_add_htlc_onion)
-					//      HTLC_FAIL_TIMEOUT_BLOCKS + 2*CLTV_CLAIM_BUFFER <= CLTV_EXPIRY_DELTA
+					//      LATENCY_GRACE_PERIOD_BLOCKS + 2*CLTV_CLAIM_BUFFER <= CLTV_EXPIRY_DELTA
 					//  The final, above, condition is checked for statically in channelmanager
 					//  with CHECK_CLTV_EXPIRY_SANITY_2.
 					let htlc_outbound = $local_tx == htlc.offered;
-					if ( htlc_outbound && htlc.cltv_expiry + HTLC_FAIL_TIMEOUT_BLOCKS <= height) ||
+					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
 					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(self, "Force-closing channel due to {} HTLC timeout, HTLC expiry is {}", if htlc_outbound { "outbound" } else { "inbound "}, htlc.cltv_expiry);
 						return true;
@@ -2206,8 +2218,8 @@ impl ChannelMonitor {
 					payment_preimage.0.copy_from_slice(&input.witness[1]);
 					htlc_updated.push((source, Some(payment_preimage), payment_hash));
 				} else {
-					log_info!(self, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), height + HTLC_FAIL_ANTI_REORG_DELAY - 1);
-					match self.onchain_events_waiting_threshold_conf.entry(height + HTLC_FAIL_ANTI_REORG_DELAY - 1) {
+					log_info!(self, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), height + ANTI_REORG_DELAY - 1);
+					match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 						hash_map::Entry::Occupied(mut entry) => {
 							let e = entry.get_mut();
 							e.retain(|ref event| {
