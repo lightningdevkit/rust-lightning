@@ -18,6 +18,7 @@ use bitcoin::network::constants::Network;
 
 use secp256k1::{SecretKey, PublicKey};
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
 use std::{mem};
 
@@ -242,8 +243,9 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> Self {
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
 		Self {
-			backing: keysinterface::KeysManager::new(seed, network, logger),
+			backing: keysinterface::KeysManager::new(seed, network, logger, now.as_secs(), now.subsec_nanos()),
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
 		}
