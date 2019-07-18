@@ -21,7 +21,7 @@ use bitcoin::blockdata::script::Script;
 
 use secp256k1::key::PublicKey;
 
-use std::time::Instant;
+use std::time::Duration;
 
 /// An Event which you should probably take some action in response to.
 pub enum Event {
@@ -92,8 +92,8 @@ pub enum Event {
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
 	PendingHTLCsForwardable {
-		/// The earliest time at which process_pending_htlc_forwards should be called.
-		time_forwardable: Instant,
+		/// The amount of time that should be waited prior to calling process_pending_htlc_forwards
+		time_forwardable: Duration,
 	},
 	/// Used to indicate that an output was generated on-chain which you should know how to spend.
 	/// Such an output will *not* ever be spent by rust-lightning, so you need to store them

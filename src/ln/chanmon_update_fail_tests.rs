@@ -13,8 +13,6 @@ use util::errors::APIError;
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::Hash;
 
-use std::time::Instant;
-
 use ln::functional_test_utils::*;
 
 #[test]
@@ -1495,7 +1493,6 @@ fn test_monitor_update_on_pending_forwards() {
 		Event::PendingHTLCsForwardable { .. } => { },
 		_ => panic!("Unexpected event"),
 	};
-	nodes[0].node.channel_state.lock().unwrap().next_forward = Instant::now();
 	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_received!(nodes[0], payment_hash_2, 1000000);
 
