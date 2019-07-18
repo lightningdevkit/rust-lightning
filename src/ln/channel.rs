@@ -33,7 +33,6 @@ use util::config::{UserConfig,ChannelConfig};
 use std;
 use std::default::Default;
 use std::{cmp,mem};
-use std::time::Instant;
 use std::sync::{Arc};
 
 #[cfg(test)]
@@ -133,14 +132,13 @@ struct OutboundHTLCOutput {
 
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum HTLCUpdateAwaitingACK {
-	AddHTLC {
+	AddHTLC { // TODO: Time out if we're getting close to cltv_expiry
 		// always outbound
 		amount_msat: u64,
 		cltv_expiry: u32,
 		payment_hash: PaymentHash,
 		source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket,
-		time_created: Instant, //TODO: Some kind of timeout thing-a-majig
 	},
 	ClaimHTLC {
 		payment_preimage: PaymentPreimage,
@@ -3252,7 +3250,6 @@ impl Channel {
 				cltv_expiry: cltv_expiry,
 				source,
 				onion_routing_packet: onion_routing_packet,
-				time_created: Instant::now(),
 			});
 			return Ok(None);
 		}
@@ -3622,14 +3619,13 @@ impl Writeable for Channel {
 		(self.holding_cell_htlc_updates.len() as u64).write(writer)?;
 		for update in self.holding_cell_htlc_updates.iter() {
 			match update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, time_created: _ } => {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet } => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
 					cltv_expiry.write(writer)?;
 					payment_hash.write(writer)?;
 					source.write(writer)?;
 					onion_routing_packet.write(writer)?;
-					// time_created is not serialized - we re-init the timeout upon deserialization
 				},
 				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
 					1u8.write(writer)?;
@@ -3796,7 +3792,6 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 					payment_hash: Readable::read(reader)?,
 					source: Readable::read(reader)?,
 					onion_routing_packet: Readable::read(reader)?,
-					time_created: Instant::now(),
 				},
 				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
