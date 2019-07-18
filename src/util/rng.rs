@@ -1,15 +1,13 @@
 #[cfg(not(feature = "fuzztarget"))]
 mod real_rng {
-	use rand::{thread_rng,Rng};
+	use rand::{Rng, rngs::OsRng};
 
 	pub fn fill_bytes(data: &mut [u8]) {
-		let mut rng = thread_rng();
-		rng.fill_bytes(data);
+		OsRng.fill(data);
 	}
 
 	pub fn rand_f32() -> f32 {
-		let mut rng = thread_rng();
-		rng.next_f32()
+		OsRng.gen()
 	}
 }
 #[cfg(not(feature = "fuzztarget"))]
