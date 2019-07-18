@@ -43,7 +43,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 use std::mem;
 
 use ln::functional_test_utils::*;
@@ -2460,7 +2459,6 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			_ => panic!("Unexpected event"),
 		};
 	}
-	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
 
@@ -2813,7 +2811,6 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
-	nodes[1].node.channel_state.lock().unwrap().next_forward = Instant::now();
 	nodes[1].node.process_pending_htlc_forwards();
 
 	let events_2 = nodes[1].node.get_and_clear_pending_events();
@@ -4463,7 +4460,6 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 	macro_rules! expect_htlc_forward {
 		($node: expr) => {{
 			expect_event!($node, Event::PendingHTLCsForwardable);
-			$node.node.channel_state.lock().unwrap().next_forward = Instant::now();
 			$node.node.process_pending_htlc_forwards();
 		}}
 	}
