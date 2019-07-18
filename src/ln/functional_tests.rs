@@ -5,7 +5,6 @@
 use chain::transaction::OutPoint;
 use chain::chaininterface::{ChainListener, ChainWatchInterface};
 use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
-use chain::keysinterface;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, BREAKDOWN_TIMEOUT};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
@@ -3225,7 +3224,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let config = UserConfig::new();
-	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
@@ -3290,7 +3289,7 @@ fn test_simple_manager_serialize_deserialize() {
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
@@ -3354,7 +3353,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::new(),
 		keys_manager,
