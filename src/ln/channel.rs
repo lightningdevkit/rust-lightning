@@ -18,7 +18,7 @@ use secp256k1;
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, LocalFeatures};
 use ln::channelmonitor::ChannelMonitor;
-use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -347,14 +347,6 @@ pub const OUR_MAX_HTLCS: u16 = 50; //TODO
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
 /// really allow for this, so instead we're stuck closing it out at that point.
 const UNCONF_THRESHOLD: u32 = 6;
-/// The amount of time we require our counterparty wait to claim their money (ie time between when
-/// we, or our watchtower, must check for them having broadcast a theft transaction).
-#[cfg(not(test))]
-const BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 7; //TODO?
-#[cfg(test)]
-pub const BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 7; //TODO?
-/// The amount of time we're willing to wait to claim money back to us
-const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 14;
 /// Exposing these two constants for use in test in ChannelMonitor
 pub const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
 pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
