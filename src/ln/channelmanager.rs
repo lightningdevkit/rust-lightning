@@ -36,7 +36,7 @@ use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
 use chain::keysinterface::KeysInterface;
 use util::config::UserConfig;
-use util::{byte_utils, events, rng};
+use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::chacha20::ChaCha20;
 use util::logger::Logger;
@@ -214,11 +214,11 @@ impl MsgHandleErrInternal {
 	}
 }
 
-/// We hold back HTLCs we intend to relay for a random interval in the range (this, 5*this). This
-/// provides some limited amount of privacy. Ideally this would range from somewhere like 1 second
-/// to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly. We could
-/// probably increase this significantly.
-const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u32 = 50;
+/// We hold back HTLCs we intend to relay for a random interval greater than this (see
+/// Event::PendingHTLCsForwardable for the API guidelines indicating how long should be waited).
+/// This provides some limited amount of privacy. Ideally this would range from somewhere like one
+/// second to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly.
+const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 
 pub(super) enum HTLCForwardInfo {
 	AddHTLC {
@@ -1486,7 +1486,7 @@ impl ChannelManager {
 
 				let mut forward_event = None;
 				if channel_state_lock.forward_htlcs.is_empty() {
-					forward_event = Some(Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS));
 				}
 				match channel_state_lock.forward_htlcs.entry(short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
@@ -2095,7 +2095,7 @@ impl ChannelManager {
 			if !pending_forwards.is_empty() {
 				let mut channel_state = self.channel_state.lock().unwrap();
 				if channel_state.forward_htlcs.is_empty() {
-					forward_event = Some(Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
+					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS))
 				}
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
