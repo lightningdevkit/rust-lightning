@@ -8,7 +8,7 @@ use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 use chain::keysinterface;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, BREAKDOWN_TIMEOUT};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash};
-use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, ManyChannelMonitor};
+use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
 use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
@@ -27,7 +27,7 @@ use bitcoin::util::bip143;
 use bitcoin::util::address::Address;
 use bitcoin::util::bip32::{ChildNumber, ExtendedPubKey, ExtendedPrivKey};
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType, OutPoint as BitcoinOutPoint};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
@@ -1694,7 +1694,7 @@ fn channel_monitor_network_test() {
 	{
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[3].chain_monitor.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
-		for i in 3..TEST_FINAL_CLTV + 2 + HTLC_FAIL_TIMEOUT_BLOCKS + 1 {
+		for i in 3..TEST_FINAL_CLTV + 2 + LATENCY_GRACE_PERIOD_BLOCKS + 1 {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[3].chain_monitor.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 		}
@@ -1870,6 +1870,7 @@ fn claim_htlc_outputs_shared_tx() {
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_blocks(&nodes[1].chain_monitor, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -1937,6 +1938,7 @@ fn claim_htlc_outputs_single_tx() {
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
 		nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
+		connect_blocks(&nodes[1].chain_monitor, ANTI_REORG_DELAY - 1, 200, true, header.bitcoin_hash());
 
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -1948,7 +1950,7 @@ fn claim_htlc_outputs_single_tx() {
 		}
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 12); // ChannelManager : 2, ChannelMontitor: 8 (1 standard revoked output, 2 revocation htlc tx, 1 local commitment tx + 1 htlc timeout tx) * 2 (block-rescan)
+		assert_eq!(node_txn.len(), 22); // ChannelManager : 2, ChannelMontitor: 8 (1 standard revoked output, 2 revocation htlc tx, 1 local commitment tx + 1 htlc timeout tx) * 2 (block-rescan) + 5 * (1 local commitment tx + 1 htlc timeout tx)
 
 		assert_eq!(node_txn[0], node_txn[7]);
 		assert_eq!(node_txn[1], node_txn[8]);
@@ -1957,6 +1959,10 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(node_txn[4], node_txn[11]);
 		assert_eq!(node_txn[3], node_txn[5]); //local commitment tx + htlc timeout tx broadcasted by ChannelManger
 		assert_eq!(node_txn[4], node_txn[6]);
+
+		for i in 12..22 {
+			if i % 2 == 0 { assert_eq!(node_txn[3], node_txn[i]); } else { assert_eq!(node_txn[4], node_txn[i]); }
+		}
 
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(node_txn[1].input.len(), 1);
@@ -2234,6 +2240,7 @@ fn test_htlc_on_chain_timeout() {
 	}
 
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![timeout_tx]}, 1);
+	connect_blocks(&nodes[1].chain_monitor, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 	check_added_monitors!(nodes[1], 0);
 	check_closed_broadcast!(nodes[1]);
 
@@ -2292,6 +2299,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1].chain_monitor, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 	check_added_monitors!(nodes[1], 0);
 	check_closed_broadcast!(nodes[1]);
 
@@ -2444,6 +2452,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1].chain_monitor, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 1 } else { 2 });
@@ -2664,8 +2673,10 @@ fn test_unconf_chan() {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		headers.push(header.clone());
 	}
+	let mut height = 99;
 	while !headers.is_empty() {
-		nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		nodes[0].node.block_disconnected(&headers.pop().unwrap(), height);
+		height -= 1;
 	}
 	check_closed_broadcast!(nodes[0]);
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -3885,6 +3896,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	check_spends!(htlc_success_txn[1], commitment_txn[0].clone());
 
 	nodes[1].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![htlc_timeout_tx] }, 200);
+	connect_blocks(&nodes[1].chain_monitor, ANTI_REORG_DELAY - 1, 200, true, header.bitcoin_hash());
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
@@ -4103,6 +4115,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	} else {
 		nodes[2].chain_monitor.block_connected_checked(&header, 1, &[&ds_prev_commitment_tx[0]], &[1; 1]);
 	}
+	connect_blocks(&nodes[2].chain_monitor, ANTI_REORG_DELAY - 1, 1, true,  header.bitcoin_hash());
 	check_closed_broadcast!(nodes[2]);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 2);
@@ -4332,7 +4345,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	// to "time out" the HTLC.
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	for i in 1..TEST_FINAL_CLTV + HTLC_FAIL_TIMEOUT_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
+	for i in 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
 		nodes[0].chain_monitor.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
 		header.prev_blockhash = header.bitcoin_hash();
 	}
@@ -4371,7 +4384,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	}
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	for i in 1..TEST_FINAL_CLTV + HTLC_FAIL_TIMEOUT_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
+	for i in 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
 		nodes[0].chain_monitor.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
 		header.prev_blockhash = header.bitcoin_hash();
 	}
@@ -4774,7 +4787,7 @@ fn test_onion_failure() {
 	}, || {}, true, Some(UPDATE|13), Some(msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id: channels[0].0.contents.short_channel_id, is_permanent: true}));
 
 	run_onion_failure_test("expiry_too_soon", 0, &nodes, &route, &payment_hash, |msg| {
-		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - HTLC_FAIL_TIMEOUT_BLOCKS + 1;
+		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].chain_monitor.block_connected_checked(&header, height, &Vec::new()[..], &[0; 0]);
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
@@ -4784,7 +4797,7 @@ fn test_onion_failure() {
 	}, false, Some(PERM|15), None);
 
 	run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, |msg| {
-		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - HTLC_FAIL_TIMEOUT_BLOCKS + 1;
+		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[2].chain_monitor.block_connected_checked(&header, height, &Vec::new()[..], &[0; 0]);
 	}, || {}, true, Some(17), None);
@@ -5495,4 +5508,273 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	};
 
 	check_added_monitors!(nodes[1], 1);
+}
+
+fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
+	// Dust-HTLC failure updates must be delayed until failure-trigger tx (in this case local commitment) reach ANTI_REORG_DELAY
+	// We can have at most two valid local commitment tx, so both cases must be covered, and both txs must be checked to get them all as
+	// HTLC could have been removed from lastest local commitment tx but still valid until we get remote RAA
+
+	let nodes = create_network(2);
+	let chan =create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+
+	// We route 2 dust-HTLCs between A and B
+	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_, payment_hash_2) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	// Cache one local commitment tx as previous
+	let as_prev_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	// Fail one HTLC to prune it in the will-be-latest-local commitment tx
+	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash_2));
+	check_added_monitors!(nodes[1], 0);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+
+	let remove = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &remove.update_fail_htlcs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &remove.commitment_signed).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	// Cache one local commitment tx as lastest
+	let as_last_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	match events[0] {
+		MessageSendEvent::SendRevokeAndACK { node_id, .. } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		MessageSendEvent::UpdateHTLCs { node_id, .. } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert_ne!(as_prev_commitment_tx, as_last_commitment_tx);
+	// Fail the 2 dust-HTLCs, move their failure in maturation buffer (htlc_updated_waiting_threshold_conf)
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	if announce_latest {
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&as_last_commitment_tx[0]], &[1; 1]);
+	} else {
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&as_prev_commitment_tx[0]], &[1; 1]);
+	}
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+	connect_blocks(&nodes[0].chain_monitor, ANTI_REORG_DELAY - 1, 1, true,  header.bitcoin_hash());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	// Only 2 PaymentFailed events should show up, over-dust HTLC has to be failed by timeout tx
+	assert_eq!(events.len(), 2);
+	let mut first_failed = false;
+	for event in events {
+		match event {
+			Event::PaymentFailed { payment_hash, .. } => {
+				if payment_hash == payment_hash_1 {
+					assert!(!first_failed);
+					first_failed = true;
+				} else {
+					assert_eq!(payment_hash, payment_hash_2);
+				}
+			}
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[test]
+fn test_failure_delay_dust_htlc_local_commitment() {
+	do_test_failure_delay_dust_htlc_local_commitment(true);
+	do_test_failure_delay_dust_htlc_local_commitment(false);
+}
+
+#[test]
+fn test_no_failure_dust_htlc_local_commitment() {
+	// Transaction filters for failing back dust htlc based on local commitment txn infos has been
+	// prone to error, we test here that a dummy transaction don't fail them.
+
+	let nodes = create_network(2);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Rebalance a bit
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+
+	let as_dust_limit = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+
+	// We route 2 dust-HTLCs between A and B
+	let (preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (preimage_2, _) = route_payment(&nodes[1], &[&nodes[0]], as_dust_limit*1000);
+
+	// Build a dummy invalid transaction trying to spend a commitment tx
+	let input = TxIn {
+		previous_output: BitcoinOutPoint { txid: chan.3.txid(), vout: 0 },
+		script_sig: Script::new(),
+		sequence: 0,
+		witness: Vec::new(),
+	};
+
+	let outp = TxOut {
+		script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
+		value: 10000,
+	};
+
+	let dummy_tx = Transaction {
+		version: 2,
+		lock_time: 0,
+		input: vec![input],
+		output: vec![outp]
+	};
+
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].chan_monitor.simple_monitor.block_connected(&header, 1, &[&dummy_tx], &[1;1]);
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
+	// We broadcast a few more block to check everything is all right
+	connect_blocks(&nodes[0].chain_monitor, 20, 1, true,  header.bitcoin_hash());
+	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
+
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], preimage_1);
+	claim_payment(&nodes[1], &vec!(&nodes[0])[..], preimage_2);
+}
+
+fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
+	// Outbound HTLC-failure updates must be cancelled if we get a reorg before we reach ANTI_REORG_DELAY.
+	// Broadcast of revoked remote commitment tx, trigger failure-update of dust/non-dust HTLCs
+	// Broadcast of remote commitment tx, trigger failure-update of dust-HTLCs
+	// Broadcast of timeout tx on remote commitment tx, trigger failure-udate of non-dust HTLCs
+	// Broadcast of local commitment tx, trigger failure-update of dust-HTLCs
+	// Broadcast of HTLC-timeout tx on local commitment tx, trigger failure-update of non-dust HTLCs
+
+	let nodes = create_network(3);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+
+	let (payment_preimage_1, dust_hash) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (payment_preimage_2, non_dust_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+
+	let as_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+	let bs_commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+
+	// We revoked bs_commitment_tx
+	if revoked {
+		let (payment_preimage_3, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
+	}
+
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut timeout_tx = Vec::new();
+	if local {
+		// We fail dust-HTLC 1 by broadcast of local commitment tx
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&as_commitment_tx[0]], &[1; 1]);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
+		let parent_hash  = connect_blocks(&nodes[0].chain_monitor, ANTI_REORG_DELAY - 1, 2, true, header.bitcoin_hash());
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { payment_hash, .. } => {
+				assert_eq!(payment_hash, dust_hash);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		// We fail non-dust-HTLC 2 by broadcast of local HTLC-timeout tx on local commitment tx
+		let header_2 = BlockHeader { version: 0x20000000, prev_blockhash: parent_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+		nodes[0].chain_monitor.block_connected_checked(&header_2, 7, &[&timeout_tx[0]], &[1; 1]);
+		let header_3 = BlockHeader { version: 0x20000000, prev_blockhash: header_2.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		connect_blocks(&nodes[0].chain_monitor, ANTI_REORG_DELAY - 1, 8, true, header_3.bitcoin_hash());
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { payment_hash, .. } => {
+				assert_eq!(payment_hash, non_dust_hash);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	} else {
+		// We fail dust-HTLC 1 by broadcast of remote commitment tx. If revoked, fail also non-dust HTLC
+		nodes[0].chain_monitor.block_connected_checked(&header, 1, &[&bs_commitment_tx[0]], &[1; 1]);
+		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
+		let parent_hash  = connect_blocks(&nodes[0].chain_monitor, ANTI_REORG_DELAY - 1, 2, true, header.bitcoin_hash());
+		let header_2 = BlockHeader { version: 0x20000000, prev_blockhash: parent_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		if !revoked {
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { payment_hash, .. } => {
+					assert_eq!(payment_hash, dust_hash);
+				},
+				_ => panic!("Unexpected event"),
+			}
+			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+			// We fail non-dust-HTLC 2 by broadcast of local timeout tx on remote commitment tx
+			nodes[0].chain_monitor.block_connected_checked(&header_2, 7, &[&timeout_tx[0]], &[1; 1]);
+			assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+			let header_3 = BlockHeader { version: 0x20000000, prev_blockhash: header_2.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			connect_blocks(&nodes[0].chain_monitor, ANTI_REORG_DELAY - 1, 8, true, header_3.bitcoin_hash());
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { payment_hash, .. } => {
+					assert_eq!(payment_hash, non_dust_hash);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		} else {
+			// If revoked, both dust & non-dust HTLCs should have been failed after ANTI_REORG_DELAY confs of revoked
+			// commitment tx
+			let events = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 2);
+			let first;
+			match events[0] {
+				Event::PaymentFailed { payment_hash, .. } => {
+					if payment_hash == dust_hash { first = true; }
+					else { first = false; }
+				},
+				_ => panic!("Unexpected event"),
+			}
+			match events[1] {
+				Event::PaymentFailed { payment_hash, .. } => {
+					if first { assert_eq!(payment_hash, non_dust_hash); }
+					else { assert_eq!(payment_hash, dust_hash); }
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+	}
+}
+
+#[test]
+fn test_sweep_outbound_htlc_failure_update() {
+	do_test_sweep_outbound_htlc_failure_update(false, true);
+	do_test_sweep_outbound_htlc_failure_update(false, false);
+	do_test_sweep_outbound_htlc_failure_update(true, false);
 }

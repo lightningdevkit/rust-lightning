@@ -28,7 +28,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, HTLC_FAIL_TIMEOUT_BLOCKS, HTLC_FAIL_ANTI_REORG_DELAY};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use ln::router::Route;
 use ln::msgs;
 use ln::onion_utils;
@@ -348,20 +348,21 @@ pub struct ChannelManager {
 const CLTV_EXPIRY_DELTA: u16 = 6 * 12; //TODO?
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
-// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + 2*HTLC_FAIL_TIMEOUT_BLOCKS +
-// HTLC_FAIL_ANTI_REORG_DELAY, ie that if the next-hop peer fails the HTLC within
-// HTLC_FAIL_TIMEOUT_BLOCKS then we'll still have HTLC_FAIL_TIMEOUT_BLOCKS left to fail it
-// backwards ourselves before hitting the CLTV_CLAIM_BUFFER point and failing the channel
-// on-chain to time out the HTLC.
+// Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
+// ie that if the next-hop peer fails the HTLC within
+// LATENCY_GRACE_PERIOD_BLOCKS then we'll still have CLTV_CLAIM_BUFFER left to timeout it onchain,
+// then waiting ANTI_REORG_DELAY to be reorg-safe on the outbound HLTC and
+// failing the corresponding htlc backward, and us now seeing the last block of ANTI_REORG_DELAY before
+// LATENCY_GRACE_PERIOD_BLOCKS.
 #[deny(const_err)]
 #[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - 2*HTLC_FAIL_TIMEOUT_BLOCKS - CLTV_CLAIM_BUFFER - HTLC_FAIL_ANTI_REORG_DELAY;
+const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - CLTV_CLAIM_BUFFER - ANTI_REORG_DELAY - LATENCY_GRACE_PERIOD_BLOCKS;
 
 // Check for ability of an attacker to make us fail on-chain by delaying inbound claim. See
 // ChannelMontior::would_broadcast_at_height for a description of why this is needed.
 #[deny(const_err)]
 #[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - HTLC_FAIL_TIMEOUT_BLOCKS - 2*CLTV_CLAIM_BUFFER;
+const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
 macro_rules! secp_call {
 	( $res: expr, $err: expr ) => {
@@ -841,7 +842,7 @@ impl ChannelManager {
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
 				// OUR PAYMENT!
 				// final_expiry_too_soon
-				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS) as u64 {
+				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount
@@ -933,8 +934,8 @@ impl ChannelManager {
 						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
 					}
 					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-					// We want to have at least HTLC_FAIL_TIMEOUT_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
-					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + HTLC_FAIL_TIMEOUT_BLOCKS as u32 { // expiry_too_soon
+					// We want to have at least LATENCY_GRACE_PERIOD_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
+					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS as u32 { // expiry_too_soon
 						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
@@ -2489,7 +2490,7 @@ impl ChainListener for ChannelManager {
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
-	fn block_disconnected(&self, header: &BlockHeader) {
+	fn block_disconnected(&self, header: &BlockHeader, _: u32) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{

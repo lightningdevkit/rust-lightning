@@ -9,6 +9,7 @@ use std::hash::Hash;
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::transaction::OutPoint;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
@@ -420,5 +421,24 @@ impl<R, T> Readable<R> for Option<T>
 			1 => Ok(Some(Readable::read(r)?)),
 			_ => return Err(DecodeError::InvalidValue),
 		}
+	}
+}
+
+impl Writeable for OutPoint {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.txid.write(w)?;
+		self.vout.write(w)?;
+		Ok(())
+	}
+}
+
+impl<R: Read> Readable<R> for OutPoint {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let txid = Readable::read(r)?;
+		let vout = Readable::read(r)?;
+		Ok(OutPoint {
+			txid,
+			vout,
+		})
 	}
 }

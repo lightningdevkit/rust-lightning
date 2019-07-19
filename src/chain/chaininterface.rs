@@ -78,7 +78,8 @@ pub trait ChainListener: Sync + Send {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
-	fn block_disconnected(&self, header: &BlockHeader);
+	/// Height must be the one of the block which was disconnected (not new height of the best chain)
+	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32);
 }
 
 /// An enum that represents the speed at which we want a transaction to confirm used for feerate
@@ -279,11 +280,11 @@ impl ChainWatchInterfaceUtil {
 	}
 
 	/// Notify listeners that a block was disconnected.
-	pub fn block_disconnected(&self, header: &BlockHeader) {
+	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
 			match listener.upgrade() {
-				Some(arc) => arc.block_disconnected(header),
+				Some(arc) => arc.block_disconnected(&header, disconnected_height),
 				None => ()
 			}
 		}
