@@ -1768,7 +1768,7 @@ impl ChannelMonitor {
 			None => return (None, None),
 			Some(their_delayed_payment_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &their_delayed_payment_base_key)),
 		};
-		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.their_to_self_delay.unwrap(), &delayed_key);
+		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
 		let htlc_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 
