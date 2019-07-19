@@ -20,6 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
 
+use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
+use bitcoin_hashes::{HashEngine, Hash};
+
 /// Provides references to trait impls which handle different types of messages.
 pub struct MessageHandler {
 	/// A message handler which handles messages specific to channels. Usually this is just a
@@ -151,12 +155,25 @@ impl<Descriptor: SocketDescriptor> PeerHolder<Descriptor> {
 	}
 }
 
+#[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
+fn _check_usize_is_32_or_64() {
+	// See below, less than 32 bit pointers may be unsafe here!
+	unsafe { mem::transmute::<*const usize, [u8; 4]>(panic!()); }
+}
+
 /// A PeerManager manages a set of peers, described by their SocketDescriptor and marshalls socket
 /// events into messages which it passes on to its MessageHandlers.
 pub struct PeerManager<Descriptor: SocketDescriptor> {
 	message_handler: MessageHandler,
 	peers: Mutex<PeerHolder<Descriptor>>,
 	our_node_secret: SecretKey,
+	ephemeral_key_midstate: Sha256Engine,
+
+	// Usize needs to be at least 32 bits to avoid overflowing both low and high. If usize is 64
+	// bits we will never realistically count into high:
+	peer_counter_low: AtomicUsize,
+	peer_counter_high: AtomicUsize,
+
 	initial_syncs_sent: AtomicUsize,
 	logger: Arc<Logger>,
 }
@@ -188,7 +205,12 @@ const INITIAL_SYNCS_TO_SEND: usize = 5;
 /// PeerIds may repeat, but only after disconnect_event() has been called.
 impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
-	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, logger: Arc<Logger>) -> PeerManager<Descriptor> {
+	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// cryptographically secure random bytes.
+	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: Arc<Logger>) -> PeerManager<Descriptor> {
+		let mut ephemeral_key_midstate = Sha256::engine();
+		ephemeral_key_midstate.input(ephemeral_random_data);
+
 		PeerManager {
 			message_handler: message_handler,
 			peers: Mutex::new(PeerHolder {
@@ -197,6 +219,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 				node_id_to_descriptor: HashMap::new()
 			}),
 			our_node_secret: our_node_secret,
+			ephemeral_key_midstate,
+			peer_counter_low: AtomicUsize::new(0),
+			peer_counter_high: AtomicUsize::new(0),
 			initial_syncs_sent: AtomicUsize::new(0),
 			logger,
 		}
@@ -217,6 +242,19 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		}).collect()
 	}
 
+	fn get_ephemeral_key(&self) -> SecretKey {
+		let mut ephemeral_hash = self.ephemeral_key_midstate.clone();
+		let low = self.peer_counter_low.fetch_add(1, Ordering::AcqRel);
+		let high = if low == 0 {
+			self.peer_counter_high.fetch_add(1, Ordering::AcqRel)
+		} else {
+			self.peer_counter_high.load(Ordering::Acquire)
+		};
+		ephemeral_hash.input(&byte_utils::le64_to_array(low as u64));
+		ephemeral_hash.input(&byte_utils::le64_to_array(high as u64));
+		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).into_inner()).expect("You broke SHA-256!")
+	}
+
 	/// Indicates a new outbound connection has been established to a node with the given node_id.
 	/// Note that if an Err is returned here you MUST NOT call disconnect_event for the new
 	/// descriptor but must disconnect the connection immediately.
@@ -226,7 +264,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
-		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone());
+		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
 		let res = peer_encryptor.get_act_one().to_vec();
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act two is 50 bytes
 
@@ -517,7 +555,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let next_step = peer.channel_encryptor.get_noise_step();
 							match next_step {
 								NextNoiseStep::ActOne => {
-									let act_two = try_potential_handleerror!(peer.channel_encryptor.process_act_one_with_key(&peer.pending_read_buffer[..], &self.our_node_secret)).to_vec();
+									let act_two = try_potential_handleerror!(peer.channel_encryptor.process_act_one_with_keys(&peer.pending_read_buffer[..], &self.our_node_secret, self.get_ephemeral_key())).to_vec();
 									peer.pending_outbound_buffer.push_back(act_two);
 									peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 								},
@@ -1096,6 +1134,8 @@ mod tests {
 		let mut peers = Vec::new();
 		let mut rng = thread_rng();
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let mut ephemeral_bytes = [0; 32];
+		rng.fill_bytes(&mut ephemeral_bytes);
 
 		for _ in 0..peer_count {
 			let chan_handler = test_utils::TestChannelMessageHandler::new();
@@ -1106,7 +1146,7 @@ mod tests {
 				SecretKey::from_slice(&key_slice).unwrap()
 			};
 			let msg_handler = MessageHandler { chan_handler: Arc::new(chan_handler), route_handler: Arc::new(router) };
-			let peer = PeerManager::new(msg_handler, node_id, Arc::clone(&logger));
+			let peer = PeerManager::new(msg_handler, node_id, &ephemeral_bytes, Arc::clone(&logger));
 			peers.push(peer);
 		}
 

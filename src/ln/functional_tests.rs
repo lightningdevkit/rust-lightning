@@ -18,7 +18,6 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
-use util::rng;
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -43,6 +42,8 @@ use std::default::Default;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::mem;
+
+use rand::{thread_rng, Rng};
 
 use ln::functional_test_utils::*;
 
@@ -1191,7 +1192,6 @@ fn duplicate_htlc_test() {
 }
 
 fn do_channel_reserve_test(test_recv: bool) {
-	use util::rng;
 	use std::sync::atomic::Ordering;
 	use ln::msgs::HandleError;
 
@@ -1308,7 +1308,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 		let secp_ctx = Secp256k1::new();
 		let session_priv = SecretKey::from_slice(&{
 			let mut session_key = [0; 32];
-			rng::fill_bytes(&mut session_key);
+			let mut rng = thread_rng();
+			rng.fill_bytes(&mut session_key);
 			session_key
 		}).expect("RNG is bad!");
 
@@ -5082,7 +5083,8 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	let session_priv = SecretKey::from_slice(&{
 		let mut session_key = [0; 32];
-		rng::fill_bytes(&mut session_key);
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut session_key);
 		session_key
 	}).expect("RNG is bad!");
 
