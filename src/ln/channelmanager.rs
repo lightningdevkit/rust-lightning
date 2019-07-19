@@ -46,7 +46,7 @@ use std::collections::{HashMap, hash_map, HashSet};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Instant,Duration};
+use std::time::Duration;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -247,7 +247,6 @@ pub(super) enum RAACommitmentOrder {
 pub(super) struct ChannelHolder {
 	pub(super) by_id: HashMap<[u8; 32], Channel>,
 	pub(super) short_to_id: HashMap<u64, [u8; 32]>,
-	pub(super) next_forward: Instant,
 	/// short channel id -> forward infos. Key of 0 means payments received
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
@@ -266,7 +265,6 @@ pub(super) struct ChannelHolder {
 pub(super) struct MutChannelHolder<'a> {
 	pub(super) by_id: &'a mut HashMap<[u8; 32], Channel>,
 	pub(super) short_to_id: &'a mut HashMap<u64, [u8; 32]>,
-	pub(super) next_forward: &'a mut Instant,
 	pub(super) forward_htlcs: &'a mut HashMap<u64, Vec<HTLCForwardInfo>>,
 	pub(super) claimable_htlcs: &'a mut HashMap<PaymentHash, Vec<(u64, HTLCPreviousHopData)>>,
 	pub(super) pending_msg_events: &'a mut Vec<events::MessageSendEvent>,
@@ -276,7 +274,6 @@ impl ChannelHolder {
 		MutChannelHolder {
 			by_id: &mut self.by_id,
 			short_to_id: &mut self.short_to_id,
-			next_forward: &mut self.next_forward,
 			forward_htlcs: &mut self.forward_htlcs,
 			claimable_htlcs: &mut self.claimable_htlcs,
 			pending_msg_events: &mut self.pending_msg_events,
@@ -549,7 +546,6 @@ impl ChannelManager {
 			channel_state: Mutex::new(ChannelHolder{
 				by_id: HashMap::new(),
 				short_to_id: HashMap::new(),
-				next_forward: Instant::now(),
 				forward_htlcs: HashMap::new(),
 				claimable_htlcs: HashMap::new(),
 				pending_msg_events: Vec::new(),
@@ -1184,10 +1180,6 @@ impl ChannelManager {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 
-			if cfg!(not(feature = "fuzztarget")) && Instant::now() < *channel_state.next_forward {
-				return;
-			}
-
 			for (short_chan_id, mut pending_forwards) in channel_state.forward_htlcs.drain() {
 				if short_chan_id != 0 {
 					let forward_chan_id = match channel_state.short_to_id.get(&short_chan_id) {
@@ -1467,8 +1459,7 @@ impl ChannelManager {
 
 				let mut forward_event = None;
 				if channel_state_lock.forward_htlcs.is_empty() {
-					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
-					channel_state_lock.next_forward = forward_event.unwrap();
+					forward_event = Some(Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
 				}
 				match channel_state_lock.forward_htlcs.entry(short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
@@ -2077,8 +2068,7 @@ impl ChannelManager {
 			if !pending_forwards.is_empty() {
 				let mut channel_state = self.channel_state.lock().unwrap();
 				if channel_state.forward_htlcs.is_empty() {
-					forward_event = Some(Instant::now() + Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
-					channel_state.next_forward = forward_event.unwrap();
+					forward_event = Some(Duration::from_millis(((rng::rand_f32() * 4.0 + 1.0) * MIN_HTLC_RELAY_HOLDING_CELL_MILLIS as f32) as u64));
 				}
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
 					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
@@ -3087,7 +3077,6 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,
 				short_to_id,
-				next_forward: Instant::now(),
 				forward_htlcs,
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),

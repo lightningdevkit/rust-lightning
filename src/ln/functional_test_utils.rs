@@ -32,7 +32,6 @@ use std::collections::HashMap;
 use std::default::Default;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use std::mem;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
@@ -536,8 +535,6 @@ macro_rules! expect_pending_htlcs_forwardable {
 			Event::PendingHTLCsForwardable { .. } => { },
 			_ => panic!("Unexpected event"),
 		};
-		let node_ref: &Node = &$node;
-		node_ref.node.channel_state.lock().unwrap().next_forward = Instant::now();
 		$node.node.process_pending_htlc_forwards();
 	}}
 }
