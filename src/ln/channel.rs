@@ -317,7 +317,7 @@ pub(super) struct Channel {
 	their_htlc_minimum_msat: u64,
 	our_htlc_minimum_msat: u64,
 	their_to_self_delay: u16,
-	//implied by BREAKDOWN_TIMEOUT: our_to_self_delay: u16,
+	our_to_self_delay: u16,
 	#[cfg(test)]
 	pub their_max_accepted_htlcs: u16,
 	#[cfg(not(test))]
@@ -413,6 +413,9 @@ impl Channel {
 		if push_msat > channel_value_satoshis * 1000 {
 			return Err(APIError::APIMisuseError{err: "push value > channel value"});
 		}
+		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
+			return Err(APIError::APIMisuseError{err: "Configured with an unreasonable our_to_self_delay putting user funds at risks"});
+		}
 
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
@@ -424,7 +427,7 @@ impl Channel {
 
 		let secp_ctx = Secp256k1::new();
 		let channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key, &chan_keys.delayed_payment_base_key,
-		                                          &chan_keys.htlc_base_key, &chan_keys.payment_base_key, &keys_provider.get_shutdown_pubkey(), BREAKDOWN_TIMEOUT,
+		                                          &chan_keys.htlc_base_key, &chan_keys.payment_base_key, &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
 		                                          keys_provider.get_destination_script(), logger.clone());
 
 		Ok(Channel {
@@ -481,6 +484,7 @@ impl Channel {
 			their_htlc_minimum_msat: 0,
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(feerate),
 			their_to_self_delay: 0,
+			our_to_self_delay: config.own_channel_config.our_to_self_delay,
 			their_max_accepted_htlcs: 0,
 			minimum_depth: 0, // Filled in in accept_channel
 
@@ -518,6 +522,10 @@ impl Channel {
 		let chan_keys = keys_provider.get_channel_keys(true);
 		let mut local_config = (*config).channel_options.clone();
 
+		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
+			return Err(ChannelError::Close("Configured with an unreasonable our_to_self_delay putting user funds at risks"));
+		}
+
 		// Check sanity of message fields:
 		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(ChannelError::Close("funding value > 2^24"));
@@ -539,7 +547,7 @@ impl Channel {
 		}
 		Channel::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 
-		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
+		if msg.to_self_delay > config.peer_channel_config_limits.their_to_self_delay || msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
@@ -612,7 +620,7 @@ impl Channel {
 
 		let secp_ctx = Secp256k1::new();
 		let mut channel_monitor = ChannelMonitor::new(&chan_keys.revocation_base_key, &chan_keys.delayed_payment_base_key,
-		                                              &chan_keys.htlc_base_key, &chan_keys.payment_base_key, &keys_provider.get_shutdown_pubkey(), BREAKDOWN_TIMEOUT,
+		                                              &chan_keys.htlc_base_key, &chan_keys.payment_base_key, &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
 		                                              keys_provider.get_destination_script(), logger.clone());
 		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
 		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
@@ -692,6 +700,7 @@ impl Channel {
 			their_htlc_minimum_msat: msg.htlc_minimum_msat,
 			our_htlc_minimum_msat: Channel::derive_our_htlc_minimum_msat(msg.feerate_per_kw as u64),
 			their_to_self_delay: msg.to_self_delay,
+			our_to_self_delay: config.own_channel_config.our_to_self_delay,
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
 			minimum_depth: config.own_channel_config.minimum_depth,
 
@@ -927,7 +936,7 @@ impl Channel {
 			log_trace!(self, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
 			txouts.push((TxOut {
 				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
-				                                                       if local { self.their_to_self_delay } else { BREAKDOWN_TIMEOUT },
+				                                                       if local { self.their_to_self_delay } else { self.our_to_self_delay },
 				                                                       &keys.a_delayed_payment_key).to_v0_p2wsh(),
 				value: value_to_a as u64
 			}, None));
@@ -1126,7 +1135,7 @@ impl Channel {
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
 	fn build_htlc_transaction(&self, prev_hash: &Sha256dHash, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u64) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { BREAKDOWN_TIMEOUT }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
+		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
 	}
 
 	fn create_htlc_tx_signature(&self, tx: &Transaction, htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Result<(Script, Signature, bool), ChannelError> {
@@ -1380,7 +1389,7 @@ impl Channel {
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(ChannelError::Close("Minimum htlc value is full channel value"));
 		}
-		if msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
+		if msg.to_self_delay > config.peer_channel_config_limits.their_to_self_delay || msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
@@ -3064,7 +3073,7 @@ impl Channel {
 			channel_reserve_satoshis: Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
 			feerate_per_kw: fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u32,
-			to_self_delay: BREAKDOWN_TIMEOUT,
+			to_self_delay: self.our_to_self_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key),
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.revocation_base_key),
@@ -3097,7 +3106,7 @@ impl Channel {
 			channel_reserve_satoshis: Channel::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
 			minimum_depth: self.minimum_depth,
-			to_self_delay: BREAKDOWN_TIMEOUT,
+			to_self_delay: self.our_to_self_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.funding_key),
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, &self.local_keys.revocation_base_key),
@@ -3746,6 +3755,7 @@ impl Writeable for Channel {
 		self.their_htlc_minimum_msat.write(writer)?;
 		self.our_htlc_minimum_msat.write(writer)?;
 		self.their_to_self_delay.write(writer)?;
+		self.our_to_self_delay.write(writer)?;
 		self.their_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
@@ -3907,6 +3917,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 		let their_htlc_minimum_msat = Readable::read(reader)?;
 		let our_htlc_minimum_msat = Readable::read(reader)?;
 		let their_to_self_delay = Readable::read(reader)?;
+		let our_to_self_delay = Readable::read(reader)?;
 		let their_max_accepted_htlcs = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
@@ -3984,6 +3995,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			their_htlc_minimum_msat,
 			our_htlc_minimum_msat,
 			their_to_self_delay,
+			our_to_self_delay,
 			their_max_accepted_htlcs,
 			minimum_depth,
 
