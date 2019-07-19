@@ -34,7 +34,6 @@ use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
-use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 
@@ -292,8 +291,6 @@ impl KeysInterface for KeyProvider {
 
 #[inline]
 pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
-	reset_rng_state();
-
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),

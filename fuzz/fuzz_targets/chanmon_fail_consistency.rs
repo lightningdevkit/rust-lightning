@@ -37,7 +37,7 @@ use lightning::ln::channelmonitor::{ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage};
 use lightning::ln::router::{Route, RouteHop};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, HandleError, UpdateAddHTLC, LocalFeatures};
-use lightning::util::{reset_rng_state, events};
+use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider, MessageSendEventsProvider};
@@ -136,8 +136,6 @@ impl KeysInterface for KeyProvider {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	reset_rng_state();
-
 	let fee_est = Arc::new(FuzzEstimator{});
 	let broadcast = Arc::new(TestBroadcaster{});
 
