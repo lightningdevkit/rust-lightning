@@ -205,6 +205,9 @@ pub fn do_test(data: &[u8]) {
 								remote_network_id: get_pubkey!(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
+								inbound_capacity_msat: 0,
+								is_live: true,
+								outbound_capacity_msat: 0,
 							});
 						}
 						Some(&first_hops_vec[..])
