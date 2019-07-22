@@ -31,6 +31,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use ln::router::Route;
 use ln::msgs;
+use ln::msgs::LocalFeatures;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
 use chain::keysinterface::KeysInterface;
@@ -1702,12 +1703,12 @@ impl ChannelManager {
 		}
 	}
 
-	fn internal_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
+	fn internal_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
 		if msg.chain_hash != self.genesis_hash {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), msg, 0, Arc::clone(&self.logger), &self.default_configuration)
+		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_local_features, msg, 0, Arc::clone(&self.logger), &self.default_configuration)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
@@ -1724,7 +1725,7 @@ impl ChannelManager {
 		Ok(())
 	}
 
-	fn internal_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
+	fn internal_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
 		let (value, output_script, user_id) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_lock.borrow_parts();
@@ -1734,7 +1735,7 @@ impl ChannelManager {
 						//TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
-					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration), channel_state, chan);
+					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, their_local_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
 				//TODO: same as above
@@ -2525,14 +2526,14 @@ impl ChainListener for ChannelManager {
 
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_open_channel(their_node_id, msg))
+		handle_error!(self, self.internal_open_channel(their_node_id, their_local_features, msg))
 	}
 
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_accept_channel(their_node_id, msg))
+		handle_error!(self, self.internal_accept_channel(their_node_id, their_local_features, msg))
 	}
 
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), HandleError> {

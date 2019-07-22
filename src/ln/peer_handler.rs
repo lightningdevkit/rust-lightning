@@ -587,10 +587,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													log_info!(self, "Peer local features required data_loss_protect");
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
-												if msg.local_features.requires_upfront_shutdown_script() {
-													log_info!(self, "Peer local features required upfront_shutdown_script");
-													return Err(PeerHandleError{ no_connection_possible: true });
-												}
 												if peer.their_global_features.is_some() {
 													return Err(PeerHandleError{ no_connection_possible: false });
 												}
@@ -659,11 +655,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Channel control:
 											32 => {
 												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), &msg));
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg));
 											},
 											33 => {
 												let msg = try_potential_decodeerror!(msgs::AcceptChannel::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), &msg));
+												try_potential_handleerror!(self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg));
 											},
 
 											34 => {

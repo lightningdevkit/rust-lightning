@@ -36,7 +36,7 @@ use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage};
 use lightning::ln::router::{Route, RouteHop};
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, HandleError, UpdateAddHTLC};
+use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, HandleError, UpdateAddHTLC, LocalFeatures};
 use lightning::util::{reset_rng_state, fill_bytes, events};
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -168,7 +168,7 @@ pub fn do_test(data: &[u8]) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$dest.handle_open_channel(&$source.get_our_node_id(), &open_channel).unwrap();
+			$dest.handle_open_channel(&$source.get_our_node_id(), LocalFeatures::new(), &open_channel).unwrap();
 			let accept_channel = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -177,7 +177,7 @@ pub fn do_test(data: &[u8]) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$source.handle_accept_channel(&$dest.get_our_node_id(), &accept_channel).unwrap();
+			$source.handle_accept_channel(&$dest.get_our_node_id(), LocalFeatures::new(), &accept_channel).unwrap();
 			{
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
