@@ -94,6 +94,7 @@ impl LocalFeatures {
 	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (3 << 4)) != 0
 	}
+	#[cfg(test)]
 	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
 		self.flags[0] ^= 1 << 4;
 	}

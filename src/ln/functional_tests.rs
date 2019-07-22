@@ -5664,8 +5664,8 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 
 	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
 
-	let (payment_preimage_1, dust_hash) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
-	let (payment_preimage_2, non_dust_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (_payment_preimage_1, dust_hash) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_payment_preimage_2, non_dust_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	let as_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
 	let bs_commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
