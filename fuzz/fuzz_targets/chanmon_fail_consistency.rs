@@ -49,6 +49,7 @@ use utils::test_logger;
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::Secp256k1;
 
+use std::mem;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc,Mutex};
@@ -286,8 +287,8 @@ pub fn do_test(data: &[u8]) {
 
 	let mut chan_a_disconnected = false;
 	let mut chan_b_disconnected = false;
-	let mut chan_a_reconnecting = false;
-	let mut chan_b_reconnecting = false;
+	let mut ba_events = Vec::new();
+	let mut bc_events = Vec::new();
 
 	macro_rules! test_err {
 		($res: expr) => {
@@ -363,13 +364,18 @@ pub fn do_test(data: &[u8]) {
 
 		macro_rules! process_msg_events {
 			($node: expr, $corrupt_forward: expr) => { {
-				for event in nodes[$node].get_and_clear_pending_msg_events() {
+				let events = if $node == 1 {
+					let mut new_events = Vec::new();
+					mem::swap(&mut new_events, &mut ba_events);
+					new_events.extend_from_slice(&bc_events[..]);
+					bc_events.clear();
+					new_events
+				} else { Vec::new() };
+				for event in events.iter().chain(nodes[$node].get_and_clear_pending_msg_events().iter()) {
 					match event {
 						events::MessageSendEvent::UpdateHTLCs { ref node_id, updates: CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-							for (idx, dest) in nodes.iter().enumerate() {
-								if dest.get_our_node_id() == *node_id &&
-										(($node != 0 && idx != 0) || !chan_a_disconnected) &&
-										(($node != 2 && idx != 2) || !chan_b_disconnected) {
+							for dest in nodes.iter() {
+								if dest.get_our_node_id() == *node_id {
 									assert!(update_fee.is_none());
 									for update_add in update_add_htlcs {
 										if !$corrupt_forward {
@@ -399,25 +405,16 @@ pub fn do_test(data: &[u8]) {
 							}
 						},
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-							for (idx, dest) in nodes.iter().enumerate() {
-								if dest.get_our_node_id() == *node_id &&
-										(($node != 0 && idx != 0) || !chan_a_disconnected) &&
-										(($node != 2 && idx != 2) || !chan_b_disconnected) {
+							for dest in nodes.iter() {
+								if dest.get_our_node_id() == *node_id {
 									test_err!(dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg));
 								}
 							}
 						},
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
-							for (idx, dest) in nodes.iter().enumerate() {
+							for dest in nodes.iter() {
 								if dest.get_our_node_id() == *node_id {
 									test_err!(dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg));
-									if $node == 0 || idx == 0 {
-										chan_a_reconnecting = false;
-										chan_a_disconnected = false;
-									} else {
-										chan_b_reconnecting = false;
-										chan_b_disconnected = false;
-									}
 								}
 							}
 						},
@@ -430,6 +427,56 @@ pub fn do_test(data: &[u8]) {
 						},
 						_ => panic!("Unhandled message event"),
 					}
+				}
+			} }
+		}
+
+		macro_rules! drain_msg_events_on_disconnect {
+			($counterparty_id: expr) => { {
+				if $counterparty_id == 0 {
+					for event in nodes[0].get_and_clear_pending_msg_events() {
+						match event {
+							events::MessageSendEvent::UpdateHTLCs { .. } => {},
+							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
+							events::MessageSendEvent::SendChannelReestablish { .. } => {},
+							events::MessageSendEvent::SendFundingLocked { .. } => {},
+							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							_ => panic!("Unhandled message event"),
+						}
+					}
+					ba_events.clear();
+				} else {
+					for event in nodes[2].get_and_clear_pending_msg_events() {
+						match event {
+							events::MessageSendEvent::UpdateHTLCs { .. } => {},
+							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
+							events::MessageSendEvent::SendChannelReestablish { .. } => {},
+							events::MessageSendEvent::SendFundingLocked { .. } => {},
+							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							_ => panic!("Unhandled message event"),
+						}
+					}
+					bc_events.clear();
+				}
+				let mut events = nodes[1].get_and_clear_pending_msg_events();
+				let drop_node_id = if $counterparty_id == 0 { nodes[0].get_our_node_id() } else { nodes[2].get_our_node_id() };
+				let msg_sink = if $counterparty_id == 0 { &mut bc_events } else { &mut ba_events };
+				for event in events.drain(..) {
+					let push = match event {
+						events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
+							if *node_id != drop_node_id { true } else { false }
+						},
+						events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
+							if *node_id != drop_node_id { true } else { false }
+						},
+						events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
+							if *node_id != drop_node_id { true } else { false }
+						},
+						events::MessageSendEvent::SendFundingLocked { .. } => false,
+						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
+						_ => panic!("Unhandled message event"),
+					};
+					if push { msg_sink.push(event); }
 				}
 			} }
 		}
@@ -500,6 +547,7 @@ pub fn do_test(data: &[u8]) {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
 					chan_a_disconnected = true;
+					drain_msg_events_on_disconnect!(0);
 				}
 			},
 			0x10 => {
@@ -507,20 +555,21 @@ pub fn do_test(data: &[u8]) {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					chan_b_disconnected = true;
+					drain_msg_events_on_disconnect!(2);
 				}
 			},
 			0x11 => {
-				if chan_a_disconnected && !chan_a_reconnecting {
+				if chan_a_disconnected {
 					nodes[0].peer_connected(&nodes[1].get_our_node_id());
 					nodes[1].peer_connected(&nodes[0].get_our_node_id());
-					chan_a_reconnecting = true;
+					chan_a_disconnected = false;
 				}
 			},
 			0x12 => {
-				if chan_b_disconnected && !chan_b_reconnecting {
+				if chan_b_disconnected {
 					nodes[1].peer_connected(&nodes[2].get_our_node_id());
 					nodes[2].peer_connected(&nodes[1].get_our_node_id());
-					chan_b_reconnecting = true;
+					chan_b_disconnected = false;
 				}
 			},
 			0x13 => process_msg_events!(0, true),
