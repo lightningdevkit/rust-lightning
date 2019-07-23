@@ -4,11 +4,11 @@
 
 use chain::transaction::OutPoint;
 use chain::chaininterface::{ChainListener, ChainWatchInterface};
-use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
+use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor, KeysManager};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
-use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
+use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT, Channel, ChannelError};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
 use ln::msgs;
@@ -1727,7 +1727,15 @@ fn channel_monitor_network_test() {
 fn test_justice_tx() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
 
-	let nodes = create_network(2, &[None, None]);
+	let mut alice_config = UserConfig::new();
+	alice_config.channel_options.announced_channel = true;
+	alice_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	alice_config.own_channel_config.our_to_self_delay = 6 * 24 * 5;
+	let mut bob_config = UserConfig::new();
+	bob_config.channel_options.announced_channel = true;
+	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	bob_config.own_channel_config.our_to_self_delay = 6 * 24 * 3;
+	let nodes = create_network(2, &[Some(alice_config), Some(bob_config)]);
 	// Create some new channels:
 	let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
 
@@ -5878,4 +5886,62 @@ fn test_upfront_shutdown_script() {
 		MessageSendEvent::SendClosingSigned { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
 		_ => panic!("Unexpected event"),
 	}
+}
+
+#[test]
+fn test_user_configurable_csv_delay() {
+	// We test our channel constructors yield errors when we pass them absurd csv delay
+
+	let mut low_our_to_self_config = UserConfig::new();
+	low_our_to_self_config.own_channel_config.our_to_self_delay = 6;
+	let mut high_their_to_self_config = UserConfig::new();
+	high_their_to_self_config.peer_channel_config_limits.their_to_self_delay = 100;
+	let nodes = create_network(2, &[Some(high_their_to_self_config.clone()), None]);
+
+	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
+	let keys_manager: Arc<KeysInterface> = Arc::new(KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new()), 10, 20));
+	if let Err(error) = Channel::new_outbound(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
+		match error {
+			APIError::APIMisuseError { err } => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
+			_ => panic!("Unexpected event"),
+		}
+	} else { assert!(false) }
+
+	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_from_req()
+	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
+	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
+	open_channel.to_self_delay = 200;
+	if let Err(error) = Channel::new_from_req(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), LocalFeatures::new(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
+		match error {
+			ChannelError::Close(err) => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
+			_ => panic!("Unexpected event"),
+		}
+	} else { assert!(false); }
+
+	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Chanel::accept_channel()
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), LocalFeatures::new(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id())).unwrap();
+	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	accept_channel.to_self_delay = 200;
+	if let Err(error) = nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), LocalFeatures::new(), &accept_channel) {
+		if let Some(error) = error.action {
+			match error {
+				ErrorAction::SendErrorMessage { msg } => {
+					assert_eq!(msg.data,"They wanted our payments to be delayed by a needlessly long period");
+				},
+				_ => { assert!(false); }
+			}
+		} else { assert!(false); }
+	} else { assert!(false); }
+
+	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Channel::new_from_req()
+	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
+	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
+	open_channel.to_self_delay = 200;
+	if let Err(error) = Channel::new_from_req(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), LocalFeatures::new(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &high_their_to_self_config) {
+		match error {
+			ChannelError::Close(err) => { assert_eq!(err, "They wanted our payments to be delayed by a needlessly long period"); },
+			_ => panic!("Unexpected event"),
+		}
+	} else { assert!(false); }
 }
