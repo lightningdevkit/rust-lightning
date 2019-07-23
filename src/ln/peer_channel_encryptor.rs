@@ -10,7 +10,7 @@ use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
-use util::{byte_utils,rng};
+use util::byte_utils;
 
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
@@ -70,12 +70,8 @@ pub struct PeerChannelEncryptor {
 }
 
 impl PeerChannelEncryptor {
-	pub fn new_outbound(their_node_id: PublicKey) -> PeerChannelEncryptor {
-		let mut key = [0u8; 32];
-		rng::fill_bytes(&mut key);
-
+	pub fn new_outbound(their_node_id: PublicKey, ephemeral_key: SecretKey) -> PeerChannelEncryptor {
 		let secp_ctx = Secp256k1::signing_only();
-		let sec_key = SecretKey::from_slice(&key).unwrap(); //TODO: nicer rng-is-bad error message
 
 		let mut sha = Sha256::engine();
 		sha.input(&NOISE_H);
@@ -88,7 +84,7 @@ impl PeerChannelEncryptor {
 			noise_state: NoiseState::InProgress {
 				state: NoiseStep::PreActOne,
 				directional_state: DirectionalNoiseState::Outbound {
-					ie: sec_key,
+					ie: ephemeral_key,
 				},
 				bidirectional_state: BidirectionalNoiseState {
 					h: h,
@@ -243,8 +239,7 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	// Separated for testing:
-	fn process_act_one_with_ephemeral_key(&mut self, act_one: &[u8], our_node_secret: &SecretKey, our_ephemeral: SecretKey) -> Result<[u8; 50], HandleError> {
+	pub fn process_act_one_with_keys(&mut self, act_one: &[u8], our_node_secret: &SecretKey, our_ephemeral: SecretKey) -> Result<[u8; 50], HandleError> {
 		assert_eq!(act_one.len(), 50);
 
 		match self.noise_state {
@@ -269,15 +264,6 @@ impl PeerChannelEncryptor {
 				},
 			_ => panic!("Cannot get act one after noise handshake completes"),
 		}
-	}
-
-	pub fn process_act_one_with_key(&mut self, act_one: &[u8], our_node_secret: &SecretKey) -> Result<[u8; 50], HandleError> {
-		assert_eq!(act_one.len(), 50);
-
-		let mut key = [0u8; 32];
-		rng::fill_bytes(&mut key);
-		let our_ephemeral_key = SecretKey::from_slice(&key).unwrap(); //TODO: nicer rng-is-bad error message
-		self.process_act_one_with_ephemeral_key(act_one, our_node_secret, our_ephemeral_key)
 	}
 
 	pub fn process_act_two(&mut self, act_two: &[u8], our_node_secret: &SecretKey) -> Result<([u8; 66], PublicKey), HandleError> {
@@ -485,21 +471,12 @@ mod tests {
 
 	use hex;
 
-	use ln::peer_channel_encryptor::{PeerChannelEncryptor,NoiseState,DirectionalNoiseState};
+	use ln::peer_channel_encryptor::{PeerChannelEncryptor,NoiseState};
 
 	fn get_outbound_peer_for_initiator_test_vectors() -> PeerChannelEncryptor {
 		let their_node_id = PublicKey::from_slice(&hex::decode("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();
 
-		let mut outbound_peer = PeerChannelEncryptor::new_outbound(their_node_id);
-		match outbound_peer.noise_state {
-			NoiseState::InProgress { state: _, ref mut directional_state, bidirectional_state: _ } => {
-				*directional_state = DirectionalNoiseState::Outbound { // overwrite ie...
-					ie: SecretKey::from_slice(&hex::decode("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap(),
-				};
-			},
-			_ => panic!()
-		}
-
+		let mut outbound_peer = PeerChannelEncryptor::new_outbound(their_node_id, SecretKey::from_slice(&hex::decode("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap());
 		assert_eq!(outbound_peer.get_act_one()[..], hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap()[..]);
 		outbound_peer
 	}
@@ -566,7 +543,7 @@ mod tests {
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			// test vector doesn't specify the initiator static key, but it's the same as the one
@@ -594,28 +571,28 @@ mod tests {
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("01036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
+			assert!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act1 bad key serialization test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one =hex::decode("00046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
+			assert!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act1 bad MAC test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6b").unwrap().to_vec();
-			assert!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
+			assert!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act3 bad version test
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("01b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
@@ -629,7 +606,7 @@ mod tests {
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00c9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
@@ -639,7 +616,7 @@ mod tests {
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00bfe3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa2235536ad09a8ee351870c2bb7f78b754a26c6cef79a98d25139c856d7efd252c2ae73c").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
@@ -649,7 +626,7 @@ mod tests {
 			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139bb").unwrap().to_vec();
 			assert!(inbound_peer.process_act_three(&act_three[..]).is_err());
@@ -692,7 +669,7 @@ mod tests {
 			inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_ephemeral_key(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
 
 			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
 			// test vector doesn't specify the initiator static key, but it's the same as the one

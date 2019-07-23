@@ -37,7 +37,7 @@ use lightning::ln::channelmonitor::{ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage};
 use lightning::ln::router::{Route, RouteHop};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, HandleError, UpdateAddHTLC, LocalFeatures};
-use lightning::util::{reset_rng_state, fill_bytes, events};
+use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider, MessageSendEventsProvider};
@@ -52,6 +52,7 @@ use secp256k1::Secp256k1;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc,Mutex};
+use std::sync::atomic;
 use std::io::Cursor;
 
 struct FuzzEstimator {}
@@ -91,6 +92,8 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 
 struct KeyProvider {
 	node_id: u8,
+	session_id: atomic::AtomicU8,
+	channel_id: atomic::AtomicU8,
 }
 impl KeysInterface for KeyProvider {
 	fn get_node_secret(&self) -> SecretKey {
@@ -121,22 +124,18 @@ impl KeysInterface for KeyProvider {
 	}
 
 	fn get_session_key(&self) -> SecretKey {
-		let mut session_key = [0; 32];
-		fill_bytes(&mut session_key);
-		SecretKey::from_slice(&session_key).unwrap()
+		let id = self.session_id.fetch_add(1, atomic::Ordering::Relaxed);
+		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 10, self.node_id]).unwrap()
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
-		let mut channel_id = [0; 32];
-		fill_bytes(&mut channel_id);
-		channel_id
+		let id = self.channel_id.fetch_add(1, atomic::Ordering::Relaxed);
+		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 11, self.node_id]
 	}
 }
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	reset_rng_state();
-
 	let fee_est = Arc::new(FuzzEstimator{});
 	let broadcast = Arc::new(TestBroadcaster{});
 
@@ -146,7 +145,7 @@ pub fn do_test(data: &[u8]) {
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id });
+			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, session_id: atomic::AtomicU8::new(0), channel_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::new();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;

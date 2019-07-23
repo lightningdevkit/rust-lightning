@@ -9,6 +9,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 
 use bitcoin_hashes::{Hash, HashEngine};
+use bitcoin_hashes::sha256::HashEngine as Sha256State;
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::hash160::Hash as Hash160;
 
@@ -16,11 +17,9 @@ use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::Secp256k1;
 use secp256k1;
 
-use util::logger::Logger;
-use util::rng;
 use util::byte_utils;
+use util::logger::Logger;
 
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -131,13 +130,31 @@ pub struct KeysManager {
 	channel_id_master_key: ExtendedPrivKey,
 	channel_id_child_index: AtomicUsize,
 
+	unique_start: Sha256State,
 	logger: Arc<Logger>,
 }
 
 impl KeysManager {
 	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
-	/// RNG is busted) this may panic.
-	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> KeysManager {
+	/// RNG is busted) this may panic (but more importantly, you will possibly lose funds).
+	/// starting_time isn't strictly required to actually be a time, but it must absolutely,
+	/// without a doubt, be unique to this instance. ie if you start multiple times with the same
+	/// seed, starting_time must be unique to each run. Thus, the easiest way to achieve this is to
+	/// simply use the current time (with very high precision).
+	///
+	/// The seed MUST be backed up safely prior to use so that the keys can be re-created, however,
+	/// obviously, starting_time should be unique every time you reload the library - it is only
+	/// used to generate new ephemeral key data (which will be stored by the individual channel if
+	/// necessary).
+	///
+	/// Note that the seed is required to recover certain on-chain funds independent of
+	/// ChannelMonitor data, though a current copy of ChannelMonitor data is also required for any
+	/// channel, and some on-chain during-closing funds.
+	///
+	/// Note that until the 0.1 release there is no guarantee of backward compatibility between
+	/// versions. Once the library is more fully supported, the docs will be updated to include a
+	/// detailed description of the guarantee.
+	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>, starting_time_secs: u64, starting_time_nanos: u32) -> KeysManager {
 		let secp_ctx = Secp256k1::signing_only();
 		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {
@@ -158,6 +175,12 @@ impl KeysManager {
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
 				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
 				let channel_id_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted");
+
+				let mut unique_start = Sha256::engine();
+				unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
+				unique_start.input(&byte_utils::be32_to_array(starting_time_nanos));
+				unique_start.input(seed);
+
 				KeysManager {
 					secp_ctx,
 					node_secret,
@@ -170,6 +193,7 @@ impl KeysManager {
 					channel_id_master_key,
 					channel_id_child_index: AtomicUsize::new(0),
 
+					unique_start,
 					logger,
 				}
 			},
@@ -193,24 +217,15 @@ impl KeysInterface for KeysManager {
 
 	fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys {
 		// We only seriously intend to rely on the channel_master_key for true secure
-		// entropy, everything else just ensures uniqueness. We generally don't expect
-		// all clients to have non-broken RNGs here, so we also include the current
-		// time as a fallback to get uniqueness.
-		let mut sha = Sha256::engine();
-
-		let mut seed = [0u8; 32];
-		rng::fill_bytes(&mut seed[..]);
-		sha.input(&seed);
-
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
-		sha.input(&byte_utils::be32_to_array(now.subsec_nanos()));
-		sha.input(&byte_utils::be64_to_array(now.as_secs()));
+		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
+		// starting_time provided in the constructor) to be unique.
+		let mut sha = self.unique_start.clone();
 
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
 		sha.input(&child_privkey.private_key.key[..]);
 
-		seed = Sha256::from_engine(sha).into_inner();
+		let seed = Sha256::from_engine(sha).into_inner();
 
 		let commitment_seed = {
 			let mut sha = Sha256::engine();
@@ -244,11 +259,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_session_key(&self) -> SecretKey {
-		let mut sha = Sha256::engine();
-
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
-		sha.input(&byte_utils::be32_to_array(now.subsec_nanos()));
-		sha.input(&byte_utils::be64_to_array(now.as_secs()));
+		let mut sha = self.unique_start.clone();
 
 		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
@@ -257,11 +268,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
-		let mut sha = Sha256::engine();
-
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
-		sha.input(&byte_utils::be32_to_array(now.subsec_nanos()));
-		sha.input(&byte_utils::be64_to_array(now.as_secs()));
+		let mut sha = self.unique_start.clone();
 
 		let child_ix = self.channel_id_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");

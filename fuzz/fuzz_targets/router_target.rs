@@ -11,7 +11,6 @@ use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
 use lightning::ln::msgs::{RoutingMessageHandler};
 use lightning::ln::router::{Router, RouteHint};
-use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
@@ -96,8 +95,6 @@ impl ChainWatchInterface for DummyChainWatcher {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	reset_rng_state();
-
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),

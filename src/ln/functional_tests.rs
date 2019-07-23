@@ -5,7 +5,6 @@
 use chain::transaction::OutPoint;
 use chain::chaininterface::{ChainListener, ChainWatchInterface};
 use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
-use chain::keysinterface;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, BREAKDOWN_TIMEOUT};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
@@ -19,7 +18,6 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
-use util::rng;
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -44,6 +42,8 @@ use std::default::Default;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::mem;
+
+use rand::{thread_rng, Rng};
 
 use ln::functional_test_utils::*;
 
@@ -1192,7 +1192,6 @@ fn duplicate_htlc_test() {
 }
 
 fn do_channel_reserve_test(test_recv: bool) {
-	use util::rng;
 	use std::sync::atomic::Ordering;
 	use ln::msgs::HandleError;
 
@@ -1309,7 +1308,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 		let secp_ctx = Secp256k1::new();
 		let session_priv = SecretKey::from_slice(&{
 			let mut session_key = [0; 32];
-			rng::fill_bytes(&mut session_key);
+			let mut rng = thread_rng();
+			rng.fill_bytes(&mut session_key);
 			session_key
 		}).expect("RNG is bad!");
 
@@ -3225,7 +3225,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let config = UserConfig::new();
-	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
@@ -3290,7 +3290,7 @@ fn test_simple_manager_serialize_deserialize() {
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
@@ -3354,7 +3354,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	let keys_manager = Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::new(),
 		keys_manager,
@@ -5083,7 +5083,8 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	let session_priv = SecretKey::from_slice(&{
 		let mut session_key = [0; 32];
-		rng::fill_bytes(&mut session_key);
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut session_key);
 		session_key
 	}).expect("RNG is bad!");
 
