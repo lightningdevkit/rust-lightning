@@ -10,6 +10,7 @@
 //! instead of having a rather-separate lightning appendage to a wallet.
 
 #![cfg_attr(not(feature = "fuzztarget"), deny(missing_docs))]
+#![forbid(unsafe_code)]
 
 extern crate bitcoin;
 extern crate bitcoin_hashes;

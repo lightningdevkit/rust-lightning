@@ -1,7 +1,7 @@
 use ln::channelmanager::{PaymentHash, HTLCSource};
 use ln::msgs;
 use ln::router::{Route,RouteHop};
-use util::{byte_utils, internal_traits};
+use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable};
@@ -17,7 +17,6 @@ use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use std::ptr;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -113,9 +112,7 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
-	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
-	internal_traits::test_no_dealloc::<msgs::OnionHopData>(None);
-	unsafe { res.set_len(route.hops.len()); }
+	let mut res: Vec<msgs::OnionHopData> = vec![msgs::OnionHopData::default(); route.hops.len()];
 
 	for (idx, hop) in route.hops.iter().enumerate().rev() {
 		// First hop gets special values so that it can check, on receipt, that everything is
@@ -147,8 +144,8 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 
 #[inline]
 fn shift_arr_right(arr: &mut [u8; 20*65]) {
-	unsafe {
-		ptr::copy(arr[0..].as_ptr(), arr[65..].as_mut_ptr(), 19*65);
+	for i in (65..20*65).rev() {
+		arr[i] = arr[i-65];
 	}
 	for i in 0..65 {
 		arr[i] = 0;

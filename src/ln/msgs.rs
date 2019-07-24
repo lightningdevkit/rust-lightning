@@ -696,6 +696,7 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
 }
 
+#[derive(Default, Clone)]
 pub(crate) struct OnionRealm0HopData {
 	pub(crate) short_channel_id: u64,
 	pub(crate) amt_to_forward: u64,
@@ -708,12 +709,12 @@ mod fuzzy_internal_msgs {
 	// them from untrusted input):
 
 	use super::OnionRealm0HopData;
+	#[derive(Default, Clone)]
 	pub struct OnionHopData {
 		pub(crate) realm: u8,
 		pub(crate) data: OnionRealm0HopData,
 		pub(crate) hmac: [u8; 32],
 	}
-	unsafe impl ::util::internal_traits::NoDealloc for OnionHopData{}
 
 	pub struct DecodedOnionErrorPacket {
 		pub(crate) hmac: [u8; 32],
