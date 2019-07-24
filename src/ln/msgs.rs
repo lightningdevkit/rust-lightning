@@ -713,7 +713,6 @@ mod fuzzy_internal_msgs {
 		pub(crate) data: OnionRealm0HopData,
 		pub(crate) hmac: [u8; 32],
 	}
-	unsafe impl ::util::internal_traits::NoDealloc for OnionHopData{}
 
 	pub struct DecodedOnionErrorPacket {
 		pub(crate) hmac: [u8; 32],
