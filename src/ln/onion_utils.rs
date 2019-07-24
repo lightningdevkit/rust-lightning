@@ -114,7 +114,7 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 	let mut last_short_channel_id = 0;
 	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
 
-	for (idx, hop) in route.hops.iter().enumerate().rev() {
+	for hop in route.hops.iter().rev() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
