@@ -341,6 +341,12 @@ pub struct ChannelManager {
 	logger: Arc<Logger>,
 }
 
+/// The amount of time we require our counterparty wait to claim their money (ie time between when
+/// we, or our watchtower, must check for them having broadcast a theft transaction).
+pub(crate) const BREAKDOWN_TIMEOUT: u16 = 6 * 24;
+/// The amount of time we're willing to wait to claim money back to us
+pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 6 * 24 * 7;
+
 /// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
 /// HTLC's CLTV. This should always be a few blocks greater than channelmonitor::CLTV_CLAIM_BUFFER,
 /// ie the node we forwarded the payment on to should always have enough room to reliably time out

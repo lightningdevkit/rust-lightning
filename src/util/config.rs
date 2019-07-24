@@ -1,6 +1,8 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
+use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
 #[derive(Clone, Debug)]
 pub struct UserConfig {
@@ -30,6 +32,18 @@ pub struct ChannelHandshakeConfig {
 	/// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
 	/// equivalent limit applied to outbound channels).
 	pub minimum_depth: u32,
+	/// Set to the amount of time we require our counterparty to wait to claim their money.
+	///
+	/// It's one of the main parameter of our security model. We (or one of our watchtowers) MUST
+	/// be online to check for peer having broadcast a revoked transaction to steal our funds
+	/// at least once every our_to_self_delay blocks.
+	/// Default is BREAKDOWN_TIMEOUT, we enforce it as a minimum at channel opening so you can
+	/// tweak config to ask for more security, not less.
+	///
+	/// Meanwhile, asking for a too high delay, we bother peer to freeze funds for nothing in
+	/// case of an honest unilateral channel close, which implicitly decrease the economic value of
+	/// our channel.
+	pub our_to_self_delay: u16,
 }
 
 impl ChannelHandshakeConfig {
@@ -37,6 +51,7 @@ impl ChannelHandshakeConfig {
 	pub fn new() -> ChannelHandshakeConfig {
 		ChannelHandshakeConfig {
 			minimum_depth: 6,
+			our_to_self_delay: BREAKDOWN_TIMEOUT,
 		}
 	}
 }
@@ -88,6 +103,13 @@ pub struct ChannelHandshakeLimits {
 	/// Defaults to true to make the default that no announced channels are possible (which is
 	/// appropriate for any nodes which are not online very reliably).
 	pub force_announced_channel_preference: bool,
+	/// Set to the amount of time we're willing to wait to claim money back to us.
+	///
+	/// Not checking this value would be a security issue, as our peer would be able to set it to
+	/// max relative lock-time (a year) and we would "lose" money as it would be locked for a long time.
+	/// Default is MAX_LOCAL_BREAKDOWN_TIMEOUT, which we also enforce as a maximum value
+	/// so you can tweak config to reduce the loss of having useless locked funds (if your peer accepts)
+	pub their_to_self_delay: u16
 }
 
 impl ChannelHandshakeLimits {
@@ -107,6 +129,7 @@ impl ChannelHandshakeLimits {
 			max_dust_limit_satoshis: <u64>::max_value(),
 			max_minimum_depth: 144,
 			force_announced_channel_preference: true,
+			their_to_self_delay: MAX_LOCAL_BREAKDOWN_TIMEOUT,
 		}
 	}
 }
