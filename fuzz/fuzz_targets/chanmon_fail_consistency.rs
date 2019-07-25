@@ -52,7 +52,7 @@ use secp256k1::Secp256k1;
 
 use std::mem;
 use std::cmp::Ordering;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashSet, hash_map, HashMap};
 use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;
@@ -80,6 +80,7 @@ impl Writer for VecWriter {
 	}
 }
 
+static mut IN_RESTORE: bool = false;
 pub struct TestChannelMonitor {
 	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
@@ -107,7 +108,18 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 			let mut ser = VecWriter(Vec::new());
 			monitor.write_for_disk(&mut ser).unwrap();
 			self.latest_good_update.lock().unwrap().insert(funding_txo, ser.0);
-			self.latest_update_good.lock().unwrap().insert(funding_txo, true);
+			match self.latest_update_good.lock().unwrap().entry(funding_txo) {
+				hash_map::Entry::Vacant(mut e) => { e.insert(true); },
+				hash_map::Entry::Occupied(mut e) => {
+					if !e.get() && unsafe { IN_RESTORE } {
+						// Technically we can't consider an update to be "good" unless we're doing
+						// it in response to a test_restore_channel_monitor as the channel may
+						// still be waiting on such a call, so only set us to good if we're in the
+						// middle of a restore call.
+						e.insert(true);
+					}
+				},
+			}
 			self.should_update_manager.store(true, atomic::Ordering::Relaxed);
 		} else {
 			self.latest_update_good.lock().unwrap().insert(funding_txo, false);
@@ -619,9 +631,9 @@ pub fn do_test(data: &[u8]) {
 			0x03 => *monitor_a.update_ret.lock().unwrap() = Ok(()),
 			0x04 => *monitor_b.update_ret.lock().unwrap() = Ok(()),
 			0x05 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
-			0x06 => nodes[0].test_restore_channel_monitor(),
-			0x07 => nodes[1].test_restore_channel_monitor(),
-			0x08 => nodes[2].test_restore_channel_monitor(),
+			0x06 => { unsafe { IN_RESTORE = true }; nodes[0].test_restore_channel_monitor(); unsafe { IN_RESTORE = false }; },
+			0x07 => { unsafe { IN_RESTORE = true }; nodes[1].test_restore_channel_monitor(); unsafe { IN_RESTORE = false }; },
+			0x08 => { unsafe { IN_RESTORE = true }; nodes[2].test_restore_channel_monitor(); unsafe { IN_RESTORE = false }; },
 			0x09 => send_payment!(nodes[0], (&nodes[1], chan_a)),
 			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a)),
 			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b)),
