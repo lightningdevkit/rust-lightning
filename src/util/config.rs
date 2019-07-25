@@ -152,13 +152,15 @@ pub struct ChannelConfig {
 	///
 	/// This cannot be changed after the initial channel handshake.
 	pub announced_channel: bool,
-	/// Set to commit to an upfront shutdown_pubkey at channel opening. In case of mutual
-	/// closing, the other peer will check that our closing transction output is encumbered
-	/// by the provided script.
+	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
+	/// supports it, they will then enforce the mutual-close output to us matches what we provided
+	/// at intialization, preventing us from closing to an alternate pubkey.
 	///
-	/// We set it by default as this ensure greater security to the user funds.
+	/// This is set to true by default to provide a slight increase in security, though ultimately
+	/// any attacker who is able to take control of a channel can just as easily send the funds via
+	/// lightning payments, so we never require that our counterparties support this option.
 	///
-	/// This cannot be changed after channel opening.
+	/// This cannot be changed after a channel has been initialized.
 	pub commit_upfront_shutdown_pubkey: bool
 }
 

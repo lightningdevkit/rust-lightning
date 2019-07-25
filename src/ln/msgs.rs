@@ -63,13 +63,13 @@ impl LocalFeatures {
 	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) fn new() -> LocalFeatures {
 		LocalFeatures {
-			flags: vec![1 << 4],
+			flags: vec![1 << 5],
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
 	pub fn new() -> LocalFeatures {
 		LocalFeatures {
-			flags: vec![1 << 4],
+			flags: vec![1 << 5],
 		}
 	}
 
@@ -96,7 +96,7 @@ impl LocalFeatures {
 	}
 	#[cfg(test)]
 	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
-		self.flags[0] ^= 1 << 4;
+		self.flags[0] ^= 1 << 5;
 	}
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
@@ -2018,9 +2018,9 @@ mod tests {
 			target_value.append(&mut hex::decode("0000").unwrap());
 		}
 		if initial_routing_sync {
-			target_value.append(&mut hex::decode("000118").unwrap());
+			target_value.append(&mut hex::decode("000128").unwrap());
 		} else {
-			target_value.append(&mut hex::decode("000110").unwrap());
+			target_value.append(&mut hex::decode("000120").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
 	}
