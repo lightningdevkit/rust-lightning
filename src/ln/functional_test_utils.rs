@@ -157,35 +157,39 @@ macro_rules! get_feerate {
 	}
 }
 
+pub fn create_funding_transaction(node: &Node, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
+	let chan_id = *node.network_chan_count.borrow();
+
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
+			assert_eq!(*channel_value_satoshis, expected_chan_value);
+			assert_eq!(user_channel_id, expected_user_chan_id);
+
+			let tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+			}]};
+			let funding_outpoint = OutPoint::new(tx.txid(), 0);
+			(*temporary_channel_id, tx, funding_outpoint)
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
 
 pub fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: LocalFeatures, b_flags: LocalFeatures) -> Transaction {
 	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id())).unwrap();
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id())).unwrap();
 
-	let chan_id = *node_a.network_chan_count.borrow();
-	let tx;
-	let funding_output;
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, channel_value, 42);
 
-	let events_2 = node_a.node.get_and_clear_pending_events();
-	assert_eq!(events_2.len(), 1);
-	match events_2[0] {
-		Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
-			assert_eq!(*channel_value_satoshis, channel_value);
-			assert_eq!(user_channel_id, 42);
-
-			tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
-				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
-			}]};
-			funding_output = OutPoint::new(tx.txid(), 0);
-
-			node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
-			let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			assert_eq!(added_monitors[0].0, funding_output);
-			added_monitors.clear();
-		},
-		_ => panic!("Unexpected event"),
+	{
+		node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
+		let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		assert_eq!(added_monitors[0].0, funding_output);
+		added_monitors.clear();
 	}
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id())).unwrap();
