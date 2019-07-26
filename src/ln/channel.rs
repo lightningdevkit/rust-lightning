@@ -1540,7 +1540,7 @@ impl Channel {
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?"));
 		}
-		if self.channel_state != ChannelState::FundingCreated as u32 {
+		if self.channel_state & !(ChannelState::MonitorUpdateFailed as u32) != ChannelState::FundingCreated as u32 {
 			return Err(ChannelError::Close("Received funding_signed in strange state!"));
 		}
 		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
@@ -1561,10 +1561,14 @@ impl Channel {
 		self.sign_commitment_transaction(&mut local_initial_commitment_tx, &msg.signature);
 		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx.clone(), local_keys, self.feerate_per_kw, Vec::new());
 		self.last_local_commitment_txn = vec![local_initial_commitment_tx];
-		self.channel_state = ChannelState::FundingSent as u32;
+		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
 		self.cur_local_commitment_transaction_number -= 1;
 
-		Ok(self.channel_monitor.clone())
+		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+			Ok(self.channel_monitor.clone())
+		} else {
+			Err(ChannelError::Ignore("Previous monitor update failure prevented funding_signed from allowing funding broadcast"))
+		}
 	}
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), ChannelError> {
@@ -2345,9 +2349,10 @@ impl Channel {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
+	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
+		let needs_broadcast_safe = self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.channel_outbound;
 
 		let mut forwards = Vec::new();
 		mem::swap(&mut forwards, &mut self.monitor_pending_forwards);
@@ -2357,7 +2362,7 @@ impl Channel {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures);
+			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, needs_broadcast_safe);
 		}
 
 		let raa = if self.monitor_pending_revoke_and_ack {
@@ -2370,11 +2375,12 @@ impl Channel {
 		self.monitor_pending_revoke_and_ack = false;
 		self.monitor_pending_commitment_signed = false;
 		let order = self.resend_order.clone();
-		log_trace!(self, "Restored monitor updating resulting in {} commitment update and {} RAA, with {} first",
+		log_trace!(self, "Restored monitor updating resulting in {}{} commitment update and {} RAA, with {} first",
+			if needs_broadcast_safe { "a funding broadcast safe, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
-		(raa, commitment_update, order, forwards, failures)
+		(raa, commitment_update, order, forwards, failures, needs_broadcast_safe)
 	}
 
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), ChannelError> {
