@@ -909,8 +909,6 @@ impl Channel {
 		{
 			// Make sure that the to_self/to_remote is always either past the appropriate
 			// channel_reserve *or* it is making progress towards it.
-			// TODO: This should happen after fee calculation, but we don't handle that correctly
-			// yet!
 			let mut max_commitment_tx_output = if generated_by_local {
 				self.max_commitment_tx_output_local.lock().unwrap()
 			} else {
@@ -2452,7 +2450,7 @@ impl Channel {
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
-			update_fee: None, //TODO: We need to support re-generating any update_fees in the last commitment_signed!
+			update_fee: None,
 			commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 		}
 	}
