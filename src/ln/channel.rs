@@ -2831,7 +2831,6 @@ impl Channel {
 		self.cur_remote_commitment_transaction_number + 2
 	}
 
-	//TODO: Testing purpose only, should be changed in another way after #81
 	#[cfg(test)]
 	pub fn get_local_keys(&self) -> &ChannelKeys {
 		&self.local_keys
