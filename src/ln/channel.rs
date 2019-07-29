@@ -181,9 +181,9 @@ enum ChannelState {
 	/// "disconnected" and no updates are allowed until after we've done a channel_reestablish
 	/// dance.
 	PeerDisconnected = (1 << 7),
-	/// Flag which is set on ChannelFunded and FundingSent indicating the user has told us they
-	/// failed to update our ChannelMonitor somewhere and we should pause sending any outbound
-	/// messages until they've managed to do so.
+	/// Flag which is set on ChannelFunded, FundingCreated, and FundingSent indicating the user has
+	/// told us they failed to update our ChannelMonitor somewhere and we should pause sending any
+	/// outbound messages until they've managed to do so.
 	MonitorUpdateFailed = (1 << 8),
 	/// Flag which implies that we have sent a commitment_signed but are awaiting the responding
 	/// revoke_and_ack message. During this time period, we can't generate new commitment_signed
@@ -248,6 +248,7 @@ pub(super) struct Channel {
 	/// send it first.
 	resend_order: RAACommitmentOrder,
 
+	monitor_pending_funding_locked: bool,
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
 	monitor_pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>,
@@ -457,6 +458,7 @@ impl Channel {
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
+			monitor_pending_funding_locked: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
 			monitor_pending_forwards: Vec::new(),
@@ -672,6 +674,7 @@ impl Channel {
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
+			monitor_pending_funding_locked: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
 			monitor_pending_forwards: Vec::new(),
@@ -1538,7 +1541,7 @@ impl Channel {
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?"));
 		}
-		if self.channel_state != ChannelState::FundingCreated as u32 {
+		if self.channel_state & !(ChannelState::MonitorUpdateFailed as u32) != ChannelState::FundingCreated as u32 {
 			return Err(ChannelError::Close("Received funding_signed in strange state!"));
 		}
 		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
@@ -1559,10 +1562,14 @@ impl Channel {
 		self.sign_commitment_transaction(&mut local_initial_commitment_tx, &msg.signature);
 		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx.clone(), local_keys, self.feerate_per_kw, Vec::new());
 		self.last_local_commitment_txn = vec![local_initial_commitment_tx];
-		self.channel_state = ChannelState::FundingSent as u32;
+		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
 		self.cur_local_commitment_transaction_number -= 1;
 
-		Ok(self.channel_monitor.clone())
+		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+			Ok(self.channel_monitor.clone())
+		} else {
+			Err(ChannelError::Ignore("Previous monitor update failure prevented funding_signed from allowing funding broadcast"))
+		}
 	}
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), ChannelError> {
@@ -1577,10 +1584,13 @@ impl Channel {
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.channel_update_count += 1;
-		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
-				// Note that funding_signed/funding_created will have decremented both by 1!
-				self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
-				self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
+		} else if (self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
+				 // Note that funding_signed/funding_created will have decremented both by 1!
+				 self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
+				 self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1) ||
+				// If we reconnected before sending our funding locked they may still resend theirs:
+				(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) ==
+				                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32)) {
 			if self.their_cur_commitment_point != Some(msg.next_per_commitment_point) {
 				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point"));
 			}
@@ -2343,9 +2353,28 @@ impl Channel {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
+	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool, Option<msgs::FundingLocked>) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
+
+		let needs_broadcast_safe = self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.channel_outbound;
+
+		// Because we will never generate a FundingBroadcastSafe event when we're in
+		// MonitorUpdateFailed, if we assume the user only broadcast the funding transaction when
+		// they received the FundingBroadcastSafe event, we can only ever hit
+		// monitor_pending_funding_locked when we're an inbound channel which failed to persist the
+		// monitor on funding_created, and we even got the funding transaction confirmed before the
+		// monitor was persisted.
+		let funding_locked = if self.monitor_pending_funding_locked {
+			assert!(!self.channel_outbound, "Funding transaction broadcast without FundingBroadcastSafe!");
+			self.monitor_pending_funding_locked = false;
+			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+			Some(msgs::FundingLocked {
+				channel_id: self.channel_id(),
+				next_per_commitment_point: next_per_commitment_point,
+			})
+		} else { None };
 
 		let mut forwards = Vec::new();
 		mem::swap(&mut forwards, &mut self.monitor_pending_forwards);
@@ -2355,7 +2384,7 @@ impl Channel {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures);
+			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, needs_broadcast_safe, funding_locked);
 		}
 
 		let raa = if self.monitor_pending_revoke_and_ack {
@@ -2368,11 +2397,12 @@ impl Channel {
 		self.monitor_pending_revoke_and_ack = false;
 		self.monitor_pending_commitment_signed = false;
 		let order = self.resend_order.clone();
-		log_trace!(self, "Restored monitor updating resulting in {} commitment update and {} RAA, with {} first",
+		log_trace!(self, "Restored monitor updating resulting in {}{} commitment update and {} RAA, with {} first",
+			if needs_broadcast_safe { "a funding broadcast safe, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
-		(raa, commitment_update, order, forwards, failures)
+		(raa, commitment_update, order, forwards, failures, needs_broadcast_safe, funding_locked)
 	}
 
 	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), ChannelError> {
@@ -2482,7 +2512,9 @@ impl Channel {
 		} else { None };
 
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
-			if self.channel_state & ChannelState::OurFundingLocked as u32 == 0 {
+			// If we're waiting on a monitor update, we shouldn't re-send any funding_locked's.
+			if self.channel_state & (ChannelState::OurFundingLocked as u32) == 0 ||
+					self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				if msg.next_remote_commitment_number != 0 {
 					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet"));
 				}
@@ -2972,12 +3004,17 @@ impl Channel {
 					//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
 					//a protocol oversight, but I assume I'm just missing something.
 					if need_commitment_update {
-						let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-						let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-						return Ok(Some(msgs::FundingLocked {
-							channel_id: self.channel_id,
-							next_per_commitment_point: next_per_commitment_point,
-						}));
+						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+							let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+							let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+							return Ok(Some(msgs::FundingLocked {
+								channel_id: self.channel_id,
+								next_per_commitment_point: next_per_commitment_point,
+							}));
+						} else {
+							self.monitor_pending_funding_locked = true;
+							return Ok(None);
+						}
 					}
 				}
 			}
@@ -3696,6 +3733,7 @@ impl Writeable for Channel {
 			RAACommitmentOrder::RevokeAndACKFirst => 1u8.write(writer)?,
 		}
 
+		self.monitor_pending_funding_locked.write(writer)?;
 		self.monitor_pending_revoke_and_ack.write(writer)?;
 		self.monitor_pending_commitment_signed.write(writer)?;
 
@@ -3863,6 +3901,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
+		let monitor_pending_funding_locked = Readable::read(reader)?;
 		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
 		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
@@ -3959,6 +3998,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 
 			resend_order,
 
+			monitor_pending_funding_locked,
 			monitor_pending_revoke_and_ack,
 			monitor_pending_commitment_signed,
 			monitor_pending_forwards,
