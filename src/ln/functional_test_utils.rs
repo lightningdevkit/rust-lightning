@@ -221,29 +221,35 @@ pub fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, c
 	tx
 }
 
-pub fn create_chan_between_nodes_with_value_confirm(node_a: &Node, node_b: &Node, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
-	confirm_transaction(&node_b.chain_monitor, &tx, tx.version);
-	node_a.node.handle_funding_locked(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendFundingLocked, node_a.node.get_our_node_id())).unwrap();
+pub fn create_chan_between_nodes_with_value_confirm_first(node_recv: &Node, node_conf: &Node, tx: &Transaction) {
+	confirm_transaction(&node_conf.chain_monitor, &tx, tx.version);
+	node_recv.node.handle_funding_locked(&node_conf.node.get_our_node_id(), &get_event_msg!(node_conf, MessageSendEvent::SendFundingLocked, node_recv.node.get_our_node_id())).unwrap();
+}
 
+pub fn create_chan_between_nodes_with_value_confirm_second(node_recv: &Node, node_conf: &Node) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
 	let channel_id;
-
-	confirm_transaction(&node_a.chain_monitor, &tx, tx.version);
-	let events_6 = node_a.node.get_and_clear_pending_msg_events();
+	let events_6 = node_conf.node.get_and_clear_pending_msg_events();
 	assert_eq!(events_6.len(), 2);
 	((match events_6[0] {
 		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
 			channel_id = msg.channel_id.clone();
-			assert_eq!(*node_id, node_b.node.get_our_node_id());
+			assert_eq!(*node_id, node_recv.node.get_our_node_id());
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	}, match events_6[1] {
 		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
-			assert_eq!(*node_id, node_b.node.get_our_node_id());
+			assert_eq!(*node_id, node_recv.node.get_our_node_id());
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	}), channel_id)
+}
+
+pub fn create_chan_between_nodes_with_value_confirm(node_a: &Node, node_b: &Node, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
+	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx);
+	confirm_transaction(&node_a.chain_monitor, &tx, tx.version);
+	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
 pub fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: LocalFeatures, b_flags: LocalFeatures) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
