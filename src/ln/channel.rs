@@ -1583,10 +1583,13 @@ impl Channel {
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.channel_update_count += 1;
-		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
-				// Note that funding_signed/funding_created will have decremented both by 1!
-				self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
-				self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
+		} else if (self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
+				 // Note that funding_signed/funding_created will have decremented both by 1!
+				 self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
+				 self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1) ||
+				// If we reconnected before sending our funding locked they may still resend theirs:
+				(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) ==
+				                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32)) {
 			if self.their_cur_commitment_point != Some(msg.next_per_commitment_point) {
 				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point"));
 			}
