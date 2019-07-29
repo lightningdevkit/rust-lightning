@@ -49,7 +49,7 @@ use std::collections::{HashMap, hash_map};
 use std::cmp;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8,AtomicUsize,Ordering};
+use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -236,7 +236,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 
 struct KeyProvider {
 	node_secret: SecretKey,
-	counter: AtomicU8,
+	counter: AtomicU64,
 }
 impl KeysInterface for KeyProvider {
 	fn get_node_secret(&self) -> SecretKey {
@@ -256,7 +256,7 @@ impl KeysInterface for KeyProvider {
 	}
 
 	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys {
-		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
+		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		if inbound {
 			ChannelKeys {
 				funding_key:               SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
@@ -279,13 +279,14 @@ impl KeysInterface for KeyProvider {
 	}
 
 	fn get_session_key(&self) -> SecretKey {
-		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
+		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, ctr]).unwrap()
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, ctr]
+		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
 	}
 }
 
@@ -326,7 +327,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	let broadcast = Arc::new(TestBroadcaster{});
 	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone(), Arc::clone(&logger), fee_est.clone());
 
-	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU8::new(0) });
+	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::new();
 	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
