@@ -128,7 +128,7 @@ impl Connection {
 		let (reader, us) = Self::new(event_notify, stream);
 
 		if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone(), peer_manager.clone())) {
-			if SocketDescriptor::new(us.clone(), peer_manager.clone()).send_data(&initial_send, 0, true) == initial_send.len() {
+			if SocketDescriptor::new(us.clone(), peer_manager.clone()).send_data(&initial_send, true) == initial_send.len() {
 				Self::schedule_read(peer_manager, us, reader);
 			} else {
 				println!("Failed to write first full message to socket!");
@@ -170,7 +170,7 @@ impl SocketDescriptor {
 	}
 }
 impl peer_handler::SocketDescriptor for SocketDescriptor {
-	fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, resume_read: bool) -> usize {
+	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
 		macro_rules! schedule_read {
 			($us_ref: expr) => {
 				tokio::spawn(future::lazy(move || -> Result<(), ()> {
@@ -211,20 +211,20 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 			let us_ref = self.clone();
 			schedule_read!(us_ref);
 		}
-		if data.len() == write_offset { return 0; }
+		if data.is_empty() { return 0; }
 		if us.writer.is_none() {
 			us.read_paused = true;
 			return 0;
 		}
 
-		let mut bytes = bytes::BytesMut::with_capacity(data.len() - write_offset);
-		bytes.put(&data[write_offset..]);
+		let mut bytes = bytes::BytesMut::with_capacity(data.len());
+		bytes.put(data);
 		let write_res = us.writer.as_mut().unwrap().start_send(bytes.freeze());
 		match write_res {
 			Ok(res) => {
 				match res {
 					AsyncSink::Ready => {
-						data.len() - write_offset
+						data.len()
 					},
 					AsyncSink::NotReady(_) => {
 						us.read_paused = true;
