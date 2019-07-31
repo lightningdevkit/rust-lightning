@@ -45,12 +45,13 @@ pub struct MessageHandler {
 /// careful to ensure you don't have races whereby you might register a new connection with an fd
 /// the same as a yet-to-be-disconnect_event()-ed.
 pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
-	/// Attempts to send some data from the given Vec starting at the given offset to the peer.
+	/// Attempts to send some data from the given slice to the peer.
+	///
 	/// Returns the amount of data which was sent, possibly 0 if the socket has since disconnected.
 	/// Note that in the disconnected case, a disconnect_event must still fire and further write
 	/// attempts may occur until that time.
 	///
-	/// If the returned size is smaller than data.len() - write_offset, a write_available event must
+	/// If the returned size is smaller than data.len(), a write_available event must
 	/// trigger the next time more data can be written. Additionally, until the a send_data event
 	/// completes fully, no further read_events should trigger on the same peer!
 	///
@@ -58,7 +59,7 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// events should be paused to prevent DoS in the send buffer), resume_read may be set
 	/// indicating that read events on this descriptor should resume. A resume_read of false does
 	/// *not* imply that further read events should be paused.
-	fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, resume_read: bool) -> usize;
+	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize;
 	/// Disconnect the socket pointed to by this SocketDescriptor. Once this function returns, no
 	/// more calls to write_event, read_event or disconnect_event may be made with this descriptor.
 	/// No disconnect_event should be generated as a result of this call, though obviously races
@@ -387,7 +388,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 				};
 
 				let should_be_reading = peer.pending_outbound_buffer.len() < MSG_BUFF_SIZE;
-				let data_sent = descriptor.send_data(next_buff, peer.pending_outbound_buffer_first_msg_offset, should_be_reading);
+				let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
+				let data_sent = descriptor.send_data(pending, should_be_reading);
 				peer.pending_outbound_buffer_first_msg_offset += data_sent;
 				if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() { true } else { false }
 			} {
@@ -1122,9 +1124,8 @@ mod tests {
 	}
 
 	impl SocketDescriptor for FileDescriptor {
-		fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, _resume_read: bool) -> usize {
-			assert!(write_offset < data.len());
-			data.len() - write_offset
+		fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+			data.len()
 		}
 
 		fn disconnect_socket(&mut self) {}

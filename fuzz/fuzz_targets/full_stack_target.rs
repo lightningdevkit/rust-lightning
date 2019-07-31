@@ -124,9 +124,8 @@ struct Peer<'a> {
 	peers_connected: &'a RefCell<[bool; 256]>,
 }
 impl<'a> SocketDescriptor for Peer<'a> {
-	fn send_data(&mut self, data: &Vec<u8>, write_offset: usize, _resume_read: bool) -> usize {
-		assert!(write_offset < data.len());
-		data.len() - write_offset
+	fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+		data.len()
 	}
 	fn disconnect_socket(&mut self) {
 		assert!(self.peers_connected.borrow()[self.id as usize]);
