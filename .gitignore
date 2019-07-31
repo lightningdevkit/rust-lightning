@@ -1,6 +1,6 @@
 /target/
+/net-tokio/target/
 **/*.rs.bk
 Cargo.lock
-/target/
-**/*.rs.bk
 .idea
+
