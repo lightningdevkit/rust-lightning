@@ -2051,9 +2051,16 @@ impl ChannelMonitor {
 		None
 	}
 
-	/// Used by ChannelManager deserialization to broadcast the latest local state if it's copy of
-	/// the Channel was out-of-date.
-	pub(super) fn get_latest_local_commitment_txn(&self) -> Vec<Transaction> {
+	/// Used by ChannelManager deserialization to broadcast the latest local state if its copy of
+	/// the Channel was out-of-date. You may use it to get a broadcastable local toxic tx in case of
+	/// fallen-behind, i.e when receiving a channel_reestablish with a proof that our remote side knows
+	/// a higher revocation secret than the local commitment number we are aware of. Broadcasting these
+	/// transactions are UNSAFE, as they allow remote side to punish you. Nevertheless you may want to
+	/// broadcast them if remote don't close channel with his higher commitment transaction after a
+	/// substantial amount of time (a month or even a year) to get back funds. Best may be to contact
+	/// out-of-band the other node operator to coordinate with him if option is available to you.
+	/// In any-case, choice is up to the user.
+	pub fn get_latest_local_commitment_txn(&self) -> Vec<Transaction> {
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			let mut res = vec![local_tx.tx.clone()];
 			match self.key_storage {
