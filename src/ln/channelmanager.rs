@@ -494,7 +494,10 @@ macro_rules! try_chan_entry {
 						}
 					}
 				}
-				let mut shutdown_res = chan.force_shutdown(); // We drop closing transactions as they are toxic datas and MUST NOT be broadcast
+				let mut shutdown_res = chan.force_shutdown();
+				if shutdown_res.0.len() >= 1 {
+					log_error!($self, "You have a toxic local commitment transaction {} avaible in channel monitor, read comment in ChannelMonitor::get_latest_local_commitment_txn to be informed of manual action to take", shutdown_res.0[0].txid());
+				}
 				shutdown_res.0.clear();
 				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, $self.get_channel_update(&chan).ok()))
 			}
