@@ -456,6 +456,10 @@ pub struct ChannelMonitor {
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
 	destination_script: Script,
+	// Thanks to data loss protection, we may be able to claim our non-htlc funds
+	// back, this is the script we have to spend from but we need to
+	// scan every commitment transaction for that
+	to_remote_rescue: Option<(Script, SecretKey)>,
 
 	// Used to track outpoint in the process of being claimed by our transactions. We need to scan all transactions
 	// for inputs spending this. If height timer (u32) is expired and claim tx hasn't reached enough confirmations
@@ -535,6 +539,7 @@ impl PartialEq for ChannelMonitor {
 			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
 			self.payment_preimages != other.payment_preimages ||
 			self.destination_script != other.destination_script ||
+			self.to_remote_rescue != other.to_remote_rescue ||
 			self.our_claim_txn_waiting_first_conf != other.our_claim_txn_waiting_first_conf ||
 			self.onchain_events_waiting_threshold_conf != other.onchain_events_waiting_threshold_conf
 		{
@@ -585,6 +590,7 @@ impl ChannelMonitor {
 
 			payment_preimages: HashMap::new(),
 			destination_script: destination_script,
+			to_remote_rescue: None,
 
 			our_claim_txn_waiting_first_conf: HashMap::new(),
 
@@ -764,6 +770,19 @@ impl ChannelMonitor {
 	}
 
 	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
+		match self.key_storage {
+			Storage::Local { ref payment_base_key, .. } => {
+				if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &PublicKey::from_secret_key(&self.secp_ctx, &payment_base_key)) {
+					let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+						.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+						.into_script();
+					if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &payment_base_key) {
+						self.to_remote_rescue = Some((to_remote_script, to_remote_key));
+					}
+				}
+			},
+			Storage::Watchtower { .. } => {}
+		}
 	}
 
 	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
@@ -855,6 +874,7 @@ impl ChannelMonitor {
 				self.current_local_signed_commitment_tx = Some(local_tx);
 			}
 			self.payment_preimages = other.payment_preimages;
+			self.to_remote_rescue = other.to_remote_rescue;
 		}
 
 		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
@@ -1108,6 +1128,13 @@ impl ChannelMonitor {
 
 		self.last_block_hash.write(writer)?;
 		self.destination_script.write(writer)?;
+		if let Some((ref to_remote_script, ref local_key)) = self.to_remote_rescue {
+			writer.write_all(&[1; 1])?;
+			to_remote_script.write(writer)?;
+			local_key.write(writer)?;
+		} else {
+			writer.write_all(&[0; 1])?;
+		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.our_claim_txn_waiting_first_conf.len() as u64))?;
 		for (ref outpoint, claim_tx_data) in self.our_claim_txn_waiting_first_conf.iter() {
@@ -1736,6 +1763,16 @@ impl ChannelMonitor {
 					txn_to_broadcast.push(spend_tx);
 				}
 			}
+		} else if let Some((ref to_remote_rescue, ref local_key)) = self.to_remote_rescue {
+			for (idx, outp) in tx.output.iter().enumerate() {
+				if to_remote_rescue == &outp.script_pubkey {
+					spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+						outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 },
+						key: local_key.clone(),
+						output: outp.clone(),
+					});
+				}
+			}
 		}
 
 		(txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs)
@@ -2098,18 +2135,20 @@ impl ChannelMonitor {
 					}
 				};
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
-					let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(tx, height, fee_estimator);
-					txn = remote_txn;
-					spendable_outputs.append(&mut spendable_output);
-					if !new_outputs.1.is_empty() {
-						watch_outputs.push(new_outputs);
-					}
-					if txn.is_empty() {
-						let (local_txn, mut spendable_output, new_outputs) = self.check_spend_local_transaction(tx, height);
+					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
+						let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(tx, height, fee_estimator);
+						txn = remote_txn;
 						spendable_outputs.append(&mut spendable_output);
-						txn = local_txn;
 						if !new_outputs.1.is_empty() {
 							watch_outputs.push(new_outputs);
+						}
+						if txn.is_empty() {
+							let (local_txn, mut spendable_output, new_outputs) = self.check_spend_local_transaction(tx, height);
+							spendable_outputs.append(&mut spendable_output);
+							txn = local_txn;
+							if !new_outputs.1.is_empty() {
+								watch_outputs.push(new_outputs);
+							}
 						}
 					}
 					if !funding_txo.is_none() && txn.is_empty() {
@@ -2637,6 +2676,15 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 		let last_block_hash: Sha256dHash = Readable::read(reader)?;
 		let destination_script = Readable::read(reader)?;
+		let to_remote_rescue = match <u8 as Readable<R>>::read(reader)? {
+			0 => None,
+			1 => {
+				let to_remote_script = Readable::read(reader)?;
+				let local_key = Readable::read(reader)?;
+				Some((to_remote_script, local_key))
+			}
+			_ => return Err(DecodeError::InvalidValue),
+		};
 
 		let our_claim_txn_waiting_first_conf_len: u64 = Readable::read(reader)?;
 		let mut our_claim_txn_waiting_first_conf = HashMap::with_capacity(cmp::min(our_claim_txn_waiting_first_conf_len as usize, MAX_ALLOC_SIZE / 128));
@@ -2746,6 +2794,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			payment_preimages,
 
 			destination_script,
+			to_remote_rescue,
 
 			our_claim_txn_waiting_first_conf,
 
