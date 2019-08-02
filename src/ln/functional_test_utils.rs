@@ -740,7 +740,7 @@ pub fn route_over_limit(origin_node: &Node, expected_route: &[&Node], recv_value
 
 	let err = origin_node.node.send_payment(route, our_payment_hash).err().unwrap();
 	match err {
-		APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight"),
+		APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"),
 		_ => panic!("Unknown error variants"),
 	};
 }
