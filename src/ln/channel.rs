@@ -390,7 +390,7 @@ impl Channel {
 	/// Returns a minimum channel reserve value **they** need to maintain
 	///
 	/// Guaranteed to return a value no larger than channel_value_satoshis
-	fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
+	pub(crate) fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
 		let (q, _) = channel_value_satoshis.overflowing_div(100);
 		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}

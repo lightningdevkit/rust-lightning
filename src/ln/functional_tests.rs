@@ -48,6 +48,58 @@ use rand::{thread_rng, Rng};
 use ln::functional_test_utils::*;
 
 #[test]
+fn test_insane_channel_opens() {
+	// Stand up a network of 2 nodes
+	let nodes = create_network(2, &[None, None]);
+
+	// Instantiate channel parameters where we push the maximum msats given our
+	// funding satoshis
+	let channel_value_sat = 31337; // same as funding satoshis
+	let channel_reserve_satoshis = Channel::get_our_channel_reserve_satoshis(channel_value_sat);
+	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
+
+	// Have node0 initiate a channel to node1 with aforementioned parameters
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42).unwrap();
+
+	// Extract the channel open message from node0 to node1
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	// Test helper that asserts we get the correct error string given a mutator
+	// that supposedly makes the channel open message insane
+	let insane_open_helper = |expected_error_str, message_mutator: fn(msgs::OpenChannel) -> msgs::OpenChannel| {
+		match nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), LocalFeatures::new(), &message_mutator(open_channel_message.clone())) {
+			Err(msgs::HandleError{ err: error_str, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) => {
+				assert_eq!(error_str, expected_error_str, "unexpected HandleError string (expected `{}`, actual `{}`)", expected_error_str, error_str)
+			},
+			Err(msgs::HandleError{..}) => {panic!("unexpected HandleError action")},
+			_ => panic!("insane OpenChannel message was somehow Ok"),
+		}
+	};
+
+	use ln::channel::MAX_FUNDING_SATOSHIS;
+	use ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
+
+	// Test all mutations that would make the channel open message insane
+	insane_open_helper("funding value > 2^24", |mut msg| { msg.funding_satoshis = MAX_FUNDING_SATOSHIS; msg });
+
+	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.funding_satoshis + 1; msg });
+
+	insane_open_helper("push_msat larger than funding value", |mut msg| { msg.push_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
+
+	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.dust_limit_satoshis = msg.funding_satoshis + 1 ; msg });
+
+	insane_open_helper("Bogus; channel reserve is less than dust limit", |mut msg| { msg.dust_limit_satoshis = msg.channel_reserve_satoshis + 1; msg });
+
+	insane_open_helper("Minimum htlc value is full channel value", |mut msg| { msg.htlc_minimum_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
+
+	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| { msg.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1; msg });
+
+	insane_open_helper("0 max_accpted_htlcs makes for a useless channel", |mut msg| { msg.max_accepted_htlcs = 0; msg });
+
+	insane_open_helper("max_accpted_htlcs > 483", |mut msg| { msg.max_accepted_htlcs = 484; msg });
+}
+
+#[test]
 fn test_async_inbound_update_fee() {
 	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
