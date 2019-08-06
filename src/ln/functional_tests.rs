@@ -3,8 +3,9 @@
 //! claim outputs on-chain.
 
 use chain::transaction::OutPoint;
-use chain::chaininterface::{ChainListener, ChainWatchInterface};
+use chain::chaininterface::{ChainListener, ChainWatchInterface, ChainWatchInterfaceUtil};
 use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor, KeysManager};
+use chain::keysinterface;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
@@ -18,6 +19,7 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
+use util::logger::Logger;
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -39,7 +41,7 @@ use secp256k1::key::{PublicKey,SecretKey};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 use std::mem;
 
@@ -5944,4 +5946,114 @@ fn test_user_configurable_csv_delay() {
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
+}
+
+#[test]
+fn test_data_loss_protect() {
+	// We want to be sure that :
+	// * we don't broadcast our Local Commitment Tx in case of fallen behind
+	// * we close channel in case of detecting other being fallen behind
+	// * we are able to claim our own outputs thanks to remote my_current_per_commitment_point
+	let mut nodes = create_network(2, &[None, None]);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, LocalFeatures::new(), LocalFeatures::new());
+
+	// Cache node A state before any channel update
+	let previous_node_state = nodes[0].node.encode();
+	let mut previous_chan_monitor_state = test_utils::TestVecWriter(Vec::new());
+	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut previous_chan_monitor_state).unwrap();
+
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	// Restore node A from previous state
+	let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", 0)));
+	let chan_monitor = <(Sha256dHash, ChannelMonitor)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0), Arc::clone(&logger)).unwrap().1;
+	let chain_monitor = Arc::new(ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
+	let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
+	let monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
+	let mut channel_monitors = HashMap::new();
+	channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &chan_monitor);
+	let node_state_0 = <(Sha256dHash, ChannelManager)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
+		keys_manager: Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::clone(&logger), 42, 21)),
+		fee_estimator: feeest.clone(),
+		monitor: monitor.clone(),
+		chain_monitor: chain_monitor.clone(),
+		logger: Arc::clone(&logger),
+		tx_broadcaster,
+		default_config: UserConfig::new(),
+		channel_monitors: &channel_monitors
+	}).unwrap().1;
+	nodes[0].node = Arc::new(node_state_0);
+	monitor.add_update_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok();
+	nodes[0].chan_monitor = monitor;
+	nodes[0].chain_monitor = chain_monitor;
+	check_added_monitors!(nodes[0], 1);
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+
+	let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	// Check we update monitor following learning of per_commitment_point from B
+	if let Err(err) = nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0])  {
+		if let Some(error) = err.action {
+			match error {
+				ErrorAction::SendErrorMessage { msg } => {
+					assert_eq!(msg.data, "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can't do any automated broadcasting");
+				},
+				_ => panic!("Unexpected event!"),
+			}
+		} else { assert!(false); }
+	} else { assert!(false); }
+	check_added_monitors!(nodes[0], 1);
+
+	{
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+		assert_eq!(node_txn.len(), 0);
+	}
+
+	let mut reestablish_1 = Vec::with_capacity(1);
+	for msg in nodes[0].node.get_and_clear_pending_msg_events() {
+		if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
+			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			reestablish_1.push(msg.clone());
+		} else if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
+		} else {
+			panic!("Unexpected event")
+		}
+	}
+
+	// Check we close channel detecting A is fallen-behind
+	if let Err(err) = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]) {
+		if let Some(error) = err.action {
+			match error {
+				ErrorAction::SendErrorMessage { msg } => {
+					assert_eq!(msg.data, "Peer attempted to reestablish channel with a very old local commitment transaction"); },
+				_ => panic!("Unexpected event!"),
+			}
+		} else { assert!(false); }
+	} else { assert!(false); }
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Check A is able to claim to_remote output
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	assert_eq!(node_txn.len(), 1);
+	check_spends!(node_txn[0], chan.3.clone());
+	assert_eq!(node_txn[0].output.len(), 2);
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![node_txn[0].clone()]}, 1);
+	let spend_txn = check_spendable_outputs!(nodes[0], 1);
+	assert_eq!(spend_txn.len(), 1);
+	check_spends!(spend_txn[0], node_txn[0].clone());
 }

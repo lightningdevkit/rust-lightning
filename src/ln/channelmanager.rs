@@ -208,6 +208,15 @@ impl MsgHandleErrInternal {
 						},
 					}),
 				},
+				ChannelError::CloseDelayBroadcast { msg, .. } => HandleError {
+					err: msg,
+					action: Some(msgs::ErrorAction::SendErrorMessage {
+						msg: msgs::ErrorMessage {
+							channel_id,
+							data: msg.to_string()
+						},
+					}),
+				},
 			},
 			shutdown_finish: None,
 		}
@@ -447,6 +456,7 @@ macro_rules! break_chan_entry {
 				}
 				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
+			Err(ChannelError::CloseDelayBroadcast { .. }) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 		}
 	}
 }
@@ -466,6 +476,31 @@ macro_rules! try_chan_entry {
 				}
 				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
 			},
+			Err(ChannelError::CloseDelayBroadcast { msg, update }) => {
+				log_error!($self, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($entry.key()[..]), msg);
+				let (channel_id, mut chan) = $entry.remove_entry();
+				if let Some(short_id) = chan.get_short_channel_id() {
+					$channel_state.short_to_id.remove(&short_id);
+				}
+				if let Some(update) = update {
+					if let Err(e) = $self.monitor.add_update_monitor(update.get_funding_txo().unwrap(), update) {
+						match e {
+							// Upstream channel is dead, but we want at least to fail backward HTLCs to save
+							// downstream channels. In case of PermanentFailure, we are not going to be able
+							// to claim back to_remote output on remote commitment transaction. Doesn't
+							// make a difference here, we are concern about HTLCs circuit, not onchain funds.
+							ChannelMonitorUpdateErr::PermanentFailure => {},
+							ChannelMonitorUpdateErr::TemporaryFailure => {},
+						}
+					}
+				}
+				let mut shutdown_res = chan.force_shutdown();
+				if shutdown_res.0.len() >= 1 {
+					log_error!($self, "You have a toxic local commitment transaction {} avaible in channel monitor, read comment in ChannelMonitor::get_latest_local_commitment_txn to be informed of manual action to take", shutdown_res.0[0].txid());
+				}
+				shutdown_res.0.clear();
+				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, $self.get_channel_update(&chan).ok()))
+			}
 		}
 	}
 }
