@@ -488,13 +488,13 @@ macro_rules! subtract_high_prio_fee {
 	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $spent_txid: expr, $used_feerate: expr) => {
 		{
 			$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority);
-			let mut fee = $used_feerate * $predicted_weight / 1000;
+			let mut fee = $used_feerate * ($predicted_weight as u64) / 1000;
 			if $value <= fee {
 				$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
-				fee = $used_feerate * $predicted_weight / 1000;
+				fee = $used_feerate * ($predicted_weight as u64) / 1000;
 				if $value <= fee {
 					$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-					fee = $used_feerate * $predicted_weight / 1000;
+					fee = $used_feerate * ($predicted_weight as u64) / 1000;
 					if $value <= fee {
 						log_error!($self, "Failed to generate an on-chain punishment tx spending {} as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
 							$spent_txid, fee, $value);
@@ -602,7 +602,7 @@ impl ChannelMonitor {
 		}
 	}
 
-	fn get_witnesses_weight(inputs: &[InputDescriptors]) -> u64 {
+	fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
 		let mut tx_weight = 2; // count segwit flags
 		for inp in inputs {
 			// We use expected weight (and not actual) as signatures and time lock delays may vary
@@ -3307,7 +3307,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let privkey = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 		let pubkey = PublicKey::from_secret_key(&secp_ctx, &privkey);
-		let mut sum_actual_sigs: u64 = 0;
+		let mut sum_actual_sigs = 0;
 
 		macro_rules! sign_input {
 			($sighash_parts: expr, $input: expr, $idx: expr, $amount: expr, $input_type: expr, $sum_actual_sigs: expr) => {
@@ -3323,7 +3323,7 @@ mod tests {
 				let sig = secp_ctx.sign(&sighash, &privkey);
 				$input.witness.push(sig.serialize_der().to_vec());
 				$input.witness[0].push(SigHashType::All as u8);
-				sum_actual_sigs += $input.witness[0].len() as u64;
+				sum_actual_sigs += $input.witness[0].len();
 				if *$input_type == InputDescriptors::RevokedOutput {
 					$input.witness.push(vec!(1));
 				} else if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::RevokedReceivedHTLC {
@@ -3366,7 +3366,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -3388,7 +3388,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -3408,7 +3408,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() as u64 - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
