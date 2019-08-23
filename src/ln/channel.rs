@@ -2784,7 +2784,7 @@ impl Channel {
 			}
 		}
 
-		let proposed_sat_per_kw = msg.fee_satoshis * 1000 / closing_tx.get_weight();
+		let proposed_sat_per_kw = msg.fee_satoshis * 1000 / closing_tx.get_weight() as u64;
 		if self.channel_outbound {
 			let our_max_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 			if proposed_sat_per_kw > our_max_feerate {

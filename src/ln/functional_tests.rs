@@ -2030,11 +2030,16 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(node_txn[1].input.len(), 1);
 		assert_eq!(node_txn[2].input.len(), 1);
 
-		let mut revoked_tx_map = HashMap::new();
-		revoked_tx_map.insert(revoked_local_txn[0].txid(), revoked_local_txn[0].clone());
-		node_txn[0].verify(&revoked_tx_map).unwrap();
-		node_txn[1].verify(&revoked_tx_map).unwrap();
-		node_txn[2].verify(&revoked_tx_map).unwrap();
+		fn get_txout(out_point: &BitcoinOutPoint, tx: &Transaction) -> Option<TxOut> {
+			if out_point.txid == tx.txid() {
+				tx.output.get(out_point.vout as usize).cloned()
+			} else {
+				None
+			}
+		}
+		node_txn[0].verify(|out|get_txout(out, &revoked_local_txn[0])).unwrap();
+		node_txn[1].verify(|out|get_txout(out, &revoked_local_txn[0])).unwrap();
+		node_txn[2].verify(|out|get_txout(out, &revoked_local_txn[0])).unwrap();
 
 		let mut witness_lens = BTreeSet::new();
 		witness_lens.insert(node_txn[0].input[0].witness.last().unwrap().len());
