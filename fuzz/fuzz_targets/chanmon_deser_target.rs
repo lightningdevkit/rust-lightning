@@ -2,12 +2,12 @@
 // To modify it, modify msg_target_template.txt and run gen_target.sh instead.
 
 extern crate bitcoin;
+extern crate bitcoin_hashes;
 extern crate lightning;
 
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use lightning::ln::channelmonitor;
-use lightning::util::reset_rng_state;
 use lightning::util::ser::{ReadableArgs, Writer};
 
 mod utils;
@@ -29,8 +29,7 @@ impl Writer for VecWriter {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	reset_rng_state();
-	let logger = Arc::new(test_logger::TestLogger{});
+	let logger = Arc::new(test_logger::TestLogger::new("".to_owned()));
 	if let Ok((latest_block_hash, monitor)) = <(Sha256dHash, channelmonitor::ChannelMonitor)>::read(&mut Cursor::new(data), logger.clone()) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();

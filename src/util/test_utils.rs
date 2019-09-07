@@ -4,6 +4,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::channelmonitor;
 use ln::msgs;
+use ln::msgs::LocalFeatures;
 use ln::msgs::{HandleError};
 use ln::channelmonitor::HTLCUpdate;
 use util::events;
@@ -12,16 +13,17 @@ use util::ser::{ReadableArgs, Writer};
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
 
 use secp256k1::{SecretKey, PublicKey};
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
 use std::{mem};
 
-struct VecWriter(Vec<u8>);
-impl Writer for VecWriter {
+pub struct TestVecWriter(pub Vec<u8>);
+impl Writer for TestVecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
@@ -46,10 +48,10 @@ pub struct TestChannelMonitor {
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
 impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>) -> Self {
+	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
-			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger),
+			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
 		}
 	}
@@ -58,7 +60,7 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		let mut w = VecWriter(Vec::new());
+		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
 		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == monitor);
@@ -96,10 +98,10 @@ impl TestChannelMessageHandler {
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::OpenChannel) -> Result<(), HandleError> {
+	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::OpenChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
-	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
+	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
 		Err(HandleError { err: "", action: None })
 	}
 	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<(), HandleError> {
@@ -215,6 +217,7 @@ impl Logger for TestLogger {
 pub struct TestKeysInterface {
 	backing: keysinterface::KeysManager,
 	pub override_session_priv: Mutex<Option<SecretKey>>,
+	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 }
 
 impl keysinterface::KeysInterface for TestKeysInterface {
@@ -229,13 +232,22 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 			None => self.backing.get_session_key()
 		}
 	}
+
+	fn get_channel_id(&self) -> [u8; 32] {
+		match *self.override_channel_id_priv.lock().unwrap() {
+			Some(key) => key.clone(),
+			None => self.backing.get_channel_id()
+		}
+	}
 }
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>) -> Self {
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
 		Self {
-			backing: keysinterface::KeysManager::new(seed, network, logger),
+			backing: keysinterface::KeysManager::new(seed, network, logger, now.as_secs(), now.subsec_nanos()),
 			override_session_priv: Mutex::new(None),
+			override_channel_id_priv: Mutex::new(None),
 		}
 	}
 }

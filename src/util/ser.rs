@@ -6,10 +6,11 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use secp256k1::{Secp256k1, Signature};
+use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
-use bitcoin::util::hash::Sha256dHash;
 use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::transaction::OutPoint;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::channelmanager::{PaymentPreimage, PaymentHash};
@@ -203,6 +204,10 @@ macro_rules! impl_array {
 }
 
 //TODO: performance issue with [u8; size] with impl_array!()
+impl_array!(3); // for rgb
+impl_array!(4); // for IPv4
+impl_array!(10); // for OnionV2
+impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
 impl_array!(33); // for PublicKey
 impl_array!(64); // for Signature
@@ -302,29 +307,6 @@ impl<R: Read> Readable<R> for Script {
 	}
 }
 
-impl Writeable for Option<Script> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		if let &Some(ref script) = self {
-			script.write(w)?;
-		}
-		Ok(())
-	}
-}
-
-impl<R: Read> Readable<R> for Option<Script> {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		match <u16 as Readable<R>>::read(r) {
-			Ok(len) => {
-				let mut buf = vec![0; len as usize];
-				r.read_exact(&mut buf)?;
-				Ok(Some(Script::from(buf)))
-			},
-			Err(DecodeError::ShortRead) => Ok(None),
-			Err(e) => Err(e)
-		}
-	}
-}
-
 impl Writeable for PublicKey {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.serialize().write(w)
@@ -334,7 +316,7 @@ impl Writeable for PublicKey {
 impl<R: Read> Readable<R> for PublicKey {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 33] = Readable::read(r)?;
-		match PublicKey::from_slice(&Secp256k1::without_caps(), &buf) {
+		match PublicKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
@@ -352,7 +334,7 @@ impl Writeable for SecretKey {
 impl<R: Read> Readable<R> for SecretKey {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
-		match SecretKey::from_slice(&Secp256k1::without_caps(), &buf) {
+		match SecretKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
@@ -361,27 +343,29 @@ impl<R: Read> Readable<R> for SecretKey {
 
 impl Writeable for Sha256dHash {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		self.as_bytes().write(w)
+		w.write_all(&self[..])
 	}
 }
 
 impl<R: Read> Readable<R> for Sha256dHash {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin_hashes::Hash;
+
 		let buf: [u8; 32] = Readable::read(r)?;
-		Ok(From::from(&buf[..]))
+		Ok(Sha256dHash::from_slice(&buf[..]).unwrap())
 	}
 }
 
 impl Writeable for Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		self.serialize_compact(&Secp256k1::without_caps()).write(w)
+		self.serialize_compact().write(w)
 	}
 }
 
 impl<R: Read> Readable<R> for Signature {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 64] = Readable::read(r)?;
-		match Signature::from_compact(&Secp256k1::without_caps(), &buf) {
+		match Signature::from_compact(&buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
@@ -411,5 +395,50 @@ impl<R: Read> Readable<R> for PaymentHash {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentHash(buf))
+	}
+}
+
+impl<T: Writeable> Writeable for Option<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		match *self {
+			None => 0u8.write(w)?,
+			Some(ref data) => {
+				1u8.write(w)?;
+				data.write(w)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R, T> Readable<R> for Option<T>
+	where R: Read,
+	      T: Readable<R>
+{
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		match <u8 as Readable<R>>::read(r)? {
+			0 => Ok(None),
+			1 => Ok(Some(Readable::read(r)?)),
+			_ => return Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+impl Writeable for OutPoint {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.txid.write(w)?;
+		self.vout.write(w)?;
+		Ok(())
+	}
+}
+
+impl<R: Read> Readable<R> for OutPoint {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let txid = Readable::read(r)?;
+		let vout = Readable::read(r)?;
+		Ok(OutPoint {
+			txid,
+			vout,
+		})
 	}
 }

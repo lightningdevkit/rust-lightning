@@ -2,13 +2,14 @@
 //! blockchain.
 //!
 //! Includes traits for monitoring and receiving notifications of new blocks and block
-//! disconnections, transactio broadcasting, and feerate information requests.
+//! disconnections, transaction broadcasting, and feerate information requests.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::util::hash::{BitcoinHash, Sha256dHash};
+use bitcoin::util::hash::BitcoinHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
 
 use util::logger::Logger;
@@ -77,7 +78,8 @@ pub trait ChainListener: Sync + Send {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
-	fn block_disconnected(&self, header: &BlockHeader);
+	/// Height must be the one of the block which was disconnected (not new height of the best chain)
+	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32);
 }
 
 /// An enum that represents the speed at which we want a transaction to confirm used for feerate
@@ -143,7 +145,7 @@ impl ChainWatchedUtil {
 		}
 		#[cfg(not(test))]
 		{
-			let _tx_unused = txid; // Its used in cfg(test), though
+			let _tx_unused = txid; // It's used in cfg(test), though
 			self.watched_txn.insert(script_pub_key.clone())
 		}
 	}
@@ -155,7 +157,7 @@ impl ChainWatchedUtil {
 		self.watched_outpoints.insert(outpoint)
 	}
 
-	/// Sets us to match all transactions, returning true if this is a new setting anf false if
+	/// Sets us to match all transactions, returning true if this is a new setting and false if
 	/// we'd already been set to match everything.
 	pub fn watch_all(&mut self) -> bool {
 		if self.watch_all { return false; }
@@ -278,11 +280,11 @@ impl ChainWatchInterfaceUtil {
 	}
 
 	/// Notify listeners that a block was disconnected.
-	pub fn block_disconnected(&self, header: &BlockHeader) {
+	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
 			match listener.upgrade() {
-				Some(arc) => arc.block_disconnected(header),
+				Some(arc) => arc.block_disconnected(&header, disconnected_height),
 				None => ()
 			}
 		}

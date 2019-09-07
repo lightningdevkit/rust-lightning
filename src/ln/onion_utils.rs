@@ -1,11 +1,11 @@
 use ln::channelmanager::{PaymentHash, HTLCSource};
 use ln::msgs;
 use ln::router::{Route,RouteHop};
-use util::{byte_utils, internal_traits};
+use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable};
-use util::logger::Logger;
+use util::logger::{Logger, LogHolder};
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::cmp::fixed_time_eq;
@@ -17,7 +17,6 @@ use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use std::ptr;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -69,7 +68,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 	for hop in route.hops.iter() {
-		let shared_secret = SharedSecret::new(secp_ctx, &hop.pubkey, &blinded_priv);
+		let shared_secret = SharedSecret::new(&hop.pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
 		sha.input(&blinded_pub.serialize()[..]);
@@ -78,7 +77,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 
 		let ephemeral_pubkey = blinded_pub;
 
-		blinded_priv.mul_assign(secp_ctx, &SecretKey::from_slice(secp_ctx, &blinding_factor)?)?;
+		blinded_priv.mul_assign(&blinding_factor)?;
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 		callback(shared_secret, blinding_factor, ephemeral_pubkey, hop);
@@ -114,16 +113,14 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
 	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
-	internal_traits::test_no_dealloc::<msgs::OnionHopData>(None);
-	unsafe { res.set_len(route.hops.len()); }
 
-	for (idx, hop) in route.hops.iter().enumerate().rev() {
+	for hop in route.hops.iter().rev() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
-		res[idx] = msgs::OnionHopData {
+		res.insert(0, msgs::OnionHopData {
 			realm: 0,
 			data: msgs::OnionRealm0HopData {
 				short_channel_id: last_short_channel_id,
@@ -131,7 +128,7 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 				outgoing_cltv_value: cltv,
 			},
 			hmac: [0; 32],
-		};
+		});
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::RouteError{err: "Channel fees overflowed?!"});
@@ -147,8 +144,8 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 
 #[inline]
 fn shift_arr_right(arr: &mut [u8; 20*65]) {
-	unsafe {
-		ptr::copy(arr[0..].as_ptr(), arr[65..].as_mut_ptr(), 19*65);
+	for i in (65..20*65).rev() {
+		arr[i] = arr[i-65];
 	}
 	for i in 0..65 {
 		arr[i] = 0;
@@ -265,7 +262,6 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 }
 
-struct LogHolder<'a> { logger: &'a Arc<Logger> }
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
@@ -438,29 +434,29 @@ mod tests {
 		let route = Route {
 			hops: vec!(
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 					RouteHop {
-						pubkey: PublicKey::from_slice(&secp_ctx, &hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
+						pubkey: PublicKey::from_slice(&hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 			),
 		};
 
-		let session_priv = SecretKey::from_slice(&secp_ctx, &hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
+		let session_priv = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
 
 		let onion_keys = super::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
 		assert_eq!(onion_keys.len(), route.hops.len());

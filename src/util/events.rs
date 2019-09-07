@@ -1,7 +1,7 @@
 //! Events are returned from various bits in the library which indicate some action must be taken
 //! by the client.
 //!
-//! Because we don't have a built-in runtime, its up to the client to call events at a time in the
+//! Because we don't have a built-in runtime, it's up to the client to call events at a time in the
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
 //!
@@ -21,7 +21,7 @@ use bitcoin::blockdata::script::Script;
 
 use secp256k1::key::PublicKey;
 
-use std::time::Instant;
+use std::time::Duration;
 
 /// An Event which you should probably take some action in response to.
 pub enum Event {
@@ -92,8 +92,11 @@ pub enum Event {
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
 	PendingHTLCsForwardable {
-		/// The earliest time at which process_pending_htlc_forwards should be called.
-		time_forwardable: Instant,
+		/// The minimum amount of time that should be waited prior to calling
+		/// process_pending_htlc_forwards. To increase the effort required to correlate payments,
+		/// you should wait a random amount of time in roughly the range (now + time_forwardable,
+		/// now + 5*time_forwardable).
+		time_forwardable: Duration,
 	},
 	/// Used to indicate that an output was generated on-chain which you should know how to spend.
 	/// Such an output will *not* ever be spent by rust-lightning, so you need to store them

@@ -1,6 +1,11 @@
-Rust-Lightning, not Rusty's Lightning!
+[![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-Currently somewhere near 15% towards usable, published to see if there is any
+Rust-Lightning, not Rusty's Lightning!
+=====
+
+Documentation can be found at [docs.rs](https://docs.rs/lightning/)
+
+Currently somewhere near 40% towards usable, published to see if there is any
 real interest from folks in using a lightning rust library.
 
 The goal is to provide a full-featured but also incredibly flexible lightning

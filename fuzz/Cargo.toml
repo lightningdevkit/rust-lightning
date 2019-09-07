@@ -13,15 +13,17 @@ cargo-fuzz = true
 [features]
 afl_fuzz = ["afl"]
 honggfuzz_fuzz = ["honggfuzz"]
+libfuzzer_fuzz = ["libfuzzer-sys"]
 
 [dependencies]
 afl = { version = "0.4", optional = true }
 lightning = { path = "..", features = ["fuzztarget"] }
-bitcoin = { version = "0.15", features = ["fuzztarget"] }
-bitcoin_hashes = { git = "https://github.com/TheBlueMatt/bitcoin_hashes", branch = "rust-lightning-dep", features=["fuzztarget"] }
+bitcoin = { version = "0.20", features = ["fuzztarget"] }
+bitcoin_hashes = { version = "0.7", features = ["fuzztarget"] }
 hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }
-secp256k1 = { version = "0.11", features=["fuzztarget"] }
+secp256k1 = { version = "0.15", features=["fuzztarget"] }
+libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git", optional = true }
 
 [build-dependencies]
 cc = "1.0"
@@ -41,6 +43,10 @@ path = "fuzz_targets/peer_crypt_target.rs"
 [[bin]]
 name = "full_stack_target"
 path = "fuzz_targets/full_stack_target.rs"
+
+[[bin]]
+name = "chanmon_fail_consistency"
+path = "fuzz_targets/chanmon_fail_consistency.rs"
 
 [[bin]]
 name = "router_target"

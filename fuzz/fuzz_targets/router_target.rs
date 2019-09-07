@@ -1,8 +1,9 @@
 extern crate bitcoin;
+extern crate bitcoin_hashes;
 extern crate lightning;
 extern crate secp256k1;
 
-use bitcoin::util::hash::Sha256dHash;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::{Script, Builder};
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface, ChainListener};
@@ -10,12 +11,10 @@ use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
 use lightning::ln::msgs::{RoutingMessageHandler};
 use lightning::ln::router::{Router, RouteHint};
-use lightning::util::reset_rng_state;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
 use secp256k1::key::PublicKey;
-use secp256k1::Secp256k1;
 
 mod utils;
 
@@ -96,8 +95,6 @@ impl ChainWatchInterface for DummyChainWatcher {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	reset_rng_state();
-
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
@@ -146,17 +143,16 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
-	let secp_ctx = Secp256k1::new();
 	macro_rules! get_pubkey {
 		() => {
-			match PublicKey::from_slice(&secp_ctx, get_slice!(33)) {
+			match PublicKey::from_slice(get_slice!(33)) {
 				Ok(key) => key,
 				Err(_) => return,
 			}
 		}
 	}
 
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger{});
+	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
 	let chain_monitor = Arc::new(DummyChainWatcher {
 		input: Arc::clone(&input),
 	});
@@ -206,6 +202,9 @@ pub fn do_test(data: &[u8]) {
 								remote_network_id: get_pubkey!(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
+								inbound_capacity_msat: 0,
+								is_live: true,
+								outbound_capacity_msat: 0,
 							});
 						}
 						Some(&first_hops_vec[..])

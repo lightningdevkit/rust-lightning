@@ -16,11 +16,12 @@
 
 use std::cmp;
 use std::fmt;
+use std::sync::Arc;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 
 /// An enum representing the available verbosity levels of the logger.
-#[derive(Copy, Clone, Eq, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum Level {
 	///Designates logger being silent
 	Off,
@@ -34,13 +35,6 @@ pub enum Level {
 	Debug,
 	/// Designates very low priority, often extremely verbose, information
 	Trace,
-}
-
-impl PartialEq for Level {
-	#[inline]
-	fn eq(&self, other: &Level) -> bool {
-		*self as usize == *other as usize
-	}
 }
 
 impl PartialOrd for Level {
@@ -126,6 +120,8 @@ pub trait Logger: Sync + Send {
 	/// Logs the `Record`
 	fn log(&self, record: &Record);
 }
+
+pub(crate) struct LogHolder<'a> { pub(crate) logger: &'a Arc<Logger> }
 
 #[cfg(test)]
 mod tests {

@@ -1,11 +1,15 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
+use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
 #[derive(Clone, Debug)]
 pub struct UserConfig {
-	/// Limits applied during channel creation.
-	pub channel_limits: ChannelHandshakeLimits,
+	/// Channel config that we propose to our counterparty.
+	pub own_channel_config: ChannelHandshakeConfig,
+	/// Limits applied to our counterparty's proposed channel config settings.
+	pub peer_channel_config_limits: ChannelHandshakeLimits,
 	/// Channel config which affects behavior during channel lifetime.
 	pub channel_options: ChannelConfig,
 }
@@ -14,8 +18,40 @@ impl UserConfig {
 	/// Provides sane defaults for most configurations (but with 0 relay fees!)
 	pub fn new() -> Self{
 		UserConfig {
-			channel_limits: ChannelHandshakeLimits::new(),
+			own_channel_config: ChannelHandshakeConfig::new(),
+			peer_channel_config_limits: ChannelHandshakeLimits::new(),
 			channel_options: ChannelConfig::new(),
+		}
+	}
+}
+
+/// Configuration we set when applicable.
+#[derive(Clone, Debug)]
+pub struct ChannelHandshakeConfig {
+	/// Confirmations we will wait for before considering the channel locked in.
+	/// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
+	/// equivalent limit applied to outbound channels).
+	pub minimum_depth: u32,
+	/// Set to the amount of time we require our counterparty to wait to claim their money.
+	///
+	/// It's one of the main parameter of our security model. We (or one of our watchtowers) MUST
+	/// be online to check for peer having broadcast a revoked transaction to steal our funds
+	/// at least once every our_to_self_delay blocks.
+	/// Default is BREAKDOWN_TIMEOUT, we enforce it as a minimum at channel opening so you can
+	/// tweak config to ask for more security, not less.
+	///
+	/// Meanwhile, asking for a too high delay, we bother peer to freeze funds for nothing in
+	/// case of an honest unilateral channel close, which implicitly decrease the economic value of
+	/// our channel.
+	pub our_to_self_delay: u16,
+}
+
+impl ChannelHandshakeConfig {
+	/// Provides sane defaults for `ChannelHandshakeConfig`
+	pub fn new() -> ChannelHandshakeConfig {
+		ChannelHandshakeConfig {
+			minimum_depth: 6,
+			our_to_self_delay: BREAKDOWN_TIMEOUT,
 		}
 	}
 }
@@ -67,6 +103,13 @@ pub struct ChannelHandshakeLimits {
 	/// Defaults to true to make the default that no announced channels are possible (which is
 	/// appropriate for any nodes which are not online very reliably).
 	pub force_announced_channel_preference: bool,
+	/// Set to the amount of time we're willing to wait to claim money back to us.
+	///
+	/// Not checking this value would be a security issue, as our peer would be able to set it to
+	/// max relative lock-time (a year) and we would "lose" money as it would be locked for a long time.
+	/// Default is MAX_LOCAL_BREAKDOWN_TIMEOUT, which we also enforce as a maximum value
+	/// so you can tweak config to reduce the loss of having useless locked funds (if your peer accepts)
+	pub their_to_self_delay: u16
 }
 
 impl ChannelHandshakeLimits {
@@ -86,6 +129,7 @@ impl ChannelHandshakeLimits {
 			max_dust_limit_satoshis: <u64>::max_value(),
 			max_minimum_depth: 144,
 			force_announced_channel_preference: true,
+			their_to_self_delay: MAX_LOCAL_BREAKDOWN_TIMEOUT,
 		}
 	}
 }
@@ -108,6 +152,16 @@ pub struct ChannelConfig {
 	///
 	/// This cannot be changed after the initial channel handshake.
 	pub announced_channel: bool,
+	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
+	/// supports it, they will then enforce the mutual-close output to us matches what we provided
+	/// at intialization, preventing us from closing to an alternate pubkey.
+	///
+	/// This is set to true by default to provide a slight increase in security, though ultimately
+	/// any attacker who is able to take control of a channel can just as easily send the funds via
+	/// lightning payments, so we never require that our counterparties support this option.
+	///
+	/// This cannot be changed after a channel has been initialized.
+	pub commit_upfront_shutdown_pubkey: bool
 }
 
 impl ChannelConfig {
@@ -116,12 +170,14 @@ impl ChannelConfig {
 		ChannelConfig {
 			fee_proportional_millionths: 0,
 			announced_channel: false,
+			commit_upfront_shutdown_pubkey: true,
 		}
 	}
 }
 
 //Add write and readable traits to channelconfig
-impl_writeable!(ChannelConfig, 8+1, {
+impl_writeable!(ChannelConfig, 8+1+1, {
 	fee_proportional_millionths,
-	announced_channel
+	announced_channel,
+	commit_upfront_shutdown_pubkey
 });
