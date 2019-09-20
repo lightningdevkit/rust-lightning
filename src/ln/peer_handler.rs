@@ -1181,3 +1181,55 @@ mod tests {
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 }
+
+
+/*
+
+
+BlueMatt's github comments for reference:
+"In general, lightning nodes should constantly be pinging their peers to ensure connectivity and ensure that we have a peer marked
+ disconnected before we get a payment to route through them that gets stuck. This will require:
+
+    Some general API in peer_handler that indicates a timer tick (doesn't have to be that often,
+     just enough to quantize pings and make sure we get pongs back by the next tick).
+    A regular ping generation,
+    Disconnecting a peer if no pong is heard by the next timer tick.
+"
+"Cool! Might also want to coordinate with @rrybarczyk who was thinking of working on this, I think.
+ As for your question, I don't think you need anything as crazy as a function pointer, just literally a function in the PeerHandler 
+ called timer_tick_occurred which the client calls every N seconds (should define N, I assume something like 15-30). The client can
+  schedule it in any way they want."
+
+
+
+
+
+*/ 
+// check_peer continually loops and then iterates through each peer in the peer manager
+// we create a bool variable set to true, ping each peer and wait for a response if there is no response the bool varibable is false and we run timer_tick_occured()
+pub fn check_peer(PeerManager:pm){
+
+
+	loop{
+	for i in pm.peers.iter()
+		{
+		let mut recieved_pong = true;
+
+		//TODO ping each one
+		//TODO wait 30 seconds
+		//TODO if the peer did not recieve pong set bool recieved_pong = false
+		// if recieved pong is false then perform timer_tick_occured(i);
+		}
+
+}
+}
+	
+
+
+//this will disconnect the peer
+pub fn timer_tick_occured(&peer_holder: ph){
+	//TODO the peer in peerholder to see if it recieved a pong message
+	//
+	
+}
+
