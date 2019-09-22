@@ -1205,6 +1205,41 @@ BlueMatt's github comments for reference:
 
 
 */ 
+
+/* relevent functionality:
+/// A shutdown message to be sent or received from a peer
+pub struct Shutdown 238
+
+pub struct HandleError msgs.rs ln 546: An Err type for failure to process messages.
+HandleError contains a ErrorAction as the action field 
+					
+pub enum ErrorAction  msgs.rs ln 530 /// Used to put an error message in a HandleError
+We are concerned with the DisconnectPeer {msg: Option <ErrorMessage>} field
+
+
+pub struct ErrorMessage msgs.rs ln 155 /// An error message to be sent or received from a peer
+
+
+
+
+#[test] peerhandler.rs 1162
+	fn test_disconnect_peer() {
+		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
+		// push a DisconnectPeer event to remove the node flagged by id
+
+
+
+
+
+
+
+pub struct Ping, msgs.rs ln 160
+pub struct Pong msgs.rs ln 167
+pub struct Shutdown msgs.rs ln 240
+
+
+
+*/
 // check_peer continually loops and then iterates through each peer in the peer manager
 // we create a bool variable set to true, ping each peer and wait for a response if there is no response the bool varibable is false and we run timer_tick_occured()
 pub fn check_peer(PeerManager:pm){
