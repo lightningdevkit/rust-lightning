@@ -1213,23 +1213,31 @@ pub fn check_peer(PeerManager:pm){
 	loop{
 	for i in pm.peers.iter()
 		{
-		let mut recieved_pong = true;
+		
 
-		//TODO ping each one
-		//TODO wait 30 seconds
-		//TODO if the peer did not recieve pong set bool recieved_pong = false
-		// if recieved pong is false then perform timer_tick_occured(i);
+		//ping each one
+
 		}
+		timer_tick_occured();
+
+	for i in pm.peers.iter(){
+		//check for pong message
+		// disconnect peer if need tos
+	}
 
 }
 }
 	
 
 
-//this will disconnect the peer
-pub fn timer_tick_occured(&peer_holder: ph){
-	//TODO the peer in peerholder to see if it recieved a pong message
-	//
-	
+// tick for 30 seconds
+//
+pub fn timer_tick_occured(){
+    let handle = thread::spawn(|| {
+     
+        thread::sleep(Duration::from_millis(30000));
+    });
+   handle.join().unwrap()
+    
+    
 }
-
