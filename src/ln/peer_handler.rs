@@ -1184,25 +1184,6 @@ mod tests {
 	}
 }
 
-
-/*
-
-
-BlueMatt's github comments for reference:
-"In general, lightning nodes should constantly be pinging their peers to ensure connectivity and ensure that we have a peer marked
- disconnected before we get a payment to route through them that gets stuck. This will require:
-
-    Some general API in peer_handler that indicates a timer tick (doesn't have to be that often,
-     just enough to quantize pings and make sure we get pongs back by the next tick).
-    A regular ping generation,
-    Disconnecting a peer if no pong is heard by the next timer tick.
-"
-"Cool! Might also want to coordinate with @rrybarczyk who was thinking of working on this, I think.
- As for your question, I don't think you need anything as crazy as a function pointer, just literally a function in the PeerHandler 
- called timer_tick_occurred which the client calls every N seconds (should define N, I assume something like 15-30). The client can
-  schedule it in any way they want."
-
-*/
 pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 
 	let mut peers = pm.peers.lock().unwrap(); // when this completes we have the mutexguard... a smart pointer to PeerHolder
@@ -1218,9 +1199,9 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
  			byteslen: 64
   		};
 
-  		let encoded_ping: Vec<u8> = ping.encode();
+  		let encoded_ping: &[u8] = ping.encode();
 	
-		let data_sent: usize =  send_data(ping_encoded, True);
+		let data_sent: usize =  send_data(&ping_encoded, True);
 
 		}
 		// 30 seconds passes
@@ -1228,7 +1209,17 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 
 	//index through each peer
 	for i in peers.peers.iter(){
-	//TODO check to see if recieved pong from peer
+
+	let mut data: &[u8]: = &[0u8];
+
+
+	//fill data with incoming message 
+	let message_recv: bool = match do_read_event(peers.Descriptor, data){
+		Ok(res) => Ok(res),
+		Err(e) => false,
+
+	}
+	// if data is not equal to a pong message or message_recv is false disconnect peer 
 
 	// disconnect the peer
 	// pm.message_handler.chan_handler.handle_error(i.their_node_id.unwrap(), None); 
