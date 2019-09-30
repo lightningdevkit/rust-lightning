@@ -1207,14 +1207,20 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 
 	let mut peers = pm.peers.lock().unwrap(); // when this completes we have the mutexguard... a smart pointer to PeerHolder
 
-	//continal loop
+	// eternal loop
 	loop{
 	
 	//index through each peer and ping 
 	for i in peers.peers.iter()
 		{
-		
-		//TODO ping each peer
+		let ping = msgs::Ping {
+ 			ponglen: 64,
+ 			byteslen: 64
+  		};
+
+  		let encoded_ping: Vec<u8> = ping.encode();
+	
+		let data_sent: usize =  send_data(ping_encoded, True);
 
 		}
 		// 30 seconds passes
@@ -1225,7 +1231,7 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 	//TODO check to see if recieved pong from peer
 
 	// disconnect the peer
-	 pm.message_handler.chan_handler.handle_error(i.their_node_id.unwrap(), None); 
+	// pm.message_handler.chan_handler.handle_error(i.their_node_id.unwrap(), None); 
 
 				}
 	  }
