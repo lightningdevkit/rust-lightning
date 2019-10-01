@@ -1193,15 +1193,19 @@ mod tests {
 ln 1226: i am not properly indexing into the hashmap peer_holder with peers.peers.Peer something is wrong with the .Peer
 ln 1240: not in scope i dont think we are allowed to be using that.*/
 
-pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
+pub fn check_peer<Descriptor: SocketDescriptor>(mut pm: PeerManager<Descriptor>){
 
-	let mut peers = pm.peers.lock().unwrap(); // when this completes we have the mutexguard... a smart pointer to PeerHolder
+	
 
 	// eternal loop
 	loop{
 	
-	//index through each peer and ping 
-	for (Descriptor, Peer) in peers.peers.iter()
+	{
+	//let mut peers = pm.peers.lock().unwrap(); // when this completes we have the mutexguard... a smart pointer to PeerHolder
+
+	//let mut my_hash_map: HashMap<Descriptor, Peer> = pm.peers.get_mut().unwrap().peers.clone.collect();
+	for (Descriptor, Peer) in pm.peers.get_mut().unwrap().peers.iter_mut()
+	// returns a reference to peerholder<Descriptor: SocketDescriptor>
 	//probably should be using one of the macros instead
 		{
 
@@ -1226,19 +1230,20 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 	
 
 		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
+	
 		}	
 		
 		// 30 seconds passes
 		timer_tick_occured();
 
 	//index through each peer
-	for i in peers.peers.iter(){
+	for (mut Descriptor, Peer) in pm.peers.get_mut().unwrap().peers.iter_mut(){
 
 	let mut data: &[u8] = &[0u8];
 
 
 	//fill data with incoming message 
-	let message_recv: bool = match do_read_event(peers, data){
+	let message_recv: bool = match pm.read_event(Descriptor, data.to_vec()){
 		Ok(res) => true,
 		Err(e) => false,
 
@@ -1248,10 +1253,15 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 	// disconnect the peer
 	// pm.message_handler.chan_handler.handle_error(i.their_node_id.unwrap(), None); 
 
-				}
+			}
 	  }
 
 }
+}
+
+
+
+
 
 pub fn timer_tick_occured(){
     let handle = thread::spawn(|| {
@@ -1261,10 +1271,9 @@ pub fn timer_tick_occured(){
    handle.join().unwrap()
     
     
+
+
 }
-
-
-
 
 
 
