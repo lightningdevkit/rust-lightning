@@ -15,6 +15,7 @@ use util::byte_utils;
 use util::events::{MessageSendEvent};
 use util::logger::Logger;
 
+
 use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -134,6 +135,7 @@ impl Peer {
 		}
 	}
 }
+
 
 struct PeerHolder<Descriptor: SocketDescriptor> {
 	peers: HashMap<Descriptor, Peer>,
@@ -1184,6 +1186,13 @@ mod tests {
 	}
 }
 
+
+
+
+/*TODO:
+ln 1226: i am not properly indexing into the hashmap peer_holder with peers.peers.Peer something is wrong with the .Peer
+ln 1240: not in scope i dont think we are allowed to be using that.*/
+
 pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 
 	let mut peers = pm.peers.lock().unwrap(); // when this completes we have the mutexguard... a smart pointer to PeerHolder
@@ -1192,8 +1201,11 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 	loop{
 	
 	//index through each peer and ping 
-	for i in peers.peers.iter()
+	for (Descriptor, Peer) in peers.peers.iter()
+	//probably should be using one of the macros instead
 		{
+
+		/*
 		let ping = msgs::Ping {
  			ponglen: 64,
  			byteslen: 64
@@ -1201,24 +1213,36 @@ pub fn check_peer<Descriptor: SocketDescriptor>(pm: &PeerManager<Descriptor>){
 
   		let encoded_ping: &[u8] = ping.encode();
 	
-		let data_sent: usize =  send_data(&ping_encoded, True);
+		let data_sent: usize =  send_data(&ping_encoded, True);*/
 
-		}
+		//encode_and_send_msg!(msgs::Ping);
+
+		let ping = msgs::Ping {
+ 			ponglen: 64,
+ 			byteslen: 64
+  		};
+
+  		let encoded_ping: &[u8] = &ping.encode();
+	
+
+		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
+		}	
+		
 		// 30 seconds passes
 		timer_tick_occured();
 
 	//index through each peer
 	for i in peers.peers.iter(){
 
-	let mut data: &[u8]: = &[0u8];
+	let mut data: &[u8] = &[0u8];
 
 
 	//fill data with incoming message 
-	let message_recv: bool = match do_read_event(peers.Descriptor, data){
-		Ok(res) => Ok(res),
+	let message_recv: bool = match do_read_event(peers, data){
+		Ok(res) => true,
 		Err(e) => false,
 
-	}
+	};
 	// if data is not equal to a pong message or message_recv is false disconnect peer 
 
 	// disconnect the peer
@@ -1238,6 +1262,8 @@ pub fn timer_tick_occured(){
     
     
 }
+
+
 
 
 
