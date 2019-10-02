@@ -1101,7 +1101,61 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			}
 		};
 	}
+ pub fn check_peer(&mut self){
+	loop{
+		Self::ping_peers(self);
+		Self::timer_tick_occured();
+		Self::disconnect_if_no_pong(self);
+	
+	}
 }
+
+fn ping_peers(&mut self){
+	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
+
+		let ping = msgs::Ping {
+ 			ponglen: 64,
+ 			byteslen: 64
+  		};
+
+  		let encoded_ping: &[u8] = &ping.encode();
+	
+
+		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
+	
+		}	
+	}
+fn disconnect_if_no_pong(&mut self){
+	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
+	
+
+		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
+
+		//TODO compare a pong message to anything in the data vector
+		// if there is no pong disconnect the peer
+		//if the function ping_peers() runs for a significant amount of time the pending_read_buffer is never
+		// getting cleared, perhaps that is okay as it is cleared in another manner but we should find out
+		
+	}
+	}
+
+fn timer_tick_occured(){
+    let handle = thread::spawn(|| {
+     
+        thread::sleep(Duration::from_millis(30000));
+    });
+  	 handle.join().unwrap()
+    
+	}
+
+}
+//TODO write documentation 
+		//TODO write test functions
+		// spin up a peer manaager with peers created,
+		// run ping_peers and ensure that a ping message is put into the outbound buffer
+		//spin up a peer maanger with peers created with pong messages in the pending_read_buffer field
+		// run disconnect_if_no_pong and insure that the correct peers are disconnected
+
 
 #[cfg(test)]
 mod tests {
@@ -1185,95 +1239,3 @@ mod tests {
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 }
-
-
-
-
-/*TODO:
-ln 1226: i am not properly indexing into the hashmap peer_holder with peers.peers.Peer something is wrong with the .Peer
-ln 1240: not in scope i dont think we are allowed to be using that.*/
-
-pub fn check_peer<Descriptor: SocketDescriptor>(mut pm: PeerManager<Descriptor>){
-
-	
-
-	// eternal loop
-	loop{
-	
-	{
-	//let mut peers = pm.peers.lock().unwrap(); // when this completes we have the mutexguard... a smart pointer to PeerHolder
-
-	//let mut my_hash_map: HashMap<Descriptor, Peer> = pm.peers.get_mut().unwrap().peers.clone.collect();
-	for (Descriptor, Peer) in pm.peers.get_mut().unwrap().peers.iter_mut()
-	// returns a reference to peerholder<Descriptor: SocketDescriptor>
-	//probably should be using one of the macros instead
-		{
-
-		/*
-		let ping = msgs::Ping {
- 			ponglen: 64,
- 			byteslen: 64
-  		};
-
-  		let encoded_ping: &[u8] = ping.encode();
-	
-		let data_sent: usize =  send_data(&ping_encoded, True);*/
-
-		//encode_and_send_msg!(msgs::Ping);
-
-		let ping = msgs::Ping {
- 			ponglen: 64,
- 			byteslen: 64
-  		};
-
-  		let encoded_ping: &[u8] = &ping.encode();
-	
-
-		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
-	
-		}	
-		
-		// 30 seconds passes
-		timer_tick_occured();
-
-	//index through each peer
-	for (mut Descriptor, Peer) in pm.peers.get_mut().unwrap().peers.iter_mut(){
-
-	let mut data: &[u8] = &[0u8];
-
-
-	//fill data with incoming message 
-	let message_recv: bool = match pm.read_event(Descriptor, data.to_vec()){
-		Ok(res) => true,
-		Err(e) => false,
-
-	};
-	// if data is not equal to a pong message or message_recv is false disconnect peer 
-
-	// disconnect the peer
-	// pm.message_handler.chan_handler.handle_error(i.their_node_id.unwrap(), None); 
-
-			}
-	  }
-
-}
-}
-
-
-
-
-
-pub fn timer_tick_occured(){
-    let handle = thread::spawn(|| {
-     
-        thread::sleep(Duration::from_millis(30000));
-    });
-   handle.join().unwrap()
-    
-    
-
-
-}
-
-
-
