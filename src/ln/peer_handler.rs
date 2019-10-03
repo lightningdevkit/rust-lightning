@@ -1101,7 +1101,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			}
 		};
 	}
- pub fn check_peer(&mut self){
+  fn check_peer(&mut self){
 	loop{
 		Self::ping_peers(self);
 		Self::timer_tick_occured();
@@ -1109,7 +1109,20 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	
 	}
 }
+/* comments for maintainers
+the reason i did not use the send_data(&mut self, data: &[u8], resume_read: bool) function to send the ping message to the peer is that
+it takes a &mut Descriptor as the self arguement, it would appear that I am not able to borrow it mutably.
 
+
+likewise the reason i did not use pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) to read the pong message from the peers is because
+I do not have a mutable reference to Descriptor.
+
+
+If there is any workout for this then I think it would make sense for me to be using those instead of trying to create a round-about way of accomplishing the ping all peers and check for pong tasks.
+
+fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) channel_manager
+*/
+//put a ping message in the Peers pending_ouput_buffer
 fn ping_peers(&mut self){
 	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
 
@@ -1117,28 +1130,60 @@ fn ping_peers(&mut self){
  			ponglen: 64,
  			byteslen: 64
   		};
-
+  	
   		let encoded_ping: &[u8] = &ping.encode();
-	
-
+		
 		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
 	
 		}	
 	}
+
+/*
+
+	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) 
+
+*/
+
+//check Peers pending_read_buffer to see if anything in the vector resembles a pong message
+// if there is no pong like message then we will disconnect the peer
 fn disconnect_if_no_pong(&mut self){
 	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
 	
 
 		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
 
-		//TODO compare a pong message to anything in the data vector
-		// if there is no pong disconnect the peer
-		//if the function ping_peers() runs for a significant amount of time the pending_read_buffer is never
-		// getting cleared, perhaps that is okay as it is cleared in another manner but we should find out
+		let pong = msgs::Pong {
+			byteslen: 64
+		};
+		let encoded_pong = pong.encode();
+
+		// is_sub will modify data but that should be fine as it is cloned
+		let peer_ponged_us: bool = Self::is_sub(&data, &encoded_pong);
+
+
+		if peer_ponged_us == false
+		{
+		self.message_handler.chan_handler.peer_disconnected(&Peer.their_node_id.unwrap(), false);
 		
-	}
+		}
+	
+		}
+
 	}
 
+
+//this function returns true if the second arguement is contained in the first arguement, false otherwise
+// it will modify the first arguement 
+fn is_sub<T: PartialEq>(mut haystack: &[T], needle: &[T]) -> bool {
+    if needle.len() == 0 { return true; }
+    while !haystack.is_empty() {
+        if haystack.starts_with(needle) { return true; }
+        haystack = &haystack[1..];
+    }
+    false
+}
+
+// wait thirty seconds
 fn timer_tick_occured(){
     let handle = thread::spawn(|| {
      
@@ -1155,7 +1200,6 @@ fn timer_tick_occured(){
 		// run ping_peers and ensure that a ping message is put into the outbound buffer
 		//spin up a peer maanger with peers created with pong messages in the pending_read_buffer field
 		// run disconnect_if_no_pong and insure that the correct peers are disconnected
-
 
 #[cfg(test)]
 mod tests {
