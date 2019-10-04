@@ -1101,12 +1101,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			}
 		};
 	}
-  fn check_peer(&mut self){
+  pub fn check_peer(&mut self){
 	loop{
 		Self::ping_peers(self);
 		Self::timer_tick_occured();
 		Self::disconnect_if_no_pong(self);
-	
 	}
 }
 /* comments for maintainers
@@ -1147,24 +1146,27 @@ fn ping_peers(&mut self){
 //check Peers pending_read_buffer to see if anything in the vector resembles a pong message
 // if there is no pong like message then we will disconnect the peer
 fn disconnect_if_no_pong(&mut self){
+
+	//iterate through peers in a peer manager
 	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
 	
-
+		//copy the read buffer into seperate buffer
 		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
 
 		let pong = msgs::Pong {
 			byteslen: 64
 		};
 		let encoded_pong = pong.encode();
-
-		// is_sub will modify data but that should be fine as it is cloned
-		let peer_ponged_us: bool = Self::is_sub(&data, &encoded_pong);
-
-
-		if peer_ponged_us == false
-		{
-		self.message_handler.chan_handler.peer_disconnected(&Peer.their_node_id.unwrap(), false);
 		
+		// check if a encoded pong message is in the copy of Peer.pending_read_buffer;
+		let mut res: (bool, usize)= Self::is_sub(&data, &encoded_pong);
+
+		// executes if there was no pong message in the copy of Peer.pending_read_buffer
+		if res.0 == false
+		{
+		//hopefully peer_disconnected does what I think it does and removes the Peer
+		self.message_handler.chan_handler.peer_disconnected(&Peer.their_node_id.unwrap(), false);
+		//TODO remove the pong message from Peer.pending_read_buffer
 		}
 	
 		}
@@ -1174,13 +1176,14 @@ fn disconnect_if_no_pong(&mut self){
 
 //this function returns true if the second arguement is contained in the first arguement, false otherwise
 // it will modify the first arguement 
-fn is_sub<T: PartialEq>(mut haystack: &[T], needle: &[T]) -> bool {
-    if needle.len() == 0 { return true; }
+fn is_sub<T: PartialEq>(mut haystack: &[T], needle: &[T]) -> (bool, usize){
+	let mut index: usize = 0;
     while !haystack.is_empty() {
-        if haystack.starts_with(needle) { return true; }
+        if haystack.starts_with(needle) { return (true, index) }
         haystack = &haystack[1..];
+        index += 1;
     }
-    false
+    (false, 1)
 }
 
 // wait thirty seconds
@@ -1281,5 +1284,46 @@ mod tests {
 
 		peers[0].process_events();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
+
+
 	}
+
+
+
+/* spin up 2 peers
+call check peers on them in seperate thread
+one peer pongs back
+assert that pm has removed the peer that did not pong
+
+*/
+
+	fn test_check_peers(){
+		let mut peers = create_network(2); // create Vec<PeerManager>
+		let secp_ctx = Secp256k1::new();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+
+		// this block of code will push a ping message to the first peer
+		let ping = msgs::Ping {
+ 			ponglen: 64,
+ 			byteslen: 64
+  		};
+  	
+  		let encoded_ping: &[u8] = ping.encode();
+		peers[0].peers.get_mut().unwrap().peers.Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
+		
+	
+ thread::spawn(|| {
+        for i in 1..10 {
+            println!("hi number {} from the spawned thread!", i);
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+
+
+
+	}
+
 }
+	
+
