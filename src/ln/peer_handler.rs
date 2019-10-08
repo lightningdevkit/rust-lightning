@@ -1290,10 +1290,14 @@ mod tests {
 
 
 
-/* spin up 2 peers
-call check peers on them in seperate thread
-one peer pongs back
-assert that pm has removed the peer that did not pong
+/* spin up a vector of PeerManagers with two Pm's
+
+assert that they each have a specific peer
+
+call check peers on each of them in seperate threads
+one pm pongs back
+assert that the pm that did not receive a pong removed a peer and assert that the pm that recieved a pong still has the peer
+
 
 */
 
