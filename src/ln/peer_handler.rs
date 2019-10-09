@@ -1137,11 +1137,7 @@ fn ping_peers(&mut self){
 		}	
 	}
 
-/*
 
-	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) 
-
-*/
 
 //check Peers pending_read_buffer to see if anything in the vector resembles a pong message
 // if there is no pong like message then we will disconnect the peer
@@ -1197,12 +1193,7 @@ fn timer_tick_occured(){
 	}
 
 }
-//TODO write documentation 
-		//TODO write test functions
-		// spin up a peer manaager with peers created,
-		// run ping_peers and ensure that a ping message is put into the outbound buffer
-		//spin up a peer maanger with peers created with pong messages in the pending_read_buffer field
-		// run disconnect_if_no_pong and insure that the correct peers are disconnected
+
 
 #[cfg(test)]
 mod tests {
@@ -1300,6 +1291,33 @@ assert that the pm that did not receive a pong removed a peer and assert that th
 
 
 */
+
+
+
+//TODO write documentation 
+
+
+		// test function 1:
+		// spin up a peer manaager with peers created,
+		// run ping_peers and ensure that a ping message is put into the outbound buffer
+
+
+		// test function two: 
+		//spin up a peer maanger with some  peers created with pong messages in the pending_read_buffer field
+		// run disconnect_if_no_pong and insure that the correct peers are disconnected
+
+
+
+
+
+	/* fn test_ping_peers()
+	 create peer manager with two peers 
+	 run ping peers on one of the peers 
+	 assert that the outbound buffer for the peer referenced in ping_peers does have a ping message in it
+	 assert that the outbound buffer for the peer not referenced in ping peers does not have a ping message in it
+	 
+
+	*/
 
 	fn test_check_peers(){
 		let mut peers = create_network(2); // create Vec<PeerManager>
