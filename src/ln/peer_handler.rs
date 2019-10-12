@@ -158,6 +158,7 @@ impl<Descriptor: SocketDescriptor> PeerHolder<Descriptor> {
 			node_id_to_descriptor: &mut self.node_id_to_descriptor,
 		}
 	}
+
 }
 
 #[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
@@ -1122,8 +1123,11 @@ If there is any workout for this then I think it would make sense for me to be u
 fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) channel_manager
 */
 //put a ping message in the Peers pending_ouput_buffer
-fn ping_peers(&mut self){
-	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
+fn ping_peers(&mut self) -> Result<(),Option<bool>> {
+	let peer_holder = try!(self.peers.get_mut());
+
+
+	for (Descriptor, Peer) in peer_holder.peers.iter_mut(){
 
 		let ping = msgs::Ping {
  			ponglen: 64,
@@ -1135,16 +1139,22 @@ fn ping_peers(&mut self){
 		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
 	
 		}	
+
+		Ok(())
 	}
 
 
 
 //check Peers pending_read_buffer to see if anything in the vector resembles a pong message
 // if there is no pong like message then we will disconnect the peer
-fn disconnect_if_no_pong(&mut self){
+fn disconnect_if_no_pong(&mut self) -> Result<(), std::convert::From< std::option::Option<Option>>> {
 
-	//iterate through peers in a peer manager
-	for (Descriptor, Peer) in self.peers.get_mut().unwrap().peers.iter_mut(){
+
+
+
+	let peer_holder = try!(self.peers.get_mut());
+
+	for (Descriptor, Peer) in peer_holder.peers.iter_mut(){
 	
 		//copy the read buffer into seperate buffer
 		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
@@ -1166,6 +1176,7 @@ fn disconnect_if_no_pong(&mut self){
 		}
 	
 		}
+		Ok(())
 
 	}
 
@@ -1344,7 +1355,7 @@ assert that the pm that did not receive a pong removed a peer and assert that th
 
 
 
-	}
+	}*/
 
 }
 	
