@@ -1102,7 +1102,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/*TODO list for aleru/rust-lightning
-	I think at the moment the main thing is figure out how to actually disconnect the peer in disconnect_if_no_pong()
 
 	I am a little bit concerned about insuring that the program exits gracefully upon an error we probably will need to make a few changes to check_peer();
 
