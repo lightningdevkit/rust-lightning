@@ -845,7 +845,7 @@ pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> 
 		let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
 		let weak_res = Arc::downgrade(&chan_monitor.simple_monitor);
 		block_notifier.register_listener(weak_res);
-		let mut default_config = UserConfig::new();
+		let mut default_config = UserConfig::default();
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
 		let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
