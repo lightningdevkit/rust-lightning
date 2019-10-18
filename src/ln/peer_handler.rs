@@ -1105,7 +1105,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 	// we need to figure out what happens if errors occur in one of the below functions
 	// perhaps if one of the three functions of check_peer returns with an error the entire check_peer function will return an error 
-	// probably include another test where we insure that check_peer will end under some circumstance
+	 //probably should include another test where we insure that check_peer will end (throw an error perhaps )under some circumstance
+	// check_peer function will eventually be public but keeping it a private function for now so the program will compile
  fn check_peer(&mut self){
 	loop{
 		Self::ping_peers(self);
@@ -1113,24 +1114,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		Self::disconnect_if_no_pong(self);
 	}
 }
-/* comments for maintainers
-the reason i did not use the send_data(&mut self, data: &[u8], resume_read: bool) function to send the ping message to the peer is that
-it takes a &mut Descriptor as the self arguement, it would appear that I am not able to borrow it mutably.
 
 
-likewise the reason i did not use pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) to read the pong message from the peers is because
-I do not have a mutable reference to Descriptor.
-
-
-If there is any workout for this then I think it would make sense for me to be using those instead of trying to create a round-about way of accomplishing the ping all peers and check for pong tasks.
-
-fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) channel_manager
-*/
 //put a ping message in the Peers pending_ouput_buffer
-
-
 fn ping_peers(&mut self) -> Result<(), PeerHandleError> {
-
 
 	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
 
@@ -1148,16 +1135,14 @@ fn ping_peers(&mut self) -> Result<(), PeerHandleError> {
 		Ok(())
 	}
 
-
-
-// the * line in the below function passes a none value to unwrap
 //check Peers pending_read_buffer to see if anything in the vector resembles a pong message
 // if there is no pong like message then we will disconnect the peer
 fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 
+	//iterate through each peer in PeerManagers peer holders hashmap of peers
 	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
 	
-		//copy the read buffer into seperate buffer
+		//copy the pending read buffer into seperate buffer
 		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
 
 		let pong = msgs::Pong {
@@ -1171,15 +1156,17 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 		// executes if there was no pong message in the copy of Peer.pending_read_buffer
 		if res.0 == false
 		{
-		//hopefully peer_disconnected does what I think it does and removes the Peer
-	*	//self.message_handler.chan_handler.peer_disconnected(&Peer.their_node_id.unwrap(), false);
-		//TODO remove t he pong message from Peer.pending_read_buffer
-		}
-	
-		}
-		Ok(())
 
-	}
+		//the next three lines of code should disconnect a peer but apparently that is not what it is doing 
+		self.message_handler.chan_handler.peer_disconnected(&Peer.their_node_id.unwrap(), false);
+		}}
+			self.process_events();
+
+			Ok(())
+		}
+
+
+	
 
 
 //this function returns true if the second arguement is contained in the first arguement, false otherwise
@@ -1277,7 +1264,6 @@ mod tests {
 
 		let secp_ctx = Secp256k1::new();
 		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
-
 		let chan_handler = test_utils::TestChannelMessageHandler::new();
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
@@ -1290,76 +1276,9 @@ mod tests {
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 
 
+
 	}
 
-
-
-
-/* spin up a vector of PeerManagers with two Pm's
-
-assert that they each have a specific peer
-
-call check peers on each of them in seperate threads
-one pm pongs back
-assert that the pm that did not receive a pong removed a peer and assert that the pm that recieved a pong still has the peer
-
-
-*/
-
-
-
-//TODO write documentation 
-
-
-		// test function 1:
-		// spin up a peer manaager with peers created,
-		// run ping_peers and ensure that a ping message is put into the outbound buffer
-
-
-		// test function two: 
-		//spin up a peer maanger with some  peers created with pong messages in the pending_read_buffer field
-		// run disconnect_if_no_pong and insure that the correct peers are disconnected
-
-
-
-
-
-	/* fn test_ping_peers()
-	 create peer manager with two peers 
-	 run ping peers on one of the peers 
-	 assert that the outbound buffer for the peer referenced in ping_peers does have a ping message in it
-	 assert that the outbound buffer for the peer not referenced in ping peers does not have a ping message in it
-	 
-
-	*/
-
-	/*
-	fn create_peer_manager() -> PeerManager<FileDescriptor>{
-	
-		let mut rng = thread_rng();
-		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let mut ephemeral_bytes = [0; 32];
-		rng.fill_bytes(&mut ephemeral_bytes);
-
-		let chan_handler = test_utils::TestChannelMessageHandler::new();
-		let router = test_utils::TestRoutingMessageHandler::new();
-		let node_id = {
-		let mut key_slice = [0;32];
-		rng.fill_bytes(&mut key_slice);
-		SecretKey::from_slice(&key_slice).unwrap()
-		};
-
-			let msg_handler = MessageHandler { chan_handler: Arc::new(chan_handler), route_handler: Arc::new(router) };
-			let peer = PeerManager::new(msg_handler, node_id, &ephemeral_bytes, Arc::clone(&logger));
-		let fd = FileDescriptor { fd: 1};
-		let fd2 = FileDescriptor { fd: 1};
-		peer.new_inbound_connection(fd);
-
-
-		peer.new_inbound_connection(fd2);
-		peer
-
-	}*/
 
 
 
@@ -1396,28 +1315,11 @@ assert that the pm that did not receive a pong removed a peer and assert that th
 		}
 	
 }
-/*
-
-
-
-test_disconnect_if_no_pong
-
-spin up peer manager with two peers ;
-
-
-push pong message to one peer
-
-run disconnect_if_no pong
-
-assert that peer manager only has one peer
-
-
-
-
-*/ 
  
-
 /*
+
+ultimately the below function will probably do the following:
+
 create vector of peer managers
 connect the two so each are peers 
 push pong message to the pending read buffer of only one of the peer managers peers
@@ -1426,47 +1328,62 @@ assert that the our peer that did not get the pong message is disconnected in it
 assert that the pending read buffer is empty if this is not true it might be okay because the clearing of the pending read buffer might occur elsewhere in the program or be implenented later 
 wait thirty seconds
 
-
-
-
-
-f
 	
+
+currently the below function does the following:
+create vector of peer managers
+connect the two so each are peers 
+run disconect if no pong
+assert that each peer manager has 0 peers 
+
+the function should suceed but it is failing which means that disconnect_if_no_pong() does not actually disconnect peers under apparently any circumstance which is not the intent
+
 */
 
 #[test]
 fn test_disconnect_if_no_pong(){
 	let mut peer_managers = create_network(2);
 
-
 	establish_connection(&peer_managers[1], &peer_managers[0]);
 	establish_connection(&peer_managers[0], &peer_managers[1]);
 
+for (peer_manager) in peer_managers.iter(){
+
+for (key, val) in  peer_manager.peers.lock().unwrap().peers.iter_mut(){
+
+let secp_ctx = Secp256k1::new();
+val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_ctx, &peer_manager.our_node_secret));
+
+	}
+}
+
 
 	//the function ends up failing when the block belows comment status is removed because disconnect_if_no_pong() attepts to unwrap a None Value
-
-/*
 	peer_managers[0].disconnect_if_no_pong();
-	peer_managers[1].disconnect_if_no_pong();*/
+	peer_managers[1].disconnect_if_no_pong();
 
-/*
 
-	assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
-	assert_eq!(peers[1].peers.lock().unwrap().peers.len(), 1);
+
+	assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 0);
+	assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 0);
 
 	let pong = msgs::Pong {
   			byteslen: 64 	
   	};
 
   	let encoded_pong = pong.encode();
-
-  	assert
-
-
-*/
-
-
 }
+}
+
+
+
+
+
+
+
+
+// we can probably ignore the code below here for awhile this is just a possible test function i was playing with
+
 	/* test_check_peers
 	vector of two peer managers
 	connect each peer manager
@@ -1517,4 +1434,4 @@ fn test_disconnect_if_no_pong(){
 
 	
 
-}
+
