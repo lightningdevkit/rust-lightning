@@ -15,7 +15,6 @@ use util::byte_utils;
 use util::events::{MessageSendEvent};
 use util::logger::Logger;
 
-
 use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -158,7 +157,6 @@ impl<Descriptor: SocketDescriptor> PeerHolder<Descriptor> {
 			node_id_to_descriptor: &mut self.node_id_to_descriptor,
 		}
 	}
-
 }
 
 #[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
@@ -1202,7 +1200,9 @@ mod tests {
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Writeable, Writer, Readable};
+
 	use std::collections::{HashMap,hash_map,HashSet,LinkedList};
+	
 	use secp256k1::Secp256k1;
 	use secp256k1::key::{SecretKey, PublicKey};
 
