@@ -1109,8 +1109,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	documentation also needs to be written for pub fn check_peer()
 
 	I would be pretty receptive to more tests being written 
-
-
 	*/
 
 	// we need to figure out what happens if errors occur in one of the below functions
@@ -1149,8 +1147,10 @@ fn ping_peers(&mut self) -> Result<(), PeerHandleError> {
 // if there is no pong like message then we will disconnect the peer
 fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 
+	let mut peers_to_be_removed: HashMap<Descriptor, PublicKey>= HashMap::new();
+	let mut res: (bool, usize) = (true,0);
 	//iterate through each peer in PeerManagers peer holders hashmap of peers
-	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
+	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter(){
 	
 		//copy the pending read buffer into seperate buffer
 		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
@@ -1162,17 +1162,28 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 		
 		// check if a encoded pong message is in the copy of Peer.pending_read_buffer;
 		let mut res: (bool, usize)= Self::is_sub(&data, &encoded_pong);
+		if res.0 == false{
+			let des = Descriptor.clone();
+			let peer_id = Peer.their_node_id.unwrap().clone();
+			peers_to_be_removed.insert(des, peer_id);
+		}
 
 		// executes if there was no pong message in the copy of Peer.pending_read_buffer
-		if res.0 == false
-		{
+		
 
-		//the next three lines of code should disconnect a peer but apparently that is not what it is doing 
-		self.message_handler.chan_handler.peer_disconnected(&Peer.their_node_id.unwrap(), false);
-		}}
-			self.process_events();
+		}
 
-			Ok(())
+
+		for (peer, peer_id) in peers_to_be_removed.iter_mut(){
+
+		self.message_handler.chan_handler.peer_disconnected(&peer_id, false);
+	
+		self.peers.lock().unwrap().peers.remove(peer);
+
+
+		}
+		self.process_events();
+		Ok(())
 		}
 
 
