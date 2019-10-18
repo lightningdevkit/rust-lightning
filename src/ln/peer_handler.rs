@@ -1101,6 +1101,18 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		};
 	}
 
+	/*TODO list for aleru/rust-lightning
+	I think at the moment the main thing is figure out how to actually disconnect the peer in disconnect_if_no_pong()
+
+	I am a little bit concerned about insuring that the program exits gracefully upon an error we probably will need to make a few changes to check_peer();
+
+	documentation also needs to be written for pub fn check_peer()
+
+	I would be pretty receptive to more tests being written 
+
+
+	*/
+
 	// we need to figure out what happens if errors occur in one of the below functions
 	// perhaps if one of the three functions of check_peer returns with an error the entire check_peer function will return an error 
 	 //probably should include another test where we insure that check_peer will end (throw an error perhaps )under some circumstance
@@ -1202,7 +1214,7 @@ mod tests {
 	use util::ser::{Writeable, Writer, Readable};
 
 	use std::collections::{HashMap,hash_map,HashSet,LinkedList};
-	
+
 	use secp256k1::Secp256k1;
 	use secp256k1::key::{SecretKey, PublicKey};
 
