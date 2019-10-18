@@ -1370,11 +1370,8 @@ val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_c
 }
 
 
-	//the function ends up failing when the block belows comment status is removed because disconnect_if_no_pong() attepts to unwrap a None Value
 	peer_managers[0].disconnect_if_no_pong();
 	peer_managers[1].disconnect_if_no_pong();
-
-
 
 	assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 0);
 	assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 0);
