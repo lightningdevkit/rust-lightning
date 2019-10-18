@@ -14,13 +14,13 @@ pub struct UserConfig {
 	pub channel_options: ChannelConfig,
 }
 
-impl UserConfig {
+impl Default for UserConfig {
 	/// Provides sane defaults for most configurations (but with 0 relay fees!)
-	pub fn new() -> Self{
+	fn default() -> Self {
 		UserConfig {
-			own_channel_config: ChannelHandshakeConfig::new(),
-			peer_channel_config_limits: ChannelHandshakeLimits::new(),
-			channel_options: ChannelConfig::new(),
+			own_channel_config: ChannelHandshakeConfig::default(),
+			peer_channel_config_limits: ChannelHandshakeLimits::default(),
+			channel_options: ChannelConfig::default(),
 		}
 	}
 }
@@ -46,9 +46,9 @@ pub struct ChannelHandshakeConfig {
 	pub our_to_self_delay: u16,
 }
 
-impl ChannelHandshakeConfig {
+impl Default for ChannelHandshakeConfig {
 	/// Provides sane defaults for `ChannelHandshakeConfig`
-	pub fn new() -> ChannelHandshakeConfig {
+	fn default() -> ChannelHandshakeConfig {
 		ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
@@ -112,13 +112,13 @@ pub struct ChannelHandshakeLimits {
 	pub their_to_self_delay: u16
 }
 
-impl ChannelHandshakeLimits {
+impl Default for ChannelHandshakeLimits {
 	/// Provides sane defaults for most configurations.
 	///
 	/// Most additional limits are disabled except those with which specify a default in individual
 	/// field documentation. Note that this may result in barely-usable channels, but since they
 	/// are applied mostly only to incoming channels that's not much of a problem.
-	pub fn new() -> Self {
+	fn default() -> Self {
 		ChannelHandshakeLimits {
 			min_funding_satoshis: 0,
 			max_htlc_minimum_msat: <u64>::max_value(),
@@ -164,9 +164,9 @@ pub struct ChannelConfig {
 	pub commit_upfront_shutdown_pubkey: bool
 }
 
-impl ChannelConfig {
+impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
-	pub fn new() -> Self {
+	fn default() -> Self {
 		ChannelConfig {
 			fee_proportional_millionths: 0,
 			announced_channel: false,
