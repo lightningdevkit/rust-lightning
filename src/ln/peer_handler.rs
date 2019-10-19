@@ -1142,6 +1142,7 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 
 	// use to signify if there is a encoded pong message in the pending_read_buffer of the Peer
 	let mut res: bool = true;
+
 	//iterate through each peer in PeerManagers peer holders hashmap of peers
 	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter(){
 	
@@ -1166,7 +1167,6 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 			// put information related to the Peer in a data structure for future removal
 			peers_to_be_removed.insert(des, peer_id);
 		}
-
 		}
 
 		// index through the misbehaving Peers
@@ -1181,12 +1181,6 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 		Ok(())
 	}
 	
-		
-
-
-	
-
-
 	// this function returns true if the second arguement is contained in the first arguement, false otherwise
 	// it will modify the first arguement 
 	fn is_sub<T: PartialEq>(mut haystack: &[T], needle: &[T]) -> bool{
@@ -1201,15 +1195,13 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 	// wait thirty seconds
 	fn timer_tick_occured(){
     	let handle = thread::spawn(|| {
-     
+    		
         	thread::sleep(Duration::from_millis(30000));
     	});
   	 	handle.join().unwrap()
-    
 		}
 
 	}
-
 
 #[cfg(test)]
 mod tests {
@@ -1353,7 +1345,7 @@ mod tests {
 	peer_managers[0].disconnect_if_no_pong();
 	peer_managers[1].disconnect_if_no_pong();
 
-	
+
 	assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 0);
 	assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
 
