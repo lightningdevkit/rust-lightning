@@ -1112,74 +1112,73 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		}
 	}	
 
+	// put a encoded ping message in all peers pending_outbound_buffer
+ 	fn ping_peers(&mut self) -> Result<(), PeerHandleError> {
 
-// put a encoded ping message in all peers pending_outbound_buffer
- fn ping_peers(&mut self) -> Result<(), PeerHandleError> {
+		for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
+			// create ping message
+			let ping = msgs::Ping {
+ 				ponglen: 64,
+ 				byteslen: 64
+  			};
+  			// create encoded ping message 
+  			let encoded_ping: &[u8] = &ping.encode();
 
-	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
-		// create ping message
-		let ping = msgs::Ping {
- 			ponglen: 64,
- 			byteslen: 64
-  		};
-  		// create encoded ping message 
-  		let encoded_ping: &[u8] = &ping.encode();
-
-  		// put encoded_ping in the pending_outbound_buffer of each Peer
-		Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
+  			// put encoded_ping in the pending_outbound_buffer of each Peer
+			Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
 	
 		}
 
 		Ok(())
 	}
 
-//check Peers pending_read_buffer to see if anything in the vector resembles a pong message
-// if there is no pong  message then we will disconnect the peer
-fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
+	//check Peers pending_read_buffer to see if anything in the vector resembles a pong message
+	// if there is no pong  message then we will disconnect the peer
+	fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 
-	// data structure to hold information related to any Peer that does not have a pong message in pending_read_buffer
-	let mut peers_to_be_removed: HashMap<Descriptor, PublicKey>= HashMap::new();
+		// data structure to hold information related to any Peer that does not have a pong message in pending_read_buffer
+		let mut peers_to_be_removed: HashMap<Descriptor, PublicKey>= HashMap::new();
 
-	// use to signify if there is a encoded pong message in the pending_read_buffer of the Peer
-	let mut res: bool = true;
+		// use to signify if there is a encoded pong message in the pending_read_buffer of the Peer
+		let mut res: bool = true;
 
-	//iterate through each peer in PeerManagers peer holders hashmap of peers
-	for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter(){
+		//iterate through each peer in PeerManagers peer holders hashmap of peers
+		for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter(){
 	
-		//copy the pending_read_buffer into seperate structure
-		let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
+			//copy the pending_read_buffer into seperate structure
+			let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
 
-		// create pong
-		let pong = msgs::Pong {
-			byteslen: 64
-		};
-		// encode the pong
-		let encoded_pong = pong.encode().to_vec();
+			// create pong
+			let pong = msgs::Pong {
+				byteslen: 64
+			};
+			// encode the pong
+			let encoded_pong = pong.encode().to_vec();
 		
-		// check if a encoded pong message is in the copy of Peer.pending_read_buffer;
-		let mut res: bool = Self::is_sub(&data, &encoded_pong);
+			// check if a encoded pong message is in the copy of Peer.pending_read_buffer;
+			let mut res: bool = Self::is_sub(&data, &encoded_pong);
 
-		// executes if there was no pong message in the copy of Peer.pending_read_buffer
-		if res == false{
+			// executes if there was no pong message in the copy of Peer.pending_read_buffer
+			if res == false{
 
-			let des = Descriptor.clone();
-			let peer_id = Peer.their_node_id.unwrap().clone();
-			// put information related to the Peer in a data structure for future removal
-			peers_to_be_removed.insert(des, peer_id);
+				let des = Descriptor.clone();
+				let peer_id = Peer.their_node_id.unwrap().clone();
+				// put information related to the Peer in a data structure for future removal
+				peers_to_be_removed.insert(des, peer_id);
+			}
+			}
+
+			// index through the misbehaving Peers
+			for (peer, peer_id) in peers_to_be_removed.iter_mut(){
+			//let our chan_handler know that the Peer is going to be disconnected
+			self.message_handler.chan_handler.peer_disconnected(&peer_id, false);
+
+			// remove the Peer
+			// TODO something seems a little bit sketchy about manually removing the peer here, perhaps there is a better way
+			self.peers.lock().unwrap().peers.remove(peer);
+			}
+			Ok(())
 		}
-		}
-
-		// index through the misbehaving Peers
-		for (peer, peer_id) in peers_to_be_removed.iter_mut(){
-		//let our chan_handler know that the Peer is going to be disconnected
-		self.message_handler.chan_handler.peer_disconnected(&peer_id, false);
-
-		// remove the Peer
-		// TODO something seems a little bit sketchy about manually removing the peer here, perhaps there is a better way
-		self.peers.lock().unwrap().peers.remove(peer);
-		}
-		Ok(())
-	}
 	
 	// this function returns true if the second arguement is contained in the first arguement, false otherwise
 	// it will modify the first arguement 
@@ -1195,12 +1194,11 @@ fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
 	// wait thirty seconds
 	fn timer_tick_occured(){
     	let handle = thread::spawn(|| {
-    		
+
         	thread::sleep(Duration::from_millis(30000));
     	});
   	 	handle.join().unwrap()
 		}
-
 	}
 
 #[cfg(test)]
@@ -1321,34 +1319,32 @@ mod tests {
 		establish_connection(&peer_managers[1], &peer_managers[0]);
 		establish_connection(&peer_managers[0], &peer_managers[1]);
 
-	// give a value to their_node_id of each Peer
-	for (peer_manager) in peer_managers.iter(){
-	for (key, val) in  peer_manager.peers.lock().unwrap().peers.iter_mut(){
-	let secp_ctx = Secp256k1::new();
-	val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_ctx, &peer_manager.our_node_secret));
+		// give a value to their_node_id of each Peer
+		for (peer_manager) in peer_managers.iter(){
+		for (key, val) in  peer_manager.peers.lock().unwrap().peers.iter_mut(){
+		let secp_ctx = Secp256k1::new();
+		val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_ctx, &peer_manager.our_node_secret));
+			}
 		}
+
+		// assert each PeerManager PeerHolder hashmap has one Peer
+		assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 1);
+		assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
+
+		// index into the second PeerManager in our vector of PeerManagers and put a encoded pong message in pending_read_buffer of all the Peers
+		for (Descriptor, Peer) in peer_managers[1].peers.lock().unwrap().peers.iter_mut(){
+			let pong = msgs::Pong {
+  				byteslen: 64 	
+  			};
+  		let encoded_pong = pong.encode();
+  		Peer.pending_read_buffer = encoded_pong;
+		}
+
+		peer_managers[0].disconnect_if_no_pong();
+		peer_managers[1].disconnect_if_no_pong();
+
+		assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 0);
+		assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
 	}
-
-	// assert each PeerManager PeerHolder hashmap has one Peer
-	assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 1);
-	assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
-
-	// index into the second PeerManager in our vector of PeerManagers and put a encoded pong message in pending_read_buffer of all the Peers
-	for (Descriptor, Peer) in peer_managers[1].peers.lock().unwrap().peers.iter_mut(){
-		let pong = msgs::Pong {
-  			byteslen: 64 	
-  	};
-  	let encoded_pong = pong.encode();
-  	Peer.pending_read_buffer = encoded_pong;
-	}
-
-	peer_managers[0].disconnect_if_no_pong();
-	peer_managers[1].disconnect_if_no_pong();
-
-
-	assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 0);
-	assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
-
-}
 }
 	
