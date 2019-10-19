@@ -135,7 +135,6 @@ impl Peer {
 	}
 }
 
-
 struct PeerHolder<Descriptor: SocketDescriptor> {
 	peers: HashMap<Descriptor, Peer>,
 	/// Added to by do_read_event for cases where we pushed a message onto the send buffer but
