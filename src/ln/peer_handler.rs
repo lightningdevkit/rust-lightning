@@ -19,8 +19,7 @@ use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
-use std::thread;
-use std::time::Duration;
+
 
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
@@ -117,7 +116,9 @@ struct Peer {
 	pending_read_is_header: bool,
 
 	sync_status: InitSyncTracker,
-}
+
+ 	ping tracker: Option<u8>,
+}	
 
 impl Peer {
 	/// Returns true if the channel announcements/updates for the given channel should be
@@ -288,6 +289,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			pending_read_is_header: false,
 
 			sync_status: InitSyncTracker::NoSyncRequested,
+
+			ping_tracker: None,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -324,6 +327,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			pending_read_is_header: false,
 
 			sync_status: InitSyncTracker::NoSyncRequested,
+
+			ping_tracker: None,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -687,7 +692,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											19 => {
-												try_potential_decodeerror!(msgs::Pong::read(&mut reader));
+												// reset ping_tracker to 0
+												peer.ping_tracker = 0;
+											 	try_potential_decodeerror!(msgs::Pong::read(&mut reader)); 
+											}
 											},
 
 											// Channel control:
@@ -1100,19 +1108,25 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		};
 	}
 
-	/// loop continuously and while in the loop put a encoded ping message in every Peer.pending_outbound_buffer
-	/// wait thirty seconds
-	/// check each Peer.pending_read_buffer and remove the Peer if there is no encoded pong message
-	pub fn check_peer(&mut self)-> Result<(), PeerHandleError>{
-		loop{
-			Self::ping_peers(self)?;
-			Self::timer_tick_occured();
-			Self::disconnect_if_no_pong(self)?;
-		}
-	}	
+	/// insure we recieved pong message from all peers or disconnect the peers then ping all peers
+	pub fn check_peer(&self){
+			for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
+			Self::disconnect_if_no_pong(self);
+			Self::ping_peers(self);	
+			}
+			Self::disconnect_if_no_pong(self);
+			Self::ping_peers(self);			
+	}
+
+	/*
+		TODO: changes to ping_peers
+		function takes a &mut Peer, it should be fine despite matt not wanting mutables as it would be local check_peers function
+		then we do the same thing...
+		increment the ping_tracker by one 
+	*/
 
 	// put a encoded ping message in all peers pending_outbound_buffer
- 	fn ping_peers(&mut self) -> Result<(), PeerHandleError> {
+ 	fn ping_peers(&self) -> Result<(), PeerHandleError> {
 
 		for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
 			// create ping message
@@ -1130,75 +1144,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 		Ok(())
 	}
+}
 
-	//check Peers pending_read_buffer to see if anything in the vector resembles a pong message
-	// if there is no pong  message then we will disconnect the peer
-	fn disconnect_if_no_pong(&mut self) -> Result<(), PeerHandleError> {
-
-		// data structure to hold information related to any Peer that does not have a pong message in pending_read_buffer
-		let mut peers_to_be_removed: HashMap<Descriptor, PublicKey>= HashMap::new();
-
-		// use to signify if there is a encoded pong message in the pending_read_buffer of the Peer
-		let mut res: bool = true;
-
-		//iterate through each peer in PeerManagers peer holders hashmap of peers
-		for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter(){
 	
-			//copy the pending_read_buffer into seperate structure
-			let mut data: Vec<u8> = Peer.pending_read_buffer.clone();
 
-			// create pong
-			let pong = msgs::Pong {
-				byteslen: 64
-			};
-			// encode the pong
-			let encoded_pong = pong.encode().to_vec();
-		
-			// check if a encoded pong message is in the copy of Peer.pending_read_buffer;
-			let mut res: bool = Self::is_sub(&data, &encoded_pong);
-
-			// executes if there was no pong message in the copy of Peer.pending_read_buffer
-			if res == false{
-
-				let des = Descriptor.clone();
-				let peer_id = Peer.their_node_id.unwrap().clone();
-				// put information related to the Peer in a data structure for future removal
-				peers_to_be_removed.insert(des, peer_id);
-			}
-			}
-
-			// index through the misbehaving Peers
-			for (peer, peer_id) in peers_to_be_removed.iter_mut(){
-			//let our chan_handler know that the Peer is going to be disconnected
-			self.message_handler.chan_handler.peer_disconnected(&peer_id, false);
-
-			// remove the Peer
-			// TODO something seems a little bit sketchy about manually removing the peer here, perhaps there is a better way
-			self.peers.lock().unwrap().peers.remove(peer);
-			}
-			Ok(())
-		}
 	
-	// this function returns true if the second arguement is contained in the first arguement, false otherwise
-	// it will modify the first arguement 
-	fn is_sub<T: PartialEq>(mut haystack: &[T], needle: &[T]) -> bool{
-
-   		 while !haystack.is_empty() {
-        	if haystack.starts_with(needle) { return true}
-        	haystack = &haystack[1..];
-   		 }
-    	false
-	}
-
-	// wait thirty seconds
-	fn timer_tick_occured(){
-    	let handle = thread::spawn(|| {
-
-        	thread::sleep(Duration::from_millis(30000));
-    	});
-  	 	handle.join().unwrap()
-		}
-	}
 
 #[cfg(test)]
 mod tests {
