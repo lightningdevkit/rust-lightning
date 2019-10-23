@@ -19,8 +19,7 @@ use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
-use std::thread;
-use std::time::Duration;
+
 
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
@@ -1100,15 +1099,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		};
 	}
 
-	/// loop continuously and while in the loop put a encoded ping message in every Peer.pending_outbound_buffer
-	/// wait thirty seconds
-	/// check each Peer.pending_read_buffer and remove the Peer if there is no encoded pong message
+	/// insure we recieved pong message from all peers or disconnect the peers then ping all peers
 	pub fn check_peer(&mut self)-> Result<(), PeerHandleError>{
-		loop{
-			Self::ping_peers(self)?;
-			Self::timer_tick_occured();
 			Self::disconnect_if_no_pong(self)?;
-		}
+			Self::ping_peers(self)?;
+			Ok(())			
 	}	
 
 	// put a encoded ping message in all peers pending_outbound_buffer
@@ -1190,14 +1185,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
     	false
 	}
 
-	// wait thirty seconds
-	fn timer_tick_occured(){
-    	let handle = thread::spawn(|| {
-
-        	thread::sleep(Duration::from_millis(30000));
-    	});
-  	 	handle.join().unwrap()
-		}
+	
 	}
 
 #[cfg(test)]
