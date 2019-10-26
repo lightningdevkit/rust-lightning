@@ -1246,7 +1246,6 @@ fn duplicate_htlc_test() {
 }
 
 fn do_channel_reserve_test(test_recv: bool) {
-	use std::sync::atomic::Ordering;
 	use ln::msgs::HandleError;
 
 	let mut nodes = create_network(3, &[None, None, None]);
@@ -4518,7 +4517,6 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
 				F3: FnMut(),
 {
-	use ln::msgs::HTLCFailChannelUpdate;
 
 	// reset block height
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
