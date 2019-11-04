@@ -990,6 +990,8 @@ macro_rules! get_chan_reestablish_msgs {
 				if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					res.push(msg.clone());
+				} else if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } = msg {
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				} else {
 					panic!("Unexpected event")
 				}

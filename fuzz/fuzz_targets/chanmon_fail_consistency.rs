@@ -523,6 +523,9 @@ pub fn do_test(data: &[u8]) {
 							// Can be generated due to a payment forward being rejected due to a
 							// channel having previously failed a monitor update
 						},
+						events::MessageSendEvent::SendAnnouncementSignatures {.. } => {
+							// Can be generated at peer connection
+						}
 						_ => panic!("Unhandled message event"),
 					}
 				}
@@ -539,6 +542,7 @@ pub fn do_test(data: &[u8]) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -551,6 +555,7 @@ pub fn do_test(data: &[u8]) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -572,6 +577,7 @@ pub fn do_test(data: &[u8]) {
 						},
 						events::MessageSendEvent::SendFundingLocked { .. } => false,
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
+						events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
 						_ => panic!("Unhandled message event"),
 					};
 					if push { msg_sink.push(event); }

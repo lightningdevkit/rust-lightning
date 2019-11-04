@@ -2835,11 +2835,16 @@ impl ChannelMessageHandler for ChannelManager {
 						node_id: chan.get_their_node_id(),
 						msg: chan.get_channel_reestablish(),
 					});
+					if let Some(announcement_sigs) = self.get_announcement_sigs(chan) {
+						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+							node_id: *their_node_id,
+							msg: announcement_sigs,
+						});
+					}
 					true
 				}
 			} else { true }
 		});
-		//TODO: Also re-broadcast announcement_signatures
 	}
 
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {

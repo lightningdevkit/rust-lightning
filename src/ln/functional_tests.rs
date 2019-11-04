@@ -852,15 +852,15 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
-	let node_0_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	let node_0_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
-	let node_1_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let node_1_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_reestablish).unwrap();
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_reestablish[0]).unwrap();
 	let node_1_2nd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	assert!(node_1_shutdown == node_1_2nd_shutdown);
 
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_reestablish).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_reestablish[0]).unwrap();
 	let node_0_2nd_shutdown = if recv_count > 0 {
 		let node_0_2nd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown).unwrap();
@@ -3520,9 +3520,9 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
 
 	nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id());
-	let reestablish = get_event_msg!(nodes[3], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let reestablish = get_chan_reestablish_msgs!(nodes[3], nodes[0]);
 	nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id());
-	if let Err(msgs::LightningError { action: msgs::ErrorAction::SendErrorMessage { msg }, .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
+	if let Err(msgs::LightningError { action: msgs::ErrorAction::SendErrorMessage { msg }, .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish[0]) {
 		assert_eq!(msg.channel_id, channel_id);
 	} else { panic!("Unexpected result"); }
 }
@@ -6139,6 +6139,7 @@ fn test_data_loss_protect() {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			reestablish_1.push(msg.clone());
 		} else if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
+		} else if let MessageSendEvent::SendAnnouncementSignatures { .. } = msg {
 		} else {
 			panic!("Unexpected event")
 		}

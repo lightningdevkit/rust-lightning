@@ -940,12 +940,12 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 
-	let as_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
-	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let as_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish[0]).unwrap();
 
-	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish[0]).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -956,12 +956,12 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 
-	assert!(as_reestablish == get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id()));
-	assert!(bs_reestablish == get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id()));
+	assert!(as_reestablish == get_chan_reestablish_msgs!(nodes[0], nodes[1]));
+	assert!(bs_reestablish == get_chan_reestablish_msgs!(nodes[1], nodes[0]));
 
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish[0]).unwrap();
 
-	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish).unwrap();
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish[0]).unwrap();
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1120,17 +1120,17 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 
-	let as_reconnect = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
-	let bs_reconnect = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let as_reconnect = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	let bs_reconnect = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect[0]).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now deliver a's reestablish, freeing the claim from the holding cell, but fail the monitor
 	// update.
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 
-	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect[0]).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -1248,11 +1248,11 @@ fn monitor_failed_no_reestablish_response() {
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
 
-	let as_reconnect = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
-	let bs_reconnect = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let as_reconnect = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	let bs_reconnect = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect).unwrap();
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect).unwrap();
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect[0]).unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect[0]).unwrap();
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
 	nodes[1].node.test_restore_channel_monitor();
