@@ -117,7 +117,7 @@ struct Peer {
 
 	sync_status: InitSyncTracker,
 
- 	ping tracker: Option<u8>,
+ 	ping_tracker: u8,
 }	
 
 impl Peer {
@@ -290,7 +290,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
-			ping_tracker: None,
+			ping_tracker: 0,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -328,7 +328,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
-			ping_tracker: None,
+			ping_tracker: 0,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -691,13 +691,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													encode_and_send_msg!(resp, 19);
 												}
 											},
-											19 => {
-												// reset ping_tracker to 0
+											19 => {	
 												peer.ping_tracker = 0;
 											 	try_potential_decodeerror!(msgs::Pong::read(&mut reader)); 
-											}
 											},
-
 											// Channel control:
 											32 => {
 												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
@@ -1109,46 +1106,49 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 
 	/// insure we recieved pong message from all peers or disconnect the peers then ping all peers
-	pub fn check_peer(&self){
-			for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
-			Self::disconnect_if_no_pong(self);
-			Self::ping_peers(self);	
-			}
-			Self::disconnect_if_no_pong(self);
-			Self::ping_peers(self);			
-	}
+	pub fn timer_tick_occurred(&self){
 
-	/*
-		TODO: changes to ping_peers
-		function takes a &mut Peer, it should be fine despite matt not wanting mutables as it would be local check_peers function
-		then we do the same thing...
-		increment the ping_tracker by one 
-	*/
+			let mut peers_lock = self.peers.lock().unwrap();
+			let peers = peers_lock.borrow_parts();
 
-	// put a encoded ping message in all peers pending_outbound_buffer
- 	fn ping_peers(&self) -> Result<(), PeerHandleError> {
+			for (Descriptor, mut Peer) in peers.peers.iter_mut() {
 
-		for (Descriptor, Peer) in self.peers.lock().unwrap().peers.iter_mut(){
-			// create ping message
+				//read all events that have been sent from the Peer
+				let mut descriptor = Descriptor.clone();
+				let data: Vec<u8> = Vec::new();
+				let res = match self.do_read_event(&mut descriptor, data){
+					Ok(pause_read) => pause_read,
+					Err(e) => panic!("something is wrong"),
+				};
+
+				// Disconect the Peer if there is an outstanding ping for which we have not been ponged
+				if Peer.ping_tracker > 0 {
+					self.disconnect_event(Descriptor);
+				}
+
+
+			else {
+		
 			let ping = msgs::Ping {
  				ponglen: 64,
- 				byteslen: 64
-  			};
-  			// create encoded ping message 
-  			let encoded_ping: &[u8] = &ping.encode();
+ 				byteslen: 64,
+ 			};
 
-  			// put encoded_ping in the pending_outbound_buffer of each Peer
-			Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(encoded_ping));
-	
+			Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(&encode_msg!(ping, 18)));
+
+			let mut descriptor = Descriptor.clone();
+			self.do_attempt_write_data(&mut descriptor, &mut Peer);
+  			Peer.ping_tracker += 1;
+		
+
+			}
 		}
-
-		Ok(())
 	}
 }
 
-	
 
-	
+
+
 
 #[cfg(test)]
 mod tests {
@@ -1234,66 +1234,34 @@ mod tests {
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 
- 	#[test]
-	fn test_ping_peers(){
-		// create vector of two PeerManager 
-		let mut peer_managers = create_network(2);
-
-		//create an inbound connection allowing messages to be sent from peer_managers[0] to peer_managers[1]
-		establish_connection(&peer_managers[1], &peer_managers[0]);
-
-		// put a ping message in the outbound buffer of all of peer_manager[0] peers
-		peer_managers[0].ping_peers();
-		
-
-		// assert that there is a encoded ping message in the outbound buffer of all of peer_manager[0] peers
-		for (key, val) in peer_managers[0].peers.lock().unwrap().peers.iter(){
-			let ping = msgs::Ping {
- 			ponglen: 64,
- 			byteslen: 64
-  		};
-  		let encoded_ping: &[u8] = &ping.encode();
-  		let mut lst: LinkedList<Vec<u8>> = LinkedList::new();
-  		lst.push_back(encoded_ping.to_vec());	
-		assert_eq!(val.pending_outbound_buffer,lst);
-		}
-	}
-
 	#[test]
-	fn test_disconnect_if_no_pong(){
-		//create a vector of two PeerManager
-		let mut peer_managers = create_network(2);
+	fn ttt(){
 
-		// each PeerManager now has the other one as a Peer
-		establish_connection(&peer_managers[1], &peer_managers[0]);
-		establish_connection(&peer_managers[0], &peer_managers[1]);
+		let mut peers = create_network(2);
+		establish_connection(&peers[0], &peers[1]);
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
-		// give a value to their_node_id of each Peer
-		for (peer_manager) in peer_managers.iter(){
-		for (key, val) in  peer_manager.peers.lock().unwrap().peers.iter_mut(){
-		let secp_ctx = Secp256k1::new();
-		val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_ctx, &peer_manager.our_node_secret));
+
+
+		for (peer_manager) in peers.iter(){
+			for (key, val) in  peer_manager.peers.lock().unwrap().peers.iter_mut(){
+				let secp_ctx = Secp256k1::new();
+				val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_ctx, &peer_manager.our_node_secret));
+
 			}
 		}
 
-		// assert each PeerManager PeerHolder hashmap has one Peer
-		assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 1);
-		assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
+		peers[0].timer_tick_occurred();
+		//peers[1].process_events();
 
-		// index into the second PeerManager in our vector of PeerManagers and put a encoded pong message in pending_read_buffer of all the Peers
-		for (Descriptor, Peer) in peer_managers[1].peers.lock().unwrap().peers.iter_mut(){
-			let pong = msgs::Pong {
-  				byteslen: 64 	
-  			};
-  		let encoded_pong = pong.encode();
-  		Peer.pending_read_buffer = encoded_pong;
-		}
+		//assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
-		peer_managers[0].disconnect_if_no_pong();
-		peer_managers[1].disconnect_if_no_pong();
+		//peers[0].timer_tick_occurred();
+		//peers[0].timer_tick_occurred();
 
-		assert_eq!(peer_managers[0].peers.lock().unwrap().peers.len(), 0);
-		assert_eq!(peer_managers[1].peers.lock().unwrap().peers.len(), 1);
+		//assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
+
 	}
+
 }
 	
