@@ -429,19 +429,22 @@ pub struct ChannelDetails {
 }
 
 macro_rules! handle_error {
-	($self: ident, $internal: expr) => {
+	($self: ident, $internal: expr, $their_node_id: expr, $locked_channel_state: expr) => {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, shutdown_finish }) => {
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
 					$self.finish_force_close_channel(shutdown_res);
 					if let Some(update) = update_option {
-						let mut channel_state = $self.channel_state.lock().unwrap();
-						channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+						$locked_channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
 						});
 					}
 				}
+				log_error!($self, "{}", err.err);
+				if let msgs::ErrorAction::IgnoreError = err.action {
+				} else { $locked_channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError { node_id: $their_node_id, action: err.action.clone() }); }
+				// Return error in case higher-API need one
 				Err(err)
 			},
 		}
@@ -1116,8 +1119,8 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 
 		let _ = self.total_consistency_lock.read().unwrap();
 
+		let mut channel_lock = self.channel_state.lock().unwrap();
 		let err: Result<(), _> = loop {
-			let mut channel_lock = self.channel_state.lock().unwrap();
 
 			let id = match channel_lock.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
@@ -1167,20 +1170,9 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			return Ok(());
 		};
 
-		match handle_error!(self, err) {
+		match handle_error!(self, err, route.hops.first().unwrap().pubkey, channel_lock) {
 			Ok(_) => unreachable!(),
-			Err(e) => {
-				if let msgs::ErrorAction::IgnoreError = e.action {
-				} else {
-					log_error!(self, "Got bad keys: {}!", e.err);
-					let mut channel_state = self.channel_state.lock().unwrap();
-					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: route.hops.first().unwrap().pubkey,
-						action: e.action,
-					});
-				}
-				Err(APIError::ChannelUnavailable { err: e.err })
-			},
+			Err(e) => { Err(APIError::ChannelUnavailable { err: e.err }) }
 		}
 	}
 
@@ -1197,32 +1189,22 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		let (mut chan, msg, chan_monitor) = {
-			let (res, chan) = {
-				let mut channel_state = self.channel_state.lock().unwrap();
-				match channel_state.by_id.remove(temporary_channel_id) {
-					Some(mut chan) => {
-						(chan.get_outbound_funding_created(funding_txo)
-							.map_err(|e| if let ChannelError::Close(msg) = e {
-								MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(), None)
-							} else { unreachable!(); })
-						, chan)
-					},
-					None => return
-				}
+			let mut channel_state = self.channel_state.lock().unwrap();
+			let (res, chan) = match channel_state.by_id.remove(temporary_channel_id) {
+				Some(mut chan) => {
+					(chan.get_outbound_funding_created(funding_txo)
+						.map_err(|e| if let ChannelError::Close(msg) = e {
+							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(), None)
+						} else { unreachable!(); })
+					, chan)
+				},
+				None => return
 			};
-			match handle_error!(self, res) {
+			match handle_error!(self, res, chan.get_their_node_id(), channel_state) {
 				Ok(funding_msg) => {
 					(chan, funding_msg.0, funding_msg.1)
 				},
-				Err(e) => {
-					log_error!(self, "Got bad signatures: {}!", e.err);
-					let mut channel_state = self.channel_state.lock().unwrap();
-					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: chan.get_their_node_id(),
-						action: e.action,
-					});
-					return;
-				},
+				Err(_) => { return; }
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
@@ -1230,17 +1212,12 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
-					match handle_error!(self, Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", *temporary_channel_id, chan.force_shutdown(), None))) {
-						Err(e) => {
-							log_error!(self, "Failed to store ChannelMonitor update for funding tx generation");
-							let mut channel_state = self.channel_state.lock().unwrap();
-							channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-								node_id: chan.get_their_node_id(),
-								action: e.action,
-							});
-							return;
-						},
-						Ok(()) => unreachable!(),
+					{
+						let mut channel_state = self.channel_state.lock().unwrap();
+						match handle_error!(self, Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", *temporary_channel_id, chan.force_shutdown(), None)), chan.get_their_node_id(), channel_state) {
+							Err(_) => { return; },
+							Ok(()) => unreachable!(),
+						}
 					}
 				},
 				ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -1417,22 +1394,9 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 										},
 										ChannelError::CloseDelayBroadcast { .. } => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 									};
-									match handle_error!(self, err) {
+									match handle_error!(self, err, their_node_id, channel_state) {
 										Ok(_) => unreachable!(),
-										Err(e) => {
-											match e.action {
-												msgs::ErrorAction::IgnoreError => {},
-												_ => {
-													log_error!(self, "Got bad keys: {}!", e.err);
-													let mut channel_state = self.channel_state.lock().unwrap();
-													channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-														node_id: their_node_id,
-														action: e.action,
-													});
-												},
-											}
-											continue;
-										},
+										Err(_) => { continue; },
 									}
 								}
 							};
@@ -1489,19 +1453,10 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			};
 		}
 
-		for (their_node_id, err) in handle_errors.drain(..) {
-			match handle_error!(self, err) {
-				Ok(_) => {},
-				Err(e) => {
-					if let msgs::ErrorAction::IgnoreError = e.action {
-					} else {
-						let mut channel_state = self.channel_state.lock().unwrap();
-						channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-							node_id: their_node_id,
-							action: e.action,
-						});
-					}
-				},
+		if handle_errors.len() > 0 {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			for (their_node_id, err) in handle_errors.drain(..) {
+				let _ = handle_error!(self, err, their_node_id, channel_state_lock);
 			}
 		}
 
@@ -1754,19 +1709,7 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			return;
 		};
 
-		match handle_error!(self, err) {
-			Ok(_) => {},
-			Err(e) => {
-				if let msgs::ErrorAction::IgnoreError = e.action {
-				} else {
-					let mut channel_state = self.channel_state.lock().unwrap();
-					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: their_node_id,
-						action: e.action,
-					});
-				}
-			},
-		}
+		let _ = handle_error!(self, err, their_node_id, channel_state_lock);
 	}
 
 	/// Gets the node_id held by this ChannelManager
@@ -1914,13 +1857,11 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						//TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
 					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, their_local_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
-				//TODO: same as above
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
 			}
 		};
@@ -1941,7 +1882,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
 					(try_chan_entry!(self, chan.get_mut().funding_created(msg), channel_state, chan), chan.remove())
@@ -1993,7 +1933,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let chan_monitor = try_chan_entry!(self, chan.get_mut().funding_signed(&msg), channel_state, chan);
@@ -2019,7 +1958,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
@@ -2052,7 +1990,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
-						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let (shutdown, closing_signed, dropped_htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg), channel_state, chan_entry);
@@ -2099,7 +2036,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
-						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg), channel_state, chan_entry);
@@ -2155,7 +2091,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					//TODO: here MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if !chan.get().is_usable() {
@@ -2204,7 +2139,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					try_chan_entry!(self, chan.get_mut().update_fulfill_htlc(&msg), channel_state, chan)
@@ -2222,7 +2156,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), channel_state, chan);
@@ -2238,7 +2171,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
@@ -2257,7 +2189,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) =
@@ -2334,7 +2265,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						//TODO: here and below MsgHandleErrInternal, #153 case
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
@@ -2379,7 +2309,6 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().update_fee(&*self.fee_estimator, &msg), channel_state, chan);
@@ -2508,9 +2437,9 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
 		let _ = self.total_consistency_lock.read().unwrap();
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let their_node_id;
 		let err: Result<(), _> = loop {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = channel_state_lock.borrow_parts();
 
 			match channel_state.by_id.entry(channel_id) {
@@ -2549,20 +2478,9 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			return Ok(())
 		};
 
-		match handle_error!(self, err) {
+		match handle_error!(self, err, their_node_id, channel_state_lock) {
 			Ok(_) => unreachable!(),
-			Err(e) => {
-				if let msgs::ErrorAction::IgnoreError = e.action {
-				} else {
-					log_error!(self, "Got bad keys: {}!", e.err);
-					let mut channel_state = self.channel_state.lock().unwrap();
-					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: their_node_id,
-						action: e.action,
-					});
-				}
-				Err(APIError::APIMisuseError { err: e.err })
-			},
+			Err(e) => { Err(APIError::APIMisuseError { err: e.err })}
 		}
 	}
 }
@@ -2732,85 +2650,148 @@ impl<ChanSigner: ChannelKeys> ChainListener for ChannelManager<ChanSigner> {
 }
 
 impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigner> {
-	//TODO: Handle errors and close channel (or so)
-	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), LightningError> {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_open_channel(their_node_id, their_local_features, msg))
+		let res = self.internal_open_channel(their_node_id, their_local_features, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::AcceptChannel) -> Result<(), LightningError> {
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::AcceptChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_accept_channel(their_node_id, their_local_features, msg))
+		let res = self.internal_accept_channel(their_node_id, their_local_features, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), LightningError> {
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_created(their_node_id, msg))
+		let res = self.internal_funding_created(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), LightningError> {
+	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_signed(their_node_id, msg))
+		let res = self.internal_funding_signed(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), LightningError> {
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_funding_locked(their_node_id, msg))
+		let res = self.internal_funding_locked(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), LightningError> {
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_shutdown(their_node_id, msg))
+		let res = self.internal_shutdown(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), LightningError> {
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_closing_signed(their_node_id, msg))
+		let res = self.internal_closing_signed(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), LightningError> {
+	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg))
+		let res = self.internal_update_add_htlc(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), LightningError> {
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg))
+		let res = self.internal_update_fulfill_htlc(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), LightningError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg))
+		let res = self.internal_update_fail_htlc(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), LightningError> {
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg))
+		let res = self.internal_update_fail_malformed_htlc(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), LightningError> {
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_commitment_signed(their_node_id, msg))
+		let res = self.internal_commitment_signed(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), LightningError> {
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg))
+		let res = self.internal_revoke_and_ack(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), LightningError> {
+	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_update_fee(their_node_id, msg))
+		let res = self.internal_update_fee(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), LightningError> {
+	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg))
+		let res = self.internal_announcement_signatures(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), LightningError> {
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg))
+		let res = self.internal_channel_reestablish(their_node_id, msg);
+		if res.is_err() {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let _ = handle_error!(self, res, *their_node_id, channel_state_lock);
+		}
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {

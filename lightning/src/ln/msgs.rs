@@ -616,42 +616,42 @@ pub enum OptionalField<T> {
 pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &OpenChannel) -> Result<(), LightningError>;
+	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &OpenChannel);
 	/// Handle an incoming accept_channel message from the given peer.
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &AcceptChannel) -> Result<(), LightningError>;
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &AcceptChannel);
 	/// Handle an incoming funding_created message from the given peer.
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) -> Result<(), LightningError>;
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
 	/// Handle an incoming funding_signed message from the given peer.
-	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) -> Result<(), LightningError>;
+	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned);
 	/// Handle an incoming funding_locked message from the given peer.
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) -> Result<(), LightningError>;
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked);
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) -> Result<(), LightningError>;
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
 	/// Handle an incoming closing_signed message from the given peer.
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) -> Result<(), LightningError>;
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
 	// HTLC handling:
 	/// Handle an incoming update_add_htlc message from the given peer.
-	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC) -> Result<(), LightningError>;
+	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
 	/// Handle an incoming update_fulfill_htlc message from the given peer.
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) -> Result<(), LightningError>;
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC);
 	/// Handle an incoming update_fail_htlc message from the given peer.
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) -> Result<(), LightningError>;
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC);
 	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) -> Result<(), LightningError>;
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC);
 	/// Handle an incoming commitment_signed message from the given peer.
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) -> Result<(), LightningError>;
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned);
 	/// Handle an incoming revoke_and_ack message from the given peer.
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) -> Result<(), LightningError>;
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK);
 
 	/// Handle an incoming update_fee message from the given peer.
-	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) -> Result<(), LightningError>;
+	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee);
 
 	// Channel-to-announce:
 	/// Handle an incoming announcement_signatures message from the given peer.
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) -> Result<(), LightningError>;
+	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
@@ -663,7 +663,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
 	fn peer_connected(&self, their_node_id: &PublicKey);
 	/// Handle an incoming channel_reestablish message from the given peer.
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) -> Result<(), LightningError>;
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
 	// Error:
 	/// Handle an incoming error message from the given peer.
