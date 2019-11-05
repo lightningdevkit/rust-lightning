@@ -1,4 +1,4 @@
-use ln::msgs::HandleError;
+use ln::msgs::LightningError;
 use ln::msgs;
 
 use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
@@ -133,13 +133,13 @@ impl PeerChannelEncryptor {
 	}
 
 	#[inline]
-	fn decrypt_with_ad(res: &mut[u8], n: u64, key: &[u8; 32], h: &[u8], cyphertext: &[u8]) -> Result<(), HandleError> {
+	fn decrypt_with_ad(res: &mut[u8], n: u64, key: &[u8; 32], h: &[u8], cyphertext: &[u8]) -> Result<(), LightningError> {
 		let mut nonce = [0; 12];
 		nonce[4..].copy_from_slice(&byte_utils::le64_to_array(n));
 
 		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
 		if !chacha.decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]) {
-			return Err(HandleError{err: "Bad MAC", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(LightningError{err: "Bad MAC", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 		Ok(())
 	}
@@ -189,15 +189,15 @@ impl PeerChannelEncryptor {
 	}
 
 	#[inline]
-	fn inbound_noise_act(state: &mut BidirectionalNoiseState, act: &[u8], our_key: &SecretKey) -> Result<(PublicKey, [u8; 32]), HandleError> {
+	fn inbound_noise_act(state: &mut BidirectionalNoiseState, act: &[u8], our_key: &SecretKey) -> Result<(PublicKey, [u8; 32]), LightningError> {
 		assert_eq!(act.len(), 50);
 
 		if act[0] != 0 {
-			return Err(HandleError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+			return Err(LightningError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 		}
 
 		let their_pub = match PublicKey::from_slice(&act[1..34]) {
-			Err(_) => return Err(HandleError{err: "Invalid public key", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
+			Err(_) => return Err(LightningError{err: "Invalid public key", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
 			Ok(key) => key,
 		};
 
@@ -239,7 +239,7 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	pub fn process_act_one_with_keys(&mut self, act_one: &[u8], our_node_secret: &SecretKey, our_ephemeral: SecretKey) -> Result<[u8; 50], HandleError> {
+	pub fn process_act_one_with_keys(&mut self, act_one: &[u8], our_node_secret: &SecretKey, our_ephemeral: SecretKey) -> Result<[u8; 50], LightningError> {
 		assert_eq!(act_one.len(), 50);
 
 		match self.noise_state {
@@ -266,7 +266,7 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	pub fn process_act_two(&mut self, act_two: &[u8], our_node_secret: &SecretKey) -> Result<([u8; 66], PublicKey), HandleError> {
+	pub fn process_act_two(&mut self, act_two: &[u8], our_node_secret: &SecretKey) -> Result<([u8; 66], PublicKey), LightningError> {
 		assert_eq!(act_two.len(), 50);
 
 		let final_hkdf;
@@ -317,7 +317,7 @@ impl PeerChannelEncryptor {
 		Ok((res, self.their_node_id.unwrap().clone()))
 	}
 
-	pub fn process_act_three(&mut self, act_three: &[u8]) -> Result<PublicKey, HandleError> {
+	pub fn process_act_three(&mut self, act_three: &[u8]) -> Result<PublicKey, LightningError> {
 		assert_eq!(act_three.len(), 66);
 
 		let final_hkdf;
@@ -330,14 +330,14 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 						if act_three[0] != 0 {
-							return Err(HandleError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
+							return Err(LightningError{err: "Unknown handshake version number", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })});
 						}
 
 						let mut their_node_id = [0; 33];
 						PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
 						self.their_node_id = Some(match PublicKey::from_slice(&their_node_id) {
 							Ok(key) => key,
-							Err(_) => return Err(HandleError{err: "Bad node_id from peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
+							Err(_) => return Err(LightningError{err: "Bad node_id from peer", action: Some(msgs::ErrorAction::DisconnectPeer{ msg: None })}),
 						});
 
 						let mut sha = Sha256::engine();
@@ -403,7 +403,7 @@ impl PeerChannelEncryptor {
 
 	/// Decrypts a message length header from the remote peer.
 	/// panics if noise handshake has not yet finished or msg.len() != 18
-	pub fn decrypt_length_header(&mut self, msg: &[u8]) -> Result<u16, HandleError> {
+	pub fn decrypt_length_header(&mut self, msg: &[u8]) -> Result<u16, LightningError> {
 		assert_eq!(msg.len(), 16+2);
 
 		match self.noise_state {
@@ -426,7 +426,7 @@ impl PeerChannelEncryptor {
 
 	/// Decrypts the given message.
 	/// panics if msg.len() > 65535 + 16
-	pub fn decrypt_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, HandleError> {
+	pub fn decrypt_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, LightningError> {
 		if msg.len() > 65535 + 16 {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}

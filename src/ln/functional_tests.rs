@@ -70,10 +70,10 @@ fn test_insane_channel_opens() {
 	// that supposedly makes the channel open message insane
 	let insane_open_helper = |expected_error_str, message_mutator: fn(msgs::OpenChannel) -> msgs::OpenChannel| {
 		match nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), LocalFeatures::new(), &message_mutator(open_channel_message.clone())) {
-			Err(msgs::HandleError{ err: error_str, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) => {
-				assert_eq!(error_str, expected_error_str, "unexpected HandleError string (expected `{}`, actual `{}`)", expected_error_str, error_str)
+			Err(msgs::LightningError{ err: error_str, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) => {
+				assert_eq!(error_str, expected_error_str, "unexpected LightningError string (expected `{}`, actual `{}`)", expected_error_str, error_str)
 			},
-			Err(msgs::HandleError{..}) => {panic!("unexpected HandleError action")},
+			Err(msgs::LightningError{..}) => {panic!("unexpected LightningError action")},
 			_ => panic!("insane OpenChannel message was somehow Ok"),
 		}
 	};
@@ -952,7 +952,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// transaction.
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-		if let Err(msgs::HandleError{action: Some(msgs::ErrorAction::SendErrorMessage{msg}), ..}) =
+		if let Err(msgs::LightningError{action: Some(msgs::ErrorAction::SendErrorMessage{msg}), ..}) =
 				nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_2nd_reestablish) {
 			nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msg);
 			let msgs::ErrorMessage {ref channel_id, ..} = msg;
@@ -1246,7 +1246,7 @@ fn duplicate_htlc_test() {
 }
 
 fn do_channel_reserve_test(test_recv: bool) {
-	use ln::msgs::HandleError;
+	use ln::msgs::LightningError;
 
 	let mut nodes = create_network(3, &[None, None, None]);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001, LocalFeatures::new(), LocalFeatures::new());
@@ -1382,7 +1382,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		if test_recv {
 			let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg).err().unwrap();
 			match err {
-				HandleError{err, .. } => assert_eq!(err, "Remote HTLC add would put them over their reserve value"),
+				LightningError{err, .. } => assert_eq!(err, "Remote HTLC add would put them over their reserve value"),
 			}
 			// If we send a garbage message, the channel should get closed, making the rest of this test case fail.
 			assert_eq!(nodes[1].node.list_channels().len(), 1);
@@ -3455,7 +3455,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id());
 	let reestablish = get_event_msg!(nodes[3], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
 	nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id());
-	if let Err(msgs::HandleError { action: Some(msgs::ErrorAction::SendErrorMessage { msg }), .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
+	if let Err(msgs::LightningError { action: Some(msgs::ErrorAction::SendErrorMessage { msg }), .. }) = nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish) {
 		assert_eq!(msg.channel_id, channel_id);
 	} else { panic!("Unexpected result"); }
 }
@@ -5101,7 +5101,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat-1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote side tried to send less than our minimum HTLC value");
 	} else {
 		assert!(false);
@@ -5127,7 +5127,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	updates.update_add_htlcs[0].amount_msat = 5000000-their_channel_reserve+1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote HTLC add would put them over their reserve value");
 	} else {
 		assert!(false);
@@ -5174,7 +5174,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	msg.htlc_id = (super::channel::OUR_MAX_HTLCS) as u64;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to push more than our max accepted HTLCs");
 	} else {
 		assert!(false);
@@ -5197,7 +5197,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], chan.2).their_max_htlc_value_in_flight_msat + 1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err,"Remote HTLC add would put them over our max HTLC value");
 	} else {
 		assert!(false);
@@ -5220,7 +5220,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	updates.update_add_htlcs[0].cltv_expiry = 500000000;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err,"Remote provided CLTV expiry in seconds instead of block height");
 	} else {
 		assert!(false);
@@ -5266,7 +5266,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let _bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote skipped HTLC ID");
 	} else {
 		assert!(false);
@@ -5298,7 +5298,7 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 
 	let err = nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to fulfill/fail HTLC before it had been committed");
 	} else {
 		assert!(false);
@@ -5330,7 +5330,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 
 	let err = nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to fulfill/fail HTLC before it had been committed");
 	} else {
 		assert!(false);
@@ -5363,7 +5363,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 
 	let err = nodes[0].node.handle_update_fail_malformed_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
 
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to fulfill/fail HTLC before it had been committed");
 	} else {
 		assert!(false);
@@ -5404,7 +5404,7 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	update_fulfill_msg.htlc_id = 1;
 
 	let err = nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_msg);
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to fulfill/fail an HTLC we couldn't find");
 	} else {
 		assert!(false);
@@ -5445,7 +5445,7 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	update_fulfill_msg.payment_preimage = PaymentPreimage([1; 32]);
 
 	let err = nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_msg);
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to fulfill HTLC with an incorrect preimage");
 	} else {
 		assert!(false);
@@ -5491,7 +5491,7 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 	};
 	update_msg.failure_code &= !0x8000;
 	let err = nodes[0].node.handle_update_fail_malformed_htlc(&nodes[1].node.get_our_node_id(), &update_msg);
-	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
+	if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Got update_fail_malformed_htlc with BADONION not set");
 	} else {
 		assert!(false);
