@@ -392,7 +392,7 @@ pub fn do_test(data: &[u8]) {
 		($res: expr) => {
 			match $res {
 				Ok(()) => {},
-				Err(LightningError { action: Some(ErrorAction::IgnoreError), .. }) => { },
+				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => { },
 				_ => { $res.unwrap() },
 			}
 		}

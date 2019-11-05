@@ -99,52 +99,52 @@ impl TestChannelMessageHandler {
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::OpenChannel) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::AcceptChannel) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingSigned) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingLocked) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_shutdown(&self, _their_node_id: &PublicKey, _msg: &msgs::Shutdown) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::ClosingSigned) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateAddHTLC) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFulfillHTLC) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailHTLC) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_commitment_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::CommitmentSigned) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, _msg: &msgs::RevokeAndACK) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFee) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &msgs::AnnouncementSignatures) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelReestablish) -> Result<(), LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey) {}
@@ -169,13 +169,13 @@ impl TestRoutingMessageHandler {
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
-		Err(LightningError { err: "", action: None })
+		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
 	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, msgs::ChannelUpdate,msgs::ChannelUpdate)> {

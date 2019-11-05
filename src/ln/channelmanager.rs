@@ -152,12 +152,12 @@ impl MsgHandleErrInternal {
 		Self {
 			err: LightningError {
 				err,
-				action: Some(msgs::ErrorAction::SendErrorMessage {
+				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
 						data: err.to_string()
 					},
-				}),
+				},
 			},
 			shutdown_finish: None,
 		}
@@ -167,7 +167,7 @@ impl MsgHandleErrInternal {
 		Self {
 			err: LightningError {
 				err,
-				action: Some(msgs::ErrorAction::IgnoreError),
+				action: msgs::ErrorAction::IgnoreError,
 			},
 			shutdown_finish: None,
 		}
@@ -181,12 +181,12 @@ impl MsgHandleErrInternal {
 		Self {
 			err: LightningError {
 				err,
-				action: Some(msgs::ErrorAction::SendErrorMessage {
+				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
 						data: err.to_string()
 					},
-				}),
+				},
 			},
 			shutdown_finish: Some((shutdown_res, channel_update)),
 		}
@@ -197,25 +197,25 @@ impl MsgHandleErrInternal {
 			err: match err {
 				ChannelError::Ignore(msg) => LightningError {
 					err: msg,
-					action: Some(msgs::ErrorAction::IgnoreError),
+					action: msgs::ErrorAction::IgnoreError,
 				},
 				ChannelError::Close(msg) => LightningError {
 					err: msg,
-					action: Some(msgs::ErrorAction::SendErrorMessage {
+					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
 							data: msg.to_string()
 						},
-					}),
+					},
 				},
 				ChannelError::CloseDelayBroadcast { msg, .. } => LightningError {
 					err: msg,
-					action: Some(msgs::ErrorAction::SendErrorMessage {
+					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
 							data: msg.to_string()
 						},
-					}),
+					},
 				},
 			},
 			shutdown_finish: None,
@@ -1011,7 +1011,7 @@ impl ChannelManager {
 	/// May be called with channel_state already locked!
 	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
-			None => return Err(LightningError{err: "Channel not yet established", action: None}),
+			None => return Err(LightningError{err: "Channel not yet established", action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
 
@@ -1140,7 +1140,7 @@ impl ChannelManager {
 		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
-				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				if let msgs::ErrorAction::IgnoreError = e.action {
 				} else {
 					log_error!(self, "Got bad keys: {}!", e.err);
 					let mut channel_state = self.channel_state.lock().unwrap();
@@ -1434,7 +1434,7 @@ impl ChannelManager {
 			match handle_error!(self, err) {
 				Ok(_) => {},
 				Err(e) => {
-					if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+					if let msgs::ErrorAction::IgnoreError = e.action {
 					} else {
 						let mut channel_state = self.channel_state.lock().unwrap();
 						channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
@@ -1660,7 +1660,7 @@ impl ChannelManager {
 		match handle_error!(self, err) {
 			Ok(_) => {},
 			Err(e) => {
-				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				if let msgs::ErrorAction::IgnoreError = e.action {
 				} else {
 					let mut channel_state = self.channel_state.lock().unwrap();
 					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
@@ -2292,7 +2292,7 @@ impl ChannelManager {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if !chan.get().is_usable() {
-					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError)}));
+					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it", action: msgs::ErrorAction::IgnoreError}));
 				}
 
 				let our_node_id = self.get_our_node_id();
@@ -2445,7 +2445,7 @@ impl ChannelManager {
 		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
-				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				if let msgs::ErrorAction::IgnoreError = e.action {
 				} else {
 					log_error!(self, "Got bad keys: {}!", e.err);
 					let mut channel_state = self.channel_state.lock().unwrap();
@@ -2538,7 +2538,7 @@ impl ChainListener for ChannelManager {
 				} else if let Err(e) = chan_res {
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_their_node_id(),
-						action: Some(msgs::ErrorAction::SendErrorMessage { msg: e }),
+						action: msgs::ErrorAction::SendErrorMessage { msg: e },
 					});
 					return false;
 				}

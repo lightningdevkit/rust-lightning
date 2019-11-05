@@ -190,7 +190,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 					_ => panic!("Unexpected event"),
 				}
 
-				if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::IgnoreError) }) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed) {
+				if let Err(msgs::LightningError{err, action: msgs::ErrorAction::IgnoreError }) = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed) {
 					assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
 				} else { panic!(); }
 			}
@@ -485,7 +485,7 @@ fn test_monitor_update_fail_cs() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_event.commitment_msg).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_event.commitment_msg).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -515,7 +515,7 @@ fn test_monitor_update_fail_cs() {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 
 			*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-			if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed).unwrap_err() {
+			if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed).unwrap_err() {
 				assert_eq!(err, "Failed to update ChannelMonitor");
 			} else { panic!(); }
 			check_added_monitors!(nodes[0], 1);
@@ -565,7 +565,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let bs_raa = commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false, true, false, true);
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_raa).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_raa).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -618,12 +618,12 @@ fn test_monitor_update_raa_while_paused() {
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event_2.msgs[0]).unwrap();
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
 
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa).unwrap_err() {
 		assert_eq!(err, "Previous monitor update failure prevented responses to RAA");
 	} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
@@ -704,7 +704,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Now fail monitor updating.
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
@@ -768,7 +768,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 		send_event = SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
 		nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send_event.msgs[0]).unwrap();
-		if let Err(msgs::LightningError{err, action: Some(msgs::ErrorAction::IgnoreError) }) = nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &send_event.commitment_msg) {
+		if let Err(msgs::LightningError{err, action: msgs::ErrorAction::IgnoreError }) = nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &send_event.commitment_msg) {
 			assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
 		} else { panic!(); }
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -945,7 +945,7 @@ fn test_monitor_update_fail_reestablish() {
 
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish).unwrap();
 
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -1033,12 +1033,12 @@ fn raa_no_response_awaiting_raa_state() {
 	// then restore channel monitor updates.
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
 
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap_err() {
 		assert_eq!(err, "Previous monitor update failure prevented responses to RAA");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -1130,7 +1130,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	// update.
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -1145,7 +1145,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]).unwrap();
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_updates.commitment_signed).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_updates.commitment_signed).unwrap_err() {
 		assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
 	} else { panic!(); }
 	// Note that nodes[1] not updating monitor here is OK - it wont take action on the new HTLC
@@ -1235,7 +1235,7 @@ fn monitor_failed_no_reestablish_response() {
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -1327,7 +1327,7 @@ fn first_message_on_recv_ordering() {
 	// Deliver the final RAA for the first payment, which does not require a response. RAAs
 	// generally require a commitment_signed, so the fact that we're expecting an opposite response
 	// to the next message also tests resetting the delivery order.
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa).unwrap_err() {
 		assert_eq!(err, "Failed to update ChannelMonitor");
 	} else { panic!(); }
 	check_added_monitors!(nodes[1], 1);
@@ -1336,7 +1336,7 @@ fn first_message_on_recv_ordering() {
 	// RAA/CS response, which should be generated when we call test_restore_channel_monitor (with
 	// the appropriate HTLC acceptance).
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
-	if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
+	if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg).unwrap_err() {
 		assert_eq!(err, "Previous monitor update failure prevented generation of RAA");
 	} else { panic!(); }
 
@@ -1597,7 +1597,7 @@ fn do_during_funding_monitor_fail(fail_on_generate: bool, restore_between_fails:
 	}
 	let funding_signed_res = nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
 	if fail_on_signed || !restore_between_fails {
-		if let msgs::LightningError { err, action: Some(msgs::ErrorAction::IgnoreError) } = funding_signed_res.unwrap_err() {
+		if let msgs::LightningError { err, action: msgs::ErrorAction::IgnoreError } = funding_signed_res.unwrap_err() {
 			if fail_on_generate && !restore_between_fails {
 				assert_eq!(err, "Previous monitor update failure prevented funding_signed from allowing funding broadcast");
 				check_added_monitors!(nodes[0], 0);

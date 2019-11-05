@@ -547,7 +547,7 @@ pub struct LightningError {
 	/// A human-readable message describing the error
 	pub err: &'static str,
 	/// The action which should be taken against the offending peer.
-	pub action: Option<ErrorAction>, //TODO: Make this required
+	pub action: ErrorAction,
 }
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
