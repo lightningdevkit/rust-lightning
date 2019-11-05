@@ -29,7 +29,7 @@ use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, ChannelManagerReadArgs};
 use lightning::ln::router::{Route, RouteHop};
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, LightningError, UpdateAddHTLC, LocalFeatures};
+use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, UpdateAddHTLC, LocalFeatures, ErrorAction};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::events;
 use lightning::util::logger::Logger;
@@ -252,7 +252,7 @@ pub fn do_test(data: &[u8]) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$dest.handle_open_channel(&$source.get_our_node_id(), LocalFeatures::new(), &open_channel).unwrap();
+			$dest.handle_open_channel(&$source.get_our_node_id(), LocalFeatures::new(), &open_channel);
 			let accept_channel = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -261,7 +261,7 @@ pub fn do_test(data: &[u8]) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$source.handle_accept_channel(&$dest.get_our_node_id(), LocalFeatures::new(), &accept_channel).unwrap();
+			$source.handle_accept_channel(&$dest.get_our_node_id(), LocalFeatures::new(), &accept_channel);
 			{
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
@@ -282,7 +282,7 @@ pub fn do_test(data: &[u8]) {
 					msg.clone()
 				} else { panic!("Wrong event type"); }
 			};
-			$dest.handle_funding_created(&$source.get_our_node_id(), &funding_created).unwrap();
+			$dest.handle_funding_created(&$source.get_our_node_id(), &funding_created);
 
 			let funding_signed = {
 				let events = $dest.get_and_clear_pending_msg_events();
@@ -291,7 +291,7 @@ pub fn do_test(data: &[u8]) {
 					msg.clone()
 				} else { panic!("Wrong event type"); }
 			};
-			$source.handle_funding_signed(&$dest.get_our_node_id(), &funding_signed).unwrap();
+			$source.handle_funding_signed(&$dest.get_our_node_id(), &funding_signed);
 
 			{
 				let events = $source.get_and_clear_pending_events();
@@ -330,7 +330,7 @@ pub fn do_test(data: &[u8]) {
 					if let events::MessageSendEvent::SendFundingLocked { ref node_id, ref msg } = event {
 						for node in $nodes.iter() {
 							if node.get_our_node_id() == *node_id {
-								node.handle_funding_locked(&$nodes[idx].get_our_node_id(), msg).unwrap();
+								node.handle_funding_locked(&$nodes[idx].get_our_node_id(), msg);
 							}
 						}
 					} else { panic!("Wrong event type"); }
@@ -380,16 +380,6 @@ pub fn do_test(data: &[u8]) {
 	nodes[1].write(&mut node_b_ser).unwrap();
 	let mut node_c_ser = VecWriter(Vec::new());
 	nodes[2].write(&mut node_c_ser).unwrap();
-
-	macro_rules! test_err {
-		($res: expr) => {
-			match $res {
-				Ok(()) => {},
-				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => { },
-				_ => { $res.unwrap() },
-			}
-		}
-	}
 
 	macro_rules! test_return {
 		() => { {
@@ -470,7 +460,7 @@ pub fn do_test(data: &[u8]) {
 									assert!(update_fee.is_none());
 									for update_add in update_add_htlcs {
 										if !$corrupt_forward {
-											test_err!(dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &update_add));
+											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &update_add);
 										} else {
 											// Corrupt the update_add_htlc message so that its HMAC
 											// check will fail and we generate a
@@ -479,33 +469,33 @@ pub fn do_test(data: &[u8]) {
 											let mut msg_ser = update_add.encode();
 											msg_ser[1000] ^= 0xff;
 											let new_msg = UpdateAddHTLC::read(&mut Cursor::new(&msg_ser)).unwrap();
-											test_err!(dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &new_msg));
+											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &new_msg);
 										}
 									}
 									for update_fulfill in update_fulfill_htlcs {
-										test_err!(dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), &update_fulfill));
+										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), &update_fulfill);
 									}
 									for update_fail in update_fail_htlcs {
-										test_err!(dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), &update_fail));
+										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), &update_fail);
 									}
 									for update_fail_malformed in update_fail_malformed_htlcs {
-										test_err!(dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), &update_fail_malformed));
+										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), &update_fail_malformed);
 									}
-									test_err!(dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed));
+									dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed);
 								}
 							}
 						},
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 							for dest in nodes.iter() {
 								if dest.get_our_node_id() == *node_id {
-									test_err!(dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg));
+									dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 							for dest in nodes.iter() {
 								if dest.get_our_node_id() == *node_id {
-									test_err!(dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg));
+									dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
@@ -515,6 +505,10 @@ pub fn do_test(data: &[u8]) {
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {
 							// Can be generated due to a payment forward being rejected due to a
 							// channel having previously failed a monitor update
+						},
+						events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {
+							// Can be generated at any processing step to send back an error, disconnect
+							// peer or just ignore
 						},
 						_ => panic!("Unhandled message event"),
 					}
@@ -532,6 +526,7 @@ pub fn do_test(data: &[u8]) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -544,6 +539,7 @@ pub fn do_test(data: &[u8]) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -565,6 +561,7 @@ pub fn do_test(data: &[u8]) {
 						},
 						events::MessageSendEvent::SendFundingLocked { .. } => false,
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
+						events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => false,
 						_ => panic!("Unhandled message event"),
 					};
 					if push { msg_sink.push(event); }

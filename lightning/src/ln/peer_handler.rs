@@ -686,73 +686,73 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Channel control:
 											32 => {
 												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg));
+												self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg);
 											},
 											33 => {
 												let msg = try_potential_decodeerror!(msgs::AcceptChannel::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg));
+												self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg);
 											},
 
 											34 => {
 												let msg = try_potential_decodeerror!(msgs::FundingCreated::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg);
 											},
 											35 => {
 												let msg = try_potential_decodeerror!(msgs::FundingSigned::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_signed(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_funding_signed(&peer.their_node_id.unwrap(), &msg);
 											},
 											36 => {
 												let msg = try_potential_decodeerror!(msgs::FundingLocked::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg);
 											},
 
 											38 => {
 												let msg = try_potential_decodeerror!(msgs::Shutdown::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg);
 											},
 											39 => {
 												let msg = try_potential_decodeerror!(msgs::ClosingSigned::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);
 											},
 
 											128 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateAddHTLC::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
 											130 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFulfillHTLC::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
 											131 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
 											135 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
 
 											132 => {
 												let msg = try_potential_decodeerror!(msgs::CommitmentSigned::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg);
 											},
 											133 => {
 												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg);
 											},
 											134 => {
 												let msg = try_potential_decodeerror!(msgs::UpdateFee::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_update_fee(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_update_fee(&peer.their_node_id.unwrap(), &msg);
 											},
 											136 => {
 												let msg = try_potential_decodeerror!(msgs::ChannelReestablish::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_channel_reestablish(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_channel_reestablish(&peer.their_node_id.unwrap(), &msg);
 											},
 
 											// Routing control:
 											259 => {
 												let msg = try_potential_decodeerror!(msgs::AnnouncementSignatures::read(&mut reader));
-												try_potential_handleerror!(self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg));
+												self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg);
 											},
 											256 => {
 												let msg = try_potential_decodeerror!(msgs::ChannelAnnouncement::read(&mut reader));
