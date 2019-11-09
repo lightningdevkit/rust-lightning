@@ -223,8 +223,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 			logger,
 			fee_estimator: feeest,
 		});
-		let weak_res = Arc::downgrade(&res);
-		res.chain_monitor.register_listener(weak_res);
+
 		res
 	}
 

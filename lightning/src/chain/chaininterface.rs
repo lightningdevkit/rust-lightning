@@ -45,11 +45,6 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// Indicates that a listener needs to see all transactions.
 	fn watch_all_txn(&self);
 
-	/// Register the given listener to receive events. Only a weak pointer is provided and the
-	/// registration should be freed once that pointer expires.
-	fn register_listener(&self, listener: Weak<ChainListener>);
-	//TODO: unregister
-
 	/// Gets the script and value in satoshis for a given unspent transaction output given a
 	/// short_channel_id (aka unspent_tx_output_identier). For BTC/tBTC channels the top three
 	/// bytes are the block height, the next 3 the transaction index within the block, and the
@@ -204,7 +199,6 @@ impl ChainWatchedUtil {
 pub struct ChainWatchInterfaceUtil {
 	network: Network,
 	watched: Mutex<ChainWatchedUtil>,
-	listeners: Mutex<Vec<Weak<ChainListener>>>,
 	reentered: AtomicUsize,
 	logger: Arc<Logger>,
 }
@@ -230,11 +224,6 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		if watched.watch_all() {
 			self.reentered.fetch_add(1, Ordering::Relaxed);
 		}
-	}
-
-	fn register_listener(&self, listener: Weak<ChainListener>) {
-		let mut vec = self.listeners.lock().unwrap();
-		vec.push(listener);
 	}
 
 	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {

@@ -25,7 +25,7 @@ use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
@@ -323,7 +323,6 @@ pub struct ChannelManager {
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
 	monitor: Arc<ManyChannelMonitor>,
-	chain_monitor: Arc<ChainWatchInterface>,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
 	#[cfg(test)]
@@ -596,7 +595,6 @@ impl ChannelManager {
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: feeest.clone(),
 			monitor: monitor.clone(),
-			chain_monitor,
 			tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(current_blockchain_height),
@@ -619,8 +617,7 @@ impl ChannelManager {
 
 			logger,
 		});
-		let weak_res = Arc::downgrade(&res);
-		res.chain_monitor.register_listener(weak_res);
+
 		Ok(res)
 	}
 
@@ -3142,10 +3139,7 @@ pub struct ChannelManagerReadArgs<'a> {
 	/// you have deserialized ChannelMonitors separately and will add them to your
 	/// ManyChannelMonitor after deserializing this ChannelManager.
 	pub monitor: Arc<ManyChannelMonitor>,
-	/// The ChainWatchInterface for use in the ChannelManager in the future.
-	///
-	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface>,
+
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
@@ -3248,7 +3242,6 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
 			monitor: args.monitor,
-			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),
