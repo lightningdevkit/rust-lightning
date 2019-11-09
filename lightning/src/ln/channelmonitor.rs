@@ -109,6 +109,12 @@ pub struct HTLCUpdate {
 /// channel's monitor everywhere (including remote watchtowers) *before* this function returns. If
 /// an update occurs and a remote watchtower is left with old state, it may broadcast transactions
 /// which we have revoked, allowing our counterparty to claim all funds in the channel!
+///
+/// User needs to notify implementors of ManyChannelMonitor when a new block is connected or
+/// disconnected using their `block_connected` and `block_disconnected` methods. However, rather
+/// than calling these methods directly, the user should register implementors as listeners to the
+/// BlockNotifier and call the BlockNotifier's `block_(dis)connected` methods, which will notify
+/// all registered listeners in one go.
 pub trait ManyChannelMonitor: Send + Sync {
 	/// Adds or updates a monitor for the given `funding_txo`.
 	///

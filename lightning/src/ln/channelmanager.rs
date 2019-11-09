@@ -585,8 +585,15 @@ impl ChannelManager {
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 	///
-	/// User must provide the current blockchain height from which to track onchain channel
+	/// Users must provide the current blockchain height from which to track onchain channel
 	/// funding outpoints and send payments with reliable timelocks.
+	///
+	/// Users need to notify the new ChannelManager when a new block is connected or
+	/// disconnected using its `block_connected` and `block_disconnected` methods.
+	/// However, rather than calling these methods directly, the user should register
+	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
+	/// `block_(dis)connected` methods, which will notify all registered listeners in one
+	/// go.
 	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
@@ -3122,8 +3129,7 @@ impl Writeable for ChannelManager {
 /// 4) Reconnect blocks on your ChannelMonitors.
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
-/// 7) Register the new ChannelManager with your ChainWatchInterface (this does not happen
-///    automatically as it does in ChannelManager::new()).
+/// 7) Register the new ChannelManager with your ChainWatchInterface.
 pub struct ChannelManagerReadArgs<'a> {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.

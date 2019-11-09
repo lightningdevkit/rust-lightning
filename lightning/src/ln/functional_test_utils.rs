@@ -34,27 +34,28 @@ use std::sync::{Arc, Mutex};
 use std::mem;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
-pub fn confirm_transaction(chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
+pub fn confirm_transaction(notifier: &chaininterface::BlockNotifier, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
 	assert!(chain.does_match_tx(tx));
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	chain.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
+	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
 	for i in 2..CHAN_CONFIRM_DEPTH {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		chain.block_connected_checked(&header, i, &[tx; 0], &[0; 0]);
+		notifier.block_connected_checked(&header, i, &vec![], &[0; 0]);
 	}
 }
 
-pub fn connect_blocks(chain: &chaininterface::ChainWatchInterfaceUtil, depth: u32, height: u32, parent: bool, prev_blockhash: Sha256d) -> Sha256d {
+pub fn connect_blocks(notifier: &chaininterface::BlockNotifier, depth: u32, height: u32, parent: bool, prev_blockhash: Sha256d) -> Sha256d {
 	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	chain.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
+	notifier.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
 	for i in 2..depth + 1 {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		chain.block_connected_checked(&header, height + i, &Vec::new(), &Vec::new());
+		notifier.block_connected_checked(&header, height + i, &Vec::new(), &Vec::new());
 	}
 	header.bitcoin_hash()
 }
 
 pub struct Node {
+	pub block_notifier: Arc<chaininterface::BlockNotifier<'a, 'b>>,
 	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 	pub tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 	pub chan_monitor: Arc<test_utils::TestChannelMonitor>,
@@ -220,7 +221,7 @@ pub fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, c
 }
 
 pub fn create_chan_between_nodes_with_value_confirm_first(node_recv: &Node, node_conf: &Node, tx: &Transaction) {
-	confirm_transaction(&node_conf.chain_monitor, &tx, tx.version);
+	confirm_transaction(&node_conf.block_notifier, &node_conf.chain_monitor, &tx, tx.version);
 	node_recv.node.handle_funding_locked(&node_conf.node.get_our_node_id(), &get_event_msg!(node_conf, MessageSendEvent::SendFundingLocked, node_recv.node.get_our_node_id())).unwrap();
 }
 
@@ -246,7 +247,7 @@ pub fn create_chan_between_nodes_with_value_confirm_second(node_recv: &Node, nod
 
 pub fn create_chan_between_nodes_with_value_confirm(node_a: &Node, node_b: &Node, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
 	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx);
-	confirm_transaction(&node_a.chain_monitor, &tx, tx.version);
+	confirm_transaction(&node_a.block_notifier, &node_a.chain_monitor, &tx, tx.version);
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
@@ -836,19 +837,25 @@ pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> 
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+		let block_notifier = Arc::new(chaininterface::BlockNotifier::new(chain_monitor.clone()));
 		let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 		let mut seed = [0; 32];
 		rng.fill_bytes(&mut seed);
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet, Arc::clone(&logger)));
 		let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
+		let weak_res = Arc::downgrade(&chan_monitor.simple_monitor);
+		block_notifier.register_listener(weak_res);
 		let mut default_config = UserConfig::new();
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
 		let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
+		let weak_res = Arc::downgrade(&node);
+		block_notifier.register_listener(weak_res);
 		let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
 		nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, keys_manager, node_seed: seed,
 			network_payment_count: payment_count.clone(),
 			network_chan_count: chan_count.clone(),
+			block_notifier,
 		});
 	}
 
