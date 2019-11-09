@@ -11,12 +11,15 @@
 
 #![cfg_attr(not(feature = "fuzztarget"), deny(missing_docs))]
 #![forbid(unsafe_code)]
+<<<<<<< HEAD
 
 // In general, rust is absolutely horrid at supporting users doing things like,
 // for example, compiling Rust code for real environments. Disable useless lints
 // that don't do anything but annoy us and cant actually ever be resolved.
 #![allow(bare_trait_objects)]
 #![allow(ellipsis_inclusive_range_patterns)]
+=======
+>>>>>>> 5641c3b59fc8d9fbcd8c466fc502270e3d4b6702
 
 extern crate bitcoin;
 extern crate bitcoin_hashes;
