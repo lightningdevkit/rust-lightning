@@ -1218,8 +1218,7 @@ fn holding_cell_htlc_counting() {
 
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 }
-<<<<<<< HEAD
-=======
+
 
 #[test]
 fn duplicate_htlc_test() {
@@ -1249,43 +1248,6 @@ fn duplicate_htlc_test() {
 
 fn do_channel_reserve_test(test_recv: bool) {
 	use std::sync::atomic::Ordering;
-	use ln::msgs::HandleError;
-
-	let mut nodes = create_network(3, &[None, None, None]);
-	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001, LocalFeatures::new(), LocalFeatures::new());
-	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1900, 1001, LocalFeatures::new(), LocalFeatures::new());
-
-	let mut stat01 = get_channel_value_stat!(nodes[0], chan_1.2);
-	let mut stat11 = get_channel_value_stat!(nodes[1], chan_1.2);
->>>>>>> 5641c3b59fc8d9fbcd8c466fc502270e3d4b6702
-
-#[test]
-fn duplicate_htlc_test() {
-	// Test that we accept duplicate payment_hash HTLCs across the network and that
-	// claiming/failing them are all separate and don't affect each other
-	let mut nodes = create_network(6, &[None, None, None, None, None, None]);
-
-	// Create some initial channels to route via 3 to 4/5 from 0/1/2
-	create_announced_chan_between_nodes(&nodes, 0, 3, LocalFeatures::new(), LocalFeatures::new());
-	create_announced_chan_between_nodes(&nodes, 1, 3, LocalFeatures::new(), LocalFeatures::new());
-	create_announced_chan_between_nodes(&nodes, 2, 3, LocalFeatures::new(), LocalFeatures::new());
-	create_announced_chan_between_nodes(&nodes, 3, 4, LocalFeatures::new(), LocalFeatures::new());
-	create_announced_chan_between_nodes(&nodes, 3, 5, LocalFeatures::new(), LocalFeatures::new());
-
-	let (payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], 1000000);
-
-	*nodes[0].network_payment_count.borrow_mut() -= 1;
-	assert_eq!(route_payment(&nodes[1], &vec!(&nodes[3])[..], 1000000).0, payment_preimage);
-
-	*nodes[0].network_payment_count.borrow_mut() -= 1;
-	assert_eq!(route_payment(&nodes[2], &vec!(&nodes[3], &nodes[5])[..], 1000000).0, payment_preimage);
-
-	claim_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], payment_preimage);
-	fail_payment(&nodes[2], &vec!(&nodes[3], &nodes[5])[..], payment_hash);
-	claim_payment(&nodes[1], &vec!(&nodes[3])[..], payment_preimage);
-}
-
-fn do_channel_reserve_test(test_recv: bool) {
 	use ln::msgs::HandleError;
 
 	let mut nodes = create_network(3, &[None, None, None]);
@@ -4557,10 +4519,8 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
 				F3: FnMut(),
 {
-<<<<<<< HEAD
-=======
+
 	use ln::msgs::HTLCFailChannelUpdate;
->>>>>>> 5641c3b59fc8d9fbcd8c466fc502270e3d4b6702
 
 	// reset block height
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -4922,102 +4882,7 @@ fn test_onion_failure() {
 			}
 		}
 	}, true, Some(18), None);
-<<<<<<< HEAD
 
-	run_onion_failure_test("final_incorrect_htlc_amount", 1, &nodes, &route, &payment_hash, |_| {}, || {
-		// violate amt_to_forward > msg.amount_msat
-		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
-			for f in pending_forwards.iter_mut() {
-				match f {
-					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
-						forward_info.amt_to_forward -= 1,
-					_ => {},
-				}
-			}
-		}
-	}, true, Some(19), None);
-
-	run_onion_failure_test("channel_disabled", 0, &nodes, &route, &payment_hash, |_| {}, || {
-		// disconnect event to the channel between nodes[1] ~ nodes[2]
-		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	}, true, Some(UPDATE|20), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
-	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-
-	run_onion_failure_test("expiry_too_far", 0, &nodes, &route, &payment_hash, |msg| {
-		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-		let mut route = route.clone();
-		let height = 1;
-		route.hops[1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.hops[0].cltv_expiry_delta + 1;
-		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
-		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(&route, height).unwrap();
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
-		msg.cltv_expiry = htlc_cltv;
-		msg.onion_routing_packet = onion_packet;
-	}, ||{}, true, Some(21), None);
-}
-
-#[test]
-#[should_panic]
-fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on its own as we are catching a panic
-	let nodes = create_network(2, &[None, None]);
-	//Force duplicate channel ids
-	for node in nodes.iter() {
-		*node.keys_manager.override_channel_id_priv.lock().unwrap() = Some([0; 32]);
-	}
-
-	// BOLT #2 spec: Sending node must ensure temporary_channel_id is unique from any other channel ID with the same peer.
-	let channel_value_satoshis=10000;
-	let push_msat=10001;
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).unwrap();
-	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), LocalFeatures::new(), &node0_to_1_send_open_channel).unwrap();
-
-	//Create a second channel with a channel_id collision
-	assert!(nodes[0].node.create_channel(nodes[0].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());
-}
-
-#[test]
-fn bolt2_open_channel_sending_node_checks_part2() {
-	let nodes = create_network(2, &[None, None]);
-
-	// BOLT #2 spec: Sending node must set funding_satoshis to less than 2^24 satoshis
-	let channel_value_satoshis=2^24;
-	let push_msat=10001;
-	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());
-
-	// BOLT #2 spec: Sending node must set push_msat to equal or less than 1000 * funding_satoshis
-	let channel_value_satoshis=10000;
-	// Test when push_msat is equal to 1000 * funding_satoshis.
-	let push_msat=1000*channel_value_satoshis+1;
-	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());
-
-	// BOLT #2 spec: Sending node must set set channel_reserve_satoshis greater than or equal to dust_limit_satoshis
-	let channel_value_satoshis=10000;
-	let push_msat=10001;
-	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_ok()); //Create a valid channel
-	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis>=node0_to_1_send_open_channel.dust_limit_satoshis);
-
-	// BOLT #2 spec: Sending node must set undefined bits in channel_flags to 0
-	// Only the least-significant bit of channel_flags is currently defined resulting in channel_flags only having one of two possible states 0 or 1
-	assert!(node0_to_1_send_open_channel.channel_flags<=1);
-
-	// BOLT #2 spec: Sending node should set to_self_delay sufficient to ensure the sender can irreversibly spend a commitment transaction output, in case of misbehaviour by the receiver.
-	assert!(BREAKDOWN_TIMEOUT>0);
-	assert!(node0_to_1_send_open_channel.to_self_delay==BREAKDOWN_TIMEOUT);
-
-	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
-	let chain_hash=genesis_block(Network::Testnet).header.bitcoin_hash();
-	assert_eq!(node0_to_1_send_open_channel.chain_hash,chain_hash);
-
-	// BOLT #2 spec: Sending node must set funding_pubkey, revocation_basepoint, htlc_basepoint, payment_basepoint, and delayed_payment_basepoint to valid DER-encoded, compressed, secp256k1 pubkeys.
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.funding_pubkey.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.revocation_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.htlc_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.payment_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.delayed_payment_basepoint.serialize()).is_ok());
-=======
 
 	run_onion_failure_test("final_incorrect_htlc_amount", 1, &nodes, &route, &payment_hash, |_| {}, || {
 		// violate amt_to_forward > msg.amount_msat
@@ -5154,7 +5019,6 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	} else {
 		assert!(false);
 	}
->>>>>>> 5641c3b59fc8d9fbcd8c466fc502270e3d4b6702
 }
 
 // BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
