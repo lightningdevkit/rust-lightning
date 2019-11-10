@@ -1219,7 +1219,6 @@ fn holding_cell_htlc_counting() {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 }
 
-
 #[test]
 fn duplicate_htlc_test() {
 	// Test that we accept duplicate payment_hash HTLCs across the network and that
@@ -4519,7 +4518,6 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
 				F3: FnMut(),
 {
-
 	use ln::msgs::HTLCFailChannelUpdate;
 
 	// reset block height
@@ -4883,7 +4881,6 @@ fn test_onion_failure() {
 		}
 	}, true, Some(18), None);
 
-
 	run_onion_failure_test("final_incorrect_htlc_amount", 1, &nodes, &route, &payment_hash, |_| {}, || {
 		// violate amt_to_forward > msg.amount_msat
 		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().borrow_parts().forward_htlcs.iter_mut() {
@@ -5021,8 +5018,6 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	}
 }
 
-
-
 #[test]
 fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment() {
 	//BOLT 2 Requirement: if result would be offering more than the remote's max_accepted_htlcs HTLCs, in the remote commitment transaction: MUST NOT add an HTLC.
@@ -5066,7 +5061,6 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	}
 }
 
-// BOLT 2 Requirements for the Receiver when handling an update_add_htlc message.
 #[test]
 fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	//BOLT 2 Requirement: if the sum of total offered HTLCs would exceed the remote's max_htlc_value_in_flight_msat: MUST NOT add an HTLC.
@@ -5083,7 +5077,6 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 
 	if let Err(APIError::ChannelUnavailable{err}) = err {
 		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept");
-
 	} else {
 		assert!(false);
 	}
@@ -5091,7 +5084,6 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	send_payment(&nodes[0], &[&nodes[1]], max_in_flight);
 }
 
-// BOLT 2 Requirements for the Receiver when handling an update_add_htlc message.
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	//BOLT2 Requirement: receiving an amount_msat equal to 0, OR less than its own htlc_minimum_msat -> SHOULD fail the channel.
@@ -5148,7 +5140,6 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 }
 
 #[test]
-<<<<<<< HEAD
 fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	//BOLT 2 Requirement: if a sending node adds more than its max_accepted_htlcs HTLCs to its local commitment transaction: SHOULD fail the channel
 	//BOLT 2 Requirement: MUST allow multiple HTLCs with the same payment_hash.
@@ -5187,7 +5178,6 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote tried to push more than our max accepted HTLCs");
-
 	} else {
 		assert!(false);
 	}
@@ -5202,18 +5192,15 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let mut nodes = create_network(2, &[None, None]);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, LocalFeatures::new(), LocalFeatures::new());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
-
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-
 	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], chan.2).their_max_htlc_value_in_flight_msat + 1;
 	let err = nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err,"Remote HTLC add would put them over our max HTLC value");
-
 	} else {
 		assert!(false);
 	}
