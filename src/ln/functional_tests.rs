@@ -5084,6 +5084,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	send_payment(&nodes[0], &[&nodes[1]], max_in_flight);
 }
 
+// BOLT 2 Requirements for the Receiver when handling an update_add_htlc message.
 #[test]
 fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	//BOLT2 Requirement: receiving an amount_msat equal to 0, OR less than its own htlc_minimum_msat -> SHOULD fail the channel.
@@ -5130,7 +5131,6 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 
 	if let Err(msgs::HandleError{err, action: Some(msgs::ErrorAction::SendErrorMessage {..})}) = err {
 		assert_eq!(err, "Remote HTLC add would put them over their reserve value");
-
 	} else {
 		assert!(false);
 	}
