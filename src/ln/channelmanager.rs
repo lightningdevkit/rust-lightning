@@ -1606,8 +1606,15 @@ impl ChannelManager {
 	/// generating message events for the net layer to claim the payment, if possible. Thus, you
 	/// should probably kick the net layer to go send messages if this returns true!
 	///
+	/// You must specify the expected amounts for this HTLC, and we will only claim HTLCs
+	/// available within a few percent of the expected amount. This is critical for several
+	/// reasons : a) it avoids providing senders with `proof-of-payment` (in the form of the
+	/// payment_preimage without having provided the full value and b) it avoids certain
+	/// privacy-breaking recipient-probing attacks which may reveal payment activity to
+	/// motivated attackers.
+	///
 	/// May panic if called except in response to a PaymentReceived event.
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, expected_amount: u64) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -1615,12 +1622,18 @@ impl ChannelManager {
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some(mut sources) = removed_source {
-			// TODO: We should require the user specify the expected amount so that we can claim
-			// only payments for the correct amount, and reject payments for incorrect amounts
-			// (which are probably middle nodes probing to break our privacy).
-			for (_, htlc_with_hash) in sources.drain(..) {
+			for (received_amount, htlc_with_hash) in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_preimage);
+				if received_amount < expected_amount || received_amount > expected_amount * 2 {
+					let mut htlc_msat_data = byte_utils::be64_to_array(received_amount).to_vec();
+					let mut height_data = byte_utils::be32_to_array(self.latest_block_height.load(Ordering::Acquire) as u32).to_vec();
+					htlc_msat_data.append(&mut height_data);
+					self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
+									 HTLCSource::PreviousHopData(htlc_with_hash), &payment_hash,
+									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_data });
+				} else {
+					self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_preimage);
+				}
 			}
 			true
 		} else { false }

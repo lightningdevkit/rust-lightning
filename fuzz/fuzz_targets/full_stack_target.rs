@@ -341,7 +341,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger)));
 
 	let mut should_forward = false;
-	let mut payments_received: Vec<PaymentHash> = Vec::new();
+	let mut payments_received: Vec<(PaymentHash, u64)> = Vec::new();
 	let mut payments_sent = 0;
 	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
@@ -426,7 +426,7 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 				}
 			},
 			8 => {
-				for payment in payments_received.drain(..) {
+				for (payment, amt) in payments_received.drain(..) {
 					// SHA256 is defined as XOR of all input bytes placed in the first byte, and 0s
 					// for the remaining bytes. Thus, if not all remaining bytes are 0s we cannot
 					// fulfill this HTLC, but if they are, we can just take the first byte and
@@ -436,12 +436,12 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 					} else {
 						let mut payment_preimage = PaymentPreimage([0; 32]);
 						payment_preimage.0[0] = payment.0[0];
-						channelmanager.claim_funds(payment_preimage);
+						channelmanager.claim_funds(payment_preimage, amt);
 					}
 				}
 			},
 			9 => {
-				for payment in payments_received.drain(..) {
+				for (payment, _) in payments_received.drain(..) {
 					channelmanager.fail_htlc_backwards(&payment);
 				}
 			},
@@ -516,8 +516,9 @@ pub fn do_test(data: &[u8], logger: &Arc<Logger>) {
 				Event::FundingBroadcastSafe { funding_txo, .. } => {
 					pending_funding_relay.push(pending_funding_signatures.remove(&funding_txo).unwrap());
 				},
-				Event::PaymentReceived { payment_hash, .. } => {
-					payments_received.push(payment_hash);
+				Event::PaymentReceived { payment_hash, amt } => {
+					//TODO: enhance by fetching random amounts from fuzz input?
+					payments_received.push((payment_hash, amt));
 				},
 				Event::PaymentSent {..} => {},
 				Event::PaymentFailed {..} => {},
