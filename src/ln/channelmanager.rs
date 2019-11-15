@@ -585,7 +585,10 @@ impl ChannelManager {
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	///
+	/// User must provide the current blockchain height from which to track onchain channel
+	/// funding outpoints and send payments with reliable timelocks.
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -596,7 +599,7 @@ impl ChannelManager {
 			chain_monitor,
 			tx_broadcaster,
 
-			latest_block_height: AtomicUsize::new(0), //TODO: Get an init value
+			latest_block_height: AtomicUsize::new(current_blockchain_height),
 			last_block_hash: Mutex::new(Default::default()),
 			secp_ctx,
 
