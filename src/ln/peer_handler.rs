@@ -481,26 +481,21 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 									match $thing {
 										Ok(x) => x,
 										Err(e) => {
-											if let Some(action) = e.action {
-												match action {
-													msgs::ErrorAction::DisconnectPeer { msg: _ } => {
-														//TODO: Try to push msg
-														log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
-														return Err(PeerHandleError{ no_connection_possible: false });
-													},
-													msgs::ErrorAction::IgnoreError => {
-														log_trace!(self, "Got Err handling message, ignoring because {}", e.err);
-														continue;
-													},
-													msgs::ErrorAction::SendErrorMessage { msg } => {
-														log_trace!(self, "Got Err handling message, sending Error message because {}", e.err);
-														encode_and_send_msg!(msg, 17);
-														continue;
-													},
-												}
-											} else {
-												log_debug!(self, "Got Err handling message, action not yet filled in: {}", e.err);
-												return Err(PeerHandleError{ no_connection_possible: false });
+											match e.action {
+												msgs::ErrorAction::DisconnectPeer { msg: _ } => {
+													//TODO: Try to push msg
+													log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
+													return Err(PeerHandleError{ no_connection_possible: false });
+												},
+												msgs::ErrorAction::IgnoreError => {
+													log_trace!(self, "Got Err handling message, ignoring because {}", e.err);
+													continue;
+												},
+												msgs::ErrorAction::SendErrorMessage { msg } => {
+													log_trace!(self, "Got Err handling message, sending Error message because {}", e.err);
+													encode_and_send_msg!(msg, 17);
+													continue;
+												},
 											}
 										}
 									};
@@ -1020,42 +1015,38 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 						self.message_handler.route_handler.handle_htlc_fail_channel_update(update);
 					},
 					MessageSendEvent::HandleError { ref node_id, ref action } => {
-						if let Some(ref action) = *action {
-							match *action {
-								msgs::ErrorAction::DisconnectPeer { ref msg } => {
-									if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
-										peers.peers_needing_send.remove(&descriptor);
-										if let Some(mut peer) = peers.peers.remove(&descriptor) {
-											if let Some(ref msg) = *msg {
-												log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-														log_pubkey!(node_id),
-														msg.data);
-												peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
-												// This isn't guaranteed to work, but if there is enough free
-												// room in the send buffer, put the error message there...
-												self.do_attempt_write_data(&mut descriptor, &mut peer);
-											} else {
-												log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
-											}
+						match *action {
+							msgs::ErrorAction::DisconnectPeer { ref msg } => {
+								if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
+									peers.peers_needing_send.remove(&descriptor);
+									if let Some(mut peer) = peers.peers.remove(&descriptor) {
+										if let Some(ref msg) = *msg {
+											log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
+													log_pubkey!(node_id),
+													msg.data);
+											peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
+											// This isn't guaranteed to work, but if there is enough free
+											// room in the send buffer, put the error message there...
+											self.do_attempt_write_data(&mut descriptor, &mut peer);
+										} else {
+											log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 										}
-										descriptor.disconnect_socket();
-										self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 									}
-								},
-								msgs::ErrorAction::IgnoreError => {},
-								msgs::ErrorAction::SendErrorMessage { ref msg } => {
-									log_trace!(self, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
-											log_pubkey!(node_id),
-											msg.data);
-									let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
-										//TODO: Do whatever we're gonna do for handling dropped messages
-									});
-									peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
-									self.do_attempt_write_data(&mut descriptor, peer);
-								},
-							}
-						} else {
-							log_error!(self, "Got no-action HandleError Event in peer_handler for node {}, no such events should ever be generated!", log_pubkey!(node_id));
+									descriptor.disconnect_socket();
+									self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+								}
+							},
+							msgs::ErrorAction::IgnoreError => {},
+							msgs::ErrorAction::SendErrorMessage { ref msg } => {
+								log_trace!(self, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
+										log_pubkey!(node_id),
+										msg.data);
+								let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
+									//TODO: Do whatever we're gonna do for handling dropped messages
+								});
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
+								self.do_attempt_write_data(&mut descriptor, peer);
+							},
 						}
 					}
 				}
@@ -1172,7 +1163,7 @@ mod tests {
 		let chan_handler = test_utils::TestChannelMessageHandler::new();
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
-			action: Some(msgs::ErrorAction::DisconnectPeer { msg: None }),
+			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		});
 		assert_eq!(chan_handler.pending_events.lock().unwrap().len(), 1);
 		peers[0].message_handler.chan_handler = Arc::new(chan_handler);

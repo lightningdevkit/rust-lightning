@@ -33,7 +33,7 @@ use ln::router::Route;
 use ln::msgs;
 use ln::msgs::LocalFeatures;
 use ln::onion_utils;
-use ln::msgs::{ChannelMessageHandler, DecodeError, HandleError};
+use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use chain::keysinterface::KeysInterface;
 use util::config::UserConfig;
 use util::{byte_utils, events};
@@ -118,7 +118,7 @@ impl HTLCSource {
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum HTLCFailReason {
-	ErrorPacket {
+	LightningError {
 		err: msgs::OnionErrorPacket,
 	},
 	Reason {
@@ -143,21 +143,21 @@ type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>);
 /// this struct and call handle_error!() on it.
 
 struct MsgHandleErrInternal {
-	err: msgs::HandleError,
+	err: msgs::LightningError,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
 	#[inline]
 	fn send_err_msg_no_close(err: &'static str, channel_id: [u8; 32]) -> Self {
 		Self {
-			err: HandleError {
+			err: LightningError {
 				err,
-				action: Some(msgs::ErrorAction::SendErrorMessage {
+				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
 						data: err.to_string()
 					},
-				}),
+				},
 			},
 			shutdown_finish: None,
 		}
@@ -165,28 +165,28 @@ impl MsgHandleErrInternal {
 	#[inline]
 	fn ignore_no_close(err: &'static str) -> Self {
 		Self {
-			err: HandleError {
+			err: LightningError {
 				err,
-				action: Some(msgs::ErrorAction::IgnoreError),
+				action: msgs::ErrorAction::IgnoreError,
 			},
 			shutdown_finish: None,
 		}
 	}
 	#[inline]
-	fn from_no_close(err: msgs::HandleError) -> Self {
+	fn from_no_close(err: msgs::LightningError) -> Self {
 		Self { err, shutdown_finish: None }
 	}
 	#[inline]
 	fn from_finish_shutdown(err: &'static str, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
-			err: HandleError {
+			err: LightningError {
 				err,
-				action: Some(msgs::ErrorAction::SendErrorMessage {
+				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
 						data: err.to_string()
 					},
-				}),
+				},
 			},
 			shutdown_finish: Some((shutdown_res, channel_update)),
 		}
@@ -195,27 +195,27 @@ impl MsgHandleErrInternal {
 	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: match err {
-				ChannelError::Ignore(msg) => HandleError {
+				ChannelError::Ignore(msg) => LightningError {
 					err: msg,
-					action: Some(msgs::ErrorAction::IgnoreError),
+					action: msgs::ErrorAction::IgnoreError,
 				},
-				ChannelError::Close(msg) => HandleError {
+				ChannelError::Close(msg) => LightningError {
 					err: msg,
-					action: Some(msgs::ErrorAction::SendErrorMessage {
+					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
 							data: msg.to_string()
 						},
-					}),
+					},
 				},
-				ChannelError::CloseDelayBroadcast { msg, .. } => HandleError {
+				ChannelError::CloseDelayBroadcast { msg, .. } => LightningError {
 					err: msg,
-					action: Some(msgs::ErrorAction::SendErrorMessage {
+					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
 							data: msg.to_string()
 						},
-					}),
+					},
 				},
 			},
 			shutdown_finish: None,
@@ -1012,9 +1012,9 @@ impl ChannelManager {
 
 	/// only fails if the channel does not yet have an assigned short_id
 	/// May be called with channel_state already locked!
-	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, HandleError> {
+	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
-			None => return Err(HandleError{err: "Channel not yet established", action: None}),
+			None => return Err(LightningError{err: "Channel not yet established", action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
 
@@ -1143,7 +1143,7 @@ impl ChannelManager {
 		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
-				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				if let msgs::ErrorAction::IgnoreError = e.action {
 				} else {
 					log_error!(self, "Got bad keys: {}!", e.err);
 					let mut channel_state = self.channel_state.lock().unwrap();
@@ -1437,7 +1437,7 @@ impl ChannelManager {
 			match handle_error!(self, err) {
 				Ok(_) => {},
 				Err(e) => {
-					if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+					if let msgs::ErrorAction::IgnoreError = e.action {
 					} else {
 						let mut channel_state = self.channel_state.lock().unwrap();
 						channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
@@ -1491,7 +1491,7 @@ impl ChannelManager {
 				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				mem::drop(channel_state_lock);
 				match &onion_error {
-					&HTLCFailReason::ErrorPacket { ref err } => {
+					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
 						let (channel_update, payment_retryable, onion_error_code) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
@@ -1544,8 +1544,8 @@ impl ChannelManager {
 						let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
 						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
 					},
-					HTLCFailReason::ErrorPacket { err } => {
-						log_trace!(self, "Failing HTLC with payment_hash {} backwards with pre-built ErrorPacket", log_bytes!(payment_hash.0));
+					HTLCFailReason::LightningError { err } => {
+						log_trace!(self, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
 						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &err.data)
 					}
 				};
@@ -1663,7 +1663,7 @@ impl ChannelManager {
 		match handle_error!(self, err) {
 			Ok(_) => {},
 			Err(e) => {
-				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				if let msgs::ErrorAction::IgnoreError = e.action {
 				} else {
 					let mut channel_state = self.channel_state.lock().unwrap();
 					channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
@@ -2121,7 +2121,7 @@ impl ChannelManager {
 					//TODO: here and below MsgHandleErrInternal, #153 case
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::ErrorPacket { err: msg.reason.clone() }), channel_state, chan);
+				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), channel_state, chan);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}
@@ -2295,7 +2295,7 @@ impl ChannelManager {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if !chan.get().is_usable() {
-					return Err(MsgHandleErrInternal::from_no_close(HandleError{err: "Got an announcement_signatures before we were ready for it", action: Some(msgs::ErrorAction::IgnoreError)}));
+					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it", action: msgs::ErrorAction::IgnoreError}));
 				}
 
 				let our_node_id = self.get_our_node_id();
@@ -2448,7 +2448,7 @@ impl ChannelManager {
 		match handle_error!(self, err) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
-				if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+				if let msgs::ErrorAction::IgnoreError = e.action {
 				} else {
 					log_error!(self, "Got bad keys: {}!", e.err);
 					let mut channel_state = self.channel_state.lock().unwrap();
@@ -2541,7 +2541,7 @@ impl ChainListener for ChannelManager {
 				} else if let Err(e) = chan_res {
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_their_node_id(),
-						action: Some(msgs::ErrorAction::SendErrorMessage { msg: e }),
+						action: msgs::ErrorAction::SendErrorMessage { msg: e },
 					});
 					return false;
 				}
@@ -2629,82 +2629,82 @@ impl ChainListener for ChannelManager {
 
 impl ChannelMessageHandler for ChannelManager {
 	//TODO: Handle errors and close channel (or so)
-	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), HandleError> {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_open_channel(their_node_id, their_local_features, msg))
 	}
 
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::AcceptChannel) -> Result<(), HandleError> {
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::AcceptChannel) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_accept_channel(their_node_id, their_local_features, msg))
 	}
 
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), HandleError> {
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_funding_created(their_node_id, msg))
 	}
 
-	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), HandleError> {
+	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_funding_signed(their_node_id, msg))
 	}
 
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), HandleError> {
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_funding_locked(their_node_id, msg))
 	}
 
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), HandleError> {
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_shutdown(their_node_id, msg))
 	}
 
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), HandleError> {
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_closing_signed(their_node_id, msg))
 	}
 
-	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), msgs::HandleError> {
+	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_add_htlc(their_node_id, msg))
 	}
 
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), HandleError> {
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg))
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), HandleError> {
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg))
 	}
 
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), HandleError> {
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg))
 	}
 
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), HandleError> {
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_commitment_signed(their_node_id, msg))
 	}
 
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), HandleError> {
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg))
 	}
 
-	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), HandleError> {
+	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_update_fee(their_node_id, msg))
 	}
 
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), HandleError> {
+	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_announcement_signatures(their_node_id, msg))
 	}
 
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), HandleError> {
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		handle_error!(self, self.internal_channel_reestablish(their_node_id, msg))
 	}
@@ -2949,7 +2949,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCSource {
 impl Writeable for HTLCFailReason {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
-			&HTLCFailReason::ErrorPacket { ref err } => {
+			&HTLCFailReason::LightningError { ref err } => {
 				0u8.write(writer)?;
 				err.write(writer)?;
 			},
@@ -2966,7 +2966,7 @@ impl Writeable for HTLCFailReason {
 impl<R: ::std::io::Read> Readable<R> for HTLCFailReason {
 	fn read(reader: &mut R) -> Result<HTLCFailReason, DecodeError> {
 		match <u8 as Readable<R>>::read(reader)? {
-			0 => Ok(HTLCFailReason::ErrorPacket { err: Readable::read(reader)? }),
+			0 => Ok(HTLCFailReason::LightningError { err: Readable::read(reader)? }),
 			1 => Ok(HTLCFailReason::Reason {
 				failure_code: Readable::read(reader)?,
 				data: Readable::read(reader)?,
