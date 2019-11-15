@@ -1373,12 +1373,39 @@ impl ChannelManager {
 							let (commitment_msg, monitor) = match chan.get_mut().send_commitment() {
 								Ok(res) => res,
 								Err(e) => {
-									if let ChannelError::Ignore(_) = e {
-										panic!("Stated return value requirements in send_commitment() were not met");
+									// We surely failed send_commitment due to bad keys, in that case
+									// close channel and then send error message to peer.
+									let their_node_id = chan.get().get_their_node_id();
+									let err: Result<(), _>  = match e {
+										ChannelError::Ignore(_) => {
+											panic!("Stated return value requirements in send_commitment() were not met");
+										},
+										ChannelError::Close(msg) => {
+											log_trace!(self, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
+											let (channel_id, mut channel) = chan.remove_entry();
+											if let Some(short_id) = channel.get_short_channel_id() {
+												channel_state.short_to_id.remove(&short_id);
+											}
+											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(), self.get_channel_update(&channel).ok()))
+										},
+										ChannelError::CloseDelayBroadcast { .. } => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
+									};
+									match handle_error!(self, err) {
+										Ok(_) => unreachable!(),
+										Err(e) => {
+											if let Some(msgs::ErrorAction::IgnoreError) = e.action {
+											} else {
+												log_error!(self, "Got bad keys: {}!", e.err);
+												let mut channel_state = self.channel_state.lock().unwrap();
+												channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+													node_id: their_node_id,
+													action: e.action,
+												});
+											}
+											continue;
+										},
 									}
-									//TODO: Handle...this is bad!
-									continue;
-								},
+								}
 							};
 							if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
 								handle_errors.push((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
