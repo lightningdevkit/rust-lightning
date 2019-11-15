@@ -11,7 +11,7 @@ For Rust-Lightning clients which wish to make direct connections to Lightning P2
 [dependencies]
 bitcoin = "0.20"
 bitcoin_hashes = "0.7"
-lightning = { version = "0.0.9", path = "../" }
+lightning = { version = "0.0.9", path = "../lightning" }
 secp256k1 = "0.15"
 tokio-codec = "0.1"
 futures = "0.1"

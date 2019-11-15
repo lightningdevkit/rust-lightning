@@ -1,38 +1,6 @@
-[package]
-name = "lightning"
-version = "0.0.9"
-authors = ["Matt Corallo"]
-license = "Apache-2.0"
-repository = "https://github.com/rust-bitcoin/rust-lightning/"
-description = """
-A Bitcoin Lightning library in Rust.
-Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
-Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
-"""
+[workspace]
 
-[features]
-# Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
-non_bitcoin_chain_hash_routing = []
-fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget", "bitcoin_hashes/fuzztarget"]
-# Unlog messages superior at targeted level.
-max_level_off = []
-max_level_error = []
-max_level_warn = []
-max_level_info = []
-max_level_debug = []
-
-[dependencies]
-bitcoin = "0.20"
-bitcoin_hashes = "0.7"
-secp256k1 = "0.15"
-
-[dev-dependencies.bitcoin]
-version = "0.20"
-features = ["bitcoinconsensus"]
-
-[dev-dependencies]
-hex = "0.3"
-rand = "0.4"
-
-[profile.dev]
-opt-level = 1
+members = [
+    "lightning",
+    "lightning-net-tokio",
+]
