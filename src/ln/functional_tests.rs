@@ -1245,6 +1245,73 @@ fn duplicate_htlc_test() {
 	claim_payment(&nodes[1], &vec!(&nodes[3])[..], payment_preimage);
 }
 
+#[test]
+fn test_duplicate_htlc_different_direction_onchain() {
+	// Test that ChannelMonitor doesn't generate 2 preimage txn
+	// when we have 2 HTLCs with same preimage that go across a node
+	// in opposite directions.
+	let nodes = create_network(2, &[None, None]);
+
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
+
+	// balancing
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+
+	let (payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
+
+	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 800_000, TEST_FINAL_CLTV).unwrap();
+	send_along_route_with_hash(&nodes[1], route, &vec!(&nodes[0])[..], 800_000, payment_hash);
+
+	// Provide preimage to node 0 by claiming payment
+	nodes[0].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[0], 1);
+
+	// Broadcast node 1 commitment txn
+	let remote_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan_1.2).unwrap().last_local_commitment_txn.clone();
+
+	assert_eq!(remote_txn[0].output.len(), 4); // 1 local, 1 remote, 1 htlc inbound, 1 htlc outbound
+	let mut has_both_htlcs = 0; // check htlcs match ones committed
+	for outp in remote_txn[0].output.iter() {
+		if outp.value == 800_000 / 1000 {
+			has_both_htlcs += 1;
+		} else if outp.value == 900_000 / 1000 {
+			has_both_htlcs += 1;
+		}
+	}
+	assert_eq!(has_both_htlcs, 2);
+
+	let header = BlockHeader { version: 0x2000_0000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+
+	nodes[0].chain_monitor.block_connected_with_filtering(&Block { header, txdata: vec![remote_txn[0].clone()] }, 1);
+
+	// Check we only broadcast 1 timeout tx
+	let claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	let htlc_pair = if claim_txn[0].output[0].value == 800_000 / 1000 { (claim_txn[0].clone(), claim_txn[1].clone()) } else { (claim_txn[1].clone(), claim_txn[0].clone()) };
+	assert_eq!(claim_txn.len(), 6);
+	assert_eq!(htlc_pair.0.input.len(), 1);
+	assert_eq!(htlc_pair.0.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
+	check_spends!(htlc_pair.0, remote_txn[0].clone());
+	assert_eq!(htlc_pair.1.input.len(), 1);
+	assert_eq!(htlc_pair.1.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
+	check_spends!(htlc_pair.1, remote_txn[0].clone());
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	for e in events {
+		match e {
+			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fail_htlcs.is_empty());
+				assert_eq!(update_fulfill_htlcs.len(), 1);
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
 fn do_channel_reserve_test(test_recv: bool) {
 	use ln::msgs::HandleError;
 

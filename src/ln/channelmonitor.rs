@@ -1643,46 +1643,48 @@ impl ChannelMonitor {
 								return (txn_to_broadcast, (commitment_txid, watch_outputs), spendable_outputs); // Corrupted per_commitment_data, fuck this user
 							}
 							if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
-								let input = TxIn {
-									previous_output: BitcoinOutPoint {
-										txid: commitment_txid,
-										vout: transaction_output_index,
-									},
-									script_sig: Script::new(),
-									sequence: idx as u32, // reset to 0xfffffffd in sign_input
-									witness: Vec::new(),
-								};
-								if htlc.cltv_expiry > height + CLTV_SHARED_CLAIM_BUFFER {
-									inputs.push(input);
-									inputs_desc.push(if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC });
-									inputs_info.push((payment_preimage, tx.output[transaction_output_index as usize].value, htlc.cltv_expiry));
-									total_value += tx.output[transaction_output_index as usize].value;
-								} else {
-									let mut single_htlc_tx = Transaction {
-										version: 2,
-										lock_time: 0,
-										input: vec![input],
-										output: vec!(TxOut {
-											script_pubkey: self.destination_script.clone(),
-											value: htlc.amount_msat / 1000,
-										}),
+								if htlc.offered {
+									let input = TxIn {
+										previous_output: BitcoinOutPoint {
+											txid: commitment_txid,
+											vout: transaction_output_index,
+										},
+										script_sig: Script::new(),
+										sequence: idx as u32, // reset to 0xfffffffd in sign_input
+										witness: Vec::new(),
 									};
-									let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }]);
-									let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
-									let mut used_feerate;
-									if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
-										let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
-										let (redeemscript, htlc_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
-										assert!(predicted_weight >= single_htlc_tx.get_weight());
-										spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-											outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
-											output: single_htlc_tx.output[0].clone(),
-										});
-										match self.our_claim_txn_waiting_first_conf.entry(single_htlc_tx.input[0].previous_output.clone()) {
-											hash_map::Entry::Occupied(_) => {},
-											hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000 }, used_feerate, htlc.cltv_expiry, height)); }
+									if htlc.cltv_expiry > height + CLTV_SHARED_CLAIM_BUFFER {
+										inputs.push(input);
+										inputs_desc.push(if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC });
+										inputs_info.push((payment_preimage, tx.output[transaction_output_index as usize].value, htlc.cltv_expiry));
+										total_value += tx.output[transaction_output_index as usize].value;
+									} else {
+										let mut single_htlc_tx = Transaction {
+											version: 2,
+											lock_time: 0,
+											input: vec![input],
+											output: vec!(TxOut {
+												script_pubkey: self.destination_script.clone(),
+												value: htlc.amount_msat / 1000,
+											}),
+										};
+										let predicted_weight = single_htlc_tx.get_weight() + Self::get_witnesses_weight(&[if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC }]);
+										let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
+										let mut used_feerate;
+										if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
+											let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
+											let (redeemscript, htlc_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
+											assert!(predicted_weight >= single_htlc_tx.get_weight());
+											spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
+												outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
+												output: single_htlc_tx.output[0].clone(),
+											});
+											match self.our_claim_txn_waiting_first_conf.entry(single_htlc_tx.input[0].previous_output.clone()) {
+												hash_map::Entry::Occupied(_) => {},
+												hash_map::Entry::Vacant(entry) => { entry.insert((height_timer, TxMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000 }, used_feerate, htlc.cltv_expiry, height)); }
+											}
+											txn_to_broadcast.push(single_htlc_tx);
 										}
-										txn_to_broadcast.push(single_htlc_tx);
 									}
 								}
 							}
