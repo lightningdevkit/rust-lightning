@@ -1740,7 +1740,7 @@ impl ChannelMonitor {
 						output: outputs,
 					};
 
-					let mut predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&inputs_desc[..]);
+					let predicted_weight = spend_tx.get_weight() + Self::get_witnesses_weight(&inputs_desc[..]);
 
 					let mut used_feerate;
 					if !subtract_high_prio_fee!(self, fee_estimator, spend_tx.output[0].value, predicted_weight, tx.txid(), used_feerate) {
