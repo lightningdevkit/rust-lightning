@@ -1393,14 +1393,16 @@ impl ChannelManager {
 									match handle_error!(self, err) {
 										Ok(_) => unreachable!(),
 										Err(e) => {
-											if let Some(msgs::ErrorAction::IgnoreError) = e.action {
-											} else {
-												log_error!(self, "Got bad keys: {}!", e.err);
-												let mut channel_state = self.channel_state.lock().unwrap();
-												channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-													node_id: their_node_id,
-													action: e.action,
-												});
+											match e.action {
+												msgs::ErrorAction::IgnoreError => {},
+												_ => {
+													log_error!(self, "Got bad keys: {}!", e.err);
+													let mut channel_state = self.channel_state.lock().unwrap();
+													channel_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+														node_id: their_node_id,
+														action: e.action,
+													});
+												},
 											}
 											continue;
 										},
