@@ -37,7 +37,7 @@ use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, ChannelManagerReadArgs};
 use lightning::ln::router::{Route, RouteHop};
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, HandleError, UpdateAddHTLC, LocalFeatures};
+use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, LightningError, UpdateAddHTLC, LocalFeatures};
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -193,7 +193,7 @@ pub fn do_test(data: &[u8]) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config).unwrap(),
+			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap(),
 			monitor)
 		} }
 	}
@@ -392,7 +392,7 @@ pub fn do_test(data: &[u8]) {
 		($res: expr) => {
 			match $res {
 				Ok(()) => {},
-				Err(HandleError { action: Some(ErrorAction::IgnoreError), .. }) => { },
+				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => { },
 				_ => { $res.unwrap() },
 			}
 		}

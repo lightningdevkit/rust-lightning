@@ -210,7 +210,7 @@ pub enum MessageSendEvent {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
 		/// The action which should be taken.
-		action: Option<msgs::ErrorAction>
+		action: msgs::ErrorAction
 	},
 	/// When a payment fails we may receive updates back from the hop where it failed. In such
 	/// cases this event is generated so that we can inform the router of this information.

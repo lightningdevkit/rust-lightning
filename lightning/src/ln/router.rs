@@ -14,7 +14,7 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
-use ln::msgs::{DecodeError,ErrorAction,HandleError,RoutingMessageHandler,NetAddress,GlobalFeatures};
+use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress,GlobalFeatures};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer, ReadableArgs};
 use util::logger::Logger;
@@ -404,13 +404,13 @@ macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr ) => {
 		match $secp_ctx.verify($msg, $sig, $pubkey) {
 			Ok(_) => {},
-			Err(_) => return Err(HandleError{err: "Invalid signature from remote node", action: None}),
+			Err(_) => return Err(LightningError{err: "Invalid signature from remote node", action: ErrorAction::IgnoreError}),
 		}
 	};
 }
 
 impl RoutingMessageHandler for Router {
-	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, HandleError> {
+	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
@@ -420,10 +420,10 @@ impl RoutingMessageHandler for Router {
 
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
-			None => Err(HandleError{err: "No existing channels for node_announcement", action: Some(ErrorAction::IgnoreError)}),
+			None => Err(LightningError{err: "No existing channels for node_announcement", action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if node.last_update >= msg.contents.timestamp {
-					return Err(HandleError{err: "Update older than last processed update", action: Some(ErrorAction::IgnoreError)});
+					return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
 				}
 
 				node.features = msg.contents.features.clone();
@@ -439,9 +439,9 @@ impl RoutingMessageHandler for Router {
 		}
 	}
 
-	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, HandleError> {
+	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
 		if msg.contents.node_id_1 == msg.contents.node_id_2 || msg.contents.bitcoin_key_1 == msg.contents.bitcoin_key_2 {
-			return Err(HandleError{err: "Channel announcement node had a channel with itself", action: Some(ErrorAction::IgnoreError)});
+			return Err(LightningError{err: "Channel announcement node had a channel with itself", action: ErrorAction::IgnoreError});
 		}
 
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
@@ -462,7 +462,7 @@ impl RoutingMessageHandler for Router {
 				                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
 				                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
 				if script_pubkey != expected_script {
-					return Err(HandleError{err: "Channel announcement keys didn't match on-chain script", action: Some(ErrorAction::IgnoreError)});
+					return Err(LightningError{err: "Channel announcement keys didn't match on-chain script", action: ErrorAction::IgnoreError});
 				}
 				//TODO: Check if value is worth storing, use it to inform routing, and compare it
 				//to the new HTLC max field in channel_update
@@ -473,10 +473,10 @@ impl RoutingMessageHandler for Router {
 				false
 			},
 			Err(ChainError::NotWatched) => {
-				return Err(HandleError{err: "Channel announced on an unknown chain", action: Some(ErrorAction::IgnoreError)});
+				return Err(LightningError{err: "Channel announced on an unknown chain", action: ErrorAction::IgnoreError});
 			},
 			Err(ChainError::UnknownTx) => {
-				return Err(HandleError{err: "Channel announced without corresponding UTXO entry", action: Some(ErrorAction::IgnoreError)});
+				return Err(LightningError{err: "Channel announced without corresponding UTXO entry", action: ErrorAction::IgnoreError});
 			},
 		};
 
@@ -527,7 +527,7 @@ impl RoutingMessageHandler for Router {
 					Self::remove_channel_in_nodes(network.nodes, &entry.get(), msg.contents.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(HandleError{err: "Already have knowledge of channel", action: Some(ErrorAction::IgnoreError)})
+					return Err(LightningError{err: "Already have knowledge of channel", action: ErrorAction::IgnoreError})
 				}
 			},
 			BtreeEntry::Vacant(entry) => {
@@ -592,19 +592,19 @@ impl RoutingMessageHandler for Router {
 		}
 	}
 
-	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, HandleError> {
+	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
 		let mut network = self.network_map.write().unwrap();
 		let dest_node_id;
 		let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
 
 		match network.channels.get_mut(&NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
-			None => return Err(HandleError{err: "Couldn't find channel for update", action: Some(ErrorAction::IgnoreError)}),
+			None => return Err(LightningError{err: "Couldn't find channel for update", action: ErrorAction::IgnoreError}),
 			Some(channel) => {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr) => {
 						if $target.last_update >= msg.contents.timestamp {
-							return Err(HandleError{err: "Update older than last processed update", action: Some(ErrorAction::IgnoreError)});
+							return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
 						}
 						chan_was_enabled = $target.enabled;
 						$target.last_update = msg.contents.timestamp;
@@ -824,17 +824,17 @@ impl Router {
 	/// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 	/// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 	/// *is* checked as they may change based on the receiving node.
-	pub fn get_route(&self, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>, last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32) -> Result<Route, HandleError> {
+	pub fn get_route(&self, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>, last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32) -> Result<Route, LightningError> {
 		// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 		// uptime/success in using a node in the past.
 		let network = self.network_map.read().unwrap();
 
 		if *target == network.our_node_id {
-			return Err(HandleError{err: "Cannot generate a route to ourselves", action: None});
+			return Err(LightningError{err: "Cannot generate a route to ourselves", action: ErrorAction::IgnoreError});
 		}
 
 		if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
-			return Err(HandleError{err: "Cannot generate a route of more value than all existing satoshis", action: None});
+			return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis", action: ErrorAction::IgnoreError});
 		}
 
 		// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
@@ -871,7 +871,7 @@ impl Router {
 				first_hop_targets.insert(chan.remote_network_id, short_channel_id);
 			}
 			if first_hop_targets.is_empty() {
-				return Err(HandleError{err: "Cannot route when there are no outbound routes away from us", action: None});
+				return Err(LightningError{err: "Cannot route when there are no outbound routes away from us", action: ErrorAction::IgnoreError});
 			}
 		}
 
@@ -985,7 +985,7 @@ impl Router {
 				while res.last().unwrap().pubkey != *target {
 					let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
 						Some(hop) => hop.3,
-						None => return Err(HandleError{err: "Failed to find a non-fee-overflowing path to the given destination", action: None}),
+						None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination", action: ErrorAction::IgnoreError}),
 					};
 					res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
 					res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
@@ -1006,7 +1006,7 @@ impl Router {
 			}
 		}
 
-		Err(HandleError{err: "Failed to find a path to the given destination", action: None})
+		Err(LightningError{err: "Failed to find a path to the given destination", action: ErrorAction::IgnoreError})
 	}
 }
 
