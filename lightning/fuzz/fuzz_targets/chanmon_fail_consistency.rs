@@ -609,7 +609,7 @@ pub fn do_test(data: &[u8]) {
 								if $fail {
 									assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0)));
+									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), 5_000_000));
 								}
 							}
 						},
