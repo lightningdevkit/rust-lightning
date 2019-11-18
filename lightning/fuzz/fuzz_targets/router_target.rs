@@ -5,8 +5,10 @@ extern crate secp256k1;
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::block::Block;
+use bitcoin::blockdata::transaction::Transaction;
 
-use lightning::chain::chaininterface::{ChainError,ChainWatchInterface, ChainListener};
+use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::msgs;
 use lightning::ln::msgs::{RoutingMessageHandler};
@@ -20,7 +22,7 @@ mod utils;
 
 use utils::test_logger;
 
-use std::sync::{Weak, Arc};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[inline]
@@ -79,7 +81,10 @@ impl ChainWatchInterface for DummyChainWatcher {
 	fn install_watch_tx(&self, _txid: &Sha256dHash, _script_pub_key: &Script) { }
 	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
-	fn register_listener(&self, _listener: Weak<ChainListener>) { }
+	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
+		(Vec::new(), Vec::new())
+	}
+	fn reentered(&self) -> usize { 0 }
 
 	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		match self.input.get_slice(2) {

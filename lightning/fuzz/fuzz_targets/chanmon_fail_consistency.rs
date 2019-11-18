@@ -225,7 +225,6 @@ pub fn do_test(data: &[u8]) {
 				keys_manager,
 				fee_estimator: fee_est.clone(),
 				monitor: monitor.clone(),
-				chain_monitor: watch,
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
@@ -245,7 +244,6 @@ pub fn do_test(data: &[u8]) {
 			res
 		} }
 	}
-
 
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {

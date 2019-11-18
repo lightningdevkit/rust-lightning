@@ -144,8 +144,8 @@ impl<'a> Hash for Peer<'a> {
 	}
 }
 
-struct MoneyLossDetector<'a> {
-	manager: Arc<ChannelManager>,
+struct MoneyLossDetector<'a, 'b> {
+	manager: Arc<ChannelManager<'b>>,
 	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
 	handler: PeerManager<Peer<'a>>,
 
@@ -157,8 +157,8 @@ struct MoneyLossDetector<'a> {
 	max_height: usize,
 	blocks_connected: u32,
 }
-impl<'a> MoneyLossDetector<'a> {
-	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
+impl<'a, 'b> MoneyLossDetector<'a, 'b> {
+	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager<'b>>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -217,7 +217,7 @@ impl<'a> MoneyLossDetector<'a> {
 	}
 }
 
-impl<'a> Drop for MoneyLossDetector<'a> {
+impl<'a, 'b> Drop for MoneyLossDetector<'a, 'b> {
 	fn drop(&mut self) {
 		if !::std::thread::panicking() {
 			// Disconnect all peers

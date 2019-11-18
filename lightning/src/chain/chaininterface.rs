@@ -50,6 +50,15 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// bytes are the block height, the next 3 the transaction index within the block, and the
 	/// final two the output within the transaction.
 	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
+
+	/// Gets the list of transactions and transaction indices that the ChainWatchInterface is
+	/// watching for.
+	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>);
+
+	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
+	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
+	/// determine whether they need to re-filter a given block.
+	fn reentered(&self) -> usize;
 }
 
 /// An interface to send a transaction to the Bitcoin network.
@@ -300,6 +309,25 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 			return Err(ChainError::NotWatched);
 		}
 		Err(ChainError::NotSupported)
+	}
+
+	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
+		let mut matched = Vec::new();
+		let mut matched_index = Vec::new();
+		{
+			let watched = self.watched.lock().unwrap();
+			for (index, transaction) in block.txdata.iter().enumerate() {
+				if self.does_match_tx_unguarded(transaction, &watched) {
+					matched.push(transaction);
+					matched_index.push(index as u32);
+				}
+			}
+		}
+		(matched, matched_index)
+	}
+
+	fn reentered(&self) -> usize {
+		self.reentered.load(Ordering::Relaxed)
 	}
 }
 

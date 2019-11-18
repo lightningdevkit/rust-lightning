@@ -152,7 +152,8 @@ pub struct SimpleManyChannelMonitor<Key> {
 	fee_estimator: Arc<FeeEstimator>
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
+impl<'a, Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
+
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
 		let mut new_events: Vec<events::Event> = Vec::with_capacity(0);
@@ -2143,14 +2144,14 @@ impl ChannelMonitor {
 				};
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
 					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
-						let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(tx, height, fee_estimator);
+						let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(&tx, height, fee_estimator);
 						txn = remote_txn;
 						spendable_outputs.append(&mut spendable_output);
 						if !new_outputs.1.is_empty() {
 							watch_outputs.push(new_outputs);
 						}
 						if txn.is_empty() {
-							let (local_txn, mut spendable_output, new_outputs) = self.check_spend_local_transaction(tx, height);
+							let (local_txn, mut spendable_output, new_outputs) = self.check_spend_local_transaction(&tx, height);
 							spendable_outputs.append(&mut spendable_output);
 							txn = local_txn;
 							if !new_outputs.1.is_empty() {
@@ -2159,13 +2160,13 @@ impl ChannelMonitor {
 						}
 					}
 					if !funding_txo.is_none() && txn.is_empty() {
-						if let Some(spendable_output) = self.check_spend_closing_transaction(tx) {
+						if let Some(spendable_output) = self.check_spend_closing_transaction(&tx) {
 							spendable_outputs.push(spendable_output);
 						}
 					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
-						let (tx, spendable_output) = self.check_spend_remote_htlc(tx, commitment_number, height, fee_estimator);
+						let (tx, spendable_output) = self.check_spend_remote_htlc(&tx, commitment_number, height, fee_estimator);
 						if let Some(tx) = tx {
 							txn.push(tx);
 						}
@@ -2181,7 +2182,7 @@ impl ChannelMonitor {
 			// While all commitment/HTLC-Success/HTLC-Timeout transactions have one input, HTLCs
 			// can also be resolved in a few other ways which can have more than one output. Thus,
 			// we call is_resolving_htlc_output here outside of the tx.input.len() == 1 check.
-			let mut updated = self.is_resolving_htlc_output(tx, height);
+			let mut updated = self.is_resolving_htlc_output(&tx, height);
 			if updated.len() > 0 {
 				htlc_updated.append(&mut updated);
 			}

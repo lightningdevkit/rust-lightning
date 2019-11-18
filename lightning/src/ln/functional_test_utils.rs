@@ -54,19 +54,19 @@ pub fn connect_blocks(notifier: &chaininterface::BlockNotifier, depth: u32, heig
 	header.bitcoin_hash()
 }
 
-pub struct Node {
-	pub block_notifier: Arc<chaininterface::BlockNotifier<'a, 'b>>,
+pub struct Node<'a, 'b: 'a> {
+	pub block_notifier: Arc<chaininterface::BlockNotifier<'a>>,
 	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 	pub tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 	pub chan_monitor: Arc<test_utils::TestChannelMonitor>,
 	pub keys_manager: Arc<test_utils::TestKeysInterface>,
-	pub node: Arc<ChannelManager>,
+	pub node: Arc<ChannelManager<'b>>,
 	pub router: Router,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 }
-impl Drop for Node {
+impl<'a, 'b> Drop for Node<'a, 'b> {
 	fn drop(&mut self) {
 		if !::std::thread::panicking() {
 			// Check that we processed all pending events
@@ -354,7 +354,7 @@ macro_rules! check_closed_broadcast {
 	}}
 }
 
-pub fn close_channel(outbound_node: &Node, inbound_node: &Node, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
+pub fn close_channel<'a, 'b>(outbound_node: &Node<'a, 'b>, inbound_node: &Node<'a, 'b>, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 	let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 	let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 	let (tx_a, tx_b);
@@ -589,7 +589,7 @@ macro_rules! expect_payment_sent {
 	}
 }
 
-pub fn send_along_route_with_hash(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64, our_payment_hash: PaymentHash) {
+pub fn send_along_route_with_hash<'a, 'b>(origin_node: &Node<'a, 'b>, route: Route, expected_route: &[&Node<'a, 'b>], recv_value: u64, our_payment_hash: PaymentHash) {
 	let mut payment_event = {
 		origin_node.node.send_payment(route, our_payment_hash).unwrap();
 		check_added_monitors!(origin_node, 1);
@@ -631,7 +631,7 @@ pub fn send_along_route_with_hash(origin_node: &Node, route: Route, expected_rou
 	}
 }
 
-pub fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
+pub fn send_along_route<'a, 'b>(origin_node: &Node<'a, 'b>, route: Route, expected_route: &[&Node<'a, 'b>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
 	send_along_route_with_hash(origin_node, route, expected_route, recv_value, our_payment_hash);
 	(our_payment_preimage, our_payment_hash)
@@ -721,7 +721,7 @@ pub fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_p
 
 pub const TEST_FINAL_CLTV: u32 = 32;
 
-pub fn route_payment(origin_node: &Node, expected_route: &[&Node], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
+pub fn route_payment<'a, 'b>(origin_node: &Node<'a, 'b>, expected_route: &[&Node<'a, 'b>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.hops.len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
@@ -747,7 +747,7 @@ pub fn route_over_limit(origin_node: &Node, expected_route: &[&Node], recv_value
 	};
 }
 
-pub fn send_payment(origin: &Node, expected_route: &[&Node], recv_value: u64, expected_value: u64) {
+pub fn send_payment<'a, 'b>(origin: &Node<'a, 'b>, expected_route: &[&Node<'a, 'b>], recv_value: u64, expected_value: u64) {
 	let our_payment_preimage = route_payment(&origin, expected_route, recv_value).0;
 	claim_payment(&origin, expected_route, our_payment_preimage, expected_value);
 }
