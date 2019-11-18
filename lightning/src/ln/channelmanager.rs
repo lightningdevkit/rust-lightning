@@ -318,6 +318,13 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
 /// object!
+///
+/// Note that ChannelManager is responsible of tracking liveness of its channels and by so
+/// to generate ChannelUpdate messages intended to be broadcast on the gossip layer. To avoid
+/// spam due to quick connection/reconnection, updates should be first stagged then after a period
+/// of 1 min flushed to the network through call to timer_chan_freshness_every_min. You may
+/// delay or anticipate call to this method to suit your announcements requirements different than
+/// the 1 min period.
 pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
@@ -1485,6 +1492,30 @@ impl<'a> ChannelManager<'a> {
 		if new_events.is_empty() { return }
 		let mut events = self.pending_events.lock().unwrap();
 		events.append(&mut new_events);
+	}
+
+	/// Latency/peer disconnection may trigger us to mark as disabled some
+	/// of our channels. After some time, if channels are still disabled
+	/// we need to broadcast ChannelUpdate to inform other network peers
+	/// about the uselessness of this channels.
+	pub fn timer_chan_freshness_every_min(&self) {
+		let _ = self.total_consistency_lock.read().unwrap();
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
+		for (_, chan) in channel_state.by_id {
+			if chan.is_disabled_staged() && !chan.is_live() {
+				if let Ok(update) = self.get_channel_update(&chan) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+						msg: update
+					});
+				}
+				chan.to_fresh();
+			} else if chan.is_disabled_staged() && chan.is_live() {
+				chan.to_fresh();
+			} else if chan.is_disabled_marked() {
+				chan.to_disabled_staged();
+			}
+		}
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
@@ -2795,8 +2826,8 @@ impl<'a> ChannelMessageHandler for ChannelManager<'a> {
 				log_debug!(self, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
-						//TODO: mark channel disabled (and maybe announce such after a timeout).
 						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused();
+						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {
 							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 							failed_payments.push((chan_update, failed_adds));
