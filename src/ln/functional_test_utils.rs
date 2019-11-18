@@ -636,8 +636,8 @@ pub fn send_along_route(origin_node: &Node, route: Route, expected_route: &[&Nod
 	(our_payment_preimage, our_payment_hash)
 }
 
-pub fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_preimage: PaymentPreimage) {
-	assert!(expected_route.last().unwrap().node.claim_funds(our_payment_preimage));
+pub fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_preimage: PaymentPreimage, expected_amount: u64) {
+	assert!(expected_route.last().unwrap().node.claim_funds(our_payment_preimage, expected_amount));
 	check_added_monitors!(expected_route.last().unwrap(), 1);
 
 	let mut next_msgs: Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)> = None;
@@ -714,8 +714,8 @@ pub fn claim_payment_along_route(origin_node: &Node, expected_route: &[&Node], s
 	}
 }
 
-pub fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: PaymentPreimage) {
-	claim_payment_along_route(origin_node, expected_route, false, our_payment_preimage);
+pub fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_preimage: PaymentPreimage, expected_amount: u64) {
+	claim_payment_along_route(origin_node, expected_route, false, our_payment_preimage, expected_amount);
 }
 
 pub const TEST_FINAL_CLTV: u32 = 32;
@@ -746,9 +746,9 @@ pub fn route_over_limit(origin_node: &Node, expected_route: &[&Node], recv_value
 	};
 }
 
-pub fn send_payment(origin: &Node, expected_route: &[&Node], recv_value: u64) {
+pub fn send_payment(origin: &Node, expected_route: &[&Node], recv_value: u64, expected_value: u64) {
 	let our_payment_preimage = route_payment(&origin, expected_route, recv_value).0;
-	claim_payment(&origin, expected_route, our_payment_preimage);
+	claim_payment(&origin, expected_route, our_payment_preimage, expected_value);
 }
 
 pub fn fail_payment_along_route(origin_node: &Node, expected_route: &[&Node], skip_last: bool, our_payment_hash: PaymentHash) {
