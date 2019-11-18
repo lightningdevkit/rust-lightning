@@ -6172,3 +6172,32 @@ fn test_data_loss_protect() {
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0].clone());
 }
+
+#[test]
+fn test_reannounce_sigs_at_connection() {
+	let nodes = create_network(2, &[None, None]);
+
+	let id_1 = create_announced_chan_between_nodes(&nodes, 1, 0, LocalFeatures::new(), LocalFeatures::new()).2;
+	let id_2 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new()).2;
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 0);
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 4);
+	for e in events {
+		match e {
+			MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			},
+			MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				if msg.channel_id != id_1 && msg.channel_id != id_2 {
+					panic!("Unexpected channel id in AnnouncementSigs");
+				}
+			},
+			_ => panic!("Unexpected event!"),
+		}
+	}
+}
