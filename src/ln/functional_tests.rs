@@ -6171,3 +6171,50 @@ fn test_data_loss_protect() {
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0].clone());
 }
+
+#[test]
+fn test_check_htlc_underpaying() {
+	// Send payment through A -> B but A is maliciously
+	// sending a probe payment (i.e less than expected value0
+	// to B, B should refuse payment.
+
+	let nodes = create_network(2, &[None, None, None]);
+
+	// Create some initial channels
+	create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new());
+
+	let (payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], 10_000);
+
+	// Node 3 is expecting payment of 100_000 but receive 10_000,
+	// fail htlc like we didn't know the preimage.
+	nodes[1].node.claim_funds(payment_preimage, 100_000);
+	nodes[1].node.process_pending_htlc_forwards();
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_fail_htlc, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			assert!(update_add_htlcs.is_empty());
+			assert!(update_fulfill_htlcs.is_empty());
+			assert_eq!(update_fail_htlcs.len(), 1);
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+			(update_fail_htlcs[0].clone(), commitment_signed)
+		},
+		_ => panic!("Unexpected event"),
+	};
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlc).unwrap();
+	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let &Event::PaymentFailed { payment_hash:_, ref rejected_by_dest, ref error_code } = &events[0] {
+		assert_eq!(*rejected_by_dest, true);
+		assert_eq!(error_code.unwrap(), 0x4000|15);
+	} else {
+		panic!("Unexpected event");
+	}
+	nodes[1].node.get_and_clear_pending_events();
+}
