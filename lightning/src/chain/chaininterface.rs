@@ -115,6 +115,9 @@ pub trait FeeEstimator: Sync + Send {
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u64;
 }
 
+/// Minimum relay fee as required by bitcoin network mempool policy.
+pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
+
 /// Utility for tracking registered txn/outpoints and checking for matches
 pub struct ChainWatchedUtil {
 	watch_all: bool,
