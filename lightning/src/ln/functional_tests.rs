@@ -3103,25 +3103,56 @@ fn test_funding_peer_disconnect() {
 	confirm_transaction(&nodes[1].chain_monitor, &tx, tx.version);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 2);
-	match events_2[0] {
-		MessageSendEvent::SendFundingLocked { ref node_id, msg: _ } => {
+	let funding_locked = match events_2[0] {
+		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
-	}
-	match events_2[1] {
-		MessageSendEvent::SendAnnouncementSignatures { ref node_id, msg: _ } => {
+	};
+	let bs_announcement_sigs = match events_2[1] {
+		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
-	}
+	};
 
 	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
-	// TODO: We shouldn't need to manually pass list_usable_chanels here once we support
-	// rebroadcasting announcement_signatures upon reconnect.
+	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &funding_locked).unwrap();
+	nodes[0].node.handle_announcement_signatures(&nodes[1].node.get_our_node_id(), &bs_announcement_sigs).unwrap();
+	let events_3 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_3.len(), 2);
+	let as_announcement_sigs = match events_3[0] {
+		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
+			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	let (as_announcement, as_update) = match events_3[1] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
+			(msg.clone(), update_msg.clone())
+		},
+		_ => panic!("Unexpected event"),
+	};
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels()), &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+	nodes[1].node.handle_announcement_signatures(&nodes[0].node.get_our_node_id(), &as_announcement_sigs).unwrap();
+	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_4.len(), 1);
+	let (_, bs_update) = match events_4[0] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
+			(msg.clone(), update_msg.clone())
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[0].router.handle_channel_announcement(&as_announcement).unwrap();
+	nodes[0].router.handle_channel_update(&bs_update).unwrap();
+	nodes[0].router.handle_channel_update(&as_update).unwrap();
+
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage, _) = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage, 1_000_000);
 }
