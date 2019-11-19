@@ -11,22 +11,28 @@ before_install:
   - sudo apt-get install -y binutils-dev libunwind8-dev libcurl4-openssl-dev libelf-dev libdw-dev cmake gcc binutils-dev libiberty-dev
 
 script:
-  - RUSTFLAGS="-C link-dead-code" cargo build --verbose
-  - rm -f target/debug/lightning-* # Make sure we drop old test binaries
-  - RUSTFLAGS="-C link-dead-code" cargo test --verbose
-  - if [ "$(rustup show | grep default | grep 1.34.2)" != "" ]; then cd fuzz && cargo test --verbose && ./travis-fuzz.sh; fi
-  - if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd net-tokio && cargo build --verbose && cd ..; fi
-  - if [ "$(rustup show | grep default | grep stable)" != "" ]; then
-      wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz &&
-      tar xzf master.tar.gz &&
-      cd kcov-master &&
-      mkdir build &&
-      cd build &&
-      cmake .. &&
-      make &&
-      make install DESTDIR=../../kcov-build &&
-      cd ../.. &&
-      rm -rf kcov-master &&
-      for file in target/debug/lightning-*; do [ -x "${file}" ] || continue; mkdir -p "target/cov/$(basename $file)"; ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file"; done &&
-      bash <(curl -s https://codecov.io/bash) &&
-      echo "Uploaded code coverage"; fi
+     # Build workspaces with Rust stable, beta, and 1.34.0
+     - if [ "$(rustup show | grep default | grep 1.22.0)" == "" ]; then RUSTFLAGS="-C link-dead-code" cargo build --verbose; fi
+     # Build lightning workspace with Rust 1.22.0
+     - if [ "$(rustup show | grep default | grep 1.22.0)" != "" ]; then RUSTFLAGS="-C link-dead-code" cargo build --verbose -p lightning; fi
+     - rm -f target/debug/lightning-* # Make sure we drop old test binaries
+     # Test workspaces for Rust stable, beta, and 1.34.2
+     - if [ "$(rustup show | grep default | grep 1.22.0)" == "" ]; then RUSTFLAGS="-C link-dead-code" cargo test --verbose; fi
+     # Test lightning workspace for 1.22.0
+     - if [ "$(rustup show | grep default | grep 1.22.0)" != "" ]; then RUSTFLAGS="-C link-dead-code" cargo test --verbose -p lightning; fi
+     # Run lightning workspace fuzz tests for Rust 1.34.2
+     - if [ "$(rustup show | grep default | grep 1.34.2)" != "" ]; then cd lightning/fuzz && cargo test --verbose && ./travis-fuzz.sh; fi
+     - if [ "$(rustup show | grep default | grep stable)" != "" ]; then
+           wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz &&
+           tar xzf master.tar.gz &&
+           cd kcov-master &&
+           mkdir build &&
+           cd build &&
+           cmake .. &&
+           make &&
+           make install DESTDIR=../../kcov-build &&
+           cd ../.. &&
+           rm -rf kcov-master &&
+           for file in target/debug/lightning-*; do [ -x "${file}" ] || continue; mkdir -p "target/cov/$(basename $file)"; ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file"; done &&
+           bash <(curl -s https://codecov.io/bash) &&
+           echo "Uploaded code coverage"; fi
