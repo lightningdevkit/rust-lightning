@@ -1972,6 +1972,15 @@ impl ChannelManager {
 				}
 				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
 				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
+					// If we see locking block before receiving remote funding_locked, we broadcast our
+					// announcement_sigs at remote funding_locked reception. If we receive remote
+					// funding_locked before seeing locking block, we broadcast our announcement_sigs at locking
+					// block connection. We should guanrantee to broadcast announcement_sigs to our peer whatever
+					// the order of the events but our peer may not receive it due to disconnection. The specs
+					// lacking an acknowledgement for announcement_sigs we may have to re-send them at peer
+					// connection in the future if simultaneous misses by both peers due to network/hardware
+					// failures is an issue. Note, to achieve its goal, only one of the announcement_sigs needs
+					// to be received, from then sigs are going to be flood to the whole network.
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 						node_id: their_node_id.clone(),
 						msg: announcement_sigs,
