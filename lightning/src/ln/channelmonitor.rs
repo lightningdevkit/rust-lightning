@@ -2170,6 +2170,7 @@ impl ChannelMonitor {
 					}
 				}
 				for tx in txn.iter() {
+					log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 					broadcaster.broadcast_transaction(tx);
 				}
 			}
@@ -2205,6 +2206,7 @@ impl ChannelMonitor {
 		let mut pending_claims = Vec::new();
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			if self.would_broadcast_at_height(height) {
+				log_trace!(self, "Broadcast onchain {}", log_tx!(cur_local_tx.tx));
 				broadcaster.broadcast_transaction(&cur_local_tx.tx);
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
@@ -2215,6 +2217,7 @@ impl ChannelMonitor {
 							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
 						}
 						for tx in txs {
+							log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 							broadcaster.broadcast_transaction(&tx);
 						}
 					},
@@ -2226,6 +2229,7 @@ impl ChannelMonitor {
 							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
 						}
 						for tx in txs {
+							log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 							broadcaster.broadcast_transaction(&tx);
 						}
 					}

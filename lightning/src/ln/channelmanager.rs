@@ -768,6 +768,7 @@ impl ChannelManager {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		for tx in local_txn {
+			log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 			self.tx_broadcaster.broadcast_transaction(&tx);
 		}
 	}
@@ -2064,6 +2065,7 @@ impl ChannelManager {
 			}
 		};
 		if let Some(broadcast_tx) = tx {
+			log_trace!(self, "Broadcast onchain {}", log_tx!(broadcast_tx));
 			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
 		}
 		if let Some(chan) = chan_option {
