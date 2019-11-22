@@ -25,7 +25,7 @@ use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
 
-use chain::chaininterface::{BroadcasterInterface,ChainListener,ChainWatchInterface,FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
@@ -318,12 +318,11 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
 /// object!
-pub struct ChannelManager {
+pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
-	monitor: Arc<ManyChannelMonitor>,
-	chain_monitor: Arc<ChainWatchInterface>,
+	monitor: Arc<ManyChannelMonitor + 'a>,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
 	#[cfg(test)]
@@ -576,7 +575,7 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl ChannelManager {
+impl<'a> ChannelManager<'a> {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
@@ -586,9 +585,16 @@ impl ChannelManager {
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 	///
-	/// User must provide the current blockchain height from which to track onchain channel
+	/// Users must provide the current blockchain height from which to track onchain channel
 	/// funding outpoints and send payments with reliable timelocks.
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, chain_monitor: Arc<ChainWatchInterface>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager>, secp256k1::Error> {
+	///
+	/// Users need to notify the new ChannelManager when a new block is connected or
+	/// disconnected using its `block_connected` and `block_disconnected` methods.
+	/// However, rather than calling these methods directly, the user should register
+	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
+	/// `block_(dis)connected` methods, which will notify all registered listeners in one
+	/// go.
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor + 'a>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager<'a>>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -596,7 +602,6 @@ impl ChannelManager {
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: feeest.clone(),
 			monitor: monitor.clone(),
-			chain_monitor,
 			tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(current_blockchain_height),
@@ -619,8 +624,7 @@ impl ChannelManager {
 
 			logger,
 		});
-		let weak_res = Arc::downgrade(&res);
-		res.chain_monitor.register_listener(weak_res);
+
 		Ok(res)
 	}
 
@@ -2514,7 +2518,7 @@ impl ChannelManager {
 	}
 }
 
-impl events::MessageSendEventsProvider for ChannelManager {
+impl<'a> events::MessageSendEventsProvider for ChannelManager<'a> {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2539,7 +2543,7 @@ impl events::MessageSendEventsProvider for ChannelManager {
 	}
 }
 
-impl events::EventsProvider for ChannelManager {
+impl<'a> events::EventsProvider for ChannelManager<'a> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2564,7 +2568,7 @@ impl events::EventsProvider for ChannelManager {
 	}
 }
 
-impl ChainListener for ChannelManager {
+impl<'a> ChainListener for ChannelManager<'a> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
@@ -2678,7 +2682,7 @@ impl ChainListener for ChannelManager {
 	}
 }
 
-impl ChannelMessageHandler for ChannelManager {
+impl<'a> ChannelMessageHandler for ChannelManager<'a> {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3063,7 +3067,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl Writeable for ChannelManager {
+impl<'a> Writeable for ChannelManager<'a> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
 
@@ -3125,9 +3129,8 @@ impl Writeable for ChannelManager {
 /// 4) Reconnect blocks on your ChannelMonitors.
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
-/// 7) Register the new ChannelManager with your ChainWatchInterface (this does not happen
-///    automatically as it does in ChannelManager::new()).
-pub struct ChannelManagerReadArgs<'a> {
+/// 7) Register the new ChannelManager with your ChainWatchInterface.
+pub struct ChannelManagerReadArgs<'a, 'b> {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
 	pub keys_manager: Arc<KeysInterface>,
@@ -3141,11 +3144,8 @@ pub struct ChannelManagerReadArgs<'a> {
 	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
 	/// you have deserialized ChannelMonitors separately and will add them to your
 	/// ManyChannelMonitor after deserializing this ChannelManager.
-	pub monitor: Arc<ManyChannelMonitor>,
-	/// The ChainWatchInterface for use in the ChannelManager in the future.
-	///
-	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface>,
+	pub monitor: Arc<ManyChannelMonitor + 'b>,
+
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
@@ -3170,8 +3170,8 @@ pub struct ChannelManagerReadArgs<'a> {
 	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
 }
 
-impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (Sha256dHash, ChannelManager) {
-	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a>) -> Result<Self, DecodeError> {
+impl<'a, 'b, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a, 'b>> for (Sha256dHash, ChannelManager<'b>) {
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, 'b>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -3248,7 +3248,6 @@ impl<'a, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a>> for (S
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
 			monitor: args.monitor,
-			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),

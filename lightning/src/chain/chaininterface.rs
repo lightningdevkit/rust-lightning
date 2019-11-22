@@ -45,16 +45,20 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// Indicates that a listener needs to see all transactions.
 	fn watch_all_txn(&self);
 
-	/// Register the given listener to receive events. Only a weak pointer is provided and the
-	/// registration should be freed once that pointer expires.
-	fn register_listener(&self, listener: Weak<ChainListener>);
-	//TODO: unregister
-
 	/// Gets the script and value in satoshis for a given unspent transaction output given a
 	/// short_channel_id (aka unspent_tx_output_identier). For BTC/tBTC channels the top three
 	/// bytes are the block height, the next 3 the transaction index within the block, and the
 	/// final two the output within the transaction.
 	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
+
+	/// Gets the list of transactions and transaction indices that the ChainWatchInterface is
+	/// watching for.
+	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>);
+
+	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
+	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
+	/// determine whether they need to re-filter a given block.
+	fn reentered(&self) -> usize;
 }
 
 /// An interface to send a transaction to the Bitcoin network.
@@ -198,13 +202,81 @@ impl ChainWatchedUtil {
 	}
 }
 
+/// Utility for notifying listeners about new blocks, and handling block rescans if new watch
+/// data is registered.
+pub struct BlockNotifier<'a> {
+	listeners: Mutex<Vec<Weak<ChainListener + 'a>>>, //TODO(vmw): try removing Weak
+	chain_monitor: Arc<ChainWatchInterface>,
+}
+
+impl<'a> BlockNotifier<'a> {
+	/// Constructs a new BlockNotifier without any listeners.
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier<'a> {
+		BlockNotifier {
+			listeners: Mutex::new(Vec::new()),
+			chain_monitor,
+		}
+	}
+
+	/// Register the given listener to receive events. Only a weak pointer is provided and
+	/// the registration should be freed once that pointer expires.
+	// TODO: unregister
+	pub fn register_listener(&self, listener: Weak<ChainListener + 'a>) {
+		let mut vec = self.listeners.lock().unwrap();
+		vec.push(listener);
+	}
+
+	/// Notify listeners that a block was connected given a full, unfiltered block.
+	///
+	/// Handles re-scanning the block and calling block_connected again if listeners register new
+	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
+	pub fn block_connected<'b>(&self, block: &'b Block, height: u32) {
+		let mut reentered = true;
+		while reentered {
+			let (matched, matched_index) = self.chain_monitor.filter_block(block);
+			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
+		}
+	}
+
+	/// Notify listeners that a block was connected, given pre-filtered list of transactions in the
+	/// block which matched the filter (probably using does_match_tx).
+	///
+	/// Returns true if notified listeners registered additional watch data (implying that the
+	/// block must be re-scanned and this function called again prior to further block_connected
+	/// calls, see ChainListener::block_connected for more info).
+	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
+		let last_seen = self.chain_monitor.reentered();
+
+		let listeners = self.listeners.lock().unwrap().clone();
+		for listener in listeners.iter() {
+			match listener.upgrade() {
+				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
+				None => ()
+			}
+		}
+		return last_seen != self.chain_monitor.reentered();
+	}
+
+
+	/// Notify listeners that a block was disconnected.
+	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
+		let listeners = self.listeners.lock().unwrap().clone();
+		for listener in listeners.iter() {
+			match listener.upgrade() {
+				Some(arc) => arc.block_disconnected(&header, disconnected_height),
+				None => ()
+			}
+		}
+	}
+
+}
+
 /// Utility to capture some common parts of ChainWatchInterface implementors.
 ///
 /// Keeping a local copy of this in a ChainWatchInterface implementor is likely useful.
 pub struct ChainWatchInterfaceUtil {
 	network: Network,
 	watched: Mutex<ChainWatchedUtil>,
-	listeners: Mutex<Vec<Weak<ChainListener>>>,
 	reentered: AtomicUsize,
 	logger: Arc<Logger>,
 }
@@ -232,16 +304,30 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		}
 	}
 
-	fn register_listener(&self, listener: Weak<ChainListener>) {
-		let mut vec = self.listeners.lock().unwrap();
-		vec.push(listener);
-	}
-
 	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
 			return Err(ChainError::NotWatched);
 		}
 		Err(ChainError::NotSupported)
+	}
+
+	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
+		let mut matched = Vec::new();
+		let mut matched_index = Vec::new();
+		{
+			let watched = self.watched.lock().unwrap();
+			for (index, transaction) in block.txdata.iter().enumerate() {
+				if self.does_match_tx_unguarded(transaction, &watched) {
+					matched.push(transaction);
+					matched_index.push(index as u32);
+				}
+			}
+		}
+		(matched, matched_index)
+	}
+
+	fn reentered(&self) -> usize {
+		self.reentered.load(Ordering::Relaxed)
 	}
 }
 
@@ -251,63 +337,11 @@ impl ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
 			network: network,
 			watched: Mutex::new(ChainWatchedUtil::new()),
-			listeners: Mutex::new(Vec::new()),
 			reentered: AtomicUsize::new(1),
 			logger: logger,
 		}
 	}
 
-	/// Notify listeners that a block was connected given a full, unfiltered block.
-	///
-	/// Handles re-scanning the block and calling block_connected again if listeners register new
-	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
-	pub fn block_connected_with_filtering(&self, block: &Block, height: u32) {
-		let mut reentered = true;
-		while reentered {
-			let mut matched = Vec::new();
-			let mut matched_index = Vec::new();
-			{
-				let watched = self.watched.lock().unwrap();
-				for (index, transaction) in block.txdata.iter().enumerate() {
-					if self.does_match_tx_unguarded(transaction, &watched) {
-						matched.push(transaction);
-						matched_index.push(index as u32);
-					}
-				}
-			}
-			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
-		}
-	}
-
-	/// Notify listeners that a block was disconnected.
-	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let listeners = self.listeners.lock().unwrap().clone();
-		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_disconnected(&header, disconnected_height),
-				None => ()
-			}
-		}
-	}
-
-	/// Notify listeners that a block was connected, given pre-filtered list of transactions in the
-	/// block which matched the filter (probably using does_match_tx).
-	///
-	/// Returns true if notified listeners registered additional watch data (implying that the
-	/// block must be re-scanned and this function called again prior to further block_connected
-	/// calls, see ChainListener::block_connected for more info).
-	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
-		let last_seen = self.reentered.load(Ordering::Relaxed);
-
-		let listeners = self.listeners.lock().unwrap().clone();
-		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
-				None => ()
-			}
-		}
-		return last_seen != self.reentered.load(Ordering::Relaxed);
-	}
 
 	/// Checks if a given transaction matches the current filter.
 	pub fn does_match_tx(&self, tx: &Transaction) -> bool {

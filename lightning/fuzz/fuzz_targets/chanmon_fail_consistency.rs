@@ -193,7 +193,7 @@ pub fn do_test(data: &[u8]) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), watch.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap(),
+			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap(),
 			monitor)
 		} }
 	}
@@ -225,7 +225,6 @@ pub fn do_test(data: &[u8]) {
 				keys_manager,
 				fee_estimator: fee_est.clone(),
 				monitor: monitor.clone(),
-				chain_monitor: watch,
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
@@ -245,7 +244,6 @@ pub fn do_test(data: &[u8]) {
 			res
 		} }
 	}
-
 
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
