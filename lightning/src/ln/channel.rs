@@ -4199,7 +4199,7 @@ mod tests {
 		}
 
 		fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys { self.chan_keys.clone() }
-		fn get_session_key(&self) -> SecretKey { panic!(); }
+		fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) { panic!(); }
 		fn get_channel_id(&self) -> [u8; 32] { [0; 32] }
 	}
 

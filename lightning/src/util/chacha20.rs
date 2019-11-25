@@ -224,6 +224,7 @@ mod real_chacha {
 			self.offset = 0;
 		}
 
+		#[inline] // Useful cause input may be 0s on stack that should be optimized out
 		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
 			assert!(input.len() == output.len());
 			let len = input.len();
