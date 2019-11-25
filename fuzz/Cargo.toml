@@ -17,7 +17,7 @@ libfuzzer_fuzz = ["libfuzzer-sys"]
 
 [dependencies]
 afl = { version = "0.4", optional = true }
-lightning = { path = "..", features = ["fuzztarget"] }
+lightning = { path = "../lightning", features = ["fuzztarget"] }
 bitcoin = { version = "0.20", features = ["fuzztarget"] }
 bitcoin_hashes = { version = "0.7", features = ["fuzztarget"] }
 hex = "0.3"
