@@ -8,6 +8,7 @@ use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, Pay
 use ln::router::{Route, Router};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler, LocalFeatures};
+use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -60,7 +61,7 @@ pub struct Node<'a, 'b: 'a> {
 	pub tx_broadcaster: Arc<test_utils::TestBroadcaster>,
 	pub chan_monitor: Arc<test_utils::TestChannelMonitor>,
 	pub keys_manager: Arc<test_utils::TestKeysInterface>,
-	pub node: Arc<ChannelManager<'b>>,
+	pub node: Arc<ChannelManager<'b, EnforcingChannelKeys>>,
 	pub router: Router,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,

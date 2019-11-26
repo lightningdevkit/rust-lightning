@@ -20,8 +20,8 @@ pub const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 // Various functions for key derivation and transaction creation for use within channels. Primarily
 // used in Channel and ChannelMonitor.
 
-pub fn build_commitment_secret(commitment_seed: [u8; 32], idx: u64) -> [u8; 32] {
-	let mut res: [u8; 32] = commitment_seed;
+pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32] {
+	let mut res: [u8; 32] = commitment_seed.clone();
 	for i in 0..48 {
 		let bitpos = 47 - i;
 		if idx & (1 << bitpos) == (1 << bitpos) {

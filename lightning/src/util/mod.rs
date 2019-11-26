@@ -23,5 +23,10 @@ pub mod config;
 #[cfg(test)]
 pub(crate) mod test_utils;
 
+/// impls of traits that add exra enforcement on the way they're called. Useful for detecting state
+/// machine errors and used in fuzz targets and tests.
+#[cfg(any(test, feature = "fuzztarget"))]
+pub mod enforcing_trait_impls;
+
 #[macro_use]
 pub(crate) mod fuzz_wrappers;

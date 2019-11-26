@@ -68,6 +68,9 @@ pub enum SpendableOutputDescriptor {
 
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface: Send + Sync {
+	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
+	type ChanKeySigner : ChannelKeys;
+
 	/// Get node secret key (aka node_id or network_key)
 	fn get_node_secret(&self) -> SecretKey;
 	/// Get destination redeemScript to encumber static protocol exit points.
@@ -76,7 +79,7 @@ pub trait KeysInterface: Send + Sync {
 	fn get_shutdown_pubkey(&self) -> PublicKey;
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
-	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys;
+	fn get_channel_keys(&self, inbound: bool) -> Self::ChanKeySigner;
 	/// Get a secret and PRNG seed for construting an onion packet
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
 	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
@@ -85,9 +88,33 @@ pub trait KeysInterface: Send + Sync {
 	fn get_channel_id(&self) -> [u8; 32];
 }
 
-/// Set of lightning keys needed to operate a channel as described in BOLT 3
+/// Set of lightning keys needed to operate a channel as described in BOLT 3.
+///
+/// If you're implementing a custom signer, you almost certainly want to implement
+/// Readable/Writable to serialize out a unique reference to this set of keys so
+/// that you can serialize the full ChannelManager object.
+///
+/// (TODO: We shouldn't require that, and should have an API to get them at deser time, due mostly
+/// to the possibility of reentrancy issues by calling the user's code during our deserialization
+/// routine).
+pub trait ChannelKeys : Send {
+	/// Gets the private key for the anchor tx
+	fn funding_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key for blinded revocation pubkey
+	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key used in commitment tx htlc outputs
+	fn payment_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key used in HTLC tx
+	fn delayed_payment_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local htlc secret key used in commitment tx htlc outputs
+	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the commitment seed
+	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
+}
+
 #[derive(Clone)]
-pub struct ChannelKeys {
+/// A simple implementation of ChannelKeys that just keeps the private keys in memory.
+pub struct InMemoryChannelKeys {
 	/// Private key of anchor tx
 	pub funding_key: SecretKey,
 	/// Local secret key for blinded revocation pubkey
@@ -102,7 +129,16 @@ pub struct ChannelKeys {
 	pub commitment_seed: [u8; 32],
 }
 
-impl_writeable!(ChannelKeys, 0, {
+impl ChannelKeys for InMemoryChannelKeys {
+	fn funding_key(&self) -> &SecretKey { &self.funding_key }
+	fn revocation_base_key(&self) -> &SecretKey { &self.revocation_base_key }
+	fn payment_base_key(&self) -> &SecretKey { &self.payment_base_key }
+	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
+	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
+	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
+}
+
+impl_writeable!(InMemoryChannelKeys, 0, {
 	funding_key,
 	revocation_base_key,
 	payment_base_key,
@@ -203,6 +239,8 @@ impl KeysManager {
 }
 
 impl KeysInterface for KeysManager {
+	type ChanKeySigner = InMemoryChannelKeys;
+
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
 	}
@@ -215,7 +253,7 @@ impl KeysInterface for KeysManager {
 		self.shutdown_pubkey.clone()
 	}
 
-	fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool) -> InMemoryChannelKeys {
 		// We only seriously intend to rely on the channel_master_key for true secure
 		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
 		// starting_time provided in the constructor) to be unique.
@@ -248,7 +286,7 @@ impl KeysInterface for KeysManager {
 		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_base_key);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 
-		ChannelKeys {
+		InMemoryChannelKeys {
 			funding_key,
 			revocation_base_key,
 			payment_base_key,
