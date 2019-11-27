@@ -2,11 +2,12 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{OutPoint, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, OutPoint, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::util::bip143;
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::HashEngine as Sha256State;
@@ -14,11 +15,14 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::Secp256k1;
+use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 
 use util::byte_utils;
 use util::logger::Logger;
+
+use ln::chan_utils;
+use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -110,6 +114,15 @@ pub trait ChannelKeys : Send {
 	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the commitment seed
 	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
+
+	/// Create a signature for a remote commitment transaction and associated HTLC transactions.
+	///
+	/// Note that if signing fails or is rejected, the channel will be force-closed.
+	///
+	/// TODO: Document the things someone using this interface should enforce before signing.
+	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
+	/// making the callee generate it via some util function we expose)!
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 }
 
 #[derive(Clone)]
@@ -136,6 +149,31 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
+
+
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+		if commitment_tx.input.len() != 1 { return Err(()); }
+		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_script, channel_value_satoshis)[..]);
+		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
+
+		let commitment_txid = commitment_tx.txid();
+
+		let mut htlc_sigs = Vec::with_capacity(htlcs.len());
+		for ref htlc in htlcs {
+			if let Some(_) = htlc.transaction_output_index {
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, to_self_delay, htlc, &keys.a_delayed_payment_key, &keys.revocation_key);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
+				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
+					Ok(s) => s,
+					Err(_) => return Err(()),
+				};
+				htlc_sigs.push(secp_ctx.sign(&htlc_sighash, &our_htlc_key));
+			}
+		}
+
+		Ok((commitment_sig, htlc_sigs))
+	}
 }
 
 impl_writeable!(InMemoryChannelKeys, 0, {
