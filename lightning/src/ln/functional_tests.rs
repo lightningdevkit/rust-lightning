@@ -6139,7 +6139,7 @@ fn test_data_loss_protect() {
 		channel_monitors: &channel_monitors
 	}).unwrap().1;
 	nodes[0].node = Arc::new(node_state_0);
-	monitor.add_update_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok();
+	assert!(monitor.add_update_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok());
 	nodes[0].chan_monitor = monitor;
 	nodes[0].chain_monitor = chain_monitor;
 

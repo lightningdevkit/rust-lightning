@@ -157,7 +157,7 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
-	let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
+	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
 	let chain_monitor = Arc::new(DummyChainWatcher {
 		input: Arc::clone(&input),
 	});

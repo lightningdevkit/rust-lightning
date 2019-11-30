@@ -90,7 +90,7 @@ pub struct TestChannelMonitor {
 	pub should_update_manager: atomic::AtomicBool,
 }
 impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<chaininterface::FeeEstimator>) -> Self {
+	pub fn new(chain_monitor: Arc<dyn chaininterface::ChainWatchInterface>, broadcaster: Arc<dyn chaininterface::BroadcasterInterface>, logger: Arc<dyn Logger>, feeest: Arc<dyn chaininterface::FeeEstimator>) -> Self {
 		Self {
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, feeest),
 			update_ret: Mutex::new(Ok(())),
@@ -109,7 +109,7 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 			monitor.write_for_disk(&mut ser).unwrap();
 			self.latest_good_update.lock().unwrap().insert(funding_txo, ser.0);
 			match self.latest_update_good.lock().unwrap().entry(funding_txo) {
-				hash_map::Entry::Vacant(mut e) => { e.insert(true); },
+				hash_map::Entry::Vacant(e) => { e.insert(true); },
 				hash_map::Entry::Occupied(mut e) => {
 					if !e.get() && unsafe { IN_RESTORE } {
 						// Technically we can't consider an update to be "good" unless we're doing
@@ -184,7 +184,7 @@ pub fn do_test(data: &[u8]) {
 
 	macro_rules! make_node {
 		($node_id: expr) => { {
-			let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string()));
+			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string()));
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
@@ -200,7 +200,7 @@ pub fn do_test(data: &[u8]) {
 
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
-			let logger: Arc<Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string()));
+			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string()));
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
