@@ -319,12 +319,11 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// block_connected() to step towards your best block) upon deserialization before using the
 /// object!
 ///
-/// Note that ChannelManager is responsible of tracking liveness of its channels and by so
-/// to generate ChannelUpdate messages intended to be broadcast on the gossip layer. To avoid
-/// spam due to quick connection/reconnection, updates should be first stagged then after a period
-/// of 1 min flushed to the network through call to timer_chan_freshness_every_min. You may
-/// delay or anticipate call to this method to suit your announcements requirements different than
-/// the 1 min period.
+/// Note that ChannelManager is responsible for tracking liveness of its channels and generating
+/// ChannelUpdate messages informing peers that the channel is temporarily disabled. To avoid
+/// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
+/// offline for a full minute. In order to track this, you must call
+/// timer_chan_freshness_every_min roughly once per minute, though it doesn't have to be perfec.
 pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
@@ -1494,10 +1493,11 @@ impl<'a> ChannelManager<'a> {
 		events.append(&mut new_events);
 	}
 
-	/// Latency/peer disconnection may trigger us to mark as disabled some
-	/// of our channels. After some time, if channels are still disabled
-	/// we need to broadcast ChannelUpdate to inform other network peers
-	/// about the uselessness of this channels.
+	/// If a peer is disconnected we mark any channels with that peer as 'disabled'.
+	/// After some time, if channels are still disabled we need to broadcast a ChannelUpdate
+	/// to inform the network about the uselessness of these channels.
+	///
+	/// This method handles all the details, and must be called roughly once per minute.
 	pub fn timer_chan_freshness_every_min(&self) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
