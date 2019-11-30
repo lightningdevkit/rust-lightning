@@ -6256,3 +6256,63 @@ fn test_check_htlc_underpaying() {
 	}
 	nodes[1].node.get_and_clear_pending_events();
 }
+
+#[test]
+fn test_announce_disable_channels() {
+	// Create 2 channels between A and B. Disconnect B. Call timer_chan_freshness_every_min and check for generated
+	// ChannelUpdate. Reconnect B, reestablish and check there is non-generated ChannelUpdate.
+
+	let nodes = create_network(2, &[None, None]);
+
+	let short_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+	let short_id_2 = create_announced_chan_between_nodes(&nodes, 1, 0, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+	let short_id_3 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+
+	// Disconnect peers
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	nodes[0].node.timer_chan_freshness_every_min(); // dirty -> stagged
+	nodes[0].node.timer_chan_freshness_every_min(); // staged -> fresh
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3);
+	for e in msg_events {
+		match e {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				let short_id = msg.contents.short_channel_id;
+				// Check generated channel_update match list in PendingChannelUpdate
+				if short_id != short_id_1 && short_id != short_id_2 && short_id != short_id_3 {
+					panic!("Generated ChannelUpdate for wrong chan!");
+				}
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+	// Reconnect peers
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 3);
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 3);
+
+	// Reestablish chan_1
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	// Reestablish chan_2
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[1]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[1]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	// Reestablish chan_3
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[2]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[2]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	nodes[0].node.timer_chan_freshness_every_min();
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 0);
+}

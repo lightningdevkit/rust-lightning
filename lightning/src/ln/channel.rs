@@ -210,6 +210,20 @@ const MULTI_STATE_FLAGS: u32 = (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDis
 
 const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
+/// Liveness is called to fluctuate given peer disconnecton/monitor failures/closing.
+/// If channel is public, network should have a liveness view announced by us on a
+/// best-effort, which means we may filter out some status transitions to avoid spam.
+/// See further timer_chan_freshness_every_min.
+#[derive(PartialEq)]
+enum UpdateStatus {
+	/// Status has been gossiped.
+	Fresh,
+	/// Status has been changed.
+	DisabledMarked,
+	/// Status has been marked to be gossiped at next flush
+	DisabledStaged,
+}
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -339,6 +353,8 @@ pub(super) struct Channel {
 	their_shutdown_scriptpubkey: Option<Script>,
 
 	channel_monitor: ChannelMonitor,
+
+	network_sync: UpdateStatus,
 
 	logger: Arc<Logger>,
 }
@@ -516,6 +532,8 @@ impl Channel {
 			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
+
+			network_sync: UpdateStatus::Fresh,
 
 			logger,
 		})
@@ -733,6 +751,8 @@ impl Channel {
 			their_shutdown_scriptpubkey,
 
 			channel_monitor: channel_monitor,
+
+			network_sync: UpdateStatus::Fresh,
 
 			logger,
 		};
@@ -2993,6 +3013,26 @@ impl Channel {
 		} else { false }
 	}
 
+	pub fn to_disabled_staged(&mut self) {
+		self.network_sync = UpdateStatus::DisabledStaged;
+	}
+
+	pub fn to_disabled_marked(&mut self) {
+		self.network_sync = UpdateStatus::DisabledMarked;
+	}
+
+	pub fn to_fresh(&mut self) {
+		self.network_sync = UpdateStatus::Fresh;
+	}
+
+	pub fn is_disabled_staged(&self) -> bool {
+		self.network_sync == UpdateStatus::DisabledStaged
+	}
+
+	pub fn is_disabled_marked(&self) -> bool {
+		self.network_sync == UpdateStatus::DisabledMarked
+	}
+
 	/// Called by channelmanager based on chain blocks being connected.
 	/// Note that we only need to use this to detect funding_signed, anything else is handled by
 	/// the channel_monitor.
@@ -4090,6 +4130,8 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 			their_shutdown_scriptpubkey,
 
 			channel_monitor,
+
+			network_sync: UpdateStatus::Fresh,
 
 			logger,
 		})
