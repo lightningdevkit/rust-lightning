@@ -322,8 +322,9 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// Note that ChannelManager is responsible for tracking liveness of its channels and generating
 /// ChannelUpdate messages informing peers that the channel is temporarily disabled. To avoid
 /// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
-/// offline for a full minute. In order to track this, you must call
-/// timer_chan_freshness_every_min roughly once per minute, though it doesn't have to be perfec.
+/// offline for a full minute or for a given channel remote revoke_and_ack is too long. In order
+/// to track this, you must call timer_chan_freshness_every_min roughly once per minute, though
+/// it doesn't have to be perfec.
 pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
@@ -1035,7 +1036,7 @@ impl<'a> ChannelManager<'a> {
 			chain_hash: self.genesis_hash,
 			short_channel_id: short_channel_id,
 			timestamp: chan.get_channel_update_count(),
-			flags: (!were_node_one) as u16 | ((!chan.is_live() as u16) << 1),
+			flags: (!were_node_one) as u16 | (if !chan.is_live() || chan.is_awaiting_remote_raa() { 1 } else { 0 }) << 1,
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
 			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
 			fee_base_msat: chan.get_our_fee_base_msat(&*self.fee_estimator),
@@ -1342,9 +1343,7 @@ impl<'a> ChannelManager<'a> {
 													// revoke_and_ack before we can add anymore HTLCs. The Channel
 													// will automatically handle building the update_add_htlc and
 													// commitment_signed messages when we can.
-													// TODO: Do some kind of timer to set the channel as !is_live()
-													// as we don't really want others relying on us relaying through
-													// this channel currently :/.
+													chan.get_mut().to_disabled_marked();
 												}
 											}
 										}
@@ -1374,6 +1373,7 @@ impl<'a> ChannelManager<'a> {
 											// We don't need any kind of timer here as they should fail
 											// the channel onto the chain if they can't get our
 											// update_fail_htlc in time, it's not our problem.
+											chan.get_mut().to_disabled_marked();
 										}
 									}
 								},
@@ -1497,6 +1497,8 @@ impl<'a> ChannelManager<'a> {
 	/// If a peer is disconnected we mark any channels with that peer as 'disabled'.
 	/// After some time, if channels are still disabled we need to broadcast a ChannelUpdate
 	/// to inform the network about the uselessness of these channels.
+	/// A channel for which we are waiting too long a remote revoke_and_ack is also
+	/// evaluated as a candidate for `disabled` announcement.
 	///
 	/// This method handles all the details, and must be called roughly once per minute.
 	pub fn timer_chan_freshness_every_min(&self) {
@@ -1504,14 +1506,14 @@ impl<'a> ChannelManager<'a> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = channel_state_lock.borrow_parts();
 		for (_, chan) in channel_state.by_id {
-			if chan.is_disabled_staged() && !chan.is_live() {
+			if chan.is_disabled_staged() && (!chan.is_live() || chan.is_awaiting_remote_raa()) {
 				if let Ok(update) = self.get_channel_update(&chan) {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 						msg: update
 					});
 				}
 				chan.to_fresh();
-			} else if chan.is_disabled_staged() && chan.is_live() {
+			} else if chan.is_disabled_staged() && (chan.is_live() && !chan.is_awaiting_remote_raa()) {
 				chan.to_fresh();
 			} else if chan.is_disabled_marked() {
 				chan.to_disabled_staged();

@@ -3013,6 +3013,11 @@ impl Channel {
 		} else { false }
 	}
 
+	/// Returns true if this channel has been marked as awaiting remote revoke_and_ack to move forward.
+	pub fn is_awaiting_remote_raa(&self) -> bool {
+		(self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0
+	}
+
 	pub fn to_disabled_staged(&mut self) {
 		self.network_sync = UpdateStatus::DisabledStaged;
 	}
