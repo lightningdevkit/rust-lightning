@@ -1512,9 +1512,9 @@ impl<'a> ChannelManager<'a> {
 						msg: update
 					});
 				}
-				chan.to_fresh();
+				chan.to_disabled_fresh();
 			} else if chan.is_disabled_staged() && (chan.is_live() && !chan.is_awaiting_remote_raa()) {
-				chan.to_fresh();
+				chan.to_enabled_fresh();
 			} else if chan.is_disabled_marked() {
 				chan.to_disabled_staged();
 			}
@@ -2333,6 +2333,14 @@ impl<'a> ChannelManager<'a> {
 						} else {
 							return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
 						}
+					}
+					if chan.get().is_disabled_fresh() && !chan.get().is_awaiting_remote_raa() { // If remote raa has been too long, we may have announce to the network this chan as disabled
+						if let Ok(update) = self.get_channel_update(&chan.get()) {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+						chan.get_mut().to_enabled_fresh();
 					}
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {

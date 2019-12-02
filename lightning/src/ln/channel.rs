@@ -216,8 +216,10 @@ const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 /// See further timer_chan_freshness_every_min.
 #[derive(PartialEq)]
 enum UpdateStatus {
-	/// Status has been gossiped.
-	Fresh,
+	/// Status enable has been gossiped.
+	EnabledFresh,
+	/// Status disable has been gossiped.
+	DisabledFresh,
 	/// Status has been changed.
 	DisabledMarked,
 	/// Status has been marked to be gossiped at next flush
@@ -533,7 +535,7 @@ impl Channel {
 
 			channel_monitor: channel_monitor,
 
-			network_sync: UpdateStatus::Fresh,
+			network_sync: UpdateStatus::EnabledFresh,
 
 			logger,
 		})
@@ -752,7 +754,7 @@ impl Channel {
 
 			channel_monitor: channel_monitor,
 
-			network_sync: UpdateStatus::Fresh,
+			network_sync: UpdateStatus::EnabledFresh,
 
 			logger,
 		};
@@ -3026,8 +3028,16 @@ impl Channel {
 		self.network_sync = UpdateStatus::DisabledMarked;
 	}
 
-	pub fn to_fresh(&mut self) {
-		self.network_sync = UpdateStatus::Fresh;
+	pub fn to_disabled_fresh(&mut self) {
+		self.network_sync = UpdateStatus::DisabledFresh;
+	}
+
+	pub fn to_enabled_fresh(&mut self) {
+		self.network_sync = UpdateStatus::EnabledFresh;
+	}
+
+	pub fn is_disabled_fresh(&self) -> bool {
+		self.network_sync == UpdateStatus::DisabledFresh
 	}
 
 	pub fn is_disabled_staged(&self) -> bool {
@@ -4136,7 +4146,7 @@ impl<R : ::std::io::Read> ReadableArgs<R, Arc<Logger>> for Channel {
 
 			channel_monitor,
 
-			network_sync: UpdateStatus::Fresh,
+			network_sync: UpdateStatus::EnabledFresh,
 
 			logger,
 		})
