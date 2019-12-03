@@ -6284,6 +6284,7 @@ fn test_announce_disable_channels() {
 				if short_id != short_id_1 && short_id != short_id_2 && short_id != short_id_3 {
 					panic!("Generated ChannelUpdate for wrong chan!");
 				}
+				assert!(msg.contents.flags & 2 == 2);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -6313,6 +6314,129 @@ fn test_announce_disable_channels() {
 	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
 	nodes[0].node.timer_chan_freshness_every_min();
+	nodes[0].node.timer_chan_freshness_every_min();
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 0);
+}
+
+#[test]
+fn test_announce_disable_channels_remote_raa() {
+	// Create 2 channels between A and B. Add an HTLC offered by B but withold its revoke_and_ack.
+	// Check after calling timer_chan_freshness_every_min for 2 periods and check for generated
+	// ChannelUpdate. Deliver the revoke_and_ack and check there is generated ChannelUpdate with
+	// disable flag unset.
+
+	let mut nodes = create_network(3, &[None, None, None]);
+
+	let short_chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+	create_announced_chan_between_nodes(&nodes, 1, 2, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8_000_000, 8_000_000);
+	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8_000_000, 8_000_000);
+
+	// Route HTLC from B to A
+	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 100_000, 42).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[1]);
+
+	let payment_event = {
+		nodes[1].node.send_payment(route, our_payment_hash).unwrap();
+		check_added_monitors!(nodes[1], 1);
+
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	// Withold revoke_msg
+	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	// Route another HTLC from C to A
+	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 100_000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[2]);
+
+	let payment_event = {
+		nodes[2].node.send_payment(route, our_payment_hash).unwrap();
+		check_added_monitors!(nodes[2], 1);
+
+		let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_2.len(), 0);
+
+	nodes[1].node.timer_chan_freshness_every_min(); // dirty -> stagged
+	nodes[1].node.timer_chan_freshness_every_min(); // staged -> fresh
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	for e in msg_events {
+		match e {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				let short_id = msg.contents.short_channel_id;
+				if short_id != short_chan_id {
+					panic!("Generated ChannelUpdate for wrong chan!");
+				}
+				assert!(msg.contents.flags & 2 == 2);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	// Deliver RAA for HLTC 1 to node B
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 0);
+	nodes[1]. node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	let payment_event = SendEvent::from_event(msg_events.remove(0));
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	let raa = match msg_events[0] {
+		MessageSendEvent::SendRevokeAndACK { ref msg, .. } => {
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PendingHTLCsForwardable { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Add HTLC 2 on link AB
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]).unwrap();
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let (as_revoke_and_ack, _) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack).unwrap();
+	check_added_monitors!(nodes[1], 1);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			let short_id = msg.contents.short_channel_id;
+			if short_id != short_chan_id {
+				panic!("Generated ChannelUpdate for wrong chan!");
+			}
+			assert!(msg.contents.flags & 2 == 0);
+		},
+		_ => panic!("Unexpected event"),
+	}
 }
