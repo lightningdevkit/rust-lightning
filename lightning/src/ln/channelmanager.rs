@@ -896,6 +896,21 @@ impl<'a> ChannelManager<'a> {
 		};
 
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
+				#[cfg(test)]
+				{
+					// In tests, make sure that the initial onion pcket data is, at least, non-0.
+					// We could do some fancy randomness test here, but, ehh, whatever.
+					// This checks for the issue where you can calculate the path length given the
+					// onion data as all the path entries that the originator sent will be here
+					// as-is (and were originally 0s).
+					// Of course reverse path calculation is still pretty easy given naive routing
+					// algorithms, but this fixes the most-obvious case.
+					let mut new_packet_data = [0; 19*65];
+					chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
+					assert_ne!(new_packet_data[0..65], [0; 65][..]);
+					assert_ne!(new_packet_data[..], [0; 19*65][..]);
+				}
+
 				// OUR PAYMENT!
 				// final_expiry_too_soon
 				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
@@ -1089,14 +1104,14 @@ impl<'a> ChannelManager<'a> {
 			}
 		}
 
-		let session_priv = self.keys_manager.get_session_key();
+		let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
 		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
 				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height)?;
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, &payment_hash);
 
 		let _ = self.total_consistency_lock.read().unwrap();
 

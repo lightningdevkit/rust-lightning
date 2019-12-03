@@ -166,9 +166,10 @@ impl KeysInterface for KeyProvider {
 		}
 	}
 
-	fn get_session_key(&self) -> SecretKey {
+	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		let id = self.session_id.fetch_add(1, atomic::Ordering::Relaxed);
-		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 10, self.node_id]).unwrap()
+		(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 10, self.node_id]).unwrap(),
+		[0; 32])
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
