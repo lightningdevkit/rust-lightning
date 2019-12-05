@@ -330,7 +330,7 @@ pub struct ChannelManager<'a, ChanSigner: ChannelKeys> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
-	monitor: Arc<ManyChannelMonitor + 'a>,
+	monitor: &'a ManyChannelMonitor,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
 	#[cfg(test)]
@@ -602,14 +602,14 @@ impl<'a, ChanSigner: ChannelKeys> ChannelManager<'a, ChanSigner> {
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor + 'a>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager<'a, ChanSigner>>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: &'a ManyChannelMonitor, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<'a, ChanSigner>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
-		let res = Arc::new(ChannelManager {
+		let res = ChannelManager {
 			default_configuration: config.clone(),
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: feeest.clone(),
-			monitor: monitor.clone(),
+			monitor,
 			tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(current_blockchain_height),
@@ -631,7 +631,7 @@ impl<'a, ChanSigner: ChannelKeys> ChannelManager<'a, ChanSigner> {
 			keys_manager,
 
 			logger,
-		});
+		};
 
 		Ok(res)
 	}
@@ -3193,7 +3193,7 @@ pub struct ChannelManagerReadArgs<'a, 'b, ChanSigner: ChannelKeys> {
 	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
 	/// you have deserialized ChannelMonitors separately and will add them to your
 	/// ManyChannelMonitor after deserializing this ChannelManager.
-	pub monitor: Arc<ManyChannelMonitor + 'b>,
+	pub monitor: &'b ManyChannelMonitor,
 
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be

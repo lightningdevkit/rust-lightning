@@ -25,10 +25,10 @@ use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin_hashes::{HashEngine, Hash};
 
 /// Provides references to trait impls which handle different types of messages.
-pub struct MessageHandler {
+pub struct MessageHandler<'a> {
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// ChannelManager object.
-	pub chan_handler: Arc<msgs::ChannelMessageHandler>,
+	pub chan_handler: &'a msgs::ChannelMessageHandler,
 	/// A message handler which handles messages updating our knowledge of the network channel
 	/// graph. Usually this is just a Router object.
 	pub route_handler: Arc<msgs::RoutingMessageHandler>,
@@ -164,8 +164,8 @@ fn _check_usize_is_32_or_64() {
 
 /// A PeerManager manages a set of peers, described by their SocketDescriptor and marshalls socket
 /// events into messages which it passes on to its MessageHandlers.
-pub struct PeerManager<Descriptor: SocketDescriptor> {
-	message_handler: MessageHandler,
+pub struct PeerManager<'a, Descriptor: SocketDescriptor> {
+	message_handler: MessageHandler<'a>,
 	peers: Mutex<PeerHolder<Descriptor>>,
 	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
@@ -204,11 +204,11 @@ const INITIAL_SYNCS_TO_SEND: usize = 5;
 
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
 /// PeerIds may repeat, but only after disconnect_event() has been called.
-impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
+impl<'a, Descriptor: SocketDescriptor> PeerManager<'a, Descriptor> {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
-	pub fn new(message_handler: MessageHandler, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: Arc<Logger>) -> PeerManager<Descriptor> {
+	pub fn new(message_handler: MessageHandler<'a>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: Arc<Logger>) -> PeerManager<'a, Descriptor> {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -1118,22 +1118,31 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
-	fn create_network(peer_count: usize) -> Vec<PeerManager<FileDescriptor>> {
+	fn create_chan_handlers(peer_count: usize) -> Vec<test_utils::TestChannelMessageHandler> {
+		let mut chan_handlers = Vec::new();
+		for _ in 0..peer_count {
+			let chan_handler = test_utils::TestChannelMessageHandler::new();
+			chan_handlers.push(chan_handler);
+		}
+
+		chan_handlers
+	}
+
+	fn create_network<'a>(peer_count: usize, chan_handlers: &'a Vec<test_utils::TestChannelMessageHandler>) -> Vec<PeerManager<'a, FileDescriptor>> {
 		let mut peers = Vec::new();
 		let mut rng = thread_rng();
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let mut ephemeral_bytes = [0; 32];
 		rng.fill_bytes(&mut ephemeral_bytes);
 
-		for _ in 0..peer_count {
-			let chan_handler = test_utils::TestChannelMessageHandler::new();
+		for i in 0..peer_count {
 			let router = test_utils::TestRoutingMessageHandler::new();
 			let node_id = {
 				let mut key_slice = [0;32];
 				rng.fill_bytes(&mut key_slice);
 				SecretKey::from_slice(&key_slice).unwrap()
 			};
-			let msg_handler = MessageHandler { chan_handler: Arc::new(chan_handler), route_handler: Arc::new(router) };
+			let msg_handler = MessageHandler { chan_handler: &chan_handlers[i], route_handler: Arc::new(router) };
 			let peer = PeerManager::new(msg_handler, node_id, &ephemeral_bytes, Arc::clone(&logger));
 			peers.push(peer);
 		}
@@ -1153,20 +1162,21 @@ mod tests {
 	fn test_disconnect_peer() {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
 		// push a DisconnectPeer event to remove the node flagged by id
-		let mut peers = create_network(2);
+		let chan_handlers = create_chan_handlers(2);
+		let chan_handler = test_utils::TestChannelMessageHandler::new();
+		let mut peers = create_network(2, &chan_handlers);
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
 		let secp_ctx = Secp256k1::new();
 		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
 
-		let chan_handler = test_utils::TestChannelMessageHandler::new();
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		});
 		assert_eq!(chan_handler.pending_events.lock().unwrap().len(), 1);
-		peers[0].message_handler.chan_handler = Arc::new(chan_handler);
+		peers[0].message_handler.chan_handler = &chan_handler;
 
 		peers[0].process_events();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);

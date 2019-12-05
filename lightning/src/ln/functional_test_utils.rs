@@ -55,19 +55,29 @@ pub fn connect_blocks(notifier: &chaininterface::BlockNotifier, depth: u32, heig
 	header.bitcoin_hash()
 }
 
-pub struct Node<'a, 'b: 'a> {
+pub struct NodeCfg {
+	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
+	pub tx_broadcaster: Arc<test_utils::TestBroadcaster>,
+	pub fee_estimator: Arc<test_utils::TestFeeEstimator>,
+	pub chan_monitor: test_utils::TestChannelMonitor,
+	pub keys_manager: Arc<test_utils::TestKeysInterface>,
+	pub logger: Arc<Logger>,
+	pub node_seed: [u8; 32],
+}
+
+pub struct Node<'a> {
 	pub block_notifier: Arc<chaininterface::BlockNotifier<'a>>,
 	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 	pub tx_broadcaster: Arc<test_utils::TestBroadcaster>,
-	pub chan_monitor: Arc<test_utils::TestChannelMonitor>,
+	pub chan_monitor: &'a test_utils::TestChannelMonitor,
 	pub keys_manager: Arc<test_utils::TestKeysInterface>,
-	pub node: Arc<ChannelManager<'b, EnforcingChannelKeys>>,
+	pub node: &'a ChannelManager<'a, EnforcingChannelKeys>,
 	pub router: Router,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 }
-impl<'a, 'b> Drop for Node<'a, 'b> {
+impl<'a> Drop for Node<'a> {
 	fn drop(&mut self) {
 		if !::std::thread::panicking() {
 			// Check that we processed all pending events
@@ -355,7 +365,7 @@ macro_rules! check_closed_broadcast {
 	}}
 }
 
-pub fn close_channel<'a, 'b>(outbound_node: &Node<'a, 'b>, inbound_node: &Node<'a, 'b>, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
+pub fn close_channel<'a>(outbound_node: &Node<'a>, inbound_node: &Node<'a>, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 	let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
 	let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
 	let (tx_a, tx_b);
@@ -590,7 +600,7 @@ macro_rules! expect_payment_sent {
 	}
 }
 
-pub fn send_along_route_with_hash<'a, 'b>(origin_node: &Node<'a, 'b>, route: Route, expected_route: &[&Node<'a, 'b>], recv_value: u64, our_payment_hash: PaymentHash) {
+pub fn send_along_route_with_hash<'a>(origin_node: &Node<'a>, route: Route, expected_route: &[&Node<'a>], recv_value: u64, our_payment_hash: PaymentHash) {
 	let mut payment_event = {
 		origin_node.node.send_payment(route, our_payment_hash).unwrap();
 		check_added_monitors!(origin_node, 1);
@@ -632,7 +642,7 @@ pub fn send_along_route_with_hash<'a, 'b>(origin_node: &Node<'a, 'b>, route: Rou
 	}
 }
 
-pub fn send_along_route<'a, 'b>(origin_node: &Node<'a, 'b>, route: Route, expected_route: &[&Node<'a, 'b>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
+pub fn send_along_route<'a>(origin_node: &Node<'a>, route: Route, expected_route: &[&Node<'a>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
 	send_along_route_with_hash(origin_node, route, expected_route, recv_value, our_payment_hash);
 	(our_payment_preimage, our_payment_hash)
@@ -722,7 +732,7 @@ pub fn claim_payment(origin_node: &Node, expected_route: &[&Node], our_payment_p
 
 pub const TEST_FINAL_CLTV: u32 = 32;
 
-pub fn route_payment<'a, 'b>(origin_node: &Node<'a, 'b>, expected_route: &[&Node<'a, 'b>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
+pub fn route_payment<'a>(origin_node: &Node<'a>, expected_route: &[&Node<'a>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.hops.len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
@@ -748,7 +758,7 @@ pub fn route_over_limit(origin_node: &Node, expected_route: &[&Node], recv_value
 	};
 }
 
-pub fn send_payment<'a, 'b>(origin: &Node<'a, 'b>, expected_route: &[&Node<'a, 'b>], recv_value: u64, expected_value: u64) {
+pub fn send_payment<'a>(origin: &Node<'a>, expected_route: &[&Node<'a>], recv_value: u64, expected_value: u64) {
 	let our_payment_preimage = route_payment(&origin, expected_route, recv_value).0;
 	claim_payment(&origin, expected_route, our_payment_preimage, expected_value);
 }
@@ -826,38 +836,51 @@ pub fn fail_payment(origin_node: &Node, expected_route: &[&Node], our_payment_ha
 	fail_payment_along_route(origin_node, expected_route, false, our_payment_hash);
 }
 
-pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> Vec<Node> {
+pub fn create_node_cfgs(node_count: usize) -> Vec<NodeCfg> {
 	let mut nodes = Vec::new();
 	let mut rng = thread_rng();
-	let secp_ctx = Secp256k1::new();
-
-	let chan_count = Rc::new(RefCell::new(0));
-	let payment_count = Rc::new(RefCell::new(0));
 
 	for i in 0..node_count {
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
-		let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
+		let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
-		let block_notifier = Arc::new(chaininterface::BlockNotifier::new(chain_monitor.clone()));
 		let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 		let mut seed = [0; 32];
 		rng.fill_bytes(&mut seed);
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet, Arc::clone(&logger)));
-		let chan_monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
-		let weak_res = Arc::downgrade(&chan_monitor.simple_monitor);
-		block_notifier.register_listener(weak_res);
+		let chan_monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone());
+		nodes.push(NodeCfg { chain_monitor, logger, tx_broadcaster, fee_estimator, chan_monitor, keys_manager, node_seed: seed });
+	}
+
+	nodes
+}
+
+pub fn create_node_chanmgrs<'a>(node_count: usize, cfgs: &'a Vec<NodeCfg>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<'a, EnforcingChannelKeys>> {
+	let mut chanmgrs = Vec::new();
+	for i in 0..node_count {
 		let mut default_config = UserConfig::default();
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
-		let node = ChannelManager::new(Network::Testnet, feeest.clone(), chan_monitor.clone(), tx_broadcaster.clone(), Arc::clone(&logger), keys_manager.clone(), if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
-		let weak_res = Arc::downgrade(&node);
-		block_notifier.register_listener(weak_res);
-		let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()), chain_monitor.clone(), Arc::clone(&logger));
-		nodes.push(Node { chain_monitor, tx_broadcaster, chan_monitor, node, router, keys_manager, node_seed: seed,
-			network_payment_count: payment_count.clone(),
-			network_chan_count: chan_count.clone(),
-			block_notifier,
-		});
+		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator.clone(), &cfgs[i].chan_monitor, cfgs[i].tx_broadcaster.clone(), cfgs[i].logger.clone(), cfgs[i].keys_manager.clone(), if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
+		chanmgrs.push(node);
+	}
+
+	chanmgrs
+}
+
+pub fn create_network<'a>(node_count: usize, cfgs: &'a Vec<NodeCfg>, chan_mgrs: &'a Vec<ChannelManager<'a, EnforcingChannelKeys>>) -> Vec<Node<'a>> {
+	let secp_ctx = Secp256k1::new();
+	let mut nodes = Vec::new();
+	let chan_count = Rc::new(RefCell::new(0));
+	let payment_count = Rc::new(RefCell::new(0));
+
+	for i in 0..node_count {
+		let block_notifier = Arc::new(chaininterface::BlockNotifier::new(cfgs[i].chain_monitor.clone()));
+		block_notifier.register_listener(&cfgs[i].chan_monitor.simple_monitor);
+		block_notifier.register_listener(&chan_mgrs[i]);
+		let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &cfgs[i].keys_manager.get_node_secret()), cfgs[i].chain_monitor.clone(), Arc::clone(&cfgs[i].logger));
+		nodes.push(Node{ chain_monitor: cfgs[i].chain_monitor.clone(), block_notifier, tx_broadcaster: cfgs[i].tx_broadcaster.clone(), chan_monitor: &cfgs[i].chan_monitor, keys_manager: cfgs[i].keys_manager.clone(), node: &chan_mgrs[i], router, node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(), network_payment_count: payment_count.clone(),
+		})
 	}
 
 	nodes

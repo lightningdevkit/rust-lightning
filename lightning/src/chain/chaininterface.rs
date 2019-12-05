@@ -14,7 +14,7 @@ use bitcoin::network::constants::Network;
 
 use util::logger::Logger;
 
-use std::sync::{Mutex,Weak,MutexGuard,Arc};
+use std::sync::{Mutex, MutexGuard, Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
 
@@ -208,7 +208,7 @@ impl ChainWatchedUtil {
 /// Utility for notifying listeners about new blocks, and handling block rescans if new watch
 /// data is registered.
 pub struct BlockNotifier<'a> {
-	listeners: Mutex<Vec<Weak<ChainListener + 'a>>>, //TODO(vmw): try removing Weak
+	listeners: Mutex<Vec<&'a ChainListener>>,
 	chain_monitor: Arc<ChainWatchInterface>,
 }
 
@@ -224,7 +224,7 @@ impl<'a> BlockNotifier<'a> {
 	/// Register the given listener to receive events. Only a weak pointer is provided and
 	/// the registration should be freed once that pointer expires.
 	// TODO: unregister
-	pub fn register_listener(&self, listener: Weak<ChainListener + 'a>) {
+	pub fn register_listener(&self, listener: &'a ChainListener) {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
 	}
@@ -252,10 +252,7 @@ impl<'a> BlockNotifier<'a> {
 
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
-				None => ()
-			}
+			listener.block_connected(header, height, txn_matched, indexes_of_txn_matched);
 		}
 		return last_seen != self.chain_monitor.reentered();
 	}
@@ -265,10 +262,7 @@ impl<'a> BlockNotifier<'a> {
 	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let listeners = self.listeners.lock().unwrap().clone();
 		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_disconnected(&header, disconnected_height),
-				None => ()
-			}
+			listener.block_disconnected(&header, disconnected_height);
 		}
 	}
 

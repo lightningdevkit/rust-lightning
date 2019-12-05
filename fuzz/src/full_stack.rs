@@ -136,9 +136,9 @@ impl<'a> Hash for Peer<'a> {
 }
 
 struct MoneyLossDetector<'a, 'b> {
-	manager: Arc<ChannelManager<'b, EnforcingChannelKeys>>,
-	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
-	handler: PeerManager<Peer<'a>>,
+	manager: &'a ChannelManager<'b, EnforcingChannelKeys>,
+	monitor: &'b channelmonitor::SimpleManyChannelMonitor<OutPoint>,
+	handler: PeerManager<'a, Peer<'a>>,
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
@@ -149,7 +149,7 @@ struct MoneyLossDetector<'a, 'b> {
 	blocks_connected: u32,
 }
 impl<'a, 'b> MoneyLossDetector<'a, 'b> {
-	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager<'b, EnforcingChannelKeys>>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
+	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: &'a ChannelManager<'b, EnforcingChannelKeys>, monitor: &'b channelmonitor::SimpleManyChannelMonitor<OutPoint>, handler: PeerManager<'a, Peer<'a>>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -325,12 +325,12 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-	let channelmanager = ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap();
+	let channelmanager = ChannelManager::new(Network::Bitcoin, fee_est.clone(), &monitor, broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap();
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
-	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
-		chan_handler: channelmanager.clone(),
+	let mut loss_detector = MoneyLossDetector::new(&peers, &channelmanager, &monitor, PeerManager::new(MessageHandler {
+		chan_handler: &channelmanager,
 		route_handler: router.clone(),
 	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger)));
 
