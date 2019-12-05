@@ -212,7 +212,7 @@ impl<'a, Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelM
 		let block_hash = header.bitcoin_hash();
 		let mut monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values_mut() {
-			monitor.block_disconnected(disconnected_height, &block_hash);
+			monitor.block_disconnected(disconnected_height, &block_hash, &*self.broadcaster, &*self.fee_estimator);
 		}
 	}
 }
@@ -397,6 +397,96 @@ enum InputMaterial {
 	}
 }
 
+impl Writeable for InputMaterial  {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref amount} => {
+				writer.write_all(&[0; 1])?;
+				script.write(writer)?;
+				pubkey.write(writer)?;
+				writer.write_all(&key[..])?;
+				if *is_htlc {
+					writer.write_all(&[0; 1])?;
+				} else {
+					writer.write_all(&[1; 1])?;
+				}
+				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+			},
+			&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
+				writer.write_all(&[1; 1])?;
+				script.write(writer)?;
+				key.write(writer)?;
+				preimage.write(writer)?;
+				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+				writer.write_all(&byte_utils::be32_to_array(*locktime))?;
+			},
+			&InputMaterial::LocalHTLC { ref script, ref sigs, ref preimage, ref amount } => {
+				writer.write_all(&[2; 1])?;
+				script.write(writer)?;
+				sigs.0.write(writer)?;
+				sigs.1.write(writer)?;
+				preimage.write(writer)?;
+				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl<R: std::io::Read> Readable<R> for InputMaterial {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		let input_material = match <u8 as Readable<R>>::read(reader)? {
+			0 => {
+				let script = Readable::read(reader)?;
+				let pubkey = Readable::read(reader)?;
+				let key = Readable::read(reader)?;
+				let is_htlc = match <u8 as Readable<R>>::read(reader)? {
+					0 => true,
+					1 => false,
+					_ => return Err(DecodeError::InvalidValue),
+				};
+				let amount = Readable::read(reader)?;
+				InputMaterial::Revoked {
+					script,
+					pubkey,
+					key,
+					is_htlc,
+					amount
+				}
+			},
+			1 => {
+				let script = Readable::read(reader)?;
+				let key = Readable::read(reader)?;
+				let preimage = Readable::read(reader)?;
+				let amount = Readable::read(reader)?;
+				let locktime = Readable::read(reader)?;
+				InputMaterial::RemoteHTLC {
+					script,
+					key,
+					preimage,
+					amount,
+					locktime
+				}
+			},
+			2 => {
+				let script = Readable::read(reader)?;
+				let their_sig = Readable::read(reader)?;
+				let our_sig = Readable::read(reader)?;
+				let preimage = Readable::read(reader)?;
+				let amount = Readable::read(reader)?;
+				InputMaterial::LocalHTLC {
+					script,
+					sigs: (their_sig, our_sig),
+					preimage,
+					amount
+				}
+			}
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		Ok(input_material)
+	}
+}
+
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
 /// once they mature to enough confirmations (ANTI_REORG_DELAY)
 #[derive(Clone, PartialEq)]
@@ -412,6 +502,13 @@ enum OnchainEvent {
 	HTLCUpdate {
 		htlc_update: (HTLCSource, PaymentHash),
 	},
+	/// Claim tx aggregate multiple claimable outpoints. One of the outpoint may be claimed by a remote party tx.
+	/// In this case, we need to drop the outpoint and regenerate a new claim tx. By safety, we keep tracking
+	/// the outpoint to be sure to resurect it back to the claim tx if reorgs happen.
+	ContentiousOutpoint {
+		outpoint: BitcoinOutPoint,
+		input_material: InputMaterial,
+	}
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -1183,36 +1280,7 @@ impl ChannelMonitor {
 			writer.write_all(&byte_utils::be64_to_array(claim_tx_data.per_input_material.len() as u64))?;
 			for (outp, tx_material) in claim_tx_data.per_input_material.iter() {
 				outp.write(writer)?;
-				match tx_material {
-					&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref amount} => {
-						writer.write_all(&[0; 1])?;
-						script.write(writer)?;
-						pubkey.write(writer)?;
-						writer.write_all(&key[..])?;
-						if *is_htlc {
-							writer.write_all(&[0; 1])?;
-						} else {
-							writer.write_all(&[1; 1])?;
-						}
-						writer.write_all(&byte_utils::be64_to_array(*amount))?;
-					},
-					&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
-						writer.write_all(&[1; 1])?;
-						script.write(writer)?;
-						key.write(writer)?;
-						preimage.write(writer)?;
-						writer.write_all(&byte_utils::be64_to_array(*amount))?;
-						writer.write_all(&byte_utils::be32_to_array(*locktime))?;
-					},
-					&InputMaterial::LocalHTLC { ref script, ref sigs, ref preimage, ref amount } => {
-						writer.write_all(&[2; 1])?;
-						script.write(writer)?;
-						sigs.0.write(writer)?;
-						sigs.1.write(writer)?;
-						preimage.write(writer)?;
-						writer.write_all(&byte_utils::be64_to_array(*amount))?;
-					}
-				}
+				tx_material.write(writer)?;
 			}
 		}
 
@@ -1237,6 +1305,11 @@ impl ChannelMonitor {
 						writer.write_all(&[1; 1])?;
 						htlc_update.0.write(writer)?;
 						htlc_update.1.write(writer)?;
+					},
+					OnchainEvent::ContentiousOutpoint { ref outpoint, ref input_material } => {
+						writer.write_all(&[2; 1])?;
+						outpoint.write(writer)?;
+						input_material.write(writer)?;
 					}
 				}
 			}
@@ -1461,6 +1534,10 @@ impl ChannelMonitor {
 								log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", single_htlc_tx.input[0].previous_output.txid, single_htlc_tx.input[0].previous_output.vout, height_timer);
 								let mut per_input_material = HashMap::with_capacity(1);
 								per_input_material.insert(single_htlc_tx.input[0].previous_output, InputMaterial::Revoked { script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: true, amount: htlc.amount_msat / 1000 });
+								match self.claimable_outpoints.entry(single_htlc_tx.input[0].previous_output) {
+									hash_map::Entry::Occupied(_) => {},
+									hash_map::Entry::Vacant(entry) => { entry.insert((single_htlc_tx.txid(), height)); }
+								}
 								match self.pending_claim_requests.entry(single_htlc_tx.txid()) {
 									hash_map::Entry::Occupied(_) => {},
 									hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock: htlc.cltv_expiry, per_input_material }); }
@@ -1546,15 +1623,17 @@ impl ChannelMonitor {
 				}
 			}
 			let height_timer = Self::get_height_timer(height, soonest_timelock);
+			let spend_txid = spend_tx.txid();
 			for (input, info) in spend_tx.input.iter_mut().zip(inputs_info.iter()) {
 				let (redeemscript, revocation_key) = sign_input!(sighash_parts, input, info.0, info.1);
 				log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", input.previous_output.txid, input.previous_output.vout, height_timer);
 				per_input_material.insert(input.previous_output, InputMaterial::Revoked { script: redeemscript, pubkey: if info.0.is_some() { Some(revocation_pubkey) } else { None }, key: revocation_key, is_htlc: if info.0.is_some() { true } else { false }, amount: info.1 });
-				if info.2 < soonest_timelock {
-					soonest_timelock = info.2;
+				match self.claimable_outpoints.entry(input.previous_output) {
+					hash_map::Entry::Occupied(_) => {},
+					hash_map::Entry::Vacant(entry) => { entry.insert((spend_txid, height)); }
 				}
 			}
-			match self.pending_claim_requests.entry(spend_tx.txid()) {
+			match self.pending_claim_requests.entry(spend_txid) {
 				hash_map::Entry::Occupied(_) => {},
 				hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock, per_input_material }); }
 			}
@@ -1747,6 +1826,10 @@ impl ChannelMonitor {
 											log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", single_htlc_tx.input[0].previous_output.txid, single_htlc_tx.input[0].previous_output.vout, height_timer);
 											let mut per_input_material = HashMap::with_capacity(1);
 											per_input_material.insert(single_htlc_tx.input[0].previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000, locktime: 0 });
+											match self.claimable_outpoints.entry(single_htlc_tx.input[0].previous_output) {
+												hash_map::Entry::Occupied(_) => {},
+												hash_map::Entry::Vacant(entry) => { entry.insert((single_htlc_tx.txid(), height)); }
+											}
 											match self.pending_claim_requests.entry(single_htlc_tx.txid()) {
 												hash_map::Entry::Occupied(_) => {},
 												hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock: htlc.cltv_expiry, per_input_material}); }
@@ -1788,6 +1871,10 @@ impl ChannelMonitor {
 									log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", timeout_tx.input[0].previous_output.txid, timeout_tx.input[0].previous_output.vout, height_timer);
 									let mut per_input_material = HashMap::with_capacity(1);
 									per_input_material.insert(timeout_tx.input[0].previous_output, InputMaterial::RemoteHTLC { script : redeemscript, key: htlc_key, preimage: None, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry });
+									match self.claimable_outpoints.entry(timeout_tx.input[0].previous_output) {
+										hash_map::Entry::Occupied(_) => {},
+										hash_map::Entry::Vacant(entry) => { entry.insert((timeout_tx.txid(), height)); }
+									}
 									match self.pending_claim_requests.entry(timeout_tx.txid()) {
 										hash_map::Entry::Occupied(_) => {},
 										hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock: htlc.cltv_expiry, per_input_material }); }
@@ -1828,12 +1915,17 @@ impl ChannelMonitor {
 						}
 					}
 					let height_timer = Self::get_height_timer(height, soonest_timelock);
+					let spend_txid = spend_tx.txid();
 					for (input, info) in spend_tx.input.iter_mut().zip(inputs_info.iter()) {
 						let (redeemscript, htlc_key) = sign_input!(sighash_parts, input, info.1, (info.0).0.to_vec());
 						log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", input.previous_output.txid, input.previous_output.vout, height_timer);
 						per_input_material.insert(input.previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*(info.0)), amount: info.1, locktime: 0});
+						match self.claimable_outpoints.entry(input.previous_output) {
+							hash_map::Entry::Occupied(_) => {},
+							hash_map::Entry::Vacant(entry) => { entry.insert((spend_txid, height)); }
+						}
 					}
-					match self.pending_claim_requests.entry(spend_tx.txid()) {
+					match self.pending_claim_requests.entry(spend_txid) {
 						hash_map::Entry::Occupied(_) => {},
 						hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock, per_input_material }); }
 					}
@@ -1952,6 +2044,10 @@ impl ChannelMonitor {
 			log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", spend_tx.input[0].previous_output.txid, spend_tx.input[0].previous_output.vout, height_timer);
 			let mut per_input_material = HashMap::with_capacity(1);
 			per_input_material.insert(spend_tx.input[0].previous_output, InputMaterial::Revoked { script: redeemscript, pubkey: None, key: revocation_key, is_htlc: false, amount: tx.output[0].value });
+			match self.claimable_outpoints.entry(spend_tx.input[0].previous_output) {
+				hash_map::Entry::Occupied(_) => {},
+				hash_map::Entry::Vacant(entry) => { entry.insert((spend_tx.txid(), height)); }
+			}
 			match self.pending_claim_requests.entry(spend_tx.txid()) {
 				hash_map::Entry::Occupied(_) => {},
 				hash_map::Entry::Vacant(entry) => { entry.insert(ClaimTxBumpMaterial { height_timer, feerate_previous: used_feerate, soonest_timelock: height + self.our_to_self_delay as u32, per_input_material }); }
@@ -2015,6 +2111,7 @@ impl ChannelMonitor {
 						let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
 						let mut per_input_material = HashMap::with_capacity(1);
 						per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { script: htlc_script, sigs: (*their_sig, *our_sig), preimage: None, amount: htlc.amount_msat / 1000});
+						//TODO: with option_simplified_commitment track outpoint too
 						log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", htlc_timeout_tx.input[0].previous_output.vout, htlc_timeout_tx.input[0].previous_output.txid, height_timer);
 						pending_claims.push((htlc_timeout_tx.txid(), ClaimTxBumpMaterial { height_timer, feerate_previous: 0, soonest_timelock: htlc.cltv_expiry, per_input_material }));
 						res.push(htlc_timeout_tx);
@@ -2038,6 +2135,7 @@ impl ChannelMonitor {
 							let height_timer = Self::get_height_timer(height, htlc.cltv_expiry);
 							let mut per_input_material = HashMap::with_capacity(1);
 							per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { script: htlc_script, sigs: (*their_sig, *our_sig), preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000});
+							//TODO: with option_simplified_commitment track outpoint too
 							log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", htlc_success_tx.input[0].previous_output.vout, htlc_success_tx.input[0].previous_output.txid, height_timer);
 							pending_claims.push((htlc_success_tx.txid(), ClaimTxBumpMaterial { height_timer, feerate_previous: 0, soonest_timelock: htlc.cltv_expiry, per_input_material }));
 							res.push(htlc_success_tx);
@@ -2272,6 +2370,8 @@ impl ChannelMonitor {
 			}
 
 			// Scan all input to verify is one of the outpoint spent is of interest for us
+			let mut claimed_outpoints = Vec::new();
+			let mut claimed_input_material = Vec::new();
 			for inp in &tx.input {
 				if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&inp.previous_output) {
 					// If outpoint has claim request pending on it...
@@ -2279,10 +2379,9 @@ impl ChannelMonitor {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
-						let mut claimed_outpoints = Vec::new();
-						for (claim_inp, tx_inp) in claim_material.per_input_material.keys().zip(tx.input.iter()) {
-							if *claim_inp != tx_inp.previous_output {
-								claimed_outpoints.push(tx_inp.previous_output.clone());
+						for claim_inp in claim_material.per_input_material.keys() {
+							if *claim_inp == inp.previous_output {
+								claimed_outpoints.push(inp.previous_output.clone());
 							}
 						}
 						if claimed_outpoints.len() == 0 && claim_material.per_input_material.len() == tx.input.len() { // If true, register claim request to be removed after reaching a block security height
@@ -2293,16 +2392,27 @@ impl ChannelMonitor {
 								}
 							}
 						} else { // If false, generate new claim request with update outpoint set
-							for already_claimed in claimed_outpoints {
-								claim_material.per_input_material.remove(&already_claimed);
+							for already_claimed in claimed_outpoints.iter() {
+								if let Some(input_material) = claim_material.per_input_material.remove(&already_claimed) {
+									claimed_input_material.push(input_material);
+								}
 							}
 							// Avoid bump engine using inaccurate feerate due to new transaction size
 							claim_material.feerate_previous = 0;
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
 							bump_candidates.push((ancestor_claimable_txid.0.clone(), claim_material.clone()));
 						}
+						break; //No need to iterate further, either tx is our or their
 					} else {
 						panic!("Inconsistencies between pending_claim_requests map and claimable_outpoints map");
+					}
+				}
+			}
+			for (outpoint, input_material) in claimed_outpoints.iter().zip(claimed_input_material.drain(..)) {
+				match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
+					hash_map::Entry::Occupied(_) => {},
+					hash_map::Entry::Vacant(entry) => {
+						entry.insert(vec![OnchainEvent::ContentiousOutpoint { outpoint: *outpoint, input_material: input_material }]);
 					}
 				}
 			}
@@ -2348,6 +2458,9 @@ impl ChannelMonitor {
 						log_trace!(self, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!((htlc_update.1).0));
 						htlc_updated.push((htlc_update.0, None, htlc_update.1));
 					},
+					OnchainEvent::ContentiousOutpoint { outpoint, .. } => {
+						self.claimable_outpoints.remove(&outpoint);
+					}
 				}
 			}
 		}
@@ -2370,13 +2483,52 @@ impl ChannelMonitor {
 		(watch_outputs, spendable_outputs, htlc_updated)
 	}
 
-	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash) {
-		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
+	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator) {
+		let mut bump_candidates = HashMap::new();
+		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
 			//We may discard:
 			//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 			//- our claim tx on a commitment tx output
+			//- resurect outpoint back in its claimable set and regenerate tx
+			for ev in events {
+				match ev {
+					OnchainEvent::ContentiousOutpoint { outpoint, input_material } => {
+						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&outpoint) {
+							if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
+								// Avoid bump engine using inaccurate feerate due to new transaction size
+								claim_material.feerate_previous = 0;
+								claim_material.per_input_material.insert(outpoint, input_material);
+								// Using a HashMap guarantee us than if we have multiple outpoints getting
+								// resurrected only one bump claim tx is going to be broadcast
+								bump_candidates.insert(ancestor_claimable_txid.clone(), claim_material.clone());
+							}
+						}
+					},
+					_ => {},
+				}
+			}
 		}
-		self.claimable_outpoints.retain(|_, ref v| if v.1 == height { false } else { true });
+		for (_, claim_material) in bump_candidates.iter_mut() {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &claim_material, fee_estimator) {
+				claim_material.height_timer = new_timer;
+				claim_material.feerate_previous = new_feerate;
+				broadcaster.broadcast_transaction(&bump_tx);
+			}
+		}
+		for (ancestor_claim_txid, claim_material) in bump_candidates.drain() {
+			self.pending_claim_requests.insert(ancestor_claim_txid.0, claim_material);
+		}
+		//TODO: if we implement cross-block aggregated claim transaction we need to refresh set of outpoints and regenerate tx but
+		// right now if one of the outpoint get disconnected, just erase whole pending claim request.
+		let mut remove_request = Vec::new();
+		self.claimable_outpoints.retain(|_, ref v|
+			if v.1 == height {
+			remove_request.push(v.0.clone());
+			false
+			} else { true });
+		for req in remove_request {
+			self.pending_claim_requests.remove(&req);
+		}
 		self.last_block_hash = block_hash.clone();
 	}
 
@@ -2951,55 +3103,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			let mut per_input_material = HashMap::with_capacity(cmp::min(per_input_material_len as usize, MAX_ALLOC_SIZE / 128));
 			for _ in 0 ..per_input_material_len {
 				let outpoint = Readable::read(reader)?;
-				let tx_material = match <u8 as Readable<R>>::read(reader)? {
-					0 => {
-						let script = Readable::read(reader)?;
-						let pubkey = Readable::read(reader)?;
-						let key = Readable::read(reader)?;
-						let is_htlc = match <u8 as Readable<R>>::read(reader)? {
-							0 => true,
-							1 => false,
-							_ => return Err(DecodeError::InvalidValue),
-						};
-						let amount = Readable::read(reader)?;
-						InputMaterial::Revoked {
-							script,
-							pubkey,
-							key,
-							is_htlc,
-							amount
-						}
-					},
-					1 => {
-						let script = Readable::read(reader)?;
-						let key = Readable::read(reader)?;
-						let preimage = Readable::read(reader)?;
-						let amount = Readable::read(reader)?;
-						let locktime = Readable::read(reader)?;
-						InputMaterial::RemoteHTLC {
-							script,
-							key,
-							preimage,
-							amount,
-							locktime
-						}
-					},
-					2 => {
-						let script = Readable::read(reader)?;
-						let their_sig = Readable::read(reader)?;
-						let our_sig = Readable::read(reader)?;
-						let preimage = Readable::read(reader)?;
-						let amount = Readable::read(reader)?;
-						InputMaterial::LocalHTLC {
-							script,
-							sigs: (their_sig, our_sig),
-							preimage,
-							amount
-						}
-					}
-					_ => return Err(DecodeError::InvalidValue),
-				};
-				per_input_material.insert(outpoint, tx_material);
+				let input_material = Readable::read(reader)?;
+				per_input_material.insert(outpoint, input_material);
 			}
 			pending_claim_requests.insert(ancestor_claim_txid, ClaimTxBumpMaterial { height_timer, feerate_previous, soonest_timelock, per_input_material });
 		}
@@ -3034,6 +3139,14 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 							htlc_update: (htlc_source, hash)
 						}
 					},
+					2 => {
+						let outpoint = Readable::read(reader)?;
+						let input_material = Readable::read(reader)?;
+						OnchainEvent::ContentiousOutpoint {
+							outpoint,
+							input_material
+						}
+					}
 					_ => return Err(DecodeError::InvalidValue),
 				};
 				events.push(ev);
