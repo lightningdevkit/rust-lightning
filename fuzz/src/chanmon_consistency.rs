@@ -24,12 +24,13 @@ use bitcoin_hashes::sha256d::Hash as Sha256d;
 use lightning::chain::chaininterface;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
-use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, ChannelManagerReadArgs};
 use lightning::ln::router::{Route, RouteHop};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, LightningError, UpdateAddHTLC, LocalFeatures};
+use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -130,7 +131,7 @@ struct KeyProvider {
 	channel_id: atomic::AtomicU8,
 }
 impl KeysInterface for KeyProvider {
-	type ChanKeySigner = InMemoryChannelKeys;
+	type ChanKeySigner = EnforcingChannelKeys;
 
 	fn get_node_secret(&self) -> SecretKey {
 		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap()
@@ -148,15 +149,15 @@ impl KeysInterface for KeyProvider {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_id]).unwrap())
 	}
 
-	fn get_channel_keys(&self, _inbound: bool) -> InMemoryChannelKeys {
-		InMemoryChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool) -> EnforcingChannelKeys {
+		EnforcingChannelKeys::new(InMemoryChannelKeys {
 			funding_key:               SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
 			revocation_base_key:       SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
 			payment_base_key:          SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
 			delayed_payment_base_key:  SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
 			htlc_base_key:             SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
 			commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
-		}
+		})
 	}
 
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
@@ -225,7 +226,7 @@ pub fn do_test(data: &[u8]) {
 				channel_monitors: &monitor_refs,
 			};
 
-			let res = (<(Sha256d, ChannelManager<InMemoryChannelKeys>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
+			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
 			for (_, was_good) in $old_monitors.latest_updates_good_at_last_ser.lock().unwrap().iter() {
 				if !was_good {
 					// If the last time we updated a monitor we didn't successfully update (and we
