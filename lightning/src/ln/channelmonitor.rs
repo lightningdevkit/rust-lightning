@@ -1977,6 +1977,7 @@ impl ChannelMonitor {
 
 	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
 	fn check_spend_remote_htlc(&mut self, tx: &Transaction, commitment_number: u64, height: u32, fee_estimator: &FeeEstimator) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
+		//TODO: send back new outputs to guarantee pending_claim_request consistency
 		if tx.input.len() != 1 || tx.output.len() != 1 {
 			return (None, None)
 		}
