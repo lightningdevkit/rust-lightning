@@ -3310,8 +3310,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			excess_data: Vec::new(),
 		};
 
-		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		let sig = self.secp_ctx.sign(&msghash, self.local_keys.funding_key());
+		let sig = self.local_keys.sign_channel_announcement(&msg, &self.secp_ctx)
+			.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement"))?;
 
 		Ok((msg, sig))
 	}

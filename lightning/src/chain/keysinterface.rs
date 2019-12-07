@@ -12,6 +12,7 @@ use bitcoin::util::bip143;
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::HashEngine as Sha256State;
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{SecretKey, PublicKey};
@@ -20,9 +21,11 @@ use secp256k1;
 
 use util::byte_utils;
 use util::logger::Logger;
+use util::ser::Writeable;
 
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
+use ln::msgs;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -140,6 +143,14 @@ pub trait ChannelKeys : Send {
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
 	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+
+	/// Signs a channel announcement message with our funding key, proving it comes from one
+	/// of the channel participants.
+	///
+	/// Note that if this fails or is rejected, the channel will not be publicly announced and
+	/// our counterparty may (though likely will not) close the channel on us for violating the
+	/// protocol.
+	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 }
 
 #[derive(Clone)]
@@ -167,7 +178,6 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 
-
 	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
 		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_script, channel_value_satoshis)[..]);
@@ -190,6 +200,11 @@ impl ChannelKeys for InMemoryChannelKeys {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
+	}
+
+	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
 }
 
