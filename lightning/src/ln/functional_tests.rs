@@ -6558,3 +6558,111 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	}
 	check_closed_broadcast!(nodes[0]);
 }
+
+#[test]
+fn test_bump_penalty_txn_on_remote_commitment() {
+	// In case of claim txn with too low feerates for getting into mempools, RBF-bump them to be sure
+	// we're able to claim outputs on remote commitment transaction before timelocks expiration
+
+	// Create 2 HTLCs
+	// Provide preimage for one
+	// Check aggregation
+
+	let nodes = create_network(2, &[None, None]);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, LocalFeatures::new(), LocalFeatures::new());
+	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
+	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
+
+	// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
+	let remote_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+	assert_eq!(remote_txn[0].output.len(), 4);
+	assert_eq!(remote_txn[0].input.len(), 1);
+	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.txid());
+
+	// Claim a HTLC without revocation (provide B monitor with preimage)
+	nodes[1].node.claim_funds(payment_preimage, 3_000_000);
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![remote_txn[0].clone()] }, 1);
+	check_added_monitors!(nodes[1], 1);
+
+	// One or more claim tx should have been broadcast, check it
+	let timeout;
+	let preimage;
+	let feerate_timeout;
+	let feerate_preimage;
+	{
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 6); // 2 * claim tx (broadcasted from ChannelMonitor) * 2 (block-reparsing) + local commitment tx + local HTLC-timeout (broadcasted from ChannelManager)
+		assert_eq!(node_txn[0], node_txn[4]);
+		assert_eq!(node_txn[1], node_txn[5]);
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[1].input.len(), 1);
+		check_spends!(node_txn[0], remote_txn[0].clone());
+		check_spends!(node_txn[1], remote_txn[0].clone());
+		if node_txn[0].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
+			timeout = node_txn[0].txid();
+			let index = node_txn[0].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
+			feerate_timeout = fee * 1000 / node_txn[0].get_weight() as u64;
+
+			preimage = node_txn[1].txid();
+			let index = node_txn[1].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
+			feerate_preimage = fee * 1000 / node_txn[1].get_weight() as u64;
+		} else {
+			timeout = node_txn[1].txid();
+			let index = node_txn[1].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
+			feerate_timeout = fee * 1000 / node_txn[1].get_weight() as u64;
+
+			preimage = node_txn[0].txid();
+			let index = node_txn[0].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
+			feerate_preimage = fee * 1000 / node_txn[0].get_weight() as u64;
+		}
+		node_txn.clear();
+	};
+	assert_ne!(feerate_timeout, 0);
+	assert_ne!(feerate_preimage, 0);
+
+	// After exhaustion of height timer, new bumped claim txn should have been broadcast, check it
+	connect_blocks(&nodes[1].block_notifier, 15, 1,  true, header.bitcoin_hash());
+	{
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 2);
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[1].input.len(), 1);
+		check_spends!(node_txn[0], remote_txn[0].clone());
+		check_spends!(node_txn[1], remote_txn[0].clone());
+		if node_txn[0].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
+			let index = node_txn[0].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
+			assert!(new_feerate * 100 > feerate_timeout * 125);
+			assert_ne!(timeout, node_txn[0].txid());
+
+			let index = node_txn[1].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[1].get_weight() as u64;
+			assert!(new_feerate * 100 > feerate_preimage * 125);
+			assert_ne!(preimage, node_txn[1].txid());
+		} else {
+			let index = node_txn[1].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[1].get_weight() as u64;
+			assert!(new_feerate * 100 > feerate_timeout * 125);
+			assert_ne!(timeout, node_txn[1].txid());
+
+			let index = node_txn[0].input[0].previous_output.vout;
+			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
+			assert!(new_feerate * 100 > feerate_preimage * 125);
+			assert_ne!(preimage, node_txn[0].txid());
+		}
+		node_txn.clear();
+	}
+
+	nodes[1].node.get_and_clear_pending_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+}
