@@ -318,6 +318,12 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
 /// object!
+///
+/// Note that ChannelManager is responsible for tracking liveness of its channels and generating
+/// ChannelUpdate messages informing peers that the channel is temporarily disabled. To avoid
+/// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
+/// offline for a full minute. In order to track this, you must call
+/// timer_chan_freshness_every_min roughly once per minute, though it doesn't have to be perfec.
 pub struct ChannelManager<'a> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
@@ -772,6 +778,7 @@ impl<'a> ChannelManager<'a> {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		for tx in local_txn {
+			log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 			self.tx_broadcaster.broadcast_transaction(&tx);
 		}
 	}
@@ -889,6 +896,21 @@ impl<'a> ChannelManager<'a> {
 		};
 
 		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
+				#[cfg(test)]
+				{
+					// In tests, make sure that the initial onion pcket data is, at least, non-0.
+					// We could do some fancy randomness test here, but, ehh, whatever.
+					// This checks for the issue where you can calculate the path length given the
+					// onion data as all the path entries that the originator sent will be here
+					// as-is (and were originally 0s).
+					// Of course reverse path calculation is still pretty easy given naive routing
+					// algorithms, but this fixes the most-obvious case.
+					let mut new_packet_data = [0; 19*65];
+					chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
+					assert_ne!(new_packet_data[0..65], [0; 65][..]);
+					assert_ne!(new_packet_data[..], [0; 19*65][..]);
+				}
+
 				// OUR PAYMENT!
 				// final_expiry_too_soon
 				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
@@ -1082,14 +1104,14 @@ impl<'a> ChannelManager<'a> {
 			}
 		}
 
-		let session_priv = self.keys_manager.get_session_key();
+		let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
 		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
 				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height)?;
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, &payment_hash);
 
 		let _ = self.total_consistency_lock.read().unwrap();
 
@@ -1485,6 +1507,31 @@ impl<'a> ChannelManager<'a> {
 		if new_events.is_empty() { return }
 		let mut events = self.pending_events.lock().unwrap();
 		events.append(&mut new_events);
+	}
+
+	/// If a peer is disconnected we mark any channels with that peer as 'disabled'.
+	/// After some time, if channels are still disabled we need to broadcast a ChannelUpdate
+	/// to inform the network about the uselessness of these channels.
+	///
+	/// This method handles all the details, and must be called roughly once per minute.
+	pub fn timer_chan_freshness_every_min(&self) {
+		let _ = self.total_consistency_lock.read().unwrap();
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = channel_state_lock.borrow_parts();
+		for (_, chan) in channel_state.by_id {
+			if chan.is_disabled_staged() && !chan.is_live() {
+				if let Ok(update) = self.get_channel_update(&chan) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+						msg: update
+					});
+				}
+				chan.to_fresh();
+			} else if chan.is_disabled_staged() && chan.is_live() {
+				chan.to_fresh();
+			} else if chan.is_disabled_marked() {
+				chan.to_disabled_staged();
+			}
+		}
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
@@ -2077,6 +2124,7 @@ impl<'a> ChannelManager<'a> {
 			}
 		};
 		if let Some(broadcast_tx) = tx {
+			log_trace!(self, "Broadcast onchain {}", log_tx!(broadcast_tx));
 			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
 		}
 		if let Some(chan) = chan_option {
@@ -2795,8 +2843,8 @@ impl<'a> ChannelMessageHandler for ChannelManager<'a> {
 				log_debug!(self, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
-						//TODO: mark channel disabled (and maybe announce such after a timeout).
 						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused();
+						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {
 							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 							failed_payments.push((chan_update, failed_adds));

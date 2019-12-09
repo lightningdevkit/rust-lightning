@@ -4,3 +4,7 @@ members = [
     "lightning",
     "lightning-net-tokio",
 ]
+
+# Our tests do actual crypo and lots of work, the tradeoff for -O1 is well worth it
+[profile.dev]
+opt-level = 1

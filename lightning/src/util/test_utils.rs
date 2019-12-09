@@ -226,10 +226,10 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
 	fn get_channel_keys(&self, inbound: bool) -> keysinterface::ChannelKeys { self.backing.get_channel_keys(inbound) }
 
-	fn get_session_key(&self) -> SecretKey {
+	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		match *self.override_session_priv.lock().unwrap() {
-			Some(key) => key.clone(),
-			None => self.backing.get_session_key()
+			Some(key) => (key.clone(), [0; 32]),
+			None => self.backing.get_onion_rand()
 		}
 	}
 

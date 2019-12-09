@@ -1435,7 +1435,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 		let msg = msgs::UpdateAddHTLC {
 			channel_id: chan_1.2,
 			htlc_id,
@@ -4815,7 +4815,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
 		onion_payloads[0].realm = 3;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+		msg.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	}, ||{}, true, Some(PERM|1), Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: channels[1].0.contents.short_channel_id, is_permanent: true}));//XXX incremented channels idx here
 
 	// final node failure
@@ -4825,7 +4825,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
 		onion_payloads[1].realm = 3;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+		msg.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	}, ||{}, false, Some(PERM|1), Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: channels[1].0.contents.short_channel_id, is_permanent: true}));
 
 	// the following three with run_onion_failure_test_with_fail_intercept() test only the origin node
@@ -5003,7 +5003,7 @@ fn test_onion_failure() {
 		route.hops[1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.hops[0].cltv_expiry_delta + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(&route, height).unwrap();
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &payment_hash);
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 		msg.cltv_expiry = htlc_cltv;
 		msg.onion_routing_packet = onion_packet;
 	}, ||{}, true, Some(21), None);
@@ -5253,7 +5253,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route, &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, &our_payment_hash);
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 
 	let mut msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -6139,7 +6139,7 @@ fn test_data_loss_protect() {
 		channel_monitors: &channel_monitors
 	}).unwrap().1;
 	nodes[0].node = Arc::new(node_state_0);
-	monitor.add_update_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok();
+	assert!(monitor.add_update_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok());
 	nodes[0].chan_monitor = monitor;
 	nodes[0].chain_monitor = chain_monitor;
 
@@ -6255,4 +6255,64 @@ fn test_check_htlc_underpaying() {
 		panic!("Unexpected event");
 	}
 	nodes[1].node.get_and_clear_pending_events();
+}
+
+#[test]
+fn test_announce_disable_channels() {
+	// Create 2 channels between A and B. Disconnect B. Call timer_chan_freshness_every_min and check for generated
+	// ChannelUpdate. Reconnect B, reestablish and check there is non-generated ChannelUpdate.
+
+	let nodes = create_network(2, &[None, None]);
+
+	let short_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+	let short_id_2 = create_announced_chan_between_nodes(&nodes, 1, 0, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+	let short_id_3 = create_announced_chan_between_nodes(&nodes, 0, 1, LocalFeatures::new(), LocalFeatures::new()).0.contents.short_channel_id;
+
+	// Disconnect peers
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	nodes[0].node.timer_chan_freshness_every_min(); // dirty -> stagged
+	nodes[0].node.timer_chan_freshness_every_min(); // staged -> fresh
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3);
+	for e in msg_events {
+		match e {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				let short_id = msg.contents.short_channel_id;
+				// Check generated channel_update match list in PendingChannelUpdate
+				if short_id != short_id_1 && short_id != short_id_2 && short_id != short_id_3 {
+					panic!("Generated ChannelUpdate for wrong chan!");
+				}
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+	// Reconnect peers
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 3);
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 3);
+
+	// Reestablish chan_1
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	// Reestablish chan_2
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[1]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[1]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	// Reestablish chan_3
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[2]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[2]).unwrap();
+	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	nodes[0].node.timer_chan_freshness_every_min();
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 0);
 }

@@ -1,6 +1,7 @@
 use chain::transaction::OutPoint;
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::blockdata::transaction::Transaction;
 use secp256k1::key::PublicKey;
 
 use ln::router::Route;
@@ -86,6 +87,29 @@ impl<'a> std::fmt::Display for DebugRoute<'a> {
 macro_rules! log_route {
 	($obj: expr) => {
 		::util::macro_logger::DebugRoute(&$obj)
+	}
+}
+
+pub(crate) struct DebugTx<'a>(pub &'a Transaction);
+impl<'a> std::fmt::Display for DebugTx<'a> {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 && (self.0.input[0].sequence >> 8*3) as u8 == 0x80 { write!(f, "commitment tx")?; }
+		else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 { write!(f, "closing tx")?; }
+		else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 133 && self.0.input[0].witness.len() == 5 { write!(f, "HTLC-timeout tx")?; }
+		else if self.0.input.len() == 1 && (self.0.input[0].witness.last().unwrap().len() == 138 || self.0.input[0].witness.last().unwrap().len() == 139) && self.0.input[0].witness.len() == 5 { write!(f, "HTLC-success tx")?; }
+		else {
+			for inp in &self.0.input {
+				if inp.witness.last().unwrap().len() == 133 { write!(f, "preimage tx")?; break }
+				else if inp.witness.last().unwrap().len() == 138 { write!(f, "timeout tx")?; break }
+			}
+		}
+		Ok(())
+	}
+}
+
+macro_rules! log_tx {
+	($obj: expr) => {
+		::util::macro_logger::DebugTx(&$obj)
 	}
 }
 

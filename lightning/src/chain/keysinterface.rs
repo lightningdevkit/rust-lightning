@@ -77,8 +77,8 @@ pub trait KeysInterface: Send + Sync {
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
 	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys;
-	/// Get a secret for construting an onion packet
-	fn get_session_key(&self) -> SecretKey;
+	/// Get a secret and PRNG seed for construting an onion packet
+	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
 	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
 	/// transaction is created, at which point they will use the outpoint in the funding
 	/// transaction.
@@ -258,13 +258,20 @@ impl KeysInterface for KeysManager {
 		}
 	}
 
-	fn get_session_key(&self) -> SecretKey {
+	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		let mut sha = self.unique_start.clone();
 
 		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
 		sha.input(&child_privkey.private_key.key[..]);
-		SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted")
+
+		let mut rng_seed = sha.clone();
+		// Not exactly the most ideal construction, but the second value will get fed into
+		// ChaCha so it is another step harder to break.
+		rng_seed.input(b"RNG Seed Salt");
+		sha.input(b"Session Key Salt");
+		(SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted"),
+		Sha256::from_engine(rng_seed).into_inner())
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
