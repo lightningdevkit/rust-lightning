@@ -2421,8 +2421,6 @@ impl ChannelMonitor {
 									claimed_input_material.push(input_material);
 								}
 							}
-							// Avoid bump engine using inaccurate feerate due to new transaction size
-							claim_material.feerate_previous = 0;
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
 							bump_candidates.push((ancestor_claimable_txid.0.clone(), claim_material.clone()));
 						}
@@ -2519,8 +2517,6 @@ impl ChannelMonitor {
 					OnchainEvent::ContentiousOutpoint { outpoint, input_material } => {
 						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&outpoint) {
 							if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
-								// Avoid bump engine using inaccurate feerate due to new transaction size
-								claim_material.feerate_previous = 0;
 								claim_material.per_input_material.insert(outpoint, input_material);
 								// Using a HashMap guarantee us than if we have multiple outpoints getting
 								// resurrected only one bump claim tx is going to be broadcast
