@@ -328,7 +328,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let monitor = channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone(), Arc::clone(&logger), fee_est.clone());
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
-	let mut config = UserConfig::new();
+	let mut config = UserConfig::default();
 	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;

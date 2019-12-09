@@ -4225,7 +4225,7 @@ mod tests {
 		let keys_provider: Arc<KeysInterface> = Arc::new(Keys { chan_keys });
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let mut config = UserConfig::new();
+		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
 		let mut chan = Channel::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
