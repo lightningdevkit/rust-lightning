@@ -1904,7 +1904,7 @@ fn test_justice_tx() {
 		let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
-		test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone());
+		test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone(), revoked_local_txn[0].clone());
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 
@@ -1947,7 +1947,7 @@ fn test_justice_tx() {
 		let node_txn = test_txn_broadcast(&nodes[1], &chan_6, Some(revoked_local_txn[0].clone()), HTLCType::SUCCESS);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
-		test_revoked_htlc_claim_txn_broadcast(&nodes[0], node_txn[1].clone());
+		test_revoked_htlc_claim_txn_broadcast(&nodes[0], node_txn[1].clone(), revoked_local_txn[0].clone());
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -3854,7 +3854,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_closed_broadcast!(nodes[1]);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 4);
+	assert_eq!(node_txn.len(), 5);
 	assert_eq!(node_txn[3].input.len(), 1);
 	check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
 
@@ -6502,40 +6502,38 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let header_133 = connect_blocks(&nodes[0].block_notifier, 3, 130, true, header_130.bitcoin_hash());
 	let node_txn = {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 4); // 2 first tx : bumped claiming txn on Revoked Commitment Tx + 2 last tx : bumped claiming txn on Revoked HTLCs Txn
-		check_spends!(node_txn[0], revoked_local_txn[0].clone());
-		check_spends!(node_txn[1], revoked_local_txn[0].clone());
-		assert_eq!(node_txn[2].input.len(), 1);
-		assert_eq!(node_txn[2].output.len(), 1);
-		assert_eq!(node_txn[3].input.len(), 1);
-		assert_eq!(node_txn[3].output.len(), 1);
+		assert_eq!(node_txn.len(), 2); //2 last tx : bumped claiming txn on Revoked HTLCs Txn, there is no bumped commitment tx as it's empty of claiming outpoints
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].output.len(), 1);
+		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[1].output.len(), 1);
 		// Verify bumped tx is different and 25% bump heuristic
-		if node_txn[2].input[0].previous_output.txid == revoked_htlc_txn[0].txid() {
-			check_spends!(node_txn[2], revoked_htlc_txn[0].clone());
-			assert_ne!(first, node_txn[2].txid());
-			let fee = revoked_htlc_txn[0].output[0].value - node_txn[2].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[2].get_weight() as u64;
+		if node_txn[0].input[0].previous_output.txid == revoked_htlc_txn[0].txid() {
+			check_spends!(node_txn[0], revoked_htlc_txn[0].clone());
+			assert_ne!(first, node_txn[0].txid());
+			let fee = revoked_htlc_txn[0].output[0].value - node_txn[0].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
 			assert!(new_feerate * 100 > feerate_1 * 125);
 
-			check_spends!(node_txn[3], revoked_htlc_txn[1].clone());
-			assert_ne!(second, node_txn[3].txid());
-			let fee = revoked_htlc_txn[1].output[0].value - node_txn[3].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[3].get_weight() as u64;
+			check_spends!(node_txn[1], revoked_htlc_txn[1].clone());
+			assert_ne!(second, node_txn[1].txid());
+			let fee = revoked_htlc_txn[1].output[0].value - node_txn[1].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[1].get_weight() as u64;
 			assert!(new_feerate * 100 > feerate_2 * 125);
-		} else if node_txn[2].input[0].previous_output.txid == revoked_htlc_txn[1].txid() {
-			check_spends!(node_txn[2], revoked_htlc_txn[1].clone());
-			assert_ne!(second, node_txn[2].txid());
-			let fee = revoked_htlc_txn[1].output[0].value - node_txn[2].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[2].get_weight() as u64;
+		} else if node_txn[0].input[0].previous_output.txid == revoked_htlc_txn[1].txid() {
+			check_spends!(node_txn[0], revoked_htlc_txn[1].clone());
+			assert_ne!(second, node_txn[0].txid());
+			let fee = revoked_htlc_txn[1].output[0].value - node_txn[0].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
 			assert!(new_feerate * 100 > feerate_2 * 125);
 
-			check_spends!(node_txn[3], revoked_htlc_txn[0].clone());
-			assert_ne!(first, node_txn[3].txid());
-			let fee = revoked_htlc_txn[0].output[0].value - node_txn[3].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[3].get_weight() as u64;
+			check_spends!(node_txn[1], revoked_htlc_txn[0].clone());
+			assert_ne!(first, node_txn[1].txid());
+			let fee = revoked_htlc_txn[0].output[0].value - node_txn[1].output[0].value;
+			let new_feerate = fee * 1000 / node_txn[1].get_weight() as u64;
 			assert!(new_feerate * 100 > feerate_1 * 125);
 		} else { assert!(false) }
-		let txn = vec![node_txn[0].clone(), node_txn[1].clone(), node_txn[2].clone(), node_txn[3].clone()];
+		let txn = vec![node_txn[0].clone(), node_txn[1].clone()];
 		node_txn.clear();
 		txn
 	};
