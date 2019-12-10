@@ -2418,10 +2418,15 @@ impl ChannelMonitor {
 						// before we could anyway), wait for ANTI_REORG_DELAY and clean the RBF
 						// tracking map.
 						if set_equality {
+							let new_event = OnchainEvent::Claim { claim_request: ancestor_claimable_txid.0.clone() };
 							match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
-								hash_map::Entry::Occupied(_) => {},
+								hash_map::Entry::Occupied(mut entry) => {
+									if !entry.get().contains(&new_event) {
+										entry.get_mut().push(new_event);
+									}
+								},
 								hash_map::Entry::Vacant(entry) => {
-									entry.insert(vec![OnchainEvent::Claim { claim_request: ancestor_claimable_txid.0.clone()}]);
+									entry.insert(vec![new_event]);
 								}
 							}
 						} else { // If false, generate new claim request with update outpoint set
@@ -2440,10 +2445,15 @@ impl ChannelMonitor {
 				}
 			}
 			for (outpoint, input_material) in claimed_outputs_material.drain(..) {
+				let new_event = OnchainEvent::ContentiousOutpoint { outpoint, input_material };
 				match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
-					hash_map::Entry::Occupied(_) => {},
+					hash_map::Entry::Occupied(mut entry) => {
+						if !entry.get().contains(&new_event) {
+							entry.get_mut().push(new_event);
+						}
+					},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![OnchainEvent::ContentiousOutpoint { outpoint, input_material }]);
+						entry.insert(vec![new_event]);
 					}
 				}
 			}
