@@ -2492,8 +2492,13 @@ impl ChannelMonitor {
 			for ev in events {
 				match ev {
 					OnchainEvent::Claim { claim_request } => {
-						// We may remove a whole set of claim outpoints here, as these one may have been aggregated in a single tx and claimed so atomically
-						self.pending_claim_requests.remove(&claim_request);
+						// We may remove a whole set of claim outpoints here, as these one may have
+						// been aggregated in a single tx and claimed so atomically
+						if let Some(bump_material) = self.pending_claim_requests.remove(&claim_request) {
+							for outpoint in bump_material.per_input_material.keys() {
+								self.claimable_outpoints.remove(&outpoint);
+							}
+						}
 					},
 					OnchainEvent::HTLCUpdate { htlc_update } => {
 						log_trace!(self, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!((htlc_update.1).0));
