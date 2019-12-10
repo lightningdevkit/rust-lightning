@@ -6762,3 +6762,49 @@ fn test_set_outpoints_partial_claiming() {
 		node_txn.clear();
 	}
 }
+
+#[test]
+fn test_bump_txn_sanitize_tracking_maps() {
+	// Sanitizing pendning_claim_request and claimable_outpoints used to be buggy,
+	// verify we clean then right after expiration of ANTI_REORG_DELAY.
+
+	let nodes = create_network(2, &[None, None]);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, LocalFeatures::new(), LocalFeatures::new());
+	// Lock HTLC in both directions
+	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
+	route_payment(&nodes[1], &vec!(&nodes[0])[..], 9_000_000).0;
+
+	let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().last_local_commitment_txn.clone();
+	assert_eq!(revoked_local_txn[0].input.len(), 1);
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
+
+	// Revoke local commitment tx
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 9_000_000);
+
+	// Broadcast set of revoked txn on A
+	let header_128 = connect_blocks(&nodes[0].block_notifier, 128, 0,  false, Default::default());
+	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_local_txn[0].clone()] }, 129);
+	check_closed_broadcast!(nodes[0]);
+	let penalty_txn = {
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 7);
+		check_spends!(node_txn[0], revoked_local_txn[0].clone());
+		check_spends!(node_txn[1], revoked_local_txn[0].clone());
+		check_spends!(node_txn[2], revoked_local_txn[0].clone());
+		let penalty_txn = vec![node_txn[0].clone(), node_txn[1].clone(), node_txn[2].clone()];
+		node_txn.clear();
+		penalty_txn
+	};
+	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: header_129.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_130, txdata: penalty_txn }, 130);
+	connect_blocks(&nodes[0].block_notifier, 5, 130,  false, header_130.bitcoin_hash());
+	{
+		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		if let Some(monitor) = monitors.get(&OutPoint::new(chan.3.txid(), 0)) {
+			assert!(monitor.pending_claim_requests.is_empty());
+			assert!(monitor.claimable_outpoints.is_empty());
+		}
+	}
+}
