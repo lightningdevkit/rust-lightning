@@ -2414,25 +2414,35 @@ impl ChannelMonitor {
 							}
 						}
 
-						// If this is our transaction (or our counterparty spent all the outputs
-						// before we could anyway), wait for ANTI_REORG_DELAY and clean the RBF
-						// tracking map.
-						if set_equality {
-							let new_event = OnchainEvent::Claim { claim_request: ancestor_claimable_txid.0.clone() };
-							match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
-								hash_map::Entry::Occupied(mut entry) => {
-									if !entry.get().contains(&new_event) {
-										entry.get_mut().push(new_event);
+						macro_rules! clean_claim_request_after_safety_delay {
+							() => {
+								let new_event = OnchainEvent::Claim { claim_request: ancestor_claimable_txid.0.clone() };
+								match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
+									hash_map::Entry::Occupied(mut entry) => {
+										if !entry.get().contains(&new_event) {
+											entry.get_mut().push(new_event);
+										}
+									},
+									hash_map::Entry::Vacant(entry) => {
+										entry.insert(vec![new_event]);
 									}
-								},
-								hash_map::Entry::Vacant(entry) => {
-									entry.insert(vec![new_event]);
 								}
 							}
+						}
+
+						// If this is our transaction (or our counterparty spent all the outputs
+						// before we could anyway with same inputs order than us), wait for
+						// ANTI_REORG_DELAY and clean the RBF tracking map.
+						if set_equality {
+							clean_claim_request_after_safety_delay!();
 						} else { // If false, generate new claim request with update outpoint set
 							for input in tx.input.iter() {
 								if let Some(input_material) = claim_material.per_input_material.remove(&input.previous_output) {
 									claimed_outputs_material.push((input.previous_output, input_material));
+								}
+								// If there are no outpoints left to claim in this request, drop it entirely after ANTI_REORG_DELAY.
+								if claim_material.per_input_material.is_empty() {
+									clean_claim_request_after_safety_delay!();
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
