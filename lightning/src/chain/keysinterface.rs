@@ -94,6 +94,22 @@ pub trait KeysInterface: Send + Sync {
 
 /// Set of lightning keys needed to operate a channel as described in BOLT 3.
 ///
+/// Signing services could be implemented on a hardware wallet. In this case,
+/// the current ChannelKeys would be a front-end on top of a communication
+/// channel connected to your secure device and lightning key material wouldn't
+/// reside on a hot server. Nevertheless, a this deployment would still need
+/// to trust the ChannelManager to avoid loss of funds as this latest component
+/// could ask to sign commitment transaction with HTLCs paying to attacker pubkeys.
+///
+/// A more secure iteration would be to use hashlock (or payment points) to pair
+/// invoice/incoming HTLCs with outgoing HTLCs to implement a no-trust-ChannelManager
+/// at the price of more state and computation on the hardware wallet side. In the future,
+/// we are looking forward to design such interface.
+///
+/// In any case, ChannelMonitor or fallback watchtowers are always going to be trusted
+/// to act, as liveness and breach reply correctness are always going to be hard requirements
+/// of LN security model, orthogonal of key management issues.
+///
 /// If you're implementing a custom signer, you almost certainly want to implement
 /// Readable/Writable to serialize out a unique reference to this set of keys so
 /// that you can serialize the full ChannelManager object.
@@ -106,9 +122,10 @@ pub trait ChannelKeys : Send {
 	fn funding_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key for blinded revocation pubkey
 	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key used in commitment tx htlc outputs
+	/// Gets the local secret key used in to_remote output of remote commitment tx
+	/// (and also as part of obscured commitment number)
 	fn payment_base_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key used in HTLC tx
+	/// Gets the local secret key used in HTLC-Success/HTLC-Timeout txn and to_local output
 	fn delayed_payment_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local htlc secret key used in commitment tx htlc outputs
 	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
