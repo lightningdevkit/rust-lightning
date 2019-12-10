@@ -2331,7 +2331,7 @@ impl ChannelMonitor {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
-		let mut bump_candidates = Vec::new();
+		let mut bump_candidates = HashMap::new();
 		for tx in txn_matched {
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
@@ -2436,7 +2436,7 @@ impl ChannelMonitor {
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
-							bump_candidates.push((ancestor_claimable_txid.0.clone(), claim_material.clone()));
+							bump_candidates.insert(ancestor_claimable_txid.0.clone(), claim_material.clone());
 						}
 						break; //No need to iterate further, either tx is our or their
 					} else {
@@ -2512,17 +2512,19 @@ impl ChannelMonitor {
 		}
 		for (ancestor_claim_txid, ref mut cached_claim_datas) in self.pending_claim_requests.iter_mut() {
 			if cached_claim_datas.height_timer == height {
-				bump_candidates.push((ancestor_claim_txid.clone(), cached_claim_datas.clone()));
+				if let hash_map::Entry::Vacant(entry) = bump_candidates.entry(ancestor_claim_txid.clone()) {
+					entry.insert(cached_claim_datas.clone());
+				}
 			}
 		}
-		for &mut (_, ref mut cached_claim_datas) in bump_candidates.iter_mut() {
+		for ref mut cached_claim_datas in bump_candidates.values_mut() {
 			if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &cached_claim_datas, fee_estimator) {
 				cached_claim_datas.height_timer = new_timer;
 				cached_claim_datas.feerate_previous = new_feerate;
 				broadcaster.broadcast_transaction(&bump_tx);
 			}
 		}
-		for (ancestor_claim_txid, cached_claim_datas) in bump_candidates.drain(..) {
+		for (ancestor_claim_txid, cached_claim_datas) in bump_candidates.drain() {
 			self.pending_claim_requests.insert(ancestor_claim_txid, cached_claim_datas);
 		}
 		self.last_block_hash = block_hash.clone();
