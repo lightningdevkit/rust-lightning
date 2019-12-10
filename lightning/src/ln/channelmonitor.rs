@@ -2383,16 +2383,14 @@ impl ChannelMonitor {
 				}
 			}
 		}
-		let mut pending_claims = Vec::new();
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			if self.would_broadcast_at_height(height) {
 				log_trace!(self, "Broadcast onchain {}", log_tx!(cur_local_tx.tx));
 				broadcaster.broadcast_transaction(&cur_local_tx.tx);
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, ref latest_per_commitment_point, .. } => {
-						let (txs, mut spendable_output, new_outputs, mut pending_txn) = self.broadcast_by_local_state(&cur_local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key), height);
+						let (txs, mut spendable_output, new_outputs, _) = self.broadcast_by_local_state(&cur_local_tx, latest_per_commitment_point, &Some(*delayed_payment_base_key), height);
 						spendable_outputs.append(&mut spendable_output);
-						pending_claims.append(&mut pending_txn);
 						if !new_outputs.is_empty() {
 							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
 						}
@@ -2402,9 +2400,8 @@ impl ChannelMonitor {
 						}
 					},
 					Storage::Watchtower { .. } => {
-						let (txs, mut spendable_output, new_outputs, mut pending_txn) = self.broadcast_by_local_state(&cur_local_tx, &None, &None, height);
+						let (txs, mut spendable_output, new_outputs, _) = self.broadcast_by_local_state(&cur_local_tx, &None, &None, height);
 						spendable_outputs.append(&mut spendable_output);
-						pending_claims.append(&mut pending_txn);
 						if !new_outputs.is_empty() {
 							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
 						}
@@ -2414,12 +2411,6 @@ impl ChannelMonitor {
 						}
 					}
 				}
-			}
-		}
-		for claim in pending_claims {
-			match self.pending_claim_requests.entry(claim.0) {
-				hash_map::Entry::Occupied(_) => {},
-				hash_map::Entry::Vacant(entry) => { entry.insert(claim.1); }
 			}
 		}
 		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&height) {
