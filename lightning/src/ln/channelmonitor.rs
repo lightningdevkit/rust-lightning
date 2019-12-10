@@ -41,7 +41,7 @@ use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable, WriterWriteAdaptor, U48};
 use util::{byte_utils, events};
 
-use std::collections::{HashMap, hash_map};
+use std::collections::{HashMap, hash_map, HashSet};
 use std::sync::{Arc,Mutex};
 use std::{hash,cmp, mem};
 
@@ -2337,7 +2337,7 @@ impl ChannelMonitor {
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();
 		let mut htlc_updated = Vec::new();
-		let mut bump_candidates = HashMap::new();
+		let mut bump_candidates = HashSet::new();
 		for tx in txn_matched {
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
@@ -2403,9 +2403,9 @@ impl ChannelMonitor {
 			// Scan all input to verify is one of the outpoint spent is of interest for us
 			let mut claimed_outputs_material = Vec::new();
 			for inp in &tx.input {
-				if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&inp.previous_output) {
+				if let Some(first_claim_txid_height) = self.claimable_outpoints.get(&inp.previous_output) {
 					// If outpoint has claim request pending on it...
-					if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
+					if let Some(claim_material) = self.pending_claim_requests.get_mut(&first_claim_txid_height.0) {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
@@ -2422,7 +2422,7 @@ impl ChannelMonitor {
 
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
-								let new_event = OnchainEvent::Claim { claim_request: ancestor_claimable_txid.0.clone() };
+								let new_event = OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() };
 								match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 									hash_map::Entry::Occupied(mut entry) => {
 										if !entry.get().contains(&new_event) {
@@ -2452,7 +2452,7 @@ impl ChannelMonitor {
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
-							bump_candidates.insert(ancestor_claimable_txid.0.clone(), claim_material.clone());
+							bump_candidates.insert(first_claim_txid_height.0.clone());
 						}
 						break; //No need to iterate further, either tx is our or their
 					} else {
@@ -2526,22 +2526,25 @@ impl ChannelMonitor {
 				}
 			}
 		}
-		for (ancestor_claim_txid, ref mut cached_claim_datas) in self.pending_claim_requests.iter_mut() {
+		for (first_claim_txid, ref mut cached_claim_datas) in self.pending_claim_requests.iter_mut() {
 			if cached_claim_datas.height_timer == height {
-				if let hash_map::Entry::Vacant(entry) = bump_candidates.entry(ancestor_claim_txid.clone()) {
-					entry.insert(cached_claim_datas.clone());
-				}
+				bump_candidates.insert(first_claim_txid.clone());
 			}
 		}
-		for ref mut cached_claim_datas in bump_candidates.values_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &cached_claim_datas, fee_estimator) {
-				cached_claim_datas.height_timer = new_timer;
-				cached_claim_datas.feerate_previous = new_feerate;
-				broadcaster.broadcast_transaction(&bump_tx);
+		for first_claim_txid in bump_candidates.iter() {
+			if let Some((new_timer, new_feerate)) = {
+				if let Some(claim_material) = self.pending_claim_requests.get(first_claim_txid) {
+					if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &claim_material, fee_estimator) {
+						broadcaster.broadcast_transaction(&bump_tx);
+						Some((new_timer, new_feerate))
+					} else { None }
+				} else { unreachable!(); }
+			} {
+				if let Some(claim_material) = self.pending_claim_requests.get_mut(first_claim_txid) {
+					claim_material.height_timer = new_timer;
+					claim_material.feerate_previous = new_feerate;
+				} else { unreachable!(); }
 			}
-		}
-		for (ancestor_claim_txid, cached_claim_datas) in bump_candidates.drain() {
-			self.pending_claim_requests.insert(ancestor_claim_txid, cached_claim_datas);
 		}
 		self.last_block_hash = block_hash.clone();
 		(watch_outputs, spendable_outputs, htlc_updated)
