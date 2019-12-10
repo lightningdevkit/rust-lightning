@@ -6508,19 +6508,25 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let header_132 = connect_blocks(&nodes[0].block_notifier, 3, 129, true, header_129.bitcoin_hash());
 	let node_txn = {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 3); //2 last tx : bumped claiming txn on Revoked HTLCs Txn, there is no bumped commitment tx as it's empty of claiming outpoints
+		assert_eq!(node_txn.len(), 5); // 2 bumped penalty txn on offered/received HTLC outputs of revoked commitment tx + 1 penalty tx on to_local of revoked commitment tx + 2 bumped penalty tx on revoked HTLC txn
+
+		check_spends!(node_txn[0], revoked_local_txn[0].clone());
+		check_spends!(node_txn[1], revoked_local_txn[0].clone());
 
 		let mut penalty_local = ::std::usize::MAX;
 		let mut penalty_offered = ::std::usize::MAX;
 		let mut penalty_received = ::std::usize::MAX;
 
-		for (i, tx) in node_txn.iter().enumerate() {
-			if tx.input[0].previous_output.txid == revoked_local_txn[0].txid() {
-				penalty_local = i;
-			} else if tx.input[0].previous_output.txid == revoked_htlc_txn[offered].txid() {
-				penalty_offered = i;
-			} else if tx.input[0].previous_output.txid == revoked_htlc_txn[received].txid() {
-				penalty_received = i;
+		{
+			let iter_txn = node_txn[2..].iter();
+			for (i, tx) in iter_txn.enumerate() {
+				if tx.input[0].previous_output.txid == revoked_local_txn[0].txid() {
+					penalty_local = 2 + i;
+				} else if tx.input[0].previous_output.txid == revoked_htlc_txn[offered].txid() {
+					penalty_offered = 2+ i;
+				} else if tx.input[0].previous_output.txid == revoked_htlc_txn[received].txid() {
+					penalty_received = 2 + i;
+				}
 			}
 		}
 		check_spends!(node_txn[penalty_local], revoked_local_txn[0].clone());
@@ -6541,7 +6547,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		let fee = revoked_htlc_txn[received].output[0].value - node_txn[penalty_received].output[0].value;
 		let new_feerate = fee * 1000 / node_txn[penalty_received].get_weight() as u64;
 		assert!(new_feerate * 100 > feerate_2 * 125);
-		let txn = vec![node_txn[0].clone(), node_txn[1].clone(), node_txn[2].clone()];
+		let txn = vec![node_txn[2].clone(), node_txn[3].clone(), node_txn[4].clone()];
 		node_txn.clear();
 		txn
 	};

@@ -2394,8 +2394,7 @@ impl ChannelMonitor {
 			}
 
 			// Scan all input to verify is one of the outpoint spent is of interest for us
-			let mut claimed_outpoints = Vec::new();
-			let mut claimed_input_material = Vec::new();
+			let mut claimed_outputs_material = Vec::new();
 			for inp in &tx.input {
 				if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&inp.previous_output) {
 					// If outpoint has claim request pending on it...
@@ -2403,12 +2402,21 @@ impl ChannelMonitor {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
-						for claim_inp in claim_material.per_input_material.keys() {
-							if *claim_inp == inp.previous_output {
-								claimed_outpoints.push(inp.previous_output.clone());
+						let mut set_equality = true;
+						if claim_material.per_input_material.len() != tx.input.len() {
+							set_equality = false;
+						} else {
+							for (claim_inp, tx_inp) in claim_material.per_input_material.keys().zip(tx.input.iter()) {
+								if *claim_inp != tx_inp.previous_output {
+									set_equality = false;
+								}
 							}
 						}
-						if claimed_outpoints.len() == 0 && claim_material.per_input_material.len() == tx.input.len() { // If true, register claim request to be removed after reaching a block security height
+
+						// If this is our transaction (or our counterparty spent all the outputs
+						// before we could anyway), wait for ANTI_REORG_DELAY and clean the RBF
+						// tracking map.
+						if set_equality {
 							match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 								hash_map::Entry::Occupied(_) => {},
 								hash_map::Entry::Vacant(entry) => {
@@ -2416,9 +2424,9 @@ impl ChannelMonitor {
 								}
 							}
 						} else { // If false, generate new claim request with update outpoint set
-							for already_claimed in claimed_outpoints.iter() {
-								if let Some(input_material) = claim_material.per_input_material.remove(&already_claimed) {
-									claimed_input_material.push(input_material);
+							for input in tx.input.iter() {
+								if let Some(input_material) = claim_material.per_input_material.remove(&input.previous_output) {
+									claimed_outputs_material.push((input.previous_output, input_material));
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
@@ -2430,11 +2438,11 @@ impl ChannelMonitor {
 					}
 				}
 			}
-			for (outpoint, input_material) in claimed_outpoints.iter().zip(claimed_input_material.drain(..)) {
+			for (outpoint, input_material) in claimed_outputs_material.drain(..) {
 				match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 					hash_map::Entry::Occupied(_) => {},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![OnchainEvent::ContentiousOutpoint { outpoint: *outpoint, input_material: input_material }]);
+						entry.insert(vec![OnchainEvent::ContentiousOutpoint { outpoint, input_material }]);
 					}
 				}
 			}
