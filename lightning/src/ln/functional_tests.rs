@@ -1846,11 +1846,11 @@ fn channel_monitor_network_test() {
 #[test]
 fn test_justice_tx() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
-	let mut alice_config = UserConfig::new();
+	let mut alice_config = UserConfig::default();
 	alice_config.channel_options.announced_channel = true;
 	alice_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	alice_config.own_channel_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = UserConfig::new();
+	let mut bob_config = UserConfig::default();
 	bob_config.channel_options.announced_channel = true;
 	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	bob_config.own_channel_config.our_to_self_delay = 6 * 24 * 3;
@@ -3388,7 +3388,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	let config = UserConfig::new();
+	let config = UserConfig::default();
 	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
@@ -3458,7 +3458,7 @@ fn test_simple_manager_serialize_deserialize() {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
 		<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: UserConfig::new(),
+			default_config: UserConfig::default(),
 			keys_manager,
 			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
 			monitor: nodes[0].chan_monitor.clone(),
@@ -3518,7 +3518,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-		default_config: UserConfig::new(),
+		default_config: UserConfig::default(),
 		keys_manager,
 		fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
 		monitor: nodes[0].chan_monitor.clone(),
@@ -5948,7 +5948,7 @@ fn test_upfront_shutdown_script() {
 	// BOLT 2 : Option upfront shutdown script, if peer commit its closing_script at channel opening
 	// enforce it at shutdown message
 
-	let mut config = UserConfig::new();
+	let mut config = UserConfig::default();
 	config.channel_options.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
@@ -6046,9 +6046,9 @@ fn test_upfront_shutdown_script() {
 fn test_user_configurable_csv_delay() {
 	// We test our channel constructors yield errors when we pass them absurd csv delay
 
-	let mut low_our_to_self_config = UserConfig::new();
+	let mut low_our_to_self_config = UserConfig::default();
 	low_our_to_self_config.own_channel_config.our_to_self_delay = 6;
-	let mut high_their_to_self_config = UserConfig::new();
+	let mut high_their_to_self_config = UserConfig::default();
 	high_their_to_self_config.peer_channel_config_limits.their_to_self_delay = 100;
 	let cfgs = [Some(high_their_to_self_config.clone()), None];
 	let nodes = create_network(2, &cfgs);
@@ -6135,7 +6135,7 @@ fn test_data_loss_protect() {
 		monitor: monitor.clone(),
 		logger: Arc::clone(&logger),
 		tx_broadcaster,
-		default_config: UserConfig::new(),
+		default_config: UserConfig::default(),
 		channel_monitors: &channel_monitors
 	}).unwrap().1;
 	nodes[0].node = Arc::new(node_state_0);
