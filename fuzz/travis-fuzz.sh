@@ -1,18 +1,23 @@
 #!/bin/bash
 set -e
 
-pushd fuzz_targets/msg_targets
+pushd src/msg_targets
+rm msg_*.rs
+./gen_target.sh
+[ "$(git diff)" != "" ] && exit 1
+popd
+pushd src/bin
 rm *_target.rs
 ./gen_target.sh
 [ "$(git diff)" != "" ] && exit 1
 popd
 
 cargo install --force honggfuzz
-for TARGET in fuzz_targets/*.rs fuzz_targets/msg_targets/*_target.rs; do
+for TARGET in src/bin/*.rs; do
 	FILENAME=$(basename $TARGET)
 	FILE="${FILENAME%.*}"
 	HFUZZ_RUN_ARGS="--exit_upon_crash -v -n2"
-	if [ "$FILE" = "chanmon_fail_consistency" ]; then
+	if [ "$FILE" = "chanmon_consistency_target" ]; then
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N100000"
 	else
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N1000000"
