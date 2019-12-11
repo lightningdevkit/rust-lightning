@@ -1096,22 +1096,103 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 		};
 	}
 
+
+
+/*tto
+get all the descriptors (this would take the lock)
+
+do_read_event on all the Descriptors
+
+action_if_no_ping (also ping peers) this would take the lock
+
+
+
+
+*/
+
+fn get_des(&self) -> Vec<Descriptor> {
+	let mut des_set: Vec<Descriptor> = Vec::new();
+	let mut peers_lock = self.peers.lock().unwrap();
+	let peers = peers_lock.borrow_parts();
+			
+	for (Descriptor, mut Peer) in peers.peers.iter_mut() {
+
+				//read all events that have been sent from the Peer
+				let mut descriptor = Descriptor.clone();
+				des_set.push(descriptor);
+	}
+	des_set
+
+}
+
+fn mass_do_read_event(&self, mut des_set: Vec<Descriptor>)
+{
+	for (mut Descriptor) in des_set.iter_mut(){
+		let data: Vec<u8> = Vec::new();
+				
+		let res = match self.do_read_event(&mut Descriptor, data){
+					Ok(pause_read) => pause_read,
+					Err(e) => panic!("something is wrong"),
+		};
+	}
+
+}
+
+fn action_if_no_ping(&self){
+
+			let mut peers_lock = self.peers.lock().unwrap();
+			let peers = peers_lock.borrow_parts();
+			
+			for (Descriptor, mut Peer) in peers.peers.iter_mut() {
+
+				// Disconect the Peer if there is an outstanding ping for which we have not been ponged
+				if Peer.ping_tracker > 0 {
+					self.disconnect_event(Descriptor);
+				}
+
+			else {
+		
+			let ping = msgs::Ping {
+ 				ponglen: 64,
+ 				byteslen: 64,
+ 			};
+
+			Peer.pending_outbound_buffer.push_back(Peer.channel_encryptor.encrypt_message(&encode_msg!(ping, 18)));
+
+			let mut descriptor = Descriptor.clone();
+			self.do_attempt_write_data(&mut descriptor, &mut Peer);
+  			Peer.ping_tracker += 1;
+		
+
+			}
+		}
+
+}
+
+///s
+	pub fn tto(&self){
+		let mut des_set: Vec<Descriptor> = self.get_des();
+		self.mass_do_read_event(des_set);
+		self.action_if_no_ping();
+	}
+
 	/// insure we recieved pong message from all peers or disconnect the peers then ping all peers
 	pub fn timer_tick_occurred(&self){
 
 			let mut peers_lock = self.peers.lock().unwrap();
 			let peers = peers_lock.borrow_parts();
-
+			
 			for (Descriptor, mut Peer) in peers.peers.iter_mut() {
 
 				//read all events that have been sent from the Peer
 				let mut descriptor = Descriptor.clone();
 				let data: Vec<u8> = Vec::new();
+				
 				let res = match self.do_read_event(&mut descriptor, data){
 					Ok(pause_read) => pause_read,
 					Err(e) => panic!("something is wrong"),
 				};
-
+				
 				// Disconect the Peer if there is an outstanding ping for which we have not been ponged
 				if Peer.ping_tracker > 0 {
 					self.disconnect_event(Descriptor);
@@ -1241,8 +1322,8 @@ mod tests {
 
 			}
 		}
-
-		peers[0].timer_tick_occurred();
+		//bring the state to noise::state::finished::
+		peers[0].tto();
 		//peers[1].process_events();
 
 		//assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
