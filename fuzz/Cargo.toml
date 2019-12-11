@@ -14,6 +14,7 @@ cargo-fuzz = true
 afl_fuzz = ["afl"]
 honggfuzz_fuzz = ["honggfuzz"]
 libfuzzer_fuzz = ["libfuzzer-sys"]
+stdin_fuzz = []
 
 [dependencies]
 afl = { version = "0.4", optional = true }
@@ -36,123 +37,7 @@ members = ["."]
 lto = true
 codegen-units = 1
 
-[[bin]]
-name = "peer_crypt_target"
-path = "fuzz_targets/peer_crypt_target.rs"
-
-[[bin]]
-name = "full_stack_target"
-path = "fuzz_targets/full_stack_target.rs"
-
-[[bin]]
-name = "chanmon_fail_consistency"
-path = "fuzz_targets/chanmon_fail_consistency.rs"
-
-[[bin]]
-name = "router_target"
-path = "fuzz_targets/router_target.rs"
-
-[[bin]]
-name = "chanmon_deser_target"
-path = "fuzz_targets/chanmon_deser_target.rs"
-
-# message fuzz targets
-[[bin]]
-name = "msg_ping_target"
-path = "fuzz_targets/msg_targets/msg_ping_target.rs"
-
-[[bin]]
-name = "msg_pong_target"
-path = "fuzz_targets/msg_targets/msg_pong_target.rs"
-
-[[bin]]
-name = "msg_error_message_target"
-path = "fuzz_targets/msg_targets/msg_error_message_target.rs"
-
-[[bin]]
-name = "msg_update_add_htlc_target"
-path = "fuzz_targets/msg_targets/msg_update_add_htlc_target.rs"
-
-[[bin]]
-name = "msg_accept_channel_target"
-path = "fuzz_targets/msg_targets/msg_accept_channel_target.rs"
-
-[[bin]]
-name = "msg_closing_signed_target"
-path = "fuzz_targets/msg_targets/msg_closing_signed_target.rs"
-
-[[bin]]
-name = "msg_commitment_signed_target"
-path = "fuzz_targets/msg_targets/msg_commitment_signed_target.rs"
-
-[[bin]]
-name = "msg_funding_created_target"
-path = "fuzz_targets/msg_targets/msg_funding_created_target.rs"
-
-[[bin]]
-name = "msg_funding_locked_target"
-path = "fuzz_targets/msg_targets/msg_funding_locked_target.rs"
-
-[[bin]]
-name = "msg_funding_signed_target"
-path = "fuzz_targets/msg_targets/msg_funding_signed_target.rs"
-
-[[bin]]
-name = "msg_open_channel_target"
-path = "fuzz_targets/msg_targets/msg_open_channel_target.rs"
-
-[[bin]]
-name = "msg_revoke_and_ack_target"
-path = "fuzz_targets/msg_targets/msg_revoke_and_ack_target.rs"
-
-[[bin]]
-name = "msg_shutdown_target"
-path = "fuzz_targets/msg_targets/msg_shutdown_target.rs"
-
-[[bin]]
-name = "msg_update_fail_malformed_htlc_target"
-path = "fuzz_targets/msg_targets/msg_update_fail_malformed_htlc_target.rs"
-
-[[bin]]
-name = "msg_update_fee_target"
-path = "fuzz_targets/msg_targets/msg_update_fee_target.rs"
-
-[[bin]]
-name = "msg_update_fulfill_htlc_target"
-path = "fuzz_targets/msg_targets/msg_update_fulfill_htlc_target.rs"
-
-[[bin]]
-name = "msg_update_fail_htlc_target"
-path = "fuzz_targets/msg_targets/msg_update_fail_htlc_target.rs"
-
-[[bin]]
-name = "msg_channel_reestablish_target"
-path = "fuzz_targets/msg_targets/msg_channel_reestablish_target.rs"
-
-[[bin]]
-name = "msg_announcement_signatures_target"
-path = "fuzz_targets/msg_targets/msg_announcement_signatures_target.rs"
-
-[[bin]]
-name = "msg_channel_announcement_target"
-path = "fuzz_targets/msg_targets/msg_channel_announcement_target.rs"
-
-[[bin]]
-name = "msg_channel_update_target"
-path = "fuzz_targets/msg_targets/msg_channel_update_target.rs"
-
-[[bin]]
-name = "msg_decoded_onion_error_packet_target"
-path = "fuzz_targets/msg_targets/msg_decoded_onion_error_packet_target.rs"
-
-[[bin]]
-name = "msg_init_target"
-path = "fuzz_targets/msg_targets/msg_init_target.rs"
-
-[[bin]]
-name = "msg_node_announcement_target"
-path = "fuzz_targets/msg_targets/msg_node_announcement_target.rs"
-
-[[bin]]
-name = "msg_onion_hop_data_target"
-path = "fuzz_targets/msg_targets/msg_onion_hop_data_target.rs"
+[lib]
+name = "lightning_fuzz"
+path = "src/lib.rs"
+crate-type = ["rlib", "dylib", "staticlib"]
