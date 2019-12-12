@@ -571,6 +571,8 @@ pub struct ChannelMonitor {
 	key_storage: Storage,
 	their_htlc_base_key: Option<PublicKey>,
 	their_delayed_payment_base_key: Option<PublicKey>,
+	funding_redeemscript: Option<Script>,
+	channel_value_satoshis: Option<u64>,
 	// first is the idx of the first of the two revocation points
 	their_cur_revocation_points: Option<(u64, PublicKey, Option<PublicKey>)>,
 
@@ -696,6 +698,8 @@ impl PartialEq for ChannelMonitor {
 			self.key_storage != other.key_storage ||
 			self.their_htlc_base_key != other.their_htlc_base_key ||
 			self.their_delayed_payment_base_key != other.their_delayed_payment_base_key ||
+			self.funding_redeemscript != other.funding_redeemscript ||
+			self.channel_value_satoshis != other.channel_value_satoshis ||
 			self.their_cur_revocation_points != other.their_cur_revocation_points ||
 			self.our_to_self_delay != other.our_to_self_delay ||
 			self.their_to_self_delay != other.their_to_self_delay ||
@@ -743,6 +747,8 @@ impl ChannelMonitor {
 			},
 			their_htlc_base_key: None,
 			their_delayed_payment_base_key: None,
+			funding_redeemscript: None,
+			channel_value_satoshis: None,
 			their_cur_revocation_points: None,
 
 			our_to_self_delay: our_to_self_delay,
@@ -1052,12 +1058,6 @@ impl ChannelMonitor {
 		Ok(())
 	}
 
-	/// Panics if commitment_transaction_number_obscure_factor doesn't fit in 48 bits
-	pub(super) fn set_commitment_obscure_factor(&mut self, commitment_transaction_number_obscure_factor: u64) {
-		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
-		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
-	}
-
 	/// Allows this monitor to scan only for transactions which are applicable. Note that this is
 	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
 	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
@@ -1076,13 +1076,15 @@ impl ChannelMonitor {
 	}
 
 	/// We log these base keys at channel opening to being able to rebuild redeemscript in case of leaked revoked commit tx
-	pub(super) fn set_their_base_keys(&mut self, their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey) {
+	/// Panics if commitment_transaction_number_obscure_factor doesn't fit in 48 bits
+	pub(super) fn set_basic_channel_info(&mut self, their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey, their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64, commitment_transaction_number_obscure_factor: u64) {
 		self.their_htlc_base_key = Some(their_htlc_base_key.clone());
 		self.their_delayed_payment_base_key = Some(their_delayed_payment_base_key.clone());
-	}
-
-	pub(super) fn set_their_to_self_delay(&mut self, their_to_self_delay: u16) {
 		self.their_to_self_delay = Some(their_to_self_delay);
+		self.funding_redeemscript = Some(funding_redeemscript);
+		self.channel_value_satoshis = Some(channel_value_satoshis);
+		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
+		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
 	}
 
 	pub(super) fn unset_funding_info(&mut self) {
@@ -1175,6 +1177,8 @@ impl ChannelMonitor {
 
 		writer.write_all(&self.their_htlc_base_key.as_ref().unwrap().serialize())?;
 		writer.write_all(&self.their_delayed_payment_base_key.as_ref().unwrap().serialize())?;
+		self.funding_redeemscript.as_ref().unwrap().write(writer)?;
+		self.channel_value_satoshis.unwrap().write(writer)?;
 
 		match self.their_cur_revocation_points {
 			Some((idx, pubkey, second_option)) => {
@@ -2994,6 +2998,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 		let their_htlc_base_key = Some(Readable::read(reader)?);
 		let their_delayed_payment_base_key = Some(Readable::read(reader)?);
+		let funding_redeemscript = Some(Readable::read(reader)?);
+		let channel_value_satoshis = Some(Readable::read(reader)?);
 
 		let their_cur_revocation_points = {
 			let first_idx = <U48 as Readable<R>>::read(reader)?.0;
@@ -3214,6 +3220,8 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 			key_storage,
 			their_htlc_base_key,
 			their_delayed_payment_base_key,
+			funding_redeemscript,
+			channel_value_satoshis,
 			their_cur_revocation_points,
 
 			our_to_self_delay,
@@ -3695,7 +3703,7 @@ mod tests {
 		// Prune with one old state and a local commitment tx holding a few overlaps with the
 		// old state.
 		let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-		monitor.set_their_to_self_delay(10);
+		monitor.their_to_self_delay = Some(10);
 
 		monitor.provide_latest_local_commitment_tx_info(dummy_tx.clone(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
 		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key);

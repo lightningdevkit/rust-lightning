@@ -644,11 +644,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let secp_ctx = Secp256k1::new();
-		let mut channel_monitor = ChannelMonitor::new(chan_keys.revocation_base_key(), chan_keys.delayed_payment_base_key(),
-		                                              chan_keys.htlc_base_key(), chan_keys.payment_base_key(), &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
-		                                              keys_provider.get_destination_script(), logger.clone());
-		channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
-		channel_monitor.set_their_to_self_delay(msg.to_self_delay);
+		let channel_monitor = ChannelMonitor::new(chan_keys.revocation_base_key(), chan_keys.delayed_payment_base_key(),
+		                                          chan_keys.htlc_base_key(), chan_keys.payment_base_key(), &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
+		                                          keys_provider.get_destination_script(), logger.clone());
 
 		let their_shutdown_scriptpubkey = if their_local_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
@@ -748,7 +746,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		};
 
 		let obscure_factor = chan.get_commitment_transaction_number_obscure_factor();
-		chan.channel_monitor.set_commitment_obscure_factor(obscure_factor);
+		let funding_redeemscript = chan.get_funding_redeemscript();
+		chan.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, msg.funding_satoshis, obscure_factor);
 
 		Ok(chan)
 	}
@@ -1469,8 +1468,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		} else { None };
 
-		self.channel_monitor.set_their_base_keys(&msg.htlc_basepoint, &msg.delayed_payment_basepoint);
-
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
 		self.their_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
 		self.their_channel_reserve_satoshis = msg.channel_reserve_satoshis;
@@ -1487,8 +1484,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.their_shutdown_scriptpubkey = their_shutdown_scriptpubkey;
 
 		let obscure_factor = self.get_commitment_transaction_number_obscure_factor();
-		self.channel_monitor.set_commitment_obscure_factor(obscure_factor);
-		self.channel_monitor.set_their_to_self_delay(msg.to_self_delay);
+		let funding_redeemscript = self.get_funding_redeemscript();
+		self.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, self.channel_value_satoshis, obscure_factor);
 
 		self.channel_state = ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32;
 
