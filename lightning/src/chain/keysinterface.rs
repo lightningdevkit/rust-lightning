@@ -2,11 +2,12 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{OutPoint, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, OutPoint, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::util::bip143;
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::HashEngine as Sha256State;
@@ -14,11 +15,14 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::Secp256k1;
+use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 
 use util::byte_utils;
 use util::logger::Logger;
+
+use ln::chan_utils;
+use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,6 +72,9 @@ pub enum SpendableOutputDescriptor {
 
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface: Send + Sync {
+	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
+	type ChanKeySigner : ChannelKeys;
+
 	/// Get node secret key (aka node_id or network_key)
 	fn get_node_secret(&self) -> SecretKey;
 	/// Get destination redeemScript to encumber static protocol exit points.
@@ -76,7 +83,7 @@ pub trait KeysInterface: Send + Sync {
 	fn get_shutdown_pubkey(&self) -> PublicKey;
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
-	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys;
+	fn get_channel_keys(&self, inbound: bool) -> Self::ChanKeySigner;
 	/// Get a secret and PRNG seed for construting an onion packet
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
 	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
@@ -85,9 +92,59 @@ pub trait KeysInterface: Send + Sync {
 	fn get_channel_id(&self) -> [u8; 32];
 }
 
-/// Set of lightning keys needed to operate a channel as described in BOLT 3
+/// Set of lightning keys needed to operate a channel as described in BOLT 3.
+///
+/// Signing services could be implemented on a hardware wallet. In this case,
+/// the current ChannelKeys would be a front-end on top of a communication
+/// channel connected to your secure device and lightning key material wouldn't
+/// reside on a hot server. Nevertheless, a this deployment would still need
+/// to trust the ChannelManager to avoid loss of funds as this latest component
+/// could ask to sign commitment transaction with HTLCs paying to attacker pubkeys.
+///
+/// A more secure iteration would be to use hashlock (or payment points) to pair
+/// invoice/incoming HTLCs with outgoing HTLCs to implement a no-trust-ChannelManager
+/// at the price of more state and computation on the hardware wallet side. In the future,
+/// we are looking forward to design such interface.
+///
+/// In any case, ChannelMonitor or fallback watchtowers are always going to be trusted
+/// to act, as liveness and breach reply correctness are always going to be hard requirements
+/// of LN security model, orthogonal of key management issues.
+///
+/// If you're implementing a custom signer, you almost certainly want to implement
+/// Readable/Writable to serialize out a unique reference to this set of keys so
+/// that you can serialize the full ChannelManager object.
+///
+/// (TODO: We shouldn't require that, and should have an API to get them at deser time, due mostly
+/// to the possibility of reentrancy issues by calling the user's code during our deserialization
+/// routine).
+pub trait ChannelKeys : Send {
+	/// Gets the private key for the anchor tx
+	fn funding_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key for blinded revocation pubkey
+	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key used in to_remote output of remote commitment tx
+	/// (and also as part of obscured commitment number)
+	fn payment_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key used in HTLC-Success/HTLC-Timeout txn and to_local output
+	fn delayed_payment_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local htlc secret key used in commitment tx htlc outputs
+	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the commitment seed
+	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
+
+	/// Create a signature for a remote commitment transaction and associated HTLC transactions.
+	///
+	/// Note that if signing fails or is rejected, the channel will be force-closed.
+	///
+	/// TODO: Document the things someone using this interface should enforce before signing.
+	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
+	/// making the callee generate it via some util function we expose)!
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+}
+
 #[derive(Clone)]
-pub struct ChannelKeys {
+/// A simple implementation of ChannelKeys that just keeps the private keys in memory.
+pub struct InMemoryChannelKeys {
 	/// Private key of anchor tx
 	pub funding_key: SecretKey,
 	/// Local secret key for blinded revocation pubkey
@@ -102,7 +159,41 @@ pub struct ChannelKeys {
 	pub commitment_seed: [u8; 32],
 }
 
-impl_writeable!(ChannelKeys, 0, {
+impl ChannelKeys for InMemoryChannelKeys {
+	fn funding_key(&self) -> &SecretKey { &self.funding_key }
+	fn revocation_base_key(&self) -> &SecretKey { &self.revocation_base_key }
+	fn payment_base_key(&self) -> &SecretKey { &self.payment_base_key }
+	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
+	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
+	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
+
+
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+		if commitment_tx.input.len() != 1 { return Err(()); }
+		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_script, channel_value_satoshis)[..]);
+		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
+
+		let commitment_txid = commitment_tx.txid();
+
+		let mut htlc_sigs = Vec::with_capacity(htlcs.len());
+		for ref htlc in htlcs {
+			if let Some(_) = htlc.transaction_output_index {
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, to_self_delay, htlc, &keys.a_delayed_payment_key, &keys.revocation_key);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
+				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
+					Ok(s) => s,
+					Err(_) => return Err(()),
+				};
+				htlc_sigs.push(secp_ctx.sign(&htlc_sighash, &our_htlc_key));
+			}
+		}
+
+		Ok((commitment_sig, htlc_sigs))
+	}
+}
+
+impl_writeable!(InMemoryChannelKeys, 0, {
 	funding_key,
 	revocation_base_key,
 	payment_base_key,
@@ -203,6 +294,8 @@ impl KeysManager {
 }
 
 impl KeysInterface for KeysManager {
+	type ChanKeySigner = InMemoryChannelKeys;
+
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
 	}
@@ -215,7 +308,7 @@ impl KeysInterface for KeysManager {
 		self.shutdown_pubkey.clone()
 	}
 
-	fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool) -> InMemoryChannelKeys {
 		// We only seriously intend to rely on the channel_master_key for true secure
 		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
 		// starting_time provided in the constructor) to be unique.
@@ -248,7 +341,7 @@ impl KeysInterface for KeysManager {
 		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_base_key);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 
-		ChannelKeys {
+		InMemoryChannelKeys {
 			funding_key,
 			revocation_base_key,
 			payment_base_key,

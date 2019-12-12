@@ -24,7 +24,7 @@ use bitcoin_hashes::sha256d::Hash as Sha256d;
 use lightning::chain::chaininterface;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
-use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, ChannelManagerReadArgs};
@@ -130,6 +130,8 @@ struct KeyProvider {
 	channel_id: atomic::AtomicU8,
 }
 impl KeysInterface for KeyProvider {
+	type ChanKeySigner = InMemoryChannelKeys;
+
 	fn get_node_secret(&self) -> SecretKey {
 		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap()
 	}
@@ -146,8 +148,8 @@ impl KeysInterface for KeyProvider {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_id]).unwrap())
 	}
 
-	fn get_channel_keys(&self, _inbound: bool) -> ChannelKeys {
-		ChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool) -> InMemoryChannelKeys {
+		InMemoryChannelKeys {
 			funding_key:               SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
 			revocation_base_key:       SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
 			payment_base_key:          SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
@@ -223,7 +225,7 @@ pub fn do_test(data: &[u8]) {
 				channel_monitors: &monitor_refs,
 			};
 
-			let res = (<(Sha256d, ChannelManager)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
+			let res = (<(Sha256d, ChannelManager<InMemoryChannelKeys>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
 			for (_, was_good) in $old_monitors.latest_updates_good_at_last_ser.lock().unwrap().iter() {
 				if !was_good {
 					// If the last time we updated a monitor we didn't successfully update (and we

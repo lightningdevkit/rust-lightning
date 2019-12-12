@@ -4,8 +4,7 @@
 
 use chain::transaction::OutPoint;
 use chain::chaininterface::{ChainListener, ChainWatchInterfaceUtil};
-use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor, KeysManager};
-use chain::keysinterface;
+use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
@@ -14,6 +13,7 @@ use ln::onion_utils;
 use ln::router::{Route, RouteHop};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, LocalFeatures, ErrorAction};
+use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -57,7 +57,7 @@ fn test_insane_channel_opens() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
-	let channel_reserve_satoshis = Channel::get_our_channel_reserve_satoshis(channel_value_sat);
+	let channel_reserve_satoshis = Channel::<EnforcingChannelKeys>::get_our_channel_reserve_satoshis(channel_value_sat);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -3324,8 +3324,8 @@ fn test_invalid_channel_announcement() {
 
 	let _ = nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
-	let as_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &as_chan.get_local_keys().funding_key);
-	let bs_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &bs_chan.get_local_keys().funding_key);
+	let as_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &as_chan.get_local_keys().inner.funding_key);
+	let bs_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &bs_chan.get_local_keys().inner.funding_key);
 
 	let as_network_key = nodes[0].node.get_our_node_id();
 	let bs_network_key = nodes[1].node.get_our_node_id();
@@ -3352,8 +3352,8 @@ fn test_invalid_channel_announcement() {
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
 			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
-			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().funding_key);
-			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().funding_key);
+			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().inner.funding_key);
+			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().inner.funding_key);
 			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
 			let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].keys_manager.get_node_secret());
 			chan_announcement = msgs::ChannelAnnouncement {
@@ -3406,7 +3406,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
-		<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
 			keys_manager,
 			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
@@ -3470,7 +3470,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &chan_0_monitor);
-		<(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: UserConfig::default(),
 			keys_manager,
 			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
@@ -3530,7 +3530,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
-	let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+	let (_, nodes_0_deserialized) = <(Sha256dHash, ChannelManager<EnforcingChannelKeys>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager,
 		fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
@@ -6067,7 +6067,7 @@ fn test_user_configurable_csv_delay() {
 	let nodes = create_network(2, &cfgs);
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
-	let keys_manager: Arc<KeysInterface> = Arc::new(KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new()), 10, 20));
+	let keys_manager: Arc<KeysInterface<ChanKeySigner = EnforcingChannelKeys>> = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
 	if let Err(error) = Channel::new_outbound(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
 		match error {
 			APIError::APIMisuseError { err } => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
@@ -6142,8 +6142,8 @@ fn test_data_loss_protect() {
 	let monitor = Arc::new(test_utils::TestChannelMonitor::new(chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), feeest.clone()));
 	let mut channel_monitors = HashMap::new();
 	channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &chan_monitor);
-	let node_state_0 = <(Sha256dHash, ChannelManager)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
-		keys_manager: Arc::new(keysinterface::KeysManager::new(&nodes[0].node_seed, Network::Testnet, Arc::clone(&logger), 42, 21)),
+	let node_state_0 = <(Sha256dHash, ChannelManager<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
+		keys_manager: Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::clone(&logger))),
 		fee_estimator: feeest.clone(),
 		monitor: monitor.clone(),
 		logger: Arc::clone(&logger),

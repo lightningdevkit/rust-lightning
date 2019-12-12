@@ -34,7 +34,7 @@ use ln::msgs;
 use ln::msgs::LocalFeatures;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
-use chain::keysinterface::KeysInterface;
+use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::config::UserConfig;
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -48,6 +48,8 @@ use std::io::Cursor;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+const SIXTY_FIVE_ZEROS: [u8; 65] = [0; 65];
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -254,8 +256,8 @@ pub(super) enum RAACommitmentOrder {
 }
 
 // Note this is only exposed in cfg(test):
-pub(super) struct ChannelHolder {
-	pub(super) by_id: HashMap<[u8; 32], Channel>,
+pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
+	pub(super) by_id: HashMap<[u8; 32], Channel<ChanSigner>>,
 	pub(super) short_to_id: HashMap<u64, [u8; 32]>,
 	/// short channel id -> forward infos. Key of 0 means payments received
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
@@ -272,15 +274,15 @@ pub(super) struct ChannelHolder {
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<events::MessageSendEvent>,
 }
-pub(super) struct MutChannelHolder<'a> {
-	pub(super) by_id: &'a mut HashMap<[u8; 32], Channel>,
+pub(super) struct MutChannelHolder<'a, ChanSigner: ChannelKeys + 'a> {
+	pub(super) by_id: &'a mut HashMap<[u8; 32], Channel<ChanSigner>>,
 	pub(super) short_to_id: &'a mut HashMap<u64, [u8; 32]>,
 	pub(super) forward_htlcs: &'a mut HashMap<u64, Vec<HTLCForwardInfo>>,
 	pub(super) claimable_htlcs: &'a mut HashMap<PaymentHash, Vec<(u64, HTLCPreviousHopData)>>,
 	pub(super) pending_msg_events: &'a mut Vec<events::MessageSendEvent>,
 }
-impl ChannelHolder {
-	pub(super) fn borrow_parts(&mut self) -> MutChannelHolder {
+impl<ChanSigner: ChannelKeys> ChannelHolder<ChanSigner> {
+	pub(super) fn borrow_parts(&mut self) -> MutChannelHolder<ChanSigner> {
 		MutChannelHolder {
 			by_id: &mut self.by_id,
 			short_to_id: &mut self.short_to_id,
@@ -324,7 +326,7 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
 /// offline for a full minute. In order to track this, you must call
 /// timer_chan_freshness_every_min roughly once per minute, though it doesn't have to be perfec.
-pub struct ChannelManager<'a> {
+pub struct ChannelManager<'a, ChanSigner: ChannelKeys> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
@@ -339,9 +341,9 @@ pub struct ChannelManager<'a> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	#[cfg(test)]
-	pub(super) channel_state: Mutex<ChannelHolder>,
+	pub(super) channel_state: Mutex<ChannelHolder<ChanSigner>>,
 	#[cfg(not(test))]
-	channel_state: Mutex<ChannelHolder>,
+	channel_state: Mutex<ChannelHolder<ChanSigner>>,
 	our_network_key: SecretKey,
 
 	pending_events: Mutex<Vec<events::Event>>,
@@ -350,7 +352,7 @@ pub struct ChannelManager<'a> {
 	/// Taken first everywhere where we are making changes before any other locks.
 	total_consistency_lock: RwLock<()>,
 
-	keys_manager: Arc<KeysInterface>,
+	keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>,
 
 	logger: Arc<Logger>,
 }
@@ -581,7 +583,7 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<'a> ChannelManager<'a> {
+impl<'a, ChanSigner: ChannelKeys> ChannelManager<'a, ChanSigner> {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
@@ -600,7 +602,7 @@ impl<'a> ChannelManager<'a> {
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor + 'a>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager<'a>>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor + 'a>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager<'a, ChanSigner>>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -818,8 +820,7 @@ impl<'a> ChannelManager<'a> {
 		}
 	}
 
-	const ZERO:[u8; 65] = [0; 65];
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder>) {
+	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder<ChanSigner>>) {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
@@ -941,7 +942,7 @@ impl<'a> ChannelManager<'a> {
 			} else {
 				let mut new_packet_data = [0; 20*65];
 				chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
-				chacha.process(&ChannelManager::ZERO[..], &mut new_packet_data[19*65..]);
+				chacha.process(&SIXTY_FIVE_ZEROS[..], &mut new_packet_data[19*65..]);
 
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
@@ -1038,7 +1039,7 @@ impl<'a> ChannelManager<'a> {
 
 	/// only fails if the channel does not yet have an assigned short_id
 	/// May be called with channel_state already locked!
-	fn get_channel_update(&self, chan: &Channel) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update(&self, chan: &Channel<ChanSigner>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
 			None => return Err(LightningError{err: "Channel not yet established", action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
@@ -1267,7 +1268,7 @@ impl<'a> ChannelManager<'a> {
 		}
 	}
 
-	fn get_announcement_sigs(&self, chan: &Channel) -> Option<msgs::AnnouncementSignatures> {
+	fn get_announcement_sigs(&self, chan: &Channel<ChanSigner>) -> Option<msgs::AnnouncementSignatures> {
 		if !chan.should_announce() { return None }
 
 		let (announcement, our_bitcoin_sig) = match chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()) {
@@ -1561,7 +1562,7 @@ impl<'a> ChannelManager<'a> {
 	/// to fail and take the channel_state lock for each iteration (as we take ownership and may
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
-	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
+	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<ChanSigner>>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
 		//identify whether we sent it or not based on the (I presume) very different runtime
 		//between the branches here. We should make this async and move it into the forward HTLCs
@@ -1689,7 +1690,7 @@ impl<'a> ChannelManager<'a> {
 			true
 		} else { false }
 	}
-	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder>, source: HTLCSource, payment_preimage: PaymentPreimage) {
+	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<ChanSigner>>, source: HTLCSource, payment_preimage: PaymentPreimage) {
 		let (their_node_id, err) = loop {
 			match source {
 				HTLCSource::OutboundRoute { .. } => {
@@ -2566,7 +2567,7 @@ impl<'a> ChannelManager<'a> {
 	}
 }
 
-impl<'a> events::MessageSendEventsProvider for ChannelManager<'a> {
+impl<'a, ChanSigner: ChannelKeys> events::MessageSendEventsProvider for ChannelManager<'a, ChanSigner> {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2591,7 +2592,7 @@ impl<'a> events::MessageSendEventsProvider for ChannelManager<'a> {
 	}
 }
 
-impl<'a> events::EventsProvider for ChannelManager<'a> {
+impl<'a, ChanSigner: ChannelKeys> events::EventsProvider for ChannelManager<'a, ChanSigner> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2616,7 +2617,7 @@ impl<'a> events::EventsProvider for ChannelManager<'a> {
 	}
 }
 
-impl<'a> ChainListener for ChannelManager<'a> {
+impl<'a, ChanSigner: ChannelKeys> ChainListener for ChannelManager<'a, ChanSigner> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
@@ -2730,7 +2731,7 @@ impl<'a> ChainListener for ChannelManager<'a> {
 	}
 }
 
-impl<'a> ChannelMessageHandler for ChannelManager<'a> {
+impl<'a, ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<'a, ChanSigner> {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3115,7 +3116,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl<'a> Writeable for ChannelManager<'a> {
+impl<'a, ChanSigner: ChannelKeys + Writeable> Writeable for ChannelManager<'a, ChanSigner> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
 
@@ -3178,10 +3179,10 @@ impl<'a> Writeable for ChannelManager<'a> {
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
-pub struct ChannelManagerReadArgs<'a, 'b> {
+pub struct ChannelManagerReadArgs<'a, 'b, ChanSigner: ChannelKeys> {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
-	pub keys_manager: Arc<KeysInterface>,
+	pub keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>,
 
 	/// The fee_estimator for use in the ChannelManager in the future.
 	///
@@ -3218,8 +3219,8 @@ pub struct ChannelManagerReadArgs<'a, 'b> {
 	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
 }
 
-impl<'a, 'b, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a, 'b>> for (Sha256dHash, ChannelManager<'b>) {
-	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, 'b>) -> Result<Self, DecodeError> {
+impl<'a, 'b, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, ChannelManagerReadArgs<'a, 'b, ChanSigner>> for (Sha256dHash, ChannelManager<'b, ChanSigner>) {
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, 'b, ChanSigner>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -3237,7 +3238,7 @@ impl<'a, 'b, R : ::std::io::Read> ReadableArgs<R, ChannelManagerReadArgs<'a, 'b>
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
-			let mut channel: Channel = ReadableArgs::read(reader, args.logger.clone())?;
+			let mut channel: Channel<ChanSigner> = ReadableArgs::read(reader, args.logger.clone())?;
 			if channel.last_block_connected != last_block_hash {
 				return Err(DecodeError::InvalidValue);
 			}

@@ -20,7 +20,7 @@ use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
@@ -135,7 +135,7 @@ impl<'a> Hash for Peer<'a> {
 }
 
 struct MoneyLossDetector<'a, 'b> {
-	manager: Arc<ChannelManager<'b>>,
+	manager: Arc<ChannelManager<'b, InMemoryChannelKeys>>,
 	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
 	handler: PeerManager<Peer<'a>>,
 
@@ -148,7 +148,7 @@ struct MoneyLossDetector<'a, 'b> {
 	blocks_connected: u32,
 }
 impl<'a, 'b> MoneyLossDetector<'a, 'b> {
-	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager<'b>>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
+	pub fn new(peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelManager<'b, InMemoryChannelKeys>>, monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>, handler: PeerManager<Peer<'a>>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -228,6 +228,8 @@ struct KeyProvider {
 	counter: AtomicU64,
 }
 impl KeysInterface for KeyProvider {
+	type ChanKeySigner = InMemoryChannelKeys;
+
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
 	}
@@ -244,10 +246,10 @@ impl KeysInterface for KeyProvider {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap())
 	}
 
-	fn get_channel_keys(&self, inbound: bool) -> ChannelKeys {
+	fn get_channel_keys(&self, inbound: bool) -> InMemoryChannelKeys {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		if inbound {
-			ChannelKeys {
+			InMemoryChannelKeys {
 				funding_key:               SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
 				revocation_base_key:       SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, ctr]).unwrap(),
 				payment_base_key:          SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, ctr]).unwrap(),
@@ -256,7 +258,7 @@ impl KeysInterface for KeyProvider {
 				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, ctr],
 			}
 		} else {
-			ChannelKeys {
+			InMemoryChannelKeys {
 				funding_key:               SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, ctr]).unwrap(),
 				revocation_base_key:       SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, ctr]).unwrap(),
 				payment_base_key:          SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, ctr]).unwrap(),

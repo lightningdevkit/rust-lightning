@@ -5,6 +5,7 @@ use std::result::Result;
 use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::Mutex;
 
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
@@ -440,5 +441,31 @@ impl<R: Read> Readable<R> for OutPoint {
 			txid,
 			vout,
 		})
+	}
+}
+
+impl<R: Read, T: Readable<R>> Readable<R> for Mutex<T> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let t: T = Readable::read(r)?;
+		Ok(Mutex::new(t))
+	}
+}
+impl<T: Writeable> Writeable for Mutex<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.lock().unwrap().write(w)
+	}
+}
+
+impl<R: Read, A: Readable<R>, B: Readable<R>> Readable<R> for (A, B) {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let a: A = Readable::read(r)?;
+		let b: B = Readable::read(r)?;
+		Ok((a, b))
+	}
+}
+impl<A: Writeable, B: Writeable> Writeable for (A, B) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.0.write(w)?;
+		self.1.write(w)
 	}
 }
