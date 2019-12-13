@@ -1129,56 +1129,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
 	}
 
-	fn create_htlc_tx_signature(&self, tx: &Transaction, htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Result<(Script, Signature, bool), ChannelError> {
-		if tx.input.len() != 1 {
-			panic!("Tried to sign HTLC transaction that had input count != 1!");
-		}
-
-		let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
-
-		let our_htlc_key = secp_check!(chan_utils::derive_private_key(&self.secp_ctx, &keys.per_commitment_point, self.local_keys.htlc_base_key()), "Derived invalid key, peer is maliciously selecting parameters");
-		let sighash = hash_to_message!(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
-		let is_local_tx = PublicKey::from_secret_key(&self.secp_ctx, &our_htlc_key) == keys.a_htlc_key;
-		Ok((htlc_redeemscript, self.secp_ctx.sign(&sighash, &our_htlc_key), is_local_tx))
-	}
-
-	#[cfg(test)]
-	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
-	/// HTLC-Success transaction (ie htlc.offered is false), preimage must be set!
-	/// TODO: Make this a chan_utils, use it in channelmonitor and tests, cause its unused now
-	fn sign_htlc_transaction(&self, tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Result<Signature, ChannelError> {
-		if tx.input.len() != 1 {
-			panic!("Tried to sign HTLC transaction that had input count != 1!");
-		}
-		if tx.input[0].witness.len() != 0 {
-			panic!("Tried to re-sign HTLC transaction");
-		}
-
-		let (htlc_redeemscript, our_sig, local_tx) = self.create_htlc_tx_signature(tx, htlc, keys)?;
-
-		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
-
-		if local_tx { // b, then a
-			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-		} else {
-			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-		}
-		tx.input[0].witness[1].push(SigHashType::All as u8);
-		tx.input[0].witness[2].push(SigHashType::All as u8);
-
-		if htlc.offered {
-			tx.input[0].witness.push(Vec::new());
-		} else {
-			tx.input[0].witness.push(preimage.unwrap().0.to_vec());
-		}
-
-		tx.input[0].witness.push(htlc_redeemscript.into_bytes());
-
-		Ok(our_sig)
-	}
-
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
 	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
 	/// Ok(_) if debug assertions are turned on and preconditions are met.
@@ -1822,8 +1772,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				log_trace!(self, "Checking HTLC tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), encode::serialize_hex(&htlc_redeemscript));
 				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
 				secp_check!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx signature from peer");
-				let htlc_sig = self.create_htlc_tx_signature(&htlc_tx, &htlc, &local_keys)?.1;
-				htlcs_and_sigs.push((htlc, Some((msg.htlc_signatures[idx], htlc_sig)), source));
+				htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source));
 			} else {
 				htlcs_and_sigs.push((htlc, None, source));
 			}
@@ -4265,7 +4214,7 @@ mod tests {
 					assert!(preimage.is_some());
 				}
 
-				chan.sign_htlc_transaction(&mut htlc_tx, &remote_signature, &preimage, &htlc, &keys).unwrap();
+				chan_utils::sign_htlc_transaction(&mut htlc_tx, &remote_signature, &preimage, &htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, &keys.per_commitment_point, chan.local_keys.htlc_base_key(), &chan.secp_ctx).unwrap();
 				assert_eq!(serialize(&htlc_tx)[..],
 						hex::decode($tx_hex).unwrap()[..]);
 			};

@@ -14,7 +14,7 @@ use bitcoin_hashes::ripemd160::Hash as Ripemd160;
 use bitcoin_hashes::hash160::Hash as Hash160;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
-use ln::channelmanager::PaymentHash;
+use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 
@@ -63,7 +63,9 @@ pub(super) fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, 
 	base_point.combine(&hashkey)
 }
 
-/// Derives a revocation key from its constituent parts
+/// Derives a revocation key from its constituent parts.
+/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
+/// generated (ie our own).
 pub(super) fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
 	let revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &revocation_base_secret);
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
@@ -284,6 +286,43 @@ pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_s
 		input: txins,
 		output: txouts,
 	}
+}
+
+/// Signs a transaction created by build_htlc_transaction. If the transaction is an
+/// HTLC-Success transaction (ie htlc.offered is false), preimage must be set!
+pub(crate) fn sign_htlc_transaction<T: secp256k1::Signing>(tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey, per_commitment_point: &PublicKey, htlc_base_key: &SecretKey, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Script), ()> {
+	if tx.input.len() != 1 { return Err(()); }
+	if tx.input[0].witness.len() != 0 { return Err(()); }
+
+	let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&htlc, a_htlc_key, b_htlc_key, revocation_key);
+
+	let our_htlc_key = derive_private_key(secp_ctx, per_commitment_point, htlc_base_key).map_err(|_| ())?;
+	let sighash = hash_to_message!(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+	let local_tx = PublicKey::from_secret_key(&secp_ctx, &our_htlc_key) == *a_htlc_key;
+	let our_sig = secp_ctx.sign(&sighash, &our_htlc_key);
+
+	tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
+
+	if local_tx { // b, then a
+		tx.input[0].witness.push(their_sig.serialize_der().to_vec());
+		tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+	} else {
+		tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+		tx.input[0].witness.push(their_sig.serialize_der().to_vec());
+	}
+	tx.input[0].witness[1].push(SigHashType::All as u8);
+	tx.input[0].witness[2].push(SigHashType::All as u8);
+
+	if htlc.offered {
+		tx.input[0].witness.push(Vec::new());
+		assert!(preimage.is_none());
+	} else {
+		tx.input[0].witness.push(preimage.unwrap().0.to_vec());
+	}
+
+	tx.input[0].witness.push(htlc_redeemscript.as_bytes().to_vec());
+
+	Ok((our_sig, htlc_redeemscript))
 }
 
 #[derive(Clone)]
