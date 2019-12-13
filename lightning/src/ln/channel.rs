@@ -19,7 +19,7 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, LocalFeatures, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
+use ln::chan_utils::{LocalCommitmentTransaction,TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
@@ -450,7 +450,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let secp_ctx = Secp256k1::new();
-		let channel_monitor = ChannelMonitor::new(chan_keys.revocation_base_key(), chan_keys.delayed_payment_base_key(),
+		let channel_monitor = ChannelMonitor::new(chan_keys.funding_key(), chan_keys.revocation_base_key(), chan_keys.delayed_payment_base_key(),
 		                                          chan_keys.htlc_base_key(), chan_keys.payment_base_key(), &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
 		                                          keys_provider.get_destination_script(), logger.clone());
 
@@ -644,7 +644,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let secp_ctx = Secp256k1::new();
-		let channel_monitor = ChannelMonitor::new(chan_keys.revocation_base_key(), chan_keys.delayed_payment_base_key(),
+		let channel_monitor = ChannelMonitor::new(chan_keys.funding_key(), chan_keys.revocation_base_key(), chan_keys.delayed_payment_base_key(),
 		                                          chan_keys.htlc_base_key(), chan_keys.payment_base_key(), &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
 		                                          keys_provider.get_destination_script(), logger.clone());
 
@@ -1122,38 +1122,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
 	}
 
-	fn sign_commitment_transaction(&self, tx: &mut Transaction, their_sig: &Signature) -> Signature {
-		if tx.input.len() != 1 {
-			panic!("Tried to sign commitment transaction that had input count != 1!");
-		}
-		if tx.input[0].witness.len() != 0 {
-			panic!("Tried to re-sign commitment transaction");
-		}
-
-		let funding_redeemscript = self.get_funding_redeemscript();
-
-		let sighash = hash_to_message!(&bip143::SighashComponents::new(&tx).sighash_all(&tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
-		let our_sig = self.secp_ctx.sign(&sighash, self.local_keys.funding_key());
-
-		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
-
-		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()).serialize();
-		let their_funding_key = self.their_funding_pubkey.unwrap().serialize();
-		if our_funding_key[..] < their_funding_key[..] {
-			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-		} else {
-			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-		}
-		tx.input[0].witness[1].push(SigHashType::All as u8);
-		tx.input[0].witness[2].push(SigHashType::All as u8);
-
-		tx.input[0].witness.push(funding_redeemscript.into_bytes());
-
-		our_sig
-	}
-
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
@@ -1492,18 +1460,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
-	fn funding_created_signature(&mut self, sig: &Signature) -> Result<(Transaction, Transaction, Signature, TxCreationKeys), ChannelError> {
+	fn funding_created_signature(&mut self, sig: &Signature) -> Result<(Transaction, LocalCommitmentTransaction, Signature, TxCreationKeys), ChannelError> {
 		let funding_script = self.get_funding_redeemscript();
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let mut local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
+		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
 
 		// They sign the "local" commitment transaction...
 		secp_check!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey.unwrap()), "Invalid funding_created signature from peer");
 
-		// ...and we sign it, allowing us to broadcast the tx if we wish
-		self.sign_commitment_transaction(&mut local_initial_commitment_tx, sig);
+		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap());
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
@@ -1511,7 +1478,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
-		Ok((remote_initial_commitment_tx, local_initial_commitment_tx, remote_signature, local_keys))
+		Ok((remote_initial_commitment_tx, localtx, remote_signature, local_keys))
 	}
 
 	pub fn funding_created(&mut self, msg: &msgs::FundingCreated) -> Result<(msgs::FundingSigned, ChannelMonitor), ChannelError> {
@@ -1575,14 +1542,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_script = self.get_funding_redeemscript();
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let mut local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
+		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
 		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid funding_signed signature from peer");
 
-		self.sign_commitment_transaction(&mut local_initial_commitment_tx, &msg.signature);
-		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx, local_keys, self.feerate_per_kw, Vec::new());
+		self.channel_monitor.provide_latest_local_commitment_tx_info(
+			LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap()),
+			local_keys, self.feerate_per_kw, Vec::new());
 		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
 		self.cur_local_commitment_transaction_number -= 1;
 
@@ -1846,8 +1814,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Got wrong number of HTLC signatures from remote"));
 		}
 
-		self.sign_commitment_transaction(&mut local_commitment_tx.0, &msg.signature);
-
 		let mut htlcs_and_sigs = Vec::with_capacity(local_commitment_tx.2.len());
 		for (idx, (htlc, source)) in local_commitment_tx.2.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
@@ -1881,7 +1847,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		self.channel_monitor.provide_latest_local_commitment_tx_info(local_commitment_tx.0, local_keys, self.feerate_per_kw, htlcs_and_sigs);
+
+		self.channel_monitor.provide_latest_local_commitment_tx_info(
+			LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap()),
+			local_keys, self.feerate_per_kw, htlcs_and_sigs);
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
@@ -2859,11 +2828,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// May only be called after funding has been initiated (ie is_funding_initiated() is true)
-	pub fn channel_monitor(&self) -> &ChannelMonitor {
+	pub fn channel_monitor(&mut self) -> &mut ChannelMonitor {
 		if self.channel_state < ChannelState::FundingCreated as u32 {
 			panic!("Can't get a channel monitor until funding has been created");
 		}
-		&self.channel_monitor
+		&mut self.channel_monitor
 	}
 
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
@@ -4141,6 +4110,7 @@ mod tests {
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::chan_utils;
+	use ln::chan_utils::LocalCommitmentTransaction;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 	use chain::transaction::OutPoint;
@@ -4260,13 +4230,15 @@ mod tests {
 						.collect();
 					(res.0, htlcs)
 				};
+				let redeemscript = chan.get_funding_redeemscript();
 				let their_signature = Signature::from_der(&hex::decode($their_sig_hex).unwrap()[..]).unwrap();
-				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &chan.get_funding_redeemscript(), chan.channel_value_satoshis)[..]).unwrap();
+				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &redeemscript, chan.channel_value_satoshis)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, &chan.their_funding_pubkey.unwrap()).unwrap();
 
-				chan.sign_commitment_transaction(&mut unsigned_tx.0, &their_signature);
+				let mut localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey.as_ref().unwrap());
+				localtx.add_local_sig(chan.local_keys.funding_key(), &redeemscript, chan.channel_value_satoshis, &chan.secp_ctx);
 
-				assert_eq!(serialize(&unsigned_tx.0)[..],
+				assert_eq!(serialize(localtx.with_valid_witness())[..],
 						hex::decode($tx_hex).unwrap()[..]);
 			};
 		}

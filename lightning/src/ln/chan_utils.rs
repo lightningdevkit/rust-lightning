@@ -4,7 +4,9 @@
 
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
+use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, SigHashType};
+use bitcoin::consensus::encode::{self, Decodable, Encodable};
+use bitcoin::util::bip143;
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
@@ -13,9 +15,11 @@ use bitcoin_hashes::hash160::Hash as Hash160;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use ln::channelmanager::PaymentHash;
+use ln::msgs::DecodeError;
+use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::Secp256k1;
+use secp256k1::key::{SecretKey,PublicKey};
+use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 
 pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
@@ -279,5 +283,118 @@ pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_s
 		lock_time: if htlc.offered { htlc.cltv_expiry } else { 0 },
 		input: txins,
 		output: txouts,
+	}
+}
+
+#[derive(Clone)]
+/// We use this to track local commitment transactions and put off signing them until we are ready
+/// to broadcast. Eventually this will require a signer which is possibly external, but for now we
+/// just pass in the SecretKeys required.
+pub(crate) struct LocalCommitmentTransaction {
+	tx: Transaction
+}
+impl LocalCommitmentTransaction {
+	#[cfg(test)]
+	pub fn dummy() -> Self {
+		Self { tx: Transaction {
+			version: 2,
+			input: Vec::new(),
+			output: Vec::new(),
+			lock_time: 0,
+		} }
+	}
+
+	pub fn new_missing_local_sig(mut tx: Transaction, their_sig: &Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey) -> LocalCommitmentTransaction {
+		if tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
+		if tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
+
+		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
+
+		if our_funding_key.serialize()[..] < their_funding_key.serialize()[..] {
+			tx.input[0].witness.push(Vec::new());
+			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
+			tx.input[0].witness[2].push(SigHashType::All as u8);
+		} else {
+			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
+			tx.input[0].witness[1].push(SigHashType::All as u8);
+			tx.input[0].witness.push(Vec::new());
+		}
+
+		Self { tx }
+	}
+
+	pub fn txid(&self) -> Sha256dHash {
+		self.tx.txid()
+	}
+
+	pub fn has_local_sig(&self) -> bool {
+		if self.tx.input.len() != 1 { panic!("Commitment transactions must have input count == 1!"); }
+		if self.tx.input[0].witness.len() == 4 {
+			assert!(!self.tx.input[0].witness[1].is_empty());
+			assert!(!self.tx.input[0].witness[2].is_empty());
+			true
+		} else {
+			assert_eq!(self.tx.input[0].witness.len(), 3);
+			assert!(self.tx.input[0].witness[0].is_empty());
+			assert!(self.tx.input[0].witness[1].is_empty() || self.tx.input[0].witness[2].is_empty());
+			false
+		}
+	}
+
+	pub fn add_local_sig<T: secp256k1::Signing>(&mut self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) {
+		if self.has_local_sig() { return; }
+		let sighash = hash_to_message!(&bip143::SighashComponents::new(&self.tx)
+			.sighash_all(&self.tx.input[0], funding_redeemscript, channel_value_satoshis)[..]);
+		let our_sig = secp_ctx.sign(&sighash, funding_key);
+
+		if self.tx.input[0].witness[1].is_empty() {
+			self.tx.input[0].witness[1] = our_sig.serialize_der().to_vec();
+			self.tx.input[0].witness[1].push(SigHashType::All as u8);
+		} else {
+			self.tx.input[0].witness[2] = our_sig.serialize_der().to_vec();
+			self.tx.input[0].witness[2].push(SigHashType::All as u8);
+		}
+
+		self.tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
+	}
+
+	pub fn without_valid_witness(&self) -> &Transaction { &self.tx }
+	pub fn with_valid_witness(&self) -> &Transaction {
+		assert!(self.has_local_sig());
+		&self.tx
+	}
+}
+impl PartialEq for LocalCommitmentTransaction {
+	// We dont care whether we are signed in equality comparison
+	fn eq(&self, o: &Self) -> bool {
+		self.txid() == o.txid()
+	}
+}
+impl Writeable for LocalCommitmentTransaction {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		if let Err(e) = self.tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
+			match e {
+				encode::Error::Io(e) => return Err(e),
+				_ => panic!("local tx must have been well-formed!"),
+			}
+		}
+		Ok(())
+	}
+}
+impl<R: ::std::io::Read> Readable<R> for LocalCommitmentTransaction {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		let tx = match Transaction::consensus_decode(reader.by_ref()) {
+			Ok(tx) => tx,
+			Err(e) => match e {
+				encode::Error::Io(ioe) => return Err(DecodeError::Io(ioe)),
+				_ => return Err(DecodeError::InvalidValue),
+			},
+		};
+
+		if tx.input.len() != 1 {
+			// Ensure tx didn't hit the 0-input ambiguity case.
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(Self { tx })
 	}
 }

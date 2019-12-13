@@ -3216,7 +3216,7 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: ChannelKeys> {
 	///
 	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
 	/// this struct.
-	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
+	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor>,
 }
 
 impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner>> for (Sha256dHash, ChannelManager<ChanSigner>) {
@@ -3245,7 +3245,7 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArg
 
 			let funding_txo = channel.channel_monitor().get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
-			if let Some(monitor) = args.channel_monitors.get(&funding_txo) {
+			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				if channel.get_cur_local_commitment_transaction_number() != monitor.get_cur_local_commitment_number() ||
 						channel.get_revoked_remote_commitment_transaction_number() != monitor.get_min_seen_secret() ||
 						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() {
@@ -3263,7 +3263,7 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArg
 			}
 		}
 
-		for (ref funding_txo, ref monitor) in args.channel_monitors.iter() {
+		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
 				closed_channels.push((monitor.get_latest_local_commitment_txn(), Vec::new()));
 			}
