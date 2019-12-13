@@ -1,4 +1,5 @@
 use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys};
+use ln::msgs;
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
 use std::cmp;
@@ -49,6 +50,14 @@ impl ChannelKeys for EnforcingChannelKeys {
 		}
 
 		Ok(self.inner.sign_remote_commitment(channel_value_satoshis, channel_funding_script, feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx).unwrap())
+	}
+
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_closing_transaction(channel_value_satoshis, channel_funding_redeemscript, closing_tx, secp_ctx).unwrap())
+	}
+
+	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 }
 
