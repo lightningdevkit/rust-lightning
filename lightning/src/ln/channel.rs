@@ -4,7 +4,7 @@ use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::bip143;
-use bitcoin::consensus::encode::{self, Encodable, Decodable};
+use bitcoin::consensus::encode;
 
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
@@ -25,7 +25,7 @@ use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::transaction_utils;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer, WriterWriteAdaptor};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::logger::{Logger, LogHolder};
 use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
@@ -297,12 +297,6 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
 	max_commitment_tx_output_remote: ::std::sync::Mutex<(u64, u64)>,
 
-	#[cfg(test)]
-	// Used in ChannelManager's tests to send a revoked transaction
-	pub last_local_commitment_txn: Vec<Transaction>,
-	#[cfg(not(test))]
-	last_local_commitment_txn: Vec<Transaction>,
-
 	last_sent_closing_fee: Option<(u64, u64, Signature)>, // (feerate, fee, our_sig)
 
 	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
@@ -497,8 +491,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_commitment_tx_output_local: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 			#[cfg(debug_assertions)]
 			max_commitment_tx_output_remote: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
-
-			last_local_commitment_txn: Vec::new(),
 
 			last_sent_closing_fee: None,
 
@@ -715,8 +707,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_commitment_tx_output_local: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
 			#[cfg(debug_assertions)]
 			max_commitment_tx_output_remote: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
-
-			last_local_commitment_txn: Vec::new(),
 
 			last_sent_closing_fee: None,
 
@@ -1185,8 +1175,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok((htlc_redeemscript, self.secp_ctx.sign(&sighash, &our_htlc_key), is_local_tx))
 	}
 
+	#[cfg(test)]
 	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
 	/// HTLC-Success transaction (ie htlc.offered is false), preimage must be set!
+	/// TODO: Make this a chan_utils, use it in channelmonitor and tests, cause its unused now
 	fn sign_htlc_transaction(&self, tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Result<Signature, ChannelError> {
 		if tx.input.len() != 1 {
 			panic!("Tried to sign HTLC transaction that had input count != 1!");
@@ -1556,7 +1548,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// Now that we're past error-generating stuff, update our local state:
 
 		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
-		self.last_local_commitment_txn = vec![local_initial_commitment_tx.clone()];
 		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx, local_keys, self.feerate_per_kw, Vec::new());
 		self.channel_state = ChannelState::FundingSent as u32;
 		self.channel_id = funding_txo.to_channel_id();
@@ -1594,8 +1585,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid funding_signed signature from peer");
 
 		self.sign_commitment_transaction(&mut local_initial_commitment_tx, &msg.signature);
-		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx.clone(), local_keys, self.feerate_per_kw, Vec::new());
-		self.last_local_commitment_txn = vec![local_initial_commitment_tx];
+		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx, local_keys, self.feerate_per_kw, Vec::new());
 		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
 		self.cur_local_commitment_transaction_number -= 1;
 
@@ -1859,25 +1849,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Got wrong number of HTLC signatures from remote"));
 		}
 
-		let mut new_local_commitment_txn = Vec::with_capacity(local_commitment_tx.1 + 1);
 		self.sign_commitment_transaction(&mut local_commitment_tx.0, &msg.signature);
-		new_local_commitment_txn.push(local_commitment_tx.0.clone());
 
 		let mut htlcs_and_sigs = Vec::with_capacity(local_commitment_tx.2.len());
 		for (idx, (htlc, source)) in local_commitment_tx.2.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
-				let mut htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
+				let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 				log_trace!(self, "Checking HTLC tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), encode::serialize_hex(&htlc_redeemscript));
 				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
 				secp_check!(self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key), "Invalid HTLC tx signature from peer");
-				let htlc_sig = if htlc.offered {
-					let htlc_sig = self.sign_htlc_transaction(&mut htlc_tx, &msg.htlc_signatures[idx], &None, &htlc, &local_keys)?;
-					new_local_commitment_txn.push(htlc_tx);
-					htlc_sig
-				} else {
-					self.create_htlc_tx_signature(&htlc_tx, &htlc, &local_keys)?.1
-				};
+				let htlc_sig = self.create_htlc_tx_signature(&htlc_tx, &htlc, &local_keys)?.1;
 				htlcs_and_sigs.push((htlc, Some((msg.htlc_signatures[idx], htlc_sig)), source));
 			} else {
 				htlcs_and_sigs.push((htlc, None, source));
@@ -1923,7 +1905,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		self.cur_local_commitment_transaction_number -= 1;
-		self.last_local_commitment_txn = new_local_commitment_txn;
 		// Note that if we need_our_commitment & !AwaitingRemoteRevoke we'll call
 		// send_commitment_no_status_check() next which will reset this to RAAFirst.
 		self.resend_order = RAACommitmentOrder::CommitmentFirst;
@@ -2881,11 +2862,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// May only be called after funding has been initiated (ie is_funding_initiated() is true)
-	pub fn channel_monitor(&self) -> ChannelMonitor {
+	pub fn channel_monitor(&self) -> &ChannelMonitor {
 		if self.channel_state < ChannelState::FundingCreated as u32 {
 			panic!("Can't get a channel monitor until funding has been created");
 		}
-		self.channel_monitor.clone()
+		&self.channel_monitor
 	}
 
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
@@ -3681,9 +3662,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.channel_update_count += 1;
-		let mut res = Vec::new();
-		mem::swap(&mut res, &mut self.last_local_commitment_txn);
-		(res, dropped_outbound_htlcs)
+		(self.channel_monitor.get_latest_local_commitment_txn(), dropped_outbound_htlcs)
 	}
 }
 
@@ -3873,16 +3852,6 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.channel_update_count.write(writer)?;
 		self.feerate_per_kw.write(writer)?;
 
-		(self.last_local_commitment_txn.len() as u64).write(writer)?;
-		for tx in self.last_local_commitment_txn.iter() {
-			if let Err(e) = tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
-				match e {
-					encode::Error::Io(e) => return Err(e),
-					_ => panic!("last_local_commitment_txn must have been well-formed!"),
-				}
-			}
-		}
-
 		match self.last_sent_closing_fee {
 			Some((feerate, fee, sig)) => {
 				1u8.write(writer)?;
@@ -4041,15 +4010,6 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 		let channel_update_count = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 
-		let last_local_commitment_txn_count: u64 = Readable::read(reader)?;
-		let mut last_local_commitment_txn = Vec::with_capacity(cmp::min(last_local_commitment_txn_count as usize, OUR_MAX_HTLCS as usize*2 + 1));
-		for _ in 0..last_local_commitment_txn_count {
-			last_local_commitment_txn.push(match Transaction::consensus_decode(reader.by_ref()) {
-				Ok(tx) => tx,
-				Err(_) => return Err(DecodeError::InvalidValue),
-			});
-		}
-
 		let last_sent_closing_fee = match <u8 as Readable<R>>::read(reader)? {
 			0 => None,
 			1 => Some((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?)),
@@ -4131,8 +4091,6 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 			max_commitment_tx_output_local: ::std::sync::Mutex::new((0, 0)),
 			#[cfg(debug_assertions)]
 			max_commitment_tx_output_remote: ::std::sync::Mutex::new((0, 0)),
-
-			last_local_commitment_txn,
 
 			last_sent_closing_fee,
 

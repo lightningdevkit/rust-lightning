@@ -2316,6 +2316,7 @@ impl ChannelMonitor {
 	/// out-of-band the other node operator to coordinate with him if option is available to you.
 	/// In any-case, choice is up to the user.
 	pub fn get_latest_local_commitment_txn(&self) -> Vec<Transaction> {
+		log_trace!(self, "Getting signed latest local commitment transaction!");
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			let mut res = vec![local_tx.tx.clone()];
 			match self.key_storage {

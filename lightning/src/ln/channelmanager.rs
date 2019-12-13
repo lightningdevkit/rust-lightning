@@ -1791,7 +1791,7 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			let pending_msg_events = channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
 				if channel.is_awaiting_monitor_update() {
-					let chan_monitor = channel.channel_monitor();
+					let chan_monitor = channel.channel_monitor().clone();
 					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 						match e {
 							ChannelMonitorUpdateErr::PermanentFailure => {
