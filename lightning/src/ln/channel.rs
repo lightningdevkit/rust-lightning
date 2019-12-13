@@ -303,7 +303,7 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	#[cfg(not(test))]
 	last_local_commitment_txn: Vec<Transaction>,
 
-	last_sent_closing_fee: Option<(u64, u64)>, // (feerate, fee)
+	last_sent_closing_fee: Option<(u64, u64, Signature)>, // (feerate, fee, our_sig)
 
 	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
 	/// to detect unconfirmation after a serialize-unserialize roundtrip where we may not see a full
@@ -2665,14 +2665,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
 
 		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
-		let funding_redeemscript = self.get_funding_redeemscript();
-		let sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
+		let our_sig = self.local_keys
+			.sign_closing_transaction(self.channel_value_satoshis, &self.get_funding_redeemscript(), &closing_tx, &self.secp_ctx)
+			.ok();
+		if our_sig.is_none() { return None; }
 
-		self.last_sent_closing_fee = Some((proposed_feerate, total_fee_satoshis));
+		self.last_sent_closing_fee = Some((proposed_feerate, total_fee_satoshis, our_sig.clone().unwrap()));
 		Some(msgs::ClosingSigned {
 			channel_id: self.channel_id,
 			fee_satoshis: total_fee_satoshis,
-			signature: self.secp_ctx.sign(&sighash, &self.local_keys.funding_key()),
+			signature: our_sig.unwrap(),
 		})
 	}
 
@@ -2749,6 +2751,28 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
 	}
 
+	fn build_signed_closing_transaction(&self, tx: &mut Transaction, their_sig: &Signature, our_sig: &Signature) {
+		if tx.input.len() != 1 { panic!("Tried to sign closing transaction that had input count != 1!"); }
+		if tx.input[0].witness.len() != 0 { panic!("Tried to re-sign closing transaction"); }
+		if tx.output.len() > 2 { panic!("Tried to sign bogus closing transaction"); }
+
+		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
+
+		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()).serialize();
+		let their_funding_key = self.their_funding_pubkey.unwrap().serialize();
+		if our_funding_key[..] < their_funding_key[..] {
+			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
+		} else {
+			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+		}
+		tx.input[0].witness[1].push(SigHashType::All as u8);
+		tx.input[0].witness[2].push(SigHashType::All as u8);
+
+		tx.input[0].witness.push(self.get_funding_redeemscript().into_bytes());
+	}
+
 	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError> {
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
 			return Err(ChannelError::Close("Remote end sent us a closing_signed before both sides provided a shutdown"));
@@ -2781,9 +2805,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			},
 		};
 
-		if let Some((_, last_fee)) = self.last_sent_closing_fee {
+		if let Some((_, last_fee, our_sig)) = self.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
-				self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
+				self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
 				self.channel_state = ChannelState::ShutdownComplete as u32;
 				self.channel_update_count += 1;
 				return Ok((None, Some(closing_tx)));
@@ -2794,9 +2818,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			($new_feerate: expr) => {
 				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
 				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 1000, false);
-				sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
-				let our_sig = self.secp_ctx.sign(&sighash, &self.local_keys.funding_key());
-				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee));
+				let our_sig = self.local_keys
+					.sign_closing_transaction(self.channel_value_satoshis, &funding_redeemscript, &closing_tx, &self.secp_ctx)
+					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
+				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee, our_sig.clone()));
 				return Ok((Some(msgs::ClosingSigned {
 					channel_id: self.channel_id,
 					fee_satoshis: used_total_fee,
@@ -2809,7 +2834,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_outbound {
 			let our_max_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 			if proposed_sat_per_kw > our_max_feerate {
-				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
+				if let Some((last_feerate, _, _)) = self.last_sent_closing_fee {
 					if our_max_feerate <= last_feerate {
 						return Err(ChannelError::Close("Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate"));
 					}
@@ -2819,7 +2844,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		} else {
 			let our_min_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 			if proposed_sat_per_kw < our_min_feerate {
-				if let Some((last_feerate, _)) = self.last_sent_closing_fee {
+				if let Some((last_feerate, _, _)) = self.last_sent_closing_fee {
 					if our_min_feerate >= last_feerate {
 						return Err(ChannelError::Close("Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate"));
 					}
@@ -2828,7 +2853,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		let our_sig = self.sign_commitment_transaction(&mut closing_tx, &msg.signature);
+		let our_sig = self.local_keys
+			.sign_closing_transaction(self.channel_value_satoshis, &funding_redeemscript, &closing_tx, &self.secp_ctx)
+			.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
+		self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
+
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.channel_update_count += 1;
 
@@ -3855,10 +3884,11 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		}
 
 		match self.last_sent_closing_fee {
-			Some((feerate, fee)) => {
+			Some((feerate, fee, sig)) => {
 				1u8.write(writer)?;
 				feerate.write(writer)?;
 				fee.write(writer)?;
+				sig.write(writer)?;
 			},
 			None => 0u8.write(writer)?,
 		}
@@ -4022,7 +4052,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 
 		let last_sent_closing_fee = match <u8 as Readable<R>>::read(reader)? {
 			0 => None,
-			1 => Some((Readable::read(reader)?, Readable::read(reader)?)),
+			1 => Some((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?)),
 			_ => return Err(DecodeError::InvalidValue),
 		};
 

@@ -142,7 +142,13 @@ pub trait ChannelKeys : Send {
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, absolute_fee: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+
+	/// Create a signature for a (proposed) closing transaction.
+	///
+	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
+	/// chosen to forgo their output as dust.
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
@@ -178,9 +184,9 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
-		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_script, channel_value_satoshis)[..]);
+		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
 
 		let commitment_txid = commitment_tx.txid();
@@ -200,6 +206,16 @@ impl ChannelKeys for InMemoryChannelKeys {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
+	}
+
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		if closing_tx.input.len() != 1 { return Err(()); }
+		if closing_tx.input[0].witness.len() != 0 { return Err(()); }
+		if closing_tx.output.len() > 2 { return Err(()); }
+
+		let sighash = hash_to_message!(&bip143::SighashComponents::new(closing_tx)
+			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
+		Ok(secp_ctx.sign(&sighash, &self.funding_key))
 	}
 
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
