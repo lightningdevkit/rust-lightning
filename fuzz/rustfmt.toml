@@ -1,0 +1,5 @@
+hard_tabs = true # use tab characters for indentation, spaces for alignment
+use_field_init_shorthand = true
+max_width = 120
+use_small_heuristics = "Max"
+fn_args_layout = "Compressed"
