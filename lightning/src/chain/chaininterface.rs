@@ -207,14 +207,14 @@ impl ChainWatchedUtil {
 
 /// Utility for notifying listeners about new blocks, and handling block rescans if new watch
 /// data is registered.
-pub struct BlockNotifier<'a> {
-	listeners: Mutex<Vec<Weak<ChainListener + 'a>>>, //TODO(vmw): try removing Weak
+pub struct BlockNotifier {
+	listeners: Mutex<Vec<Weak<ChainListener>>>, //TODO(vmw): try removing Weak
 	chain_monitor: Arc<ChainWatchInterface>,
 }
 
-impl<'a> BlockNotifier<'a> {
+impl BlockNotifier {
 	/// Constructs a new BlockNotifier without any listeners.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier<'a> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier {
 		BlockNotifier {
 			listeners: Mutex::new(Vec::new()),
 			chain_monitor,
@@ -224,7 +224,7 @@ impl<'a> BlockNotifier<'a> {
 	/// Register the given listener to receive events. Only a weak pointer is provided and
 	/// the registration should be freed once that pointer expires.
 	// TODO: unregister
-	pub fn register_listener(&self, listener: Weak<ChainListener + 'a>) {
+	pub fn register_listener(&self, listener: Weak<ChainListener>) {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
 	}

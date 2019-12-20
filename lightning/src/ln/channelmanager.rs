@@ -326,11 +326,11 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
 /// offline for a full minute. In order to track this, you must call
 /// timer_chan_freshness_every_min roughly once per minute, though it doesn't have to be perfec.
-pub struct ChannelManager<'a, ChanSigner: ChannelKeys> {
+pub struct ChannelManager<ChanSigner: ChannelKeys> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
-	monitor: Arc<ManyChannelMonitor + 'a>,
+	monitor: Arc<ManyChannelMonitor>,
 	tx_broadcaster: Arc<BroadcasterInterface>,
 
 	#[cfg(test)]
@@ -583,7 +583,7 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys> ChannelManager<'a, ChanSigner> {
+impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
@@ -602,7 +602,7 @@ impl<'a, ChanSigner: ChannelKeys> ChannelManager<'a, ChanSigner> {
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor + 'a>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager<'a, ChanSigner>>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: Arc<ManyChannelMonitor>, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<Arc<ChannelManager<ChanSigner>>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = Arc::new(ChannelManager {
@@ -2567,7 +2567,7 @@ impl<'a, ChanSigner: ChannelKeys> ChannelManager<'a, ChanSigner> {
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys> events::MessageSendEventsProvider for ChannelManager<'a, ChanSigner> {
+impl<ChanSigner: ChannelKeys> events::MessageSendEventsProvider for ChannelManager<ChanSigner> {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2592,7 +2592,7 @@ impl<'a, ChanSigner: ChannelKeys> events::MessageSendEventsProvider for ChannelM
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys> events::EventsProvider for ChannelManager<'a, ChanSigner> {
+impl<ChanSigner: ChannelKeys> events::EventsProvider for ChannelManager<ChanSigner> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2617,7 +2617,7 @@ impl<'a, ChanSigner: ChannelKeys> events::EventsProvider for ChannelManager<'a, 
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys> ChainListener for ChannelManager<'a, ChanSigner> {
+impl<ChanSigner: ChannelKeys> ChainListener for ChannelManager<ChanSigner> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
@@ -2731,7 +2731,7 @@ impl<'a, ChanSigner: ChannelKeys> ChainListener for ChannelManager<'a, ChanSigne
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<'a, ChanSigner> {
+impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigner> {
 	//TODO: Handle errors and close channel (or so)
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel) -> Result<(), LightningError> {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3116,7 +3116,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys + Writeable> Writeable for ChannelManager<'a, ChanSigner> {
+impl<ChanSigner: ChannelKeys + Writeable> Writeable for ChannelManager<ChanSigner> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
 
@@ -3179,7 +3179,7 @@ impl<'a, ChanSigner: ChannelKeys + Writeable> Writeable for ChannelManager<'a, C
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
-pub struct ChannelManagerReadArgs<'a, 'b, ChanSigner: ChannelKeys> {
+pub struct ChannelManagerReadArgs<'a, ChanSigner: ChannelKeys> {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
 	pub keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>,
@@ -3193,7 +3193,7 @@ pub struct ChannelManagerReadArgs<'a, 'b, ChanSigner: ChannelKeys> {
 	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
 	/// you have deserialized ChannelMonitors separately and will add them to your
 	/// ManyChannelMonitor after deserializing this ChannelManager.
-	pub monitor: Arc<ManyChannelMonitor + 'b>,
+	pub monitor: Arc<ManyChannelMonitor>,
 
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
@@ -3219,8 +3219,8 @@ pub struct ChannelManagerReadArgs<'a, 'b, ChanSigner: ChannelKeys> {
 	pub channel_monitors: &'a HashMap<OutPoint, &'a ChannelMonitor>,
 }
 
-impl<'a, 'b, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, ChannelManagerReadArgs<'a, 'b, ChanSigner>> for (Sha256dHash, ChannelManager<'b, ChanSigner>) {
-	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, 'b, ChanSigner>) -> Result<Self, DecodeError> {
+impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner>> for (Sha256dHash, ChannelManager<ChanSigner>) {
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
