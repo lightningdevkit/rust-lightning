@@ -5,6 +5,7 @@ use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use utils::test_logger;
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 fn slice_to_be16(v: &[u8]) -> u16 {
 	((v[0] as u16) << 8*1) |
 	((v[1] as u16) << 8*0)

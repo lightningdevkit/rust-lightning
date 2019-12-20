@@ -41,24 +41,27 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
-	((v[0] as u16) << 8*1) |
-	((v[1] as u16) << 8*0)
+	((v[0] as u16) << 8 * 1) |
+	((v[1] as u16) << 8 * 0)
 }
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be24(v: &[u8]) -> u32 {
-	((v[0] as u32) << 8*2) |
-	((v[1] as u32) << 8*1) |
-	((v[2] as u32) << 8*0)
+	((v[0] as u32) << 8 * 2) |
+	((v[1] as u32) << 8 * 1) |
+	((v[2] as u32) << 8 * 0)
 }
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be32(v: &[u8]) -> u32 {
-	((v[0] as u32) << 8*3) |
-	((v[1] as u32) << 8*2) |
-	((v[2] as u32) << 8*1) |
-	((v[3] as u32) << 8*0)
+	((v[0] as u32) << 8 * 3) |
+	((v[1] as u32) << 8 * 2) |
+	((v[2] as u32) << 8 * 1) |
+	((v[3] as u32) << 8 * 0)
 }
 
 #[inline]
@@ -282,6 +285,7 @@ impl KeysInterface for KeyProvider {
 		[0; 32])
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_channel_id(&self) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

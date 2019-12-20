@@ -1,9 +1,12 @@
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
 	((v[0] as u16) << 8*1) |
 	((v[1] as u16) << 8*0)
 }
+
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be32(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*3) |
 	((v[1] as u32) << 8*2) |
@@ -12,6 +15,7 @@ pub fn slice_to_be32(v: &[u8]) -> u32 {
 }
 #[cfg(not(feature = "fuzztarget"))] // Used only by poly1305
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_le32(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*0) |
 	((v[1] as u32) << 8*1) |
@@ -19,6 +23,7 @@ pub fn slice_to_le32(v: &[u8]) -> u32 {
 	((v[3] as u32) << 8*3)
 }
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be48(v: &[u8]) -> u64 {
 	((v[0] as u64) << 8*5) |
 	((v[1] as u64) << 8*4) |
@@ -28,6 +33,7 @@ pub fn slice_to_be48(v: &[u8]) -> u64 {
 	((v[5] as u64) << 8*0)
 }
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be64(v: &[u8]) -> u64 {
 	((v[0] as u64) << 8*7) |
 	((v[1] as u64) << 8*6) |

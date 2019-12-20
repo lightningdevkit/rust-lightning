@@ -773,6 +773,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	// Utilities to build transactions:
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
 		let mut sha = Sha256::engine();
 		let our_payment_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key());
@@ -787,12 +788,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		let res = Sha256::from_engine(sha).into_inner();
 
-		((res[26] as u64) << 5*8) |
-		((res[27] as u64) << 4*8) |
-		((res[28] as u64) << 3*8) |
-		((res[29] as u64) << 2*8) |
-		((res[30] as u64) << 1*8) |
-		((res[31] as u64) << 0*8)
+		((res[26] as u64) << 5 * 8) |
+		((res[27] as u64) << 4 * 8) |
+		((res[28] as u64) << 3 * 8) |
+		((res[29] as u64) << 2 * 8) |
+		((res[30] as u64) << 1 * 8) |
+		((res[31] as u64) << 0 * 8)
 	}
 
 	/// Transaction nomenclature is somewhat confusing here as there are many different cases - a

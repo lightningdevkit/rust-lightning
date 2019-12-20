@@ -20,29 +20,32 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
-	((v[0] as u16) << 8*1) |
-	((v[1] as u16) << 8*0)
+	((v[0] as u16) << 8 * 1) |
+	((v[1] as u16) << 8 * 0)
 }
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be32(v: &[u8]) -> u32 {
-	((v[0] as u32) << 8*3) |
-	((v[1] as u32) << 8*2) |
-	((v[2] as u32) << 8*1) |
-	((v[3] as u32) << 8*0)
+	((v[0] as u32) << 8 * 3) |
+	((v[1] as u32) << 8 * 2) |
+	((v[2] as u32) << 8 * 1) |
+	((v[3] as u32) << 8 * 0)
 }
 
 #[inline]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn slice_to_be64(v: &[u8]) -> u64 {
-	((v[0] as u64) << 8*7) |
-	((v[1] as u64) << 8*6) |
-	((v[2] as u64) << 8*5) |
-	((v[3] as u64) << 8*4) |
-	((v[4] as u64) << 8*3) |
-	((v[5] as u64) << 8*2) |
-	((v[6] as u64) << 8*1) |
-	((v[7] as u64) << 8*0)
+	((v[0] as u64) << 8 * 7) |
+	((v[1] as u64) << 8 * 6) |
+	((v[2] as u64) << 8 * 5) |
+	((v[3] as u64) << 8 * 4) |
+	((v[4] as u64) << 8 * 3) |
+	((v[5] as u64) << 8 * 2) |
+	((v[6] as u64) << 8 * 1) |
+	((v[7] as u64) << 8 * 0)
 }
 
 

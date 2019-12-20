@@ -40,6 +40,7 @@ impl Poly1305 {
 		poly
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn block(&mut self, m: &[u8]) {
 		let hibit : u32 = if self.finalized { 0 } else { 1 << 24 };
 
@@ -75,7 +76,7 @@ impl Poly1305 {
 		let mut d4 = (h0 as u64 * r4 as u64) + (h1 as u64 * r3 as u64) + (h2 as u64 * r2 as u64) + (h3 as u64 * r1 as u64) + (h4 as u64 * r0 as u64);
 
 		// (partial) h %= p
-		let mut c : u32;
+		let mut c: u32;
 		                c = (d0 >> 26) as u32; h0 = d0 as u32 & 0x3ffffff;
 		d1 += c as u64; c = (d1 >> 26) as u32; h1 = d1 as u32 & 0x3ffffff;
 		d2 += c as u64; c = (d2 >> 26) as u32; h2 = d2 as u32 & 0x3ffffff;
@@ -91,6 +92,7 @@ impl Poly1305 {
 		self.h[4] = h4;
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	pub fn finish(&mut self) {
 		if self.leftover > 0 {
 			self.buffer[self.leftover] = 1;
@@ -109,7 +111,7 @@ impl Poly1305 {
 		let mut h3 = self.h[3];
 		let mut h4 = self.h[4];
 
-		let mut c : u32;
+		let mut c: u32;
 		             c = h1 >> 26; h1 = h1 & 0x3ffffff;
 		h2 +=     c; c = h2 >> 26; h2 = h2 & 0x3ffffff;
 		h3 +=     c; c = h3 >> 26; h3 = h3 & 0x3ffffff;
@@ -145,8 +147,8 @@ impl Poly1305 {
 		h3 = ((h3 >> 18) | (h4 <<  8)) & 0xffffffff;
 
 		// h = mac = (h + pad) % (2^128)
-		let mut f : u64;
-		f = h0 as u64 + self.pad[0] as u64            ; h0 = f as u32;
+		let mut f: u64;
+		f = h0 as u64 + self.pad[0] as u64;             h0 = f as u32;
 		f = h1 as u64 + self.pad[1] as u64 + (f >> 32); h1 = f as u32;
 		f = h2 as u64 + self.pad[2] as u64 + (f >> 32); h2 = f as u32;
 		f = h3 as u64 + self.pad[3] as u64 + (f >> 32); h3 = f as u32;
