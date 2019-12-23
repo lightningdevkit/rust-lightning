@@ -103,8 +103,7 @@ struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
 	outbound: bool,
 	their_node_id: Option<PublicKey>,
-	their_global_features: Option<msgs::GlobalFeatures>,
-	their_local_features: Option<msgs::LocalFeatures>,
+	their_features: Option<msgs::InitFeatures>,
 
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
@@ -238,7 +237,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	pub fn get_peer_node_ids(&self) -> Vec<PublicKey> {
 		let peers = self.peers.lock().unwrap();
 		peers.peers.values().filter_map(|p| {
-			if !p.channel_encryptor.is_ready_for_encryption() || p.their_global_features.is_none() {
+			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() {
 				return None;
 			}
 			p.their_node_id
@@ -276,8 +275,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			channel_encryptor: peer_encryptor,
 			outbound: true,
 			their_node_id: None,
-			their_global_features: None,
-			their_local_features: None,
+			their_features: None,
 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
@@ -314,8 +312,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			channel_encryptor: peer_encryptor,
 			outbound: false,
 			their_node_id: None,
-			their_global_features: None,
-			their_local_features: None,
+			their_features: None,
 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
@@ -570,14 +567,13 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut local_features = msgs::LocalFeatures::new();
+									let mut features = msgs::InitFeatures::new();
 									if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
 										self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
-										local_features.set_initial_routing_sync();
+										features.set_initial_routing_sync();
 									}
 									encode_and_send_msg!(msgs::Init {
-										global_features: msgs::GlobalFeatures::new(),
-										local_features,
+										features,
 									}, 16);
 								},
 								NextNoiseStep::ActThree => {
@@ -606,7 +602,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 										let msg_type = byte_utils::slice_to_be16(&msg_data[0..2]);
 										log_trace!(self, "Received message of type {} from {}", msg_type, log_pubkey!(peer.their_node_id.unwrap()));
-										if msg_type != 16 && peer.their_global_features.is_none() {
+										if msg_type != 16 && peer.their_features.is_none() {
 											// Need an init message as first message
 											log_trace!(self, "Peer {} sent non-Init first message", log_pubkey!(peer.their_node_id.unwrap()));
 											return Err(PeerHandleError{ no_connection_possible: false });
@@ -616,42 +612,40 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Connection control:
 											16 => {
 												let msg = try_potential_decodeerror!(msgs::Init::read(&mut reader));
-												if msg.global_features.requires_unknown_bits() {
+												if msg.features.requires_unknown_bits() {
 													log_info!(self, "Peer global features required unknown version bits");
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
-												if msg.local_features.requires_unknown_bits() {
+												if msg.features.requires_unknown_bits() {
 													log_info!(self, "Peer local features required unknown version bits");
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
-												if peer.their_global_features.is_some() {
+												if peer.their_features.is_some() {
 													return Err(PeerHandleError{ no_connection_possible: false });
 												}
 
 												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, unkown local flags: {}, unknown global flags: {}",
-													if msg.local_features.supports_data_loss_protect() { "supported" } else { "not supported"},
-													if msg.local_features.initial_routing_sync() { "requested" } else { "not requested" },
-													if msg.local_features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
-													if msg.local_features.supports_unknown_bits() { "present" } else { "none" },
-													if msg.global_features.supports_unknown_bits() { "present" } else { "none" });
+													if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
+													if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
+													if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+													if msg.features.supports_unknown_bits() { "present" } else { "none" },
+													if msg.features.supports_unknown_bits() { "present" } else { "none" });
 
-												if msg.local_features.initial_routing_sync() {
+												if msg.features.initial_routing_sync() {
 													peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
 													peers.peers_needing_send.insert(peer_descriptor.clone());
 												}
-												peer.their_global_features = Some(msg.global_features);
-												peer.their_local_features = Some(msg.local_features);
+												peer.their_features = Some(msg.features);
 
 												if !peer.outbound {
-													let mut local_features = msgs::LocalFeatures::new();
+													let mut features = msgs::InitFeatures::new();
 													if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
 														self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
-														local_features.set_initial_routing_sync();
+														features.set_initial_routing_sync();
 													}
 
 													encode_and_send_msg!(msgs::Init {
-														global_features: msgs::GlobalFeatures::new(),
-														local_features,
+														features,
 													}, 16);
 												}
 
@@ -692,11 +686,11 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 											// Channel control:
 											32 => {
 												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
-												self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg);
+												self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_features.clone().unwrap(), &msg);
 											},
 											33 => {
 												let msg = try_potential_decodeerror!(msgs::AcceptChannel::read(&mut reader));
-												self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_local_features.clone().unwrap(), &msg);
+												self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_features.clone().unwrap(), &msg);
 											},
 
 											34 => {
@@ -833,7 +827,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							};
 							match peers.peers.get_mut(&descriptor) {
 								Some(peer) => {
-									if peer.their_global_features.is_none() {
+									if peer.their_features.is_none() {
 										$handle_no_such_peer;
 										continue;
 									}
@@ -984,7 +978,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let encoded_update_msg = encode_msg!(update_msg, 258);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_global_features.is_none() ||
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
 										!peer.should_forward_channel(msg.contents.short_channel_id) {
 									continue
 								}
@@ -1008,7 +1002,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 							let encoded_msg = encode_msg!(msg, 258);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_global_features.is_none() ||
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
 										!peer.should_forward_channel(msg.contents.short_channel_id)  {
 									continue
 								}

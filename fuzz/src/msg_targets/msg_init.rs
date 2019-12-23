@@ -7,7 +7,7 @@ use msg_targets::utils::VecWriter;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	test_msg!(msgs::Init, data);
+	test_msg_simple!(msgs::Init, data);
 }
 
 #[no_mangle]

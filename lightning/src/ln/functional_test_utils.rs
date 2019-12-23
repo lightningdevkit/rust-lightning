@@ -7,7 +7,7 @@ use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::router::{Route, Router};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler, LocalFeatures};
+use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler, Features, FeatureContextInit};
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
@@ -79,11 +79,11 @@ impl Drop for Node {
 	}
 }
 
-pub fn create_chan_between_nodes(node_a: &Node, node_b: &Node, a_flags: LocalFeatures, b_flags: LocalFeatures) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+pub fn create_chan_between_nodes(node_a: &Node, node_b: &Node, a_flags: Features<FeatureContextInit>, b_flags: Features<FeatureContextInit>) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 	create_chan_between_nodes_with_value(node_a, node_b, 100000, 10001, a_flags, b_flags)
 }
 
-pub fn create_chan_between_nodes_with_value(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: LocalFeatures, b_flags: LocalFeatures) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+pub fn create_chan_between_nodes_with_value(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: Features<FeatureContextInit>, b_flags: Features<FeatureContextInit>) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 	let (funding_locked, channel_id, tx) = create_chan_between_nodes_with_value_a(node_a, node_b, channel_value, push_msat, a_flags, b_flags);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(node_a, node_b, &funding_locked);
 	(announcement, as_update, bs_update, channel_id, tx)
@@ -178,7 +178,7 @@ pub fn create_funding_transaction(node: &Node, expected_chan_value: u64, expecte
 	}
 }
 
-pub fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: LocalFeatures, b_flags: LocalFeatures) -> Transaction {
+pub fn create_chan_between_nodes_with_value_init(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: Features<FeatureContextInit>, b_flags: Features<FeatureContextInit>) -> Transaction {
 	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42).unwrap();
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
@@ -253,7 +253,7 @@ pub fn create_chan_between_nodes_with_value_confirm(node_a: &Node, node_b: &Node
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
-pub fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: LocalFeatures, b_flags: LocalFeatures) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
+pub fn create_chan_between_nodes_with_value_a(node_a: &Node, node_b: &Node, channel_value: u64, push_msat: u64, a_flags: Features<FeatureContextInit>, b_flags: Features<FeatureContextInit>) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32], Transaction) {
 	let tx = create_chan_between_nodes_with_value_init(node_a, node_b, channel_value, push_msat, a_flags, b_flags);
 	let (msgs, chan_id) = create_chan_between_nodes_with_value_confirm(node_a, node_b, &tx);
 	(msgs, chan_id, tx)
@@ -291,11 +291,11 @@ pub fn create_chan_between_nodes_with_value_b(node_a: &Node, node_b: &Node, as_f
 	((*announcement).clone(), (*as_update).clone(), (*bs_update).clone())
 }
 
-pub fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize, a_flags: LocalFeatures, b_flags: LocalFeatures) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+pub fn create_announced_chan_between_nodes(nodes: &Vec<Node>, a: usize, b: usize, a_flags: Features<FeatureContextInit>, b_flags: Features<FeatureContextInit>) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 	create_announced_chan_between_nodes_with_value(nodes, a, b, 100000, 10001, a_flags, b_flags)
 }
 
-pub fn create_announced_chan_between_nodes_with_value(nodes: &Vec<Node>, a: usize, b: usize, channel_value: u64, push_msat: u64, a_flags: LocalFeatures, b_flags: LocalFeatures) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+pub fn create_announced_chan_between_nodes_with_value(nodes: &Vec<Node>, a: usize, b: usize, channel_value: u64, push_msat: u64, a_flags: Features<FeatureContextInit>, b_flags: Features<FeatureContextInit>) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 	let chan_announcement = create_chan_between_nodes_with_value(&nodes[a], &nodes[b], channel_value, push_msat, a_flags, b_flags);
 	for node in nodes {
 		assert!(node.router.handle_channel_announcement(&chan_announcement.0).unwrap());

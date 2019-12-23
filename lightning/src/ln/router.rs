@@ -14,7 +14,7 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
-use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress,GlobalFeatures};
+use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress,ChannelFeatures,NodeFeatures};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer, ReadableArgs};
 use util::logger::Logger;
@@ -111,7 +111,7 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 
 #[derive(PartialEq)]
 struct ChannelInfo {
-	features: GlobalFeatures,
+	features: ChannelFeatures,
 	one_to_two: DirectionalChannelInfo,
 	two_to_one: DirectionalChannelInfo,
 	//this is cached here so we can send out it later if required by route_init_sync
@@ -143,7 +143,7 @@ struct NodeInfo {
 	lowest_inbound_channel_fee_base_msat: u32,
 	lowest_inbound_channel_fee_proportional_millionths: u32,
 
-	features: GlobalFeatures,
+	features: NodeFeatures,
 	last_update: u32,
 	rgb: [u8; 3],
 	alias: [u8; 32],
@@ -546,7 +546,7 @@ impl RoutingMessageHandler for Router {
 							channels: vec!(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)),
 							lowest_inbound_channel_fee_base_msat: u32::max_value(),
 							lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
-							features: GlobalFeatures::new(),
+							features: NodeFeatures::new(),
 							last_update: 0,
 							rgb: [0; 3],
 							alias: [0; 32],
@@ -748,7 +748,7 @@ impl Router {
 			channels: Vec::new(),
 			lowest_inbound_channel_fee_base_msat: u32::max_value(),
 			lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
-			features: GlobalFeatures::new(),
+			features: NodeFeatures::new(),
 			last_update: 0,
 			rgb: [0; 3],
 			alias: [0; 32],
@@ -1015,7 +1015,7 @@ mod tests {
 	use chain::chaininterface;
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
-	use ln::msgs::GlobalFeatures;
+	use ln::msgs::{ChannelFeatures, NodeFeatures};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -1115,7 +1115,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(1, zero_hash.clone()), NetworkMap::get_key(3, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 100,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1123,7 +1123,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(1, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
 					last_update: 0,
@@ -1149,7 +1149,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(2, zero_hash.clone()), NetworkMap::get_key(4, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1157,7 +1157,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(2, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
 					last_update: 0,
@@ -1183,7 +1183,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1191,7 +1191,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
 					last_update: 0,
@@ -1223,7 +1223,7 @@ mod tests {
 					NetworkMap::get_key(7, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1231,7 +1231,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(3, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node1.clone(),
 					last_update: 0,
@@ -1254,7 +1254,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(4, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node2.clone(),
 					last_update: 0,
@@ -1277,7 +1277,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node8.clone(),
 					last_update: 0,
@@ -1303,7 +1303,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(5, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1311,7 +1311,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(5, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1337,7 +1337,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(6, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1345,7 +1345,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(6, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1368,7 +1368,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(11, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node5.clone(),
 					last_update: 0,
@@ -1394,7 +1394,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(7, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::new(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1402,7 +1402,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(7, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::new(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
