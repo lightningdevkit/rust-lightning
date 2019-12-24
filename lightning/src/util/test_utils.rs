@@ -7,6 +7,7 @@ use ln::msgs;
 use ln::msgs::LocalFeatures;
 use ln::msgs::{LightningError};
 use ln::channelmonitor::HTLCUpdate;
+use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{ReadableArgs, Writer};
@@ -221,10 +222,12 @@ pub struct TestKeysInterface {
 }
 
 impl keysinterface::KeysInterface for TestKeysInterface {
+	type ChanKeySigner = EnforcingChannelKeys;
+
 	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
-	fn get_channel_keys(&self, inbound: bool) -> keysinterface::ChannelKeys { self.backing.get_channel_keys(inbound) }
+	fn get_channel_keys(&self, inbound: bool) -> EnforcingChannelKeys { EnforcingChannelKeys::new(self.backing.get_channel_keys(inbound)) }
 
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		match *self.override_session_priv.lock().unwrap() {

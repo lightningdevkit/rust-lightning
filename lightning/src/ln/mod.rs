@@ -14,6 +14,7 @@ pub mod channelmonitor;
 pub mod msgs;
 pub mod router;
 pub mod peer_handler;
+pub mod chan_utils;
 
 #[cfg(feature = "fuzztarget")]
 pub mod peer_channel_encryptor;
@@ -21,7 +22,6 @@ pub mod peer_channel_encryptor;
 pub(crate) mod peer_channel_encryptor;
 
 mod channel;
-mod chan_utils;
 mod onion_utils;
 
 #[cfg(test)]
