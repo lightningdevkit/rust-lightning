@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
 
-
 use bitcoin_hashes::sha256::Hash as Sha256;
 use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin_hashes::{HashEngine, Hash};
@@ -117,7 +116,7 @@ struct Peer {
 
 	sync_status: InitSyncTracker,
 
- 	ping_tracker: u8,
+ 	awaiting_pong: bool,
 }	
 
 impl Peer {
@@ -290,7 +289,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
-			ping_tracker: 0,
+			awaiting_pong: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -328,7 +327,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
-			ping_tracker: 0,
+			awaiting_pong: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -687,7 +686,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											19 => {	
-												peer.ping_tracker = 0;
+												peer.awaiting_pong = false;
 											 	try_potential_decodeerror!(msgs::Pong::read(&mut reader)); 
 											},
 											// Channel control:
@@ -1095,100 +1094,68 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			}
 		};
 	}
+/// This function can be called every 30 seconds or so, it will:
+/// disconnect the Peer if awaiting_pong is true
+/// prepare to Ping all the Peers that the PeerManager is responsible for and set awaiting_pong to true
+///
+/// After calling this function one would want to call process_events() in order to finish Pinging the Peer
+/// Then one would want to call do_read_event() in order to reset awaiting_pong
+	pub fn timer_tick_occured(&self) {
+		let mut des_set: Vec<Descriptor> = Vec::new();
+		let mut peers_lock = self.peers.lock().unwrap();
+		let peers = peers_lock.borrow_parts();
+		
+		for (Descriptor, mut Peer) in peers.peers.iter_mut() {
 
-// return a set of descriptors for all the peers in our peer manager
-fn get_des(&self) -> Vec<Descriptor> {
-	let mut des_set: Vec<Descriptor> = Vec::new();
-	let mut peers_lock = self.peers.lock().unwrap();
-	let peers = peers_lock.borrow_parts();
-			
-	for (Descriptor, mut Peer) in peers.peers.iter_mut() {
+			// If the Peer has an outstanding ping add the offending Peers Descriptor to the vector
+			if Peer.awaiting_pong == true{
 
-				//read all events that have been sent from the Peer
 				let mut descriptor = Descriptor.clone();
 				des_set.push(descriptor);
-	}
-	des_set
 
-}
-
-//take a vector of descriptors and performs do_read_event on each of them
-fn mass_do_read_event(&self, mut des_set: Vec<Descriptor>)
-{
-	for (mut Descriptor) in des_set.iter_mut(){
-		let data: Vec<u8> = Vec::new();
-				
-		let res = match self.do_read_event(&mut Descriptor, data){
-					Ok(pause_read) => pause_read,
-					Err(e) => panic!("something is wrong"),
-		};
-	}
-
-}
-
-// iterate through our peers, if there are outstanding pings add a descriptor for the peer to a vector to be removed
-//otherwise ping all peers
-fn handle_pings(&self)-> Vec<Descriptor>{
-
-			let mut des_set: Vec<Descriptor> = Vec::new();
-			let mut peers_lock = self.peers.lock().unwrap();
-			let peers = peers_lock.borrow_parts();
-			
-			for (Descriptor, mut Peer) in peers.peers.iter_mut() {
-
-				// Disconect the Peer if there is an outstanding ping for which we have not been ponged
-				if Peer.ping_tracker > 0 {
-					let mut descriptor = Descriptor.clone();
-					des_set.push(descriptor);
-				}
-
+			}
 			else {
-		
+			// Otherwise we will be Pinging the Peer and taking appropriate action
 			let ping = msgs::Ping {
- 				ponglen: 64,
+ 				ponglen: 0,
  				byteslen: 64,
  			};
-
 			Peer.pending_outbound_buffer.push_back((encode_msg!(ping, 18)));
-
 			let mut descriptor = Descriptor.clone();
 			self.do_attempt_write_data(&mut descriptor, &mut Peer);
-  			Peer.ping_tracker += 1;
+  			Peer.awaiting_pong = true;
 		
 
 			}
+
 		}
-		des_set
 
-}
-// remove all peers in the vector
-fn mass_disconnect(&self, mut des_set: Vec<Descriptor>){
-	for (mut Descriptor) in des_set.iter_mut(){
-		self.disconnect_event(Descriptor);
-		};
+		// Disconnect the offending Peers based on the Descriptors aggregated above
+		for (mut Descriptor) in des_set.iter_mut(){
+			// The following code is a duplicating disconnect_event_internal() except it uses the existing lock instead of taking it
+			let no_connection_possible: bool = true;
+			peers.peers_needing_send.remove(Descriptor);
+			let peer_option = peers.peers.remove(Descriptor);
+			match peer_option {
+			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
+			Some(peer) => {
+				match peer.their_node_id {
+					Some(node_id) => {
+						peers.node_id_to_descriptor.remove(&node_id);
+						self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+					},
+					None => {}
+				}
+					}
+				}
+		}
+
 	}
-
-
-/// something is not working quite right with this function
-/// for whatever reason the ping tracker is not getting reset to 0 on a second call even if the other peer has done a read event and processed events
-/// 
-	pub fn timer_tick_occured(&self){
-		let mut des_set: Vec<Descriptor> = self.get_des();
-		self.mass_do_read_event(des_set);
-		let mut des_set: Vec<Descriptor> = self.handle_pings();
-		self.mass_disconnect(des_set);
-	}
-
 }
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
-	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
+	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, VecWriter};
 	use ln::msgs;
 	use util::events;
 	use util::test_utils;
@@ -1269,43 +1236,19 @@ mod tests {
 		peers[0].process_events();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
-
 	#[test]
-	fn ttt(){
+	fn test_timer_tick_occured(){
 
+		// Create peers, a vector of two peer managers, perform initial set up and check that peers[0] has one Peer.
 		let mut peers = create_network(2);
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
-
-
-		for (peer_manager) in peers.iter(){
-			for (key, val) in  peer_manager.peers.lock().unwrap().peers.iter_mut(){
-				let secp_ctx = Secp256k1::new();
-				val.their_node_id = std::option::Option::Some(PublicKey::from_secret_key(&secp_ctx, &peer_manager.our_node_secret));
-
-			}
-		}
-
-		let mut des_set: Vec<FileDescriptor> = peers[1].get_des();
-
+		// peers[0] awaiting_pong is set to true.
 		peers[0].timer_tick_occured();
-		peers[0].process_events();
-
-		for (mut Descriptor) in des_set.iter_mut(){
-			let data: Vec<u8> = Vec::new();
-
-			peers[1].read_event(Descriptor, data);
-			peers[1].process_events();
-		};
-		
-		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+		// Since timer_tick_occured() is called again when awaiting_pong is true, all Peers are disconnected
 		peers[0].timer_tick_occured();
-		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
-		peers[0].timer_tick_occured();
+
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
-
 	}
-
 }
-	
