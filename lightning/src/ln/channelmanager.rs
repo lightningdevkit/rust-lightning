@@ -943,11 +943,11 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount
-				if next_hop_data.data.amt_to_forward > msg.amount_msat {
+				if next_hop_data.amt_to_forward > msg.amount_msat {
 					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
 				// final_incorrect_cltv_expiry
-				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
+				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
 
@@ -961,8 +961,8 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
 					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
+					amt_to_forward: next_hop_data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
 			} else {
 				let mut new_packet_data = [0; 20*65];
@@ -992,10 +992,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: next_hop_data.data.short_channel_id,
+					short_channel_id: next_hop_data.short_channel_id,
 					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
+					amt_to_forward: next_hop_data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
 			};
 

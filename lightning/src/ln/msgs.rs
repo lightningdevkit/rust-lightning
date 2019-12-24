@@ -608,21 +608,25 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn should_request_full_sync(&self, node_id: &PublicKey) -> bool;
 }
 
-pub(crate) struct OnionRealm0HopData {
-	pub(crate) short_channel_id: u64,
-	pub(crate) amt_to_forward: u64,
-	pub(crate) outgoing_cltv_value: u32,
-	// 12 bytes of 0-padding
-}
-
 mod fuzzy_internal_msgs {
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 
-	use super::OnionRealm0HopData;
+	pub(crate) enum OnionHopDataFormat {
+		Legacy, // aka Realm-0
+		// Some tests expect to be able to generate bogus non-deserializable OnionHopDatas. In the
+		// future we can use bogus TLV attributes, but for now we have to expose a "bogus realm"
+		// option.
+		#[cfg(test)]
+		BogusRealm(u8),
+	}
+
 	pub struct OnionHopData {
-		pub(crate) realm: u8,
-		pub(crate) data: OnionRealm0HopData,
+		pub(crate) format: OnionHopDataFormat,
+		pub(crate) short_channel_id: u64,
+		pub(crate) amt_to_forward: u64,
+		pub(crate) outgoing_cltv_value: u32,
+		// 12 bytes of 0-padding
 		pub(crate) hmac: [u8; 32],
 	}
 
@@ -960,36 +964,18 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 	onion_routing_packet
 });
 
-impl Writeable for OnionRealm0HopData {
+impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(32);
+		w.size_hint(65);
+		match self.format {
+			OnionHopDataFormat::Legacy => 0u8.write(w)?,
+			#[cfg(test)]
+			OnionHopDataFormat::BogusRealm(v) => v.write(w)?,
+		}
 		self.short_channel_id.write(w)?;
 		self.amt_to_forward.write(w)?;
 		self.outgoing_cltv_value.write(w)?;
 		w.write_all(&[0;12])?;
-		Ok(())
-	}
-}
-
-impl<R: Read> Readable<R> for OnionRealm0HopData {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		Ok(OnionRealm0HopData {
-			short_channel_id: Readable::read(r)?,
-			amt_to_forward: Readable::read(r)?,
-			outgoing_cltv_value: {
-				let v: u32 = Readable::read(r)?;
-				r.read_exact(&mut [0; 12])?;
-				v
-			}
-		})
-	}
-}
-
-impl Writeable for OnionHopData {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(65);
-		self.realm.write(w)?;
-		self.data.write(w)?;
 		self.hmac.write(w)?;
 		Ok(())
 	}
@@ -998,14 +984,20 @@ impl Writeable for OnionHopData {
 impl<R: Read> Readable<R> for OnionHopData {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(OnionHopData {
-			realm: {
+			format: {
 				let r: u8 = Readable::read(r)?;
 				if r != 0 {
 					return Err(DecodeError::UnknownVersion);
 				}
-				r
+				OnionHopDataFormat::Legacy
 			},
-			data: Readable::read(r)?,
+			short_channel_id: Readable::read(r)?,
+			amt_to_forward: Readable::read(r)?,
+			outgoing_cltv_value: {
+				let v: u32 = Readable::read(r)?;
+				r.read_exact(&mut [0; 12])?;
+				v
+			},
 			hmac: Readable::read(r)?,
 		})
 	}
