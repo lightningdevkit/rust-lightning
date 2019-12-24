@@ -192,6 +192,23 @@ impl<T: FeatureContext> Features<T> {
 	pub(crate) fn byte_count(&self) -> usize {
 		self.flags.len()
 	}
+
+	#[cfg(test)]
+	pub(crate) fn set_require_unknown_bits(&mut self) {
+		let newlen = cmp::max(2, self.flags.len());
+		self.flags.resize(newlen, 0u8);
+		self.flags[1] |= 0x40;
+	}
+
+	#[cfg(test)]
+	pub(crate) fn clear_require_unknown_bits(&mut self) {
+		let newlen = cmp::max(2, self.flags.len());
+		self.flags.resize(newlen, 0u8);
+		self.flags[1] &= !0x40;
+		if self.flags.len() == 2 && self.flags[1] == 0 {
+			self.flags.resize(1, 0u8);
+		}
+	}
 }
 
 impl<T: FeatureContextInitNode> Features<T> {
@@ -1272,13 +1289,7 @@ impl Writeable for UnsignedChannelAnnouncement {
 impl<R: Read> Readable<R> for UnsignedChannelAnnouncement {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
-			features: {
-				let f: ChannelFeatures = Readable::read(r)?;
-				if f.requires_unknown_bits() {
-					return Err(DecodeError::UnknownRequiredFeature);
-				}
-				f
-			},
+			features: Readable::read(r)?,
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
 			node_id_1: Readable::read(r)?,
@@ -1406,9 +1417,6 @@ impl Writeable for UnsignedNodeAnnouncement {
 impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
 		let features: NodeFeatures = Readable::read(r)?;
-		if features.requires_unknown_bits() {
-			return Err(DecodeError::UnknownRequiredFeature);
-		}
 		let timestamp: u32 = Readable::read(r)?;
 		let node_id: PublicKey = Readable::read(r)?;
 		let mut rgb = [0; 3];
