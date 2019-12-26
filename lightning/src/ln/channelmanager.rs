@@ -906,10 +906,12 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 		}
 
 		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
-		let next_hop_data = {
+		let (next_hop_data, next_hop_hmac) = {
 			let mut decoded = [0; 65];
 			chacha.process(&msg.onion_routing_packet.hop_data[0..65], &mut decoded);
-			match msgs::OnionHopData::read(&mut Cursor::new(&decoded[..])) {
+			let mut hmac = [0; 32];
+			hmac.copy_from_slice(&decoded[33..]);
+			match msgs::OnionHopData::read(&mut Cursor::new(&decoded[..33])) {
 				Err(err) => {
 					let error_code = match err {
 						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
@@ -917,11 +919,11 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					};
 					return_err!("Unable to decode our hop data", error_code, &[0;0]);
 				},
-				Ok(msg) => msg
+				Ok(msg) => (msg, hmac)
 			}
 		};
 
-		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
+		let pending_forward_info = if next_hop_hmac == [0; 32] {
 				#[cfg(test)]
 				{
 					// In tests, make sure that the initial onion pcket data is, at least, non-0.
@@ -986,7 +988,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					version: 0,
 					public_key,
 					hop_data: new_packet_data,
-					hmac: next_hop_data.hmac.clone(),
+					hmac: next_hop_hmac.clone(),
 				};
 
 				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {

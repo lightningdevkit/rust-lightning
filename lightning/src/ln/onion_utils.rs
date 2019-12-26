@@ -125,7 +125,6 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 			short_channel_id: last_short_channel_id,
 			amt_to_forward: value_msat,
 			outgoing_cltv_value: cltv,
-			hmac: [0; 32],
 		});
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
@@ -193,8 +192,8 @@ fn construct_onion_packet_with_init_noise(mut payloads: Vec<msgs::OnionHopData>,
 
 	for (i, (payload, keys)) in payloads.iter_mut().zip(onion_keys.iter()).rev().enumerate() {
 		shift_arr_right(&mut packet_data);
-		payload.hmac = hmac_res;
-		packet_data[0..65].copy_from_slice(&payload.encode()[..]);
+		packet_data[0..33].copy_from_slice(&payload.encode()[..]);
+		packet_data[33..65].copy_from_slice(&hmac_res);
 
 		let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
 		chacha.process(&packet_data, &mut buf[0..20*65]);
@@ -518,35 +517,30 @@ mod tests {
 				short_channel_id: 0,
 				amt_to_forward: 0,
 				outgoing_cltv_value: 0,
-				hmac: [0; 32],
 			},
 			msgs::OnionHopData {
 				format: msgs::OnionHopDataFormat::Legacy,
 				short_channel_id: 0x0101010101010101,
 				amt_to_forward: 0x0100000001,
 				outgoing_cltv_value: 0,
-				hmac: [0; 32],
 			},
 			msgs::OnionHopData {
 				format: msgs::OnionHopDataFormat::Legacy,
 				short_channel_id: 0x0202020202020202,
 				amt_to_forward: 0x0200000002,
 				outgoing_cltv_value: 0,
-				hmac: [0; 32],
 			},
 			msgs::OnionHopData {
 				format: msgs::OnionHopDataFormat::Legacy,
 				short_channel_id: 0x0303030303030303,
 				amt_to_forward: 0x0300000003,
 				outgoing_cltv_value: 0,
-				hmac: [0; 32],
 			},
 			msgs::OnionHopData {
 				format: msgs::OnionHopDataFormat::Legacy,
 				short_channel_id: 0x0404040404040404,
 				amt_to_forward: 0x0400000004,
 				outgoing_cltv_value: 0,
-				hmac: [0; 32],
 			},
 		);
 

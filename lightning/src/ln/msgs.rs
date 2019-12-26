@@ -625,7 +625,6 @@ mod fuzzy_internal_msgs {
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
 		// 12 bytes of 0-padding
-		pub(crate) hmac: [u8; 32],
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -964,7 +963,7 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(65);
+		w.size_hint(33);
 		match self.format {
 			OnionHopDataFormat::Legacy => 0u8.write(w)?,
 			#[cfg(test)]
@@ -974,7 +973,6 @@ impl Writeable for OnionHopData {
 		self.amt_to_forward.write(w)?;
 		self.outgoing_cltv_value.write(w)?;
 		w.write_all(&[0;12])?;
-		self.hmac.write(w)?;
 		Ok(())
 	}
 }
@@ -996,7 +994,6 @@ impl<R: Read> Readable<R> for OnionHopData {
 				r.read_exact(&mut [0; 12])?;
 				v
 			},
-			hmac: Readable::read(r)?,
 		})
 	}
 }
