@@ -612,11 +612,6 @@ mod fuzzy_internal_msgs {
 
 	pub(crate) enum OnionHopDataFormat {
 		Legacy, // aka Realm-0
-		// Some tests expect to be able to generate bogus non-deserializable OnionHopDatas. In the
-		// future we can use bogus TLV attributes, but for now we have to expose a "bogus realm"
-		// option.
-		#[cfg(test)]
-		BogusRealm(u8),
 	}
 
 	pub struct OnionHopData {
@@ -966,8 +961,6 @@ impl Writeable for OnionHopData {
 		w.size_hint(33);
 		match self.format {
 			OnionHopDataFormat::Legacy => 0u8.write(w)?,
-			#[cfg(test)]
-			OnionHopDataFormat::BogusRealm(v) => v.write(w)?,
 		}
 		self.short_channel_id.write(w)?;
 		self.amt_to_forward.write(w)?;

@@ -169,7 +169,19 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
 }
 
-fn construct_onion_packet_with_init_noise(mut payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; 20*65], associated_data: &PaymentHash) -> msgs::OnionPacket {
+#[cfg(test)]
+// Used in testing to write bogus OnionHopDatas, which is otherwise not representable in
+// msgs::OnionHopData.
+pub(super) fn construct_onion_packet_bogus_hopdata<HD: Writeable>(payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
+	let mut packet_data = [0; 20*65];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process(&[0; 20*65], &mut packet_data);
+
+	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+}
+
+fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; 20*65], associated_data: &PaymentHash) -> msgs::OnionPacket {
 	let mut buf = Vec::with_capacity(21*65);
 	buf.resize(21*65, 0);
 
