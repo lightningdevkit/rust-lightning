@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Mutex;
+use std::cmp;
 
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
@@ -64,6 +65,46 @@ impl Writer for VecWriter {
 	}
 	fn size_hint(&mut self, size: usize) {
 		self.0.reserve_exact(size);
+	}
+}
+
+pub(crate) struct LengthCalculatingWriter(pub usize);
+impl Writer for LengthCalculatingWriter {
+	#[inline]
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0 += buf.len();
+		Ok(())
+	}
+	#[inline]
+	fn size_hint(&mut self, _size: usize) {}
+}
+
+/// Essentially std::io::Take but a bit simpler and exposing the amount read at the end, cause we
+/// may need to skip ahead that much at the end.
+pub(crate) struct FixedLengthReader<R: Read> {
+	pub read: R,
+	pub read_len: u64,
+	pub max_len: u64,
+}
+impl<R: Read> FixedLengthReader<R> {
+	pub fn eat_remaining(&mut self) -> Result<(), ::std::io::Error> {
+		while self.read_len != self.max_len {
+			debug_assert!(self.read_len < self.max_len);
+			let mut buf = [0; 1024];
+			let readsz = cmp::min(1024, self.max_len - self.read_len) as usize;
+			self.read_exact(&mut buf[0..readsz])?;
+		}
+		Ok(())
+	}
+}
+impl<R: Read> Read for FixedLengthReader<R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
+		if dest.len() as u64 > self.max_len - self.read_len {
+			Ok(0)
+		} else {
+			self.read_len += dest.len() as u64;
+			self.read.read(dest)
+		}
 	}
 }
 
