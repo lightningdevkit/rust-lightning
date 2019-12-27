@@ -38,20 +38,18 @@ use chain::keysinterface::{ChannelKeys, KeysInterface, InMemoryChannelKeys};
 use util::config::UserConfig;
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use util::chacha20::ChaCha20;
+use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::Logger;
 use util::errors::APIError;
 
 use std::{cmp, mem};
 use std::collections::{HashMap, hash_map, HashSet};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::marker::{Sync, Send};
 use std::ops::Deref;
-
-const SIXTY_FIVE_ZEROS: [u8; 65] = [0; 65];
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -906,12 +904,9 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 		}
 
 		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
+		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&msg.onion_routing_packet.hop_data[..]) };
 		let (next_hop_data, next_hop_hmac) = {
-			let mut decoded = [0; 65];
-			chacha.process(&msg.onion_routing_packet.hop_data[0..65], &mut decoded);
-			let mut hmac = [0; 32];
-			hmac.copy_from_slice(&decoded[33..]);
-			match msgs::OnionHopData::read(&mut Cursor::new(&decoded[..33])) {
+			match msgs::OnionHopData::read(&mut chacha_stream) {
 				Err(err) => {
 					let error_code = match err {
 						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
@@ -919,7 +914,13 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					};
 					return_err!("Unable to decode our hop data", error_code, &[0;0]);
 				},
-				Ok(msg) => (msg, hmac)
+				Ok(msg) => {
+					let mut hmac = [0; 32];
+					if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
+						return_err!("Unable to decode hop data", 0x4000 | 1, &[0;0]);
+					}
+					(msg, hmac)
+				},
 			}
 		};
 
@@ -933,10 +934,11 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					// as-is (and were originally 0s).
 					// Of course reverse path calculation is still pretty easy given naive routing
 					// algorithms, but this fixes the most-obvious case.
-					let mut new_packet_data = [0; 19*65];
-					chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
-					assert_ne!(new_packet_data[0..65], [0; 65][..]);
-					assert_ne!(new_packet_data[..], [0; 19*65][..]);
+					let mut next_bytes = [0; 32];
+					chacha_stream.read_exact(&mut next_bytes).unwrap();
+					assert_ne!(next_bytes[..], [0; 32][..]);
+					chacha_stream.read_exact(&mut next_bytes).unwrap();
+					assert_ne!(next_bytes[..], [0; 32][..]);
 				}
 
 				// OUR PAYMENT!
@@ -968,8 +970,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				})
 			} else {
 				let mut new_packet_data = [0; 20*65];
-				chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
-				chacha.process(&SIXTY_FIVE_ZEROS[..], &mut new_packet_data[19*65..]);
+				let read_pos = chacha_stream.read(&mut new_packet_data).unwrap();
+				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
+				// fill the onion hop data we'll forward to our next-hop peer.
+				chacha_stream.chacha.process_in_place(&mut new_packet_data[read_pos..]);
 
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 

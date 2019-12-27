@@ -9,6 +9,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::io;
+
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chacha {
 	use std::cmp;
@@ -249,6 +251,29 @@ mod real_chacha {
 				self.offset += count;
 			}
 		}
+
+		pub fn process_in_place(&mut self, input_output: &mut [u8]) {
+			let len = input_output.len();
+			let mut i = 0;
+			while i < len {
+				// If there is no keystream available in the output buffer,
+				// generate the next block.
+				if self.offset == 64 {
+					self.update();
+				}
+
+				// Process the min(available keystream, remaining input length).
+				let count = cmp::min(64 - self.offset, len - i);
+				// explicitly assert lengths to avoid bounds checks:
+				assert!(input_output.len() >= i + count);
+				assert!(self.output.len() >= self.offset + count);
+				for j in 0..count {
+					input_output[i + j] ^= self.output[self.offset + j];
+				}
+				i += count;
+				self.offset += count;
+			}
+		}
 	}
 }
 #[cfg(not(feature = "fuzztarget"))]
@@ -268,10 +293,26 @@ mod fuzzy_chacha {
 		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
 			output.copy_from_slice(input);
 		}
+
+		pub fn process_in_place(&mut self, _input_output: &mut [u8]) {}
 	}
 }
 #[cfg(feature = "fuzztarget")]
 pub use self::fuzzy_chacha::ChaCha20;
+
+pub(crate) struct ChaChaReader<'a, R: io::Read> {
+	pub chacha: &'a mut ChaCha20,
+	pub read: R,
+}
+impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
+		let res = self.read.read(dest)?;
+		if res > 0 {
+			self.chacha.process_in_place(&mut dest[0..res]);
+		}
+		Ok(res)
+	}
+}
 
 #[cfg(test)]
 mod test {
