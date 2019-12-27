@@ -121,8 +121,9 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 		res.insert(0, msgs::OnionHopData {
-			format: msgs::OnionHopDataFormat::Legacy,
-			short_channel_id: last_short_channel_id,
+			format: msgs::OnionHopDataFormat::Legacy {
+				short_channel_id: last_short_channel_id,
+			},
 			amt_to_forward: value_msat,
 			outgoing_cltv_value: cltv,
 		});
@@ -525,32 +526,37 @@ mod tests {
 		// Test vectors below are flat-out wrong: they claim to set outgoing_cltv_value to non-0 :/
 		let payloads = vec!(
 			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy,
-				short_channel_id: 0,
+				format: msgs::OnionHopDataFormat::Legacy {
+					short_channel_id: 0,
+				},
 				amt_to_forward: 0,
 				outgoing_cltv_value: 0,
 			},
 			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy,
-				short_channel_id: 0x0101010101010101,
+				format: msgs::OnionHopDataFormat::Legacy {
+					short_channel_id: 0x0101010101010101,
+				},
 				amt_to_forward: 0x0100000001,
 				outgoing_cltv_value: 0,
 			},
 			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy,
-				short_channel_id: 0x0202020202020202,
+				format: msgs::OnionHopDataFormat::Legacy {
+					short_channel_id: 0x0202020202020202,
+				},
 				amt_to_forward: 0x0200000002,
 				outgoing_cltv_value: 0,
 			},
 			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy,
-				short_channel_id: 0x0303030303030303,
+				format: msgs::OnionHopDataFormat::Legacy {
+					short_channel_id: 0x0303030303030303,
+				},
 				amt_to_forward: 0x0300000003,
 				outgoing_cltv_value: 0,
 			},
 			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy,
-				short_channel_id: 0x0404040404040404,
+				format: msgs::OnionHopDataFormat::Legacy {
+					short_channel_id: 0x0404040404040404,
+				},
 				amt_to_forward: 0x0400000004,
 				outgoing_cltv_value: 0,
 			},

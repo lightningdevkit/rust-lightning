@@ -910,6 +910,9 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				Err(err) => {
 					let error_code = match err {
 						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
+						msgs::DecodeError::UnknownRequiredFeature|
+						msgs::DecodeError::InvalidValue|
+						msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
 						_ => 0x2000 | 2, // Should never happen
 					};
 					return_err!("Unable to decode our hop data", error_code, &[0;0]);
@@ -917,7 +920,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				Ok(msg) => {
 					let mut hmac = [0; 32];
 					if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
-						return_err!("Unable to decode hop data", 0x4000 | 1, &[0;0]);
+						return_err!("Unable to decode hop data", 0x4000 | 22, &[0;0]);
 					}
 					(msg, hmac)
 				},
@@ -971,6 +974,15 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 			} else {
 				let mut new_packet_data = [0; 20*65];
 				let read_pos = chacha_stream.read(&mut new_packet_data).unwrap();
+				#[cfg(debug_assertions)]
+				{
+					// Check two things:
+					// a) that the behavior of our stream here will return Ok(0) even if the TLV
+					//    read above emptied out our buffer and the unwrap() wont needlessly panic
+					// b) that we didn't somehow magically end up with extra data.
+					let mut t = [0; 1];
+					debug_assert!(chacha_stream.read(&mut t).unwrap() == 0);
+				}
 				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
 				// fill the onion hop data we'll forward to our next-hop peer.
 				chacha_stream.chacha.process_in_place(&mut new_packet_data[read_pos..]);
@@ -995,10 +1007,18 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					hmac: next_hop_hmac.clone(),
 				};
 
+				let short_channel_id = match next_hop_data.format {
+					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::FinalNode => {
+						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
+					},
+				};
+
 				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: next_hop_data.short_channel_id,
+					short_channel_id: short_channel_id,
 					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,

@@ -182,13 +182,21 @@ impl<T: sealed::Context> Features<T> {
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
-			( idx != 0 && (byte & 0x55) != 0 ) || ( idx == 0 && (byte & 0x14) != 0 )
+			(match idx {
+				0 => (byte & 0b00010100),
+				1 => (byte & 0b01010100),
+				_ => (byte & 0b01010101),
+			}) != 0
 		})
 	}
 
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
-			( idx != 0 && byte != 0 ) || ( idx == 0 && (byte & 0xc4) != 0 )
+			(match idx {
+				0 => (byte & 0b11000100),
+				1 => (byte & 0b11111100),
+				_ => byte,
+			}) != 0
 		})
 	}
 
