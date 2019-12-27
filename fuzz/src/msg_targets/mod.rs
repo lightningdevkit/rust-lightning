@@ -20,7 +20,7 @@ pub mod msg_channel_update;
 pub mod msg_node_announcement;
 pub mod msg_update_add_htlc;
 pub mod msg_error_message;
-pub mod msg_onion_hop_data;
 pub mod msg_init;
+pub mod msg_onion_hop_data;
 pub mod msg_ping;
 pub mod msg_pong;
