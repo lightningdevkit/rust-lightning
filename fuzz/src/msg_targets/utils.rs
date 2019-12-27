@@ -13,6 +13,8 @@ impl Writer for VecWriter {
 	}
 }
 
+// Tests a message that must survive roundtrip exactly, though may not empty the read buffer
+// entirely
 #[macro_export]
 macro_rules! test_msg {
 	($MsgType: path, $data: ident) => {
@@ -31,6 +33,8 @@ macro_rules! test_msg {
 	}
 }
 
+// Tests a message that may lose data on roundtrip, but shoulnd't lose data compared to our
+// re-serialization.
 #[macro_export]
 macro_rules! test_msg_simple {
 	($MsgType: path, $data: ident) => {
@@ -40,11 +44,18 @@ macro_rules! test_msg_simple {
 			if let Ok(msg) = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut r) {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
+
+				let msg = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+				let mut w_two = VecWriter(Vec::new());
+				msg.write(&mut w_two).unwrap();
+				assert_eq!(&w.0[..], &w_two.0[..]);
 			}
 		}
 	}
 }
 
+// Tests a message that must survive roundtrip exactly, and must exactly empty the read buffer and
+// split it back out on re-serialization.
 #[macro_export]
 macro_rules! test_msg_exact {
 	($MsgType: path, $data: ident) => {
@@ -54,13 +65,14 @@ macro_rules! test_msg_exact {
 			if let Ok(msg) = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut r) {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
-
 				assert_eq!(&r.into_inner()[..], &w.0[..]);
 			}
 		}
 	}
 }
 
+// Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to 0s on
+// re-serialization.
 #[macro_export]
 macro_rules! test_msg_hole {
 	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {
