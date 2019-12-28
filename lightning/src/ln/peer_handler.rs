@@ -622,7 +622,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
 													peers.peers_needing_send.insert(peer_descriptor.clone());
 												}
-												peer.their_features = Some(msg.features);
 
 												if !peer.outbound {
 													let mut features = InitFeatures::supported();
@@ -636,7 +635,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 													}, 16);
 												}
 
-												self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap());
+												self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
+												peer.their_features = Some(msg.features);
 											},
 											17 => {
 												let msg = try_potential_decodeerror!(msgs::ErrorMessage::read(&mut reader));

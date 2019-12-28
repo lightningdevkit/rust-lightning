@@ -2853,7 +2853,7 @@ impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigne
 		}
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey) {
+	fn peer_connected(&self, their_node_id: &PublicKey, _init_msg: &msgs::Init) {
 		log_debug!(self, "Generating channel_reestablish events for {}", log_pubkey!(their_node_id));
 
 		let _ = self.total_consistency_lock.read().unwrap();
