@@ -212,7 +212,7 @@ pub fn do_test(data: &[u8]) {
 				monitor.latest_good_update.lock().unwrap().insert(outpoint, monitor_ser);
 			}
 			let mut monitor_refs = HashMap::new();
-			for (outpoint, monitor) in monitors.iter() {
+			for (outpoint, monitor) in monitors.iter_mut() {
 				monitor_refs.insert(*outpoint, monitor);
 			}
 
@@ -223,7 +223,7 @@ pub fn do_test(data: &[u8]) {
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
-				channel_monitors: &monitor_refs,
+				channel_monitors: &mut monitor_refs,
 			};
 
 			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);

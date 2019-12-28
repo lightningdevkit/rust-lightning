@@ -142,7 +142,7 @@ pub trait ChannelKeys : Send {
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, absolute_fee: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a (proposed) closing transaction.
 	///
