@@ -11,7 +11,7 @@ use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD
 use ln::channel::{Channel, ChannelError};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
-use ln::features::{ChannelFeatures, InitFeatures};
+use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
 use util::enforcing_trait_impls::EnforcingChannelKeys;
@@ -1029,19 +1029,25 @@ fn fake_network_test() {
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
 		pubkey: nodes[2].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_2.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[3].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_3.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[1].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_4.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 1000000,
 		cltv_expiry_delta: TEST_FINAL_CLTV,
 	});
@@ -1052,19 +1058,25 @@ fn fake_network_test() {
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
 		pubkey: nodes[3].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_4.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[2].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_3.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[1].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_2.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 1000000,
 		cltv_expiry_delta: TEST_FINAL_CLTV,
 	});

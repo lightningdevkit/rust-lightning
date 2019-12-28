@@ -29,7 +29,7 @@ use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, ChannelManagerReadArgs};
 use lightning::ln::router::{Route, RouteHop};
-use lightning::ln::features::InitFeatures;
+use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::events;
@@ -414,7 +414,9 @@ pub fn do_test(data: &[u8]) {
 				if let Err(_) = $source.send_payment(Route {
 					hops: vec![RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
+						channel_features: ChannelFeatures::empty(),
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
 					}],
@@ -429,12 +431,16 @@ pub fn do_test(data: &[u8]) {
 				if let Err(_) = $source.send_payment(Route {
 					hops: vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
+						channel_features: ChannelFeatures::empty(),
 						fee_msat: 50000,
 						cltv_expiry_delta: 100,
 					},RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
+						channel_features: ChannelFeatures::empty(),
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
 					}],

@@ -404,6 +404,10 @@ pub struct ChannelDetails {
 	pub short_channel_id: Option<u64>,
 	/// The node_id of our counterparty
 	pub remote_network_id: PublicKey,
+	/// The Features the channel counterparty provided upon last connection.
+	/// Useful for routing as it is the most up-to-date copy of the counterparty's features and
+	/// many routing-relevant features are present in the init context.
+	pub counterparty_features: InitFeatures,
 	/// The value, in satoshis, of this channel as appears in the funding output
 	pub channel_value_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
@@ -679,20 +683,30 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 	/// Gets the list of open channels, in random order. See ChannelDetail field documentation for
 	/// more information.
 	pub fn list_channels(&self) -> Vec<ChannelDetails> {
-		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(channel_state.by_id.len());
-		for (channel_id, channel) in channel_state.by_id.iter() {
-			let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
-			res.push(ChannelDetails {
-				channel_id: (*channel_id).clone(),
-				short_channel_id: channel.get_short_channel_id(),
-				remote_network_id: channel.get_their_node_id(),
-				channel_value_satoshis: channel.get_value_satoshis(),
-				inbound_capacity_msat,
-				outbound_capacity_msat,
-				user_id: channel.get_user_id(),
-				is_live: channel.is_live(),
-			});
+		let mut res = Vec::new();
+		{
+			let channel_state = self.channel_state.lock().unwrap();
+			res.reserve(channel_state.by_id.len());
+			for (channel_id, channel) in channel_state.by_id.iter() {
+				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
+				res.push(ChannelDetails {
+					channel_id: (*channel_id).clone(),
+					short_channel_id: channel.get_short_channel_id(),
+					remote_network_id: channel.get_their_node_id(),
+					counterparty_features: InitFeatures::empty(),
+					channel_value_satoshis: channel.get_value_satoshis(),
+					inbound_capacity_msat,
+					outbound_capacity_msat,
+					user_id: channel.get_user_id(),
+					is_live: channel.is_live(),
+				});
+			}
+		}
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		for chan in res.iter_mut() {
+			if let Some(peer_state) = per_peer_state.get(&chan.remote_network_id) {
+				chan.counterparty_features = peer_state.lock().unwrap().latest_features.clone();
+			}
 		}
 		res
 	}
@@ -703,24 +717,34 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 	/// These are guaranteed to have their is_live value set to true, see the documentation for
 	/// ChannelDetails::is_live for more info on exactly what the criteria are.
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
-		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(channel_state.by_id.len());
-		for (channel_id, channel) in channel_state.by_id.iter() {
-			// Note we use is_live here instead of usable which leads to somewhat confused
-			// internal/external nomenclature, but that's ok cause that's probably what the user
-			// really wanted anyway.
-			if channel.is_live() {
-				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
-				res.push(ChannelDetails {
-					channel_id: (*channel_id).clone(),
-					short_channel_id: channel.get_short_channel_id(),
-					remote_network_id: channel.get_their_node_id(),
-					channel_value_satoshis: channel.get_value_satoshis(),
-					inbound_capacity_msat,
-					outbound_capacity_msat,
-					user_id: channel.get_user_id(),
-					is_live: true,
-				});
+		let mut res = Vec::new();
+		{
+			let channel_state = self.channel_state.lock().unwrap();
+			res.reserve(channel_state.by_id.len());
+			for (channel_id, channel) in channel_state.by_id.iter() {
+				// Note we use is_live here instead of usable which leads to somewhat confused
+				// internal/external nomenclature, but that's ok cause that's probably what the user
+				// really wanted anyway.
+				if channel.is_live() {
+					let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
+					res.push(ChannelDetails {
+						channel_id: (*channel_id).clone(),
+						short_channel_id: channel.get_short_channel_id(),
+						remote_network_id: channel.get_their_node_id(),
+						counterparty_features: InitFeatures::empty(),
+						channel_value_satoshis: channel.get_value_satoshis(),
+						inbound_capacity_msat,
+						outbound_capacity_msat,
+						user_id: channel.get_user_id(),
+						is_live: true,
+					});
+				}
+			}
+		}
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		for chan in res.iter_mut() {
+			if let Some(peer_state) = per_peer_state.get(&chan.remote_network_id) {
+				chan.counterparty_features = peer_state.lock().unwrap().latest_features.clone();
 			}
 		}
 		res
