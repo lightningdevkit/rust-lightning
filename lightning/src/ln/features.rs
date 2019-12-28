@@ -29,6 +29,10 @@ mod sealed { // You should just use the type aliases instead.
 	pub trait UpfrontShutdownScript: Context {}
 	impl UpfrontShutdownScript for InitContext {}
 	impl UpfrontShutdownScript for NodeContext {}
+
+	pub trait VariableLengthOnion: Context {}
+	impl VariableLengthOnion for InitContext {}
+	impl VariableLengthOnion for NodeContext {}
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -69,7 +73,7 @@ impl InitFeatures {
 	/// Create a Features with the features we support
 	pub fn supported() -> InitFeatures {
 		InitFeatures {
-			flags: vec![2 | 1 << 5],
+			flags: vec![2 | 1 << 5, 1 << (9-8)],
 			mark: PhantomData,
 		}
 	}
@@ -132,14 +136,14 @@ impl NodeFeatures {
 	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) fn supported() -> NodeFeatures {
 		NodeFeatures {
-			flags: vec![2 | 1 << 5],
+			flags: vec![2 | 1 << 5, 1 << (9-8)],
 			mark: PhantomData,
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
 	pub fn supported() -> NodeFeatures {
 		NodeFeatures {
-			flags: vec![2 | 1 << 5],
+			flags: vec![2 | 1 << 5, 1 << (9-8)],
 			mark: PhantomData,
 		}
 	}
@@ -237,6 +241,12 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	#[cfg(test)]
 	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
 		self.flags[0] ^= 1 << 5;
+	}
+}
+
+impl<T: sealed::VariableLengthOnion> Features<T> {
+	pub(crate) fn supports_variable_length_onion(&self) -> bool {
+		self.flags.len() > 1 && (self.flags[1] & 3) != 0
 	}
 }
 

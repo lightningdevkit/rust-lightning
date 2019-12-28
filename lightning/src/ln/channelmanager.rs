@@ -1163,6 +1163,9 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
 				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height)?;
+		if onion_utils::route_size_insane(&onion_payloads) {
+			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
+		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, &payment_hash);
 
 		let _ = self.total_consistency_lock.read().unwrap();
