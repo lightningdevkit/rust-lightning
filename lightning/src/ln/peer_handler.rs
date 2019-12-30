@@ -1094,75 +1094,53 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			}
 		};
 	}
-/// This function can be called every 30 seconds or so, it will:
-/// disconnect the Peer if awaiting_pong is true
-/// prepare to Ping all the Peers that the PeerManager is responsible for and set awaiting_pong to true
-///
-/// After calling this function one would want to call process_events() in order to finish Pinging the Peer
-/// Then one would want to call do_read_event() in order to reset awaiting_pong
+
+	/// This function can be called at an interval greater than every 30 seconds, it will:
+	/// disconnect the Peer if awaiting_pong is true
+	/// prepare to Ping all the Peers that the PeerManager is responsible for and set awaiting_pong to true
+	///
+	/// After calling this function one would want to call process_events() in order to finish Pinging the Peer
+	/// then assuming a pong Message is sent by the corresponding Peer one would 
+	/// call do_read_event() in order to reset awaiting_pong 
 	pub fn timer_tick_occured(&self) {
-		let mut des_set: Vec<Descriptor> = Vec::new();
 		let mut peers_lock = self.peers.lock().unwrap();
 		let peers = peers_lock.borrow_parts();
-		
-		for (Descriptor, mut Peer) in peers.peers.iter_mut() {
 
-			// If the Peer has an outstanding ping add the offending Peers Descriptor to the vector
-			if Peer.awaiting_pong == true{
-
-				let mut descriptor = Descriptor.clone();
-				des_set.push(descriptor);
-
+		for (descriptor, peer) in peers.peers.iter_mut() {
+			if peer.awaiting_pong == true {
+				peers.peers_needing_send.remove(descriptor);
+				match peer.their_node_id {
+						Some(node_id) => {
+							peers.node_id_to_descriptor.remove(&node_id);
+							self.message_handler.chan_handler.peer_disconnected(&node_id, true);
+						},
+						None => {}
+				}
 			}
-			else {
-			// Otherwise we will be Pinging the Peer and taking appropriate action
+		}
+		peers.peers.retain(|_descriptor, peer| !peer.awaiting_pong);
+
+		for (descriptor, mut peer) in peers.peers.iter_mut() {
 			let ping = msgs::Ping {
  				ponglen: 0,
  				byteslen: 64,
  			};
-			Peer.pending_outbound_buffer.push_back((encode_msg!(ping, 18)));
-			let mut descriptor = Descriptor.clone();
-			self.do_attempt_write_data(&mut descriptor, &mut Peer);
-  			Peer.awaiting_pong = true;
-		
-
-			}
-
+			peer.pending_outbound_buffer.push_back(encode_msg!(ping, 18));
+			let mut descriptor_clone = descriptor.clone();
+			self.do_attempt_write_data(&mut descriptor_clone, &mut peer);
+  			peer.awaiting_pong = true;
 		}
-
-		// Disconnect the offending Peers based on the Descriptors aggregated above
-		for (mut Descriptor) in des_set.iter_mut(){
-			// The following code is a duplicating disconnect_event_internal() except it uses the existing lock instead of taking it
-			let no_connection_possible: bool = true;
-			peers.peers_needing_send.remove(Descriptor);
-			let peer_option = peers.peers.remove(Descriptor);
-			match peer_option {
-			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
-			Some(peer) => {
-				match peer.their_node_id {
-					Some(node_id) => {
-						peers.node_id_to_descriptor.remove(&node_id);
-						self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
-					},
-					None => {}
-				}
-					}
-				}
-		}
-
 	}
 }
 
+
 #[cfg(test)]
 mod tests {
-	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, VecWriter};
+	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
 	use ln::msgs;
 	use util::events;
 	use util::test_utils;
 	use util::logger::Logger;
-	use util::ser::{Writeable, Writer, Readable};
-
-	use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 
 	use secp256k1::Secp256k1;
 	use secp256k1::key::{SecretKey, PublicKey};
@@ -1238,17 +1216,17 @@ mod tests {
 	}
 	#[test]
 	fn test_timer_tick_occured(){
-
 		// Create peers, a vector of two peer managers, perform initial set up and check that peers[0] has one Peer.
-		let mut peers = create_network(2);
+		let peers = create_network(2);
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
-		// peers[0] awaiting_pong is set to true.
+		// peers[0] awaiting_pong is set to true, but the Peer is still connected
 		peers[0].timer_tick_occured();
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+
 		// Since timer_tick_occured() is called again when awaiting_pong is true, all Peers are disconnected
 		peers[0].timer_tick_occured();
-
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 }
