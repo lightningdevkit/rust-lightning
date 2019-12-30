@@ -1202,6 +1202,7 @@ mod tests {
 
 		let secp_ctx = Secp256k1::new();
 		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+		
 		let chan_handler = test_utils::TestChannelMessageHandler::new();
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
