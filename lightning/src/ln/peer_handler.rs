@@ -1133,7 +1133,6 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	}
 }
 
-
 #[cfg(test)]
 mod tests {
 	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
