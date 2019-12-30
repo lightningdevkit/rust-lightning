@@ -22,6 +22,7 @@ use secp256k1::{SecretKey, PublicKey};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
 use std::{mem};
+use std::collections::HashMap;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -190,6 +191,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 pub struct TestLogger {
 	level: Level,
 	id: String,
+	pub lines: Mutex<HashMap<(String, String), usize>>,
 }
 
 impl TestLogger {
@@ -200,15 +202,21 @@ impl TestLogger {
 		TestLogger {
 			level: Level::Trace,
 			id,
+			lines: Mutex::new(HashMap::new())
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
 		self.level = level;
 	}
+	pub fn assert_log(&self, module: String, line: String, count: usize) {
+		let log_entries = self.lines.lock().unwrap();
+		assert_eq!(log_entries.get(&(module, line)), Some(&count));
+	}
 }
 
 impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
+		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
 		if self.level >= record.level {
 			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
 		}

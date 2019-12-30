@@ -66,6 +66,7 @@ pub struct Node {
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
+	pub logger: Arc<test_utils::TestLogger>
 }
 impl Drop for Node {
 	fn drop(&mut self) {
@@ -835,7 +836,8 @@ pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> 
 	let payment_count = Rc::new(RefCell::new(0));
 
 	for i in 0..node_count {
-		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
+		let test_logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
+		let logger = &(Arc::clone(&test_logger) as Arc<Logger>);
 		let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 		let block_notifier = Arc::new(chaininterface::BlockNotifier::new(chain_monitor.clone()));
@@ -857,6 +859,7 @@ pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> 
 			network_payment_count: payment_count.clone(),
 			network_chan_count: chan_count.clone(),
 			block_notifier,
+			logger: test_logger
 		});
 	}
 
