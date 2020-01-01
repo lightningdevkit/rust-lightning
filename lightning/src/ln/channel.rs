@@ -19,7 +19,7 @@ use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
-use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -266,7 +266,7 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	monitor_pending_funding_locked: bool,
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
-	monitor_pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>,
+	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 
 	// pending_update_fee is filled when sending and receiving update_fee
@@ -1974,7 +1974,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitor), ChannelError> {
+	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitor), ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state"));
 		}
@@ -2269,7 +2269,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// which failed. The messages which were generated from that call which generated the
 	/// monitor update failure must *not* have been sent to the remote end, and must instead
 	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
-	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingForwardHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
+	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
 		self.monitor_pending_revoke_and_ack = resend_raa;
 		self.monitor_pending_commitment_signed = resend_commitment;
@@ -2283,7 +2283,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingForwardHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool, Option<msgs::FundingLocked>) {
+	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool, Option<msgs::FundingLocked>) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
