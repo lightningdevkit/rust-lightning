@@ -57,15 +57,19 @@ use std::ops::Deref;
 // forward the HTLC with information it will give back to us when it does so, or if it should Fail
 // the HTLC with the relevant message for the Channel to handle giving to the remote peer.
 //
-// When a Channel forwards an HTLC to its peer, it will give us back the PendingForwardHTLCInfo
-// which we will use to construct an outbound HTLC, with a relevant HTLCSource::PreviousHopData
-// filled in to indicate where it came from (which we can use to either fail-backwards or fulfill
-// the HTLC backwards along the relevant path).
+// Once said HTLC is committed in the Channel, if the PendingHTLCStatus indicated Forward, the
+// Channel will return the PendingHTLCInfo back to us, and we will create an HTLCForwardInfo
+// with it to track where it came from (in case of onwards-forward error), waiting a random delay
+// before we forward it.
+//
+// We will then use HTLCForwardInfo's PendingHTLCInfo to construct an outbound HTLC, with a
+// relevant HTLCSource::PreviousHopData filled in to indicate where it came from (which we can use
+// to either fail-backwards or fulfill the HTLC backwards along the relevant path).
 // Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
-/// Stores the info we will need to send when we want to forward an HTLC onwards
+
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) struct PendingForwardHTLCInfo {
+pub(super) struct PendingHTLCInfo {
 	onion_packet: Option<msgs::OnionPacket>,
 	incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
@@ -83,8 +87,20 @@ pub(super) enum HTLCFailureMsg {
 /// Stores whether we can't forward an HTLC or relevant forwarding info
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
-	Forward(PendingForwardHTLCInfo),
+	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
+}
+
+pub(super) enum HTLCForwardInfo {
+	AddHTLC {
+		prev_short_channel_id: u64,
+		prev_htlc_id: u64,
+		forward_info: PendingHTLCInfo,
+	},
+	FailHTLC {
+		htlc_id: u64,
+		err_packet: msgs::OnionErrorPacket,
+	},
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -231,18 +247,6 @@ impl MsgHandleErrInternal {
 /// second to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly.
 const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 
-pub(super) enum HTLCForwardInfo {
-	AddHTLC {
-		prev_short_channel_id: u64,
-		prev_htlc_id: u64,
-		forward_info: PendingForwardHTLCInfo,
-	},
-	FailHTLC {
-		htlc_id: u64,
-		err_packet: msgs::OnionErrorPacket,
-	},
-}
-
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg Channel::channel_reestablish needs to re-send messages in the order
@@ -262,7 +266,7 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	/// short channel id -> forward infos. Key of 0 means payments received
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
-	/// ids in the PendingForwardHTLCInfo!
+	/// ids in the PendingHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
 	/// payment_hash -> Vec<(amount_received, htlc_source)> for tracking things that were to us and
 	/// can be failed/claimed by the user
@@ -574,7 +578,7 @@ macro_rules! handle_monitor_err {
 							} else if $resend_commitment { "commitment" }
 							else if $resend_raa { "RAA" }
 							else { "nothing" },
-						(&$failed_forwards as &Vec<(PendingForwardHTLCInfo, u64)>).len(),
+						(&$failed_forwards as &Vec<(PendingHTLCInfo, u64)>).len(),
 						(&$failed_fails as &Vec<(HTLCSource, PaymentHash, HTLCFailReason)>).len());
 				if !$resend_commitment {
 					debug_assert!($action_type == RAACommitmentOrder::RevokeAndACKFirst || !$resend_raa);
@@ -969,7 +973,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				// instead we stay symmetric with the forwarding case, only responding (after a
 				// delay) once they've send us a commitment_signed!
 
-				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
+				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					onion_packet: None,
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
@@ -1021,7 +1025,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					},
 				};
 
-				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
+				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: short_channel_id,
@@ -1032,7 +1036,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 			};
 
 		channel_state = Some(self.channel_state.lock().unwrap());
-		if let &PendingHTLCStatus::Forward(PendingForwardHTLCInfo { ref onion_packet, ref short_channel_id, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref onion_packet, ref short_channel_id, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
 			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				let forwarding_id = match id_option {
@@ -2158,7 +2162,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
-					if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
+					if let PendingHTLCStatus::Forward(PendingHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
 						let chan_update = self.get_channel_update(chan.get());
 						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 							channel_id: msg.channel_id,
@@ -2289,7 +2293,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingForwardHTLCInfo, u64)>)]) {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingHTLCInfo, u64)>)]) {
 		for &mut (prev_short_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut forward_event = None;
 			if !pending_forwards.is_empty() {
@@ -3016,7 +3020,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send> Ch
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for PendingForwardHTLCInfo {
+impl Writeable for PendingHTLCInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.onion_packet.write(writer)?;
 		self.incoming_shared_secret.write(writer)?;
@@ -3028,9 +3032,9 @@ impl Writeable for PendingForwardHTLCInfo {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for PendingForwardHTLCInfo {
-	fn read(reader: &mut R) -> Result<PendingForwardHTLCInfo, DecodeError> {
-		Ok(PendingForwardHTLCInfo {
+impl<R: ::std::io::Read> Readable<R> for PendingHTLCInfo {
+	fn read(reader: &mut R) -> Result<PendingHTLCInfo, DecodeError> {
+		Ok(PendingHTLCInfo {
 			onion_packet: Readable::read(reader)?,
 			incoming_shared_secret: Readable::read(reader)?,
 			payment_hash: Readable::read(reader)?,
