@@ -69,11 +69,19 @@ use std::ops::Deref;
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+enum PendingForwardReceiveHTLCInfo {
+	Forward {
+		onion_packet: msgs::OnionPacket,
+		short_channel_id: u64, // This should be NonZero<u64> eventually
+	},
+	Receive {},
+}
+
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) struct PendingHTLCInfo {
-	onion_packet: Option<msgs::OnionPacket>,
+	type_data: PendingForwardReceiveHTLCInfo,
 	incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
-	short_channel_id: u64,
 	pub(super) amt_to_forward: u64,
 	pub(super) outgoing_cltv_value: u32,
 }
@@ -972,9 +980,8 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				// delay) once they've send us a commitment_signed!
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					onion_packet: None,
+					type_data: PendingForwardReceiveHTLCInfo::Receive {},
 					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: 0,
 					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
@@ -1016,15 +1023,17 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				let short_channel_id = match next_hop_data.format {
 					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
 					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::FinalNode => {
+					msgs::OnionHopDataFormat::FinalNode { .. } => {
 						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
 					},
 				};
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					onion_packet: Some(outgoing_packet),
+					type_data: PendingForwardReceiveHTLCInfo::Forward {
+						onion_packet: outgoing_packet,
+						short_channel_id: short_channel_id,
+					},
 					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: short_channel_id,
 					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
@@ -1032,8 +1041,11 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 			};
 
 		channel_state = Some(self.channel_state.lock().unwrap());
-		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref onion_packet, ref short_channel_id, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
-			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
+		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref type_data, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+			// If short_channel_id is 0 here, we'll reject them in the body here (which is
+			// important as various things later assume we are a ::Receive if short_channel_id is
+			// non-0.
+			if let &PendingForwardReceiveHTLCInfo::Forward { ref short_channel_id, .. } = type_data {
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				let forwarding_id = match id_option {
 					None => { // unknown_next_peer
@@ -1397,22 +1409,25 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 						let mut fail_htlc_msgs = Vec::new();
 						for forward_info in pending_forwards.drain(..) {
 							match forward_info {
-								HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
-									log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(forward_info.payment_hash.0), prev_short_channel_id, short_chan_id);
+								HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
+										type_data: PendingForwardReceiveHTLCInfo::Forward {
+											onion_packet, ..
+										}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value }, } => {
+									log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(payment_hash.0), prev_short_channel_id, short_chan_id);
 									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										htlc_id: prev_htlc_id,
-										incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+										incoming_packet_shared_secret: incoming_shared_secret,
 									});
-									match chan.get_mut().send_htlc(forward_info.amt_to_forward, forward_info.payment_hash, forward_info.outgoing_cltv_value, htlc_source.clone(), forward_info.onion_packet.unwrap()) {
+									match chan.get_mut().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet) {
 										Err(e) => {
 											if let ChannelError::Ignore(msg) = e {
-												log_trace!(self, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(forward_info.payment_hash.0), msg);
+												log_trace!(self, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
 											let chan_update = self.get_channel_update(chan.get()).unwrap();
-											failed_forwards.push((htlc_source, forward_info.payment_hash, 0x1000 | 7, Some(chan_update)));
+											failed_forwards.push((htlc_source, payment_hash, 0x1000 | 7, Some(chan_update)));
 											continue;
 										},
 										Ok(update_add) => {
@@ -1430,6 +1445,9 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 											}
 										}
 									}
+								},
+								HTLCForwardInfo::AddHTLC { .. } => {
+									panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
 								},
 								HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
 									log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
@@ -1510,20 +1528,25 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				} else {
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
-							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
+									type_data: PendingForwardReceiveHTLCInfo::Receive { },
+									incoming_shared_secret, payment_hash, amt_to_forward, .. }, } => {
 								let prev_hop_data = HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
 									htlc_id: prev_htlc_id,
-									incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+									incoming_packet_shared_secret: incoming_shared_secret,
 								};
-								match channel_state.claimable_htlcs.entry(forward_info.payment_hash) {
-									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push((forward_info.amt_to_forward, prev_hop_data)),
-									hash_map::Entry::Vacant(entry) => { entry.insert(vec![(forward_info.amt_to_forward, prev_hop_data)]); },
+								match channel_state.claimable_htlcs.entry(payment_hash) {
+									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push((amt_to_forward, prev_hop_data)),
+									hash_map::Entry::Vacant(entry) => { entry.insert(vec![(amt_to_forward, prev_hop_data)]); },
 								};
 								new_events.push(events::Event::PaymentReceived {
-									payment_hash: forward_info.payment_hash,
-									amt: forward_info.amt_to_forward,
+									payment_hash: payment_hash,
+									amt: amt_to_forward,
 								});
+							},
+							HTLCForwardInfo::AddHTLC { .. } => {
+								panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 							},
 							HTLCForwardInfo::FailHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
@@ -2324,7 +2347,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS))
 				}
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-					match channel_state.forward_htlcs.entry(forward_info.short_channel_id) {
+					match channel_state.forward_htlcs.entry(match forward_info.type_data {
+							PendingForwardReceiveHTLCInfo::Forward { short_channel_id, .. } => short_channel_id,
+							PendingForwardReceiveHTLCInfo::Receive { .. } => 0,
+					}) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info });
 						},
@@ -3029,10 +3055,18 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for PendingHTLCInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.onion_packet.write(writer)?;
+		match &self.type_data {
+			&PendingForwardReceiveHTLCInfo::Forward { ref onion_packet, ref short_channel_id } => {
+				0u8.write(writer)?;
+				onion_packet.write(writer)?;
+				short_channel_id.write(writer)?;
+			},
+			&PendingForwardReceiveHTLCInfo::Receive { } => {
+				1u8.write(writer)?;
+			},
+		}
 		self.incoming_shared_secret.write(writer)?;
 		self.payment_hash.write(writer)?;
-		self.short_channel_id.write(writer)?;
 		self.amt_to_forward.write(writer)?;
 		self.outgoing_cltv_value.write(writer)?;
 		Ok(())
@@ -3042,10 +3076,16 @@ impl Writeable for PendingHTLCInfo {
 impl<R: ::std::io::Read> Readable<R> for PendingHTLCInfo {
 	fn read(reader: &mut R) -> Result<PendingHTLCInfo, DecodeError> {
 		Ok(PendingHTLCInfo {
-			onion_packet: Readable::read(reader)?,
+			type_data: match Readable::read(reader)? {
+				0u8 => PendingForwardReceiveHTLCInfo::Forward {
+					onion_packet: Readable::read(reader)?,
+					short_channel_id: Readable::read(reader)?,
+				},
+				1u8 => PendingForwardReceiveHTLCInfo::Receive { },
+				_ => return Err(DecodeError::InvalidValue),
+			},
 			incoming_shared_secret: Readable::read(reader)?,
 			payment_hash: Readable::read(reader)?,
-			short_channel_id: Readable::read(reader)?,
 			amt_to_forward: Readable::read(reader)?,
 			outgoing_cltv_value: Readable::read(reader)?,
 		})
