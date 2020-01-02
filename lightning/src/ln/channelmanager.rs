@@ -74,7 +74,9 @@ enum PendingHTLCRouting {
 		onion_packet: msgs::OnionPacket,
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
 	},
-	Receive {},
+	Receive {
+		payment_data: Option<msgs::FinalOnionHopData>,
+	},
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -117,6 +119,16 @@ pub(super) struct HTLCPreviousHopData {
 	short_channel_id: u64,
 	htlc_id: u64,
 	incoming_packet_shared_secret: [u8; 32],
+}
+
+struct ClaimableHTLC {
+	prev_hop: HTLCPreviousHopData,
+	value: u64,
+	/// Filled in when the HTLC was received with a payment_secret packet, which contains a
+	/// total_msat (which may differ from value if this is a Multi-Path Payment) and a
+	/// payment_secret which prevents path-probing attacks and can associate different HTLCs which
+	/// are part of the same payment.
+	payment_data: Option<msgs::FinalOnionHopData>,
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -276,12 +288,11 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
 	/// ids in the PendingHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
-	/// payment_hash -> Vec<(amount_received, htlc_source)> for tracking things that were to us and
-	/// can be failed/claimed by the user
+	/// Tracks HTLCs that were to us and can be failed/claimed by the user
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	pub(super) claimable_htlcs: HashMap<PaymentHash, Vec<(u64, HTLCPreviousHopData)>>,
+	claimable_htlcs: HashMap<PaymentHash, Vec<ClaimableHTLC>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<events::MessageSendEvent>,
@@ -1007,13 +1018,19 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
 
+				let payment_data = match next_hop_data.format {
+					msgs::OnionHopDataFormat::Legacy { .. } => None,
+					msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
+					msgs::OnionHopDataFormat::FinalNode { payment_data } => payment_data,
+				};
+
 				// Note that we could obviously respond immediately with an update_fulfill_htlc
 				// message, however that would leak that we are the recipient of this payment, so
 				// instead we stay symmetric with the forwarding case, only responding (after a
 				// delay) once they've send us a commitment_signed!
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					routing: PendingHTLCRouting::Receive {},
+					routing: PendingHTLCRouting::Receive { payment_data },
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.amt_to_forward,
@@ -1580,17 +1597,18 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing: PendingHTLCRouting::Receive { },
+									routing: PendingHTLCRouting::Receive { payment_data },
 									incoming_shared_secret, payment_hash, amt_to_forward, .. }, } => {
-								let prev_hop_data = HTLCPreviousHopData {
+								let prev_hop = HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
 									htlc_id: prev_htlc_id,
 									incoming_packet_shared_secret: incoming_shared_secret,
 								};
-								match channel_state.claimable_htlcs.entry(payment_hash) {
-									hash_map::Entry::Occupied(mut entry) => entry.get_mut().push((amt_to_forward, prev_hop_data)),
-									hash_map::Entry::Vacant(entry) => { entry.insert(vec![(amt_to_forward, prev_hop_data)]); },
-								};
+								channel_state.claimable_htlcs.entry(payment_hash).or_insert(Vec::new()).push(ClaimableHTLC {
+									prev_hop,
+									value: amt_to_forward,
+									payment_data,
+								});
 								new_events.push(events::Event::PaymentReceived {
 									payment_hash: payment_hash,
 									amt: amt_to_forward,
@@ -1660,11 +1678,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
-			for (recvd_value, htlc_with_hash) in sources.drain(..) {
+			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
-						HTLCSource::PreviousHopData(htlc_with_hash), payment_hash,
-						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(recvd_value).to_vec() });
+						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
+						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(htlc.value).to_vec() });
 			}
 			true
 		} else { false }
@@ -1788,17 +1806,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some(mut sources) = removed_source {
-			for (received_amount, htlc_with_hash) in sources.drain(..) {
+			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				if received_amount < expected_amount || received_amount > expected_amount * 2 {
-					let mut htlc_msat_data = byte_utils::be64_to_array(received_amount).to_vec();
+				if htlc.value < expected_amount || htlc.value > expected_amount * 2 {
+					let mut htlc_msat_data = byte_utils::be64_to_array(htlc.value).to_vec();
 					let mut height_data = byte_utils::be32_to_array(self.latest_block_height.load(Ordering::Acquire) as u32).to_vec();
 					htlc_msat_data.append(&mut height_data);
 					self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
-									 HTLCSource::PreviousHopData(htlc_with_hash), &payment_hash,
+									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
 									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_data });
 				} else {
-					self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc_with_hash), payment_preimage);
+					self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc.prev_hop), payment_preimage);
 				}
 			}
 			true
@@ -3098,8 +3116,9 @@ impl Writeable for PendingHTLCInfo {
 				onion_packet.write(writer)?;
 				short_channel_id.write(writer)?;
 			},
-			&PendingHTLCRouting::Receive { } => {
+			&PendingHTLCRouting::Receive { ref payment_data } => {
 				1u8.write(writer)?;
+				payment_data.write(writer)?;
 			},
 		}
 		self.incoming_shared_secret.write(writer)?;
@@ -3118,7 +3137,9 @@ impl Readable for PendingHTLCInfo {
 					onion_packet: Readable::read(reader)?,
 					short_channel_id: Readable::read(reader)?,
 				},
-				1u8 => PendingHTLCRouting::Receive { },
+				1u8 => PendingHTLCRouting::Receive {
+					payment_data: Readable::read(reader)?,
+				},
 				_ => return Err(DecodeError::InvalidValue),
 			},
 			incoming_shared_secret: Readable::read(reader)?,
@@ -3185,6 +3206,12 @@ impl_writeable!(HTLCPreviousHopData, 0, {
 	short_channel_id,
 	htlc_id,
 	incoming_packet_shared_secret
+});
+
+impl_writeable!(ClaimableHTLC, 0, {
+	prev_hop,
+	value,
+	payment_data
 });
 
 impl Writeable for HTLCSource {
@@ -3328,9 +3355,8 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 		for (payment_hash, previous_hops) in channel_state.claimable_htlcs.iter() {
 			payment_hash.write(writer)?;
 			(previous_hops.len() as u64).write(writer)?;
-			for &(recvd_amt, ref previous_hop) in previous_hops.iter() {
-				recvd_amt.write(writer)?;
-				previous_hop.write(writer)?;
+			for htlc in previous_hops.iter() {
+				htlc.write(writer)?;
 			}
 		}
 
@@ -3507,7 +3533,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			let previous_hops_len: u64 = Readable::read(reader)?;
 			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, 2));
 			for _ in 0..previous_hops_len {
-				previous_hops.push((Readable::read(reader)?, Readable::read(reader)?));
+				previous_hops.push(Readable::read(reader)?);
 			}
 			claimable_htlcs.insert(payment_hash, previous_hops);
 		}

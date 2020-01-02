@@ -123,7 +123,9 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 		res.insert(0, msgs::OnionHopData {
 			format: if hop.node_features.supports_variable_length_onion() {
 				if idx == 0 {
-					msgs::OnionHopDataFormat::FinalNode
+					msgs::OnionHopDataFormat::FinalNode {
+						payment_data: None,
+					}
 				} else {
 					msgs::OnionHopDataFormat::NonFinalNode {
 						short_channel_id: last_short_channel_id,

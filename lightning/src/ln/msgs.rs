@@ -614,6 +614,11 @@ pub trait RoutingMessageHandler : Send + Sync {
 mod fuzzy_internal_msgs {
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
+	#[derive(Clone)]
+	pub(crate) struct FinalOnionHopData {
+		pub(crate) payment_secret: [u8; 32],
+		pub(crate) total_msat: u64,
+	}
 
 	pub(crate) enum OnionHopDataFormat {
 		Legacy { // aka Realm-0
@@ -622,7 +627,9 @@ mod fuzzy_internal_msgs {
 		NonFinalNode {
 			short_channel_id: u64,
 		},
-		FinalNode,
+		FinalNode {
+			payment_data: Option<FinalOnionHopData>,
+		},
 	}
 
 	pub struct OnionHopData {
@@ -965,6 +972,22 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 	onion_routing_packet
 });
 
+impl Writeable for FinalOnionHopData {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 8 - (self.total_msat.leading_zeros()/8) as usize);
+		self.payment_secret.write(w)?;
+		HighZeroBytesDroppedVarInt(self.total_msat).write(w)
+	}
+}
+
+impl Readable for FinalOnionHopData {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let payment_secret = Readable::read(r)?;
+		let amt: HighZeroBytesDroppedVarInt<u64> = Readable::read(r)?;
+		Ok(Self { payment_secret, total_msat: amt.0 })
+	}
+}
+
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(33);
@@ -983,7 +1006,14 @@ impl Writeable for OnionHopData {
 					(6, short_channel_id)
 				});
 			},
-			OnionHopDataFormat::FinalNode => {
+			OnionHopDataFormat::FinalNode { payment_data: Some(ref final_data) } => {
+				encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
+					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value)),
+					(8, final_data)
+				});
+			},
+			OnionHopDataFormat::FinalNode { payment_data: None } => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value))
@@ -1008,19 +1038,24 @@ impl Readable for OnionHopData {
 			let mut amt = HighZeroBytesDroppedVarInt(0u64);
 			let mut cltv_value = HighZeroBytesDroppedVarInt(0u32);
 			let mut short_id: Option<u64> = None;
+			let mut payment_data: Option<FinalOnionHopData> = None;
 			decode_tlv!(&mut rd, {
 				(2, amt),
 				(4, cltv_value)
 			}, {
-				(6, short_id)
+				(6, short_id),
+				(8, payment_data)
 			});
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 			let format = if let Some(short_channel_id) = short_id {
+				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
 				OnionHopDataFormat::NonFinalNode {
 					short_channel_id,
 				}
 			} else {
-				OnionHopDataFormat::FinalNode
+				OnionHopDataFormat::FinalNode {
+					payment_data
+				}
 			};
 			(format, amt.0, cltv_value.0)
 		} else {
@@ -1305,7 +1340,7 @@ impl_writeable_len_match!(NodeAnnouncement, {
 mod tests {
 	use hex;
 	use ln::msgs;
-	use ln::msgs::{ChannelFeatures, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use ln::msgs::{ChannelFeatures, FinalOnionHopData, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use util::ser::{Writeable, Readable};
 
@@ -1998,7 +2033,9 @@ mod tests {
 	#[test]
 	fn encoding_final_onion_hop_data() {
 		let mut msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::FinalNode,
+			format: OnionHopDataFormat::FinalNode {
+				payment_data: None,
+			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
@@ -2006,7 +2043,36 @@ mod tests {
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::FinalNode = msg.format { } else { panic!(); }
+		if let OnionHopDataFormat::FinalNode { payment_data: None } = msg.format { } else { panic!(); }
+		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
+		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_secret() {
+		let expected_payment_secret = [0x42u8; 32];
+		let mut msg = msgs::OnionHopData {
+			format: OnionHopDataFormat::FinalNode {
+				payment_data: Some(FinalOnionHopData {
+					payment_secret: expected_payment_secret,
+					total_msat: 0x1badca1f
+				}),
+			},
+			amt_to_forward: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+		};
+		let encoded_value = msg.encode();
+		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
+		assert_eq!(encoded_value, target_value);
+		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		if let OnionHopDataFormat::FinalNode {
+			payment_data: Some(FinalOnionHopData {
+				payment_secret,
+				total_msat: 0x1badca1f
+			})
+		} = msg.format {
+			assert_eq!(payment_secret, expected_payment_secret);
+		} else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
 		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
 	}
