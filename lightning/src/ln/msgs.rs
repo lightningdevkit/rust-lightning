@@ -33,6 +33,9 @@ use util::ser::{Readable, Writeable, Writer, FixedLengthReader};
 
 use ln::channelmanager::{PaymentPreimage, PaymentHash};
 
+/// 21 million * 10^8 * 1000
+pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
+
 /// An error in decoding a message or struct.
 #[derive(Debug)]
 pub enum DecodeError {
@@ -1095,6 +1098,11 @@ impl<R: Read> Readable<R> for OnionHopData {
 					short_channel_id,
 				}
 			} else {
+				if let &Some(ref data) = &payment_data {
+					if data.total_msat > MAX_VALUE_MSAT {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
 				OnionHopDataFormat::FinalNode {
 					payment_data
 				}
@@ -1106,6 +1114,9 @@ impl<R: Read> Readable<R> for OnionHopData {
 			};
 			let amt: u64 = Readable::read(r)?;
 			let cltv_value: u32 = Readable::read(r)?;
+			if amt > MAX_VALUE_MSAT {
+				return Err(DecodeError::InvalidValue);
+			}
 			r.read_exact(&mut [0; 12])?;
 			(format, amt, cltv_value)
 		};
