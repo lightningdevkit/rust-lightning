@@ -6,7 +6,7 @@
 //! few other things.
 
 use ln::msgs;
-use ln::channelmanager::{PaymentPreimage, PaymentHash};
+use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::ser::{Writeable, Writer, MaybeReadable, Readable};
@@ -58,6 +58,16 @@ pub enum Event {
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
+		/// The "payment secret". This authenticates the sender to the recipient, preventing a
+		/// number of deanonymization attacks during the routing process.
+		/// As nodes upgrade, the invoices you provide should likely migrate to setting the
+		/// payment_secret feature to required, at which point you should fail_backwards any HTLCs
+		/// which have a None here.
+		/// Until then, however, values of None should be ignored, and only incorrect Some values
+		/// should result in an HTLC fail_backwards.
+		/// Note that, in any case, this value must be passed as-is to any fail or claim calls as
+		/// the HTLC index includes this value.
+		payment_secret: Option<PaymentSecret>,
 		/// The value, in thousandths of a satoshi, that this payment is for. Note that you must
 		/// compare this to the expected value before accepting the payment (as otherwise you are
 		/// providing proof-of-payment for less than the value you expected!).
@@ -119,9 +129,10 @@ impl Writeable for Event {
 				funding_txo.write(writer)?;
 				user_channel_id.write(writer)?;
 			},
-			&Event::PaymentReceived { ref payment_hash, ref amt } => {
+			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt } => {
 				2u8.write(writer)?;
 				payment_hash.write(writer)?;
+				payment_secret.write(writer)?;
 				amt.write(writer)?;
 			},
 			&Event::PaymentSent { ref payment_preimage } => {
@@ -164,6 +175,7 @@ impl MaybeReadable for Event {
 				})),
 			2u8 => Ok(Some(Event::PaymentReceived {
 					payment_hash: Readable::read(reader)?,
+					payment_secret: Readable::read(reader)?,
 					amt: Readable::read(reader)?,
 				})),
 			3u8 => Ok(Some(Event::PaymentSent {

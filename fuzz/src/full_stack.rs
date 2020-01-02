@@ -22,7 +22,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,C
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
-use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage};
+use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::router::Router;
 use lightning::util::events::{EventsProvider,Event};
@@ -343,7 +343,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger)));
 
 	let mut should_forward = false;
-	let mut payments_received: Vec<(PaymentHash, u64)> = Vec::new();
+	let mut payments_received: Vec<(PaymentHash, Option<PaymentSecret>, u64)> = Vec::new();
 	let mut payments_sent = 0;
 	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
@@ -401,7 +401,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				sha.input(&payment_hash.0[..]);
 				payment_hash.0 = Sha256::from_engine(sha).into_inner();
 				payments_sent += 1;
-				match channelmanager.send_payment(route, payment_hash) {
+				match channelmanager.send_payment(route, payment_hash, &None) {
 					Ok(_) => {},
 					Err(_) => return,
 				}
@@ -428,23 +428,23 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			8 => {
-				for (payment, amt) in payments_received.drain(..) {
+				for (payment, payment_secret, amt) in payments_received.drain(..) {
 					// SHA256 is defined as XOR of all input bytes placed in the first byte, and 0s
 					// for the remaining bytes. Thus, if not all remaining bytes are 0s we cannot
 					// fulfill this HTLC, but if they are, we can just take the first byte and
 					// place that anywhere in our preimage.
 					if &payment.0[1..] != &[0; 31] {
-						channelmanager.fail_htlc_backwards(&payment);
+						channelmanager.fail_htlc_backwards(&payment, &payment_secret);
 					} else {
 						let mut payment_preimage = PaymentPreimage([0; 32]);
 						payment_preimage.0[0] = payment.0[0];
-						channelmanager.claim_funds(payment_preimage, amt);
+						channelmanager.claim_funds(payment_preimage, &payment_secret, amt);
 					}
 				}
 			},
 			9 => {
-				for (payment, _) in payments_received.drain(..) {
-					channelmanager.fail_htlc_backwards(&payment);
+				for (payment, payment_secret, _) in payments_received.drain(..) {
+					channelmanager.fail_htlc_backwards(&payment, &payment_secret);
 				}
 			},
 			10 => {
@@ -524,9 +524,9 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::FundingBroadcastSafe { funding_txo, .. } => {
 					pending_funding_relay.push(pending_funding_signatures.remove(&funding_txo).unwrap());
 				},
-				Event::PaymentReceived { payment_hash, amt } => {
+				Event::PaymentReceived { payment_hash, payment_secret, amt } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
-					payments_received.push((payment_hash, amt));
+					payments_received.push((payment_hash, payment_secret, amt));
 				},
 				Event::PaymentSent {..} => {},
 				Event::PaymentFailed {..} => {},

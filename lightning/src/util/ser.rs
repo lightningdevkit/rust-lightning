@@ -17,7 +17,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
-use ln::channelmanager::{PaymentPreimage, PaymentHash};
+use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 use util::byte_utils;
 
 use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
@@ -588,6 +588,19 @@ impl Readable for PaymentHash {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentHash(buf))
+	}
+}
+
+impl Writeable for PaymentSecret {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for PaymentSecret {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(PaymentSecret(buf))
 	}
 }
 

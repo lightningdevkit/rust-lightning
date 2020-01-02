@@ -31,7 +31,7 @@ use std::result::Result;
 use util::events;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
-use ln::channelmanager::{PaymentPreimage, PaymentHash};
+use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
@@ -615,11 +615,13 @@ pub trait RoutingMessageHandler : Send + Sync {
 }
 
 mod fuzzy_internal_msgs {
+	use ln::channelmanager::PaymentSecret;
+
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
 	#[derive(Clone)]
 	pub(crate) struct FinalOnionHopData {
-		pub(crate) payment_secret: [u8; 32],
+		pub(crate) payment_secret: PaymentSecret,
 		pub(crate) total_msat: u64,
 	}
 
@@ -978,16 +980,16 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(32 + 8 - (self.total_msat.leading_zeros()/8) as usize);
-		self.payment_secret.write(w)?;
+		self.payment_secret.0.write(w)?;
 		HighZeroBytesDroppedVarInt(self.total_msat).write(w)
 	}
 }
 
 impl Readable for FinalOnionHopData {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let payment_secret = Readable::read(r)?;
+		let secret: [u8; 32] = Readable::read(r)?;
 		let amt: HighZeroBytesDroppedVarInt<u64> = Readable::read(r)?;
-		Ok(Self { payment_secret, total_msat: amt.0 })
+		Ok(Self { payment_secret: PaymentSecret(secret), total_msat: amt.0 })
 	}
 }
 
@@ -1352,7 +1354,7 @@ mod tests {
 	use hex;
 	use ln::msgs;
 	use ln::msgs::{ChannelFeatures, FinalOnionHopData, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
-	use ln::channelmanager::{PaymentPreimage, PaymentHash};
+	use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use util::ser::{Writeable, Readable};
 
 	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -2061,7 +2063,7 @@ mod tests {
 
 	#[test]
 	fn encoding_final_onion_hop_data_with_secret() {
-		let expected_payment_secret = [0x42u8; 32];
+		let expected_payment_secret = PaymentSecret([0x42u8; 32]);
 		let mut msg = msgs::OnionHopData {
 			format: OnionHopDataFormat::FinalNode {
 				payment_data: Some(FinalOnionHopData {
