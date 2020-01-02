@@ -421,7 +421,7 @@ pub fn do_test(data: &[u8]) {
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
 					}],
-				}, PaymentHash(payment_hash.into_inner())) {
+				}, PaymentHash(payment_hash.into_inner()), None) {
 					// Probably ran out of funds
 					test_return!();
 				}
@@ -445,7 +445,7 @@ pub fn do_test(data: &[u8]) {
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
 					}],
-				}, PaymentHash(payment_hash.into_inner())) {
+				}, PaymentHash(payment_hash.into_inner()), None) {
 					// Probably ran out of funds
 					test_return!();
 				}
@@ -606,9 +606,9 @@ pub fn do_test(data: &[u8]) {
 						events::Event::PaymentReceived { payment_hash, .. } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
-									assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
+									assert!(nodes[$node].fail_htlc_backwards(&payment_hash, &None));
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), 5_000_000));
+									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), &None, 5_000_000));
 								}
 							}
 						},

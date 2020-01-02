@@ -28,7 +28,7 @@ fn test_simple_monitor_permanent_update_fail() {
 	let (_, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
-	if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
+	if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route, payment_hash_1, None) {} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
 
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -60,7 +60,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_1) {} else { panic!(); }
+	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_1, None) {} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
@@ -89,8 +89,9 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
 	match events_3[0] {
-		Event::PaymentReceived { ref payment_hash, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(payment_hash_1, *payment_hash);
+			assert_eq!(*payment_secret, None);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -101,7 +102,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// Now set it to failed again...
 	let (_, payment_hash_2) = get_payment_preimage_hash!(&nodes[0]);
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_2) {} else { panic!(); }
+	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_2, None) {} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
@@ -164,7 +165,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_2) {} else { panic!(); }
+	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_2, None) {} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
@@ -173,7 +174,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 	// Claim the previous payment, which will result in a update_fulfill_htlc/CS from nodes[1]
 	// but nodes[0] won't respond since it is frozen.
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
@@ -440,8 +441,9 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(payment_hash_2, *payment_hash);
+			assert_eq!(*payment_secret, None);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -487,7 +489,7 @@ fn test_monitor_update_fail_cs() {
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	nodes[0].node.send_payment(route, our_payment_hash, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -546,8 +548,9 @@ fn test_monitor_update_fail_cs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, amt } => {
+		Event::PaymentReceived { payment_hash, payment_secret, amt } => {
 			assert_eq!(payment_hash, our_payment_hash);
+			assert_eq!(payment_secret, None);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -568,7 +571,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, our_payment_hash).unwrap();
+	nodes[0].node.send_payment(route, our_payment_hash, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -614,13 +617,13 @@ fn test_monitor_update_raa_while_paused() {
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, our_payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, our_payment_hash_1).unwrap();
+	nodes[0].node.send_payment(route, our_payment_hash_1, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let send_event_1 = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 
 	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, our_payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[1].node.send_payment(route, our_payment_hash_2).unwrap();
+	nodes[1].node.send_payment(route, our_payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	let send_event_2 = SendEvent::from_event(nodes[1].node.get_and_clear_pending_msg_events().remove(0));
 
@@ -687,7 +690,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
-	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
+	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, &None));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
@@ -706,7 +709,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// holding cell.
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -731,7 +734,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	let (_, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
 	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-	nodes[0].node.send_payment(route, payment_hash_3).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_3, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(()); // We succeed in updating the monitor for the first channel
@@ -778,7 +781,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		// Try to route another payment backwards from 2 to make sure 1 holds off on responding
 		let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[0]);
 		let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-		nodes[2].node.send_payment(route, payment_hash_4).unwrap();
+		nodes[2].node.send_payment(route, payment_hash_4, None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 
 		send_event = SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
@@ -940,7 +943,7 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, 1_000_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage, &None, 1_000_000));
 	check_added_monitors!(nodes[2], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1024,9 +1027,9 @@ fn raa_no_response_awaiting_raa_state() {
 	// immediately after a CS. By setting failing the monitor update failure from the CS (which
 	// requires only an RAA response due to AwaitingRAA) we can deliver the RAA and require the CS
 	// generation during RAA while in monitor-update-failed state.
-	nodes[0].node.send_payment(route.clone(), payment_hash_1).unwrap();
+	nodes[0].node.send_payment(route.clone(), payment_hash_1, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
-	nodes[0].node.send_payment(route.clone(), payment_hash_2).unwrap();
+	nodes[0].node.send_payment(route.clone(), payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1073,7 +1076,7 @@ fn raa_no_response_awaiting_raa_state() {
 	// We send a third payment here, which is somewhat of a redundant test, but the
 	// chanmon_fail_consistency test required it to actually find the bug (by seeing out-of-sync
 	// commitment transaction states) whereas here we can explicitly check for it.
-	nodes[0].node.send_payment(route.clone(), payment_hash_3).unwrap();
+	nodes[0].node.send_payment(route.clone(), payment_hash_3, None).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1135,7 +1138,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
@@ -1161,7 +1164,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	// the monitor still failed
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -1250,7 +1253,7 @@ fn monitor_failed_no_reestablish_response() {
 	// on receipt).
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, payment_hash_1).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_1, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
@@ -1318,7 +1321,7 @@ fn first_message_on_recv_ordering() {
 	// can deliver it and fail the monitor update.
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, payment_hash_1).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_1, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1340,7 +1343,7 @@ fn first_message_on_recv_ordering() {
 	// Route the second payment, generating an update_add_htlc/commitment_signed
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1408,12 +1411,12 @@ fn test_monitor_update_fail_claim() {
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
 	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[2].node.send_payment(route, payment_hash_2).unwrap();
+	nodes[2].node.send_payment(route, payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[2], 1);
 
 	// Successfully update the monitor on the 1<->2 channel, but the 0<->1 channel should still be
@@ -1481,7 +1484,7 @@ fn test_monitor_update_on_pending_forwards() {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
 
 	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
-	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
+	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, &None));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
@@ -1492,7 +1495,7 @@ fn test_monitor_update_on_pending_forwards() {
 
 	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[2].node.send_payment(route, payment_hash_2).unwrap();
+	nodes[2].node.send_payment(route, payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[2], 1);
 
 	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
@@ -1549,7 +1552,7 @@ fn monitor_update_claim_fail_no_response() {
 	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(route, payment_hash_2).unwrap();
+	nodes[0].node.send_payment(route, payment_hash_2, None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1559,7 +1562,7 @@ fn monitor_update_claim_fail_no_response() {
 	let as_raa = commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true, false, true);
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
