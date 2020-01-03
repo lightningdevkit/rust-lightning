@@ -302,6 +302,9 @@ impl NetAddress {
 			&NetAddress::OnionV3 { .. } => { 37 },
 		}
 	}
+
+	/// The maximum length of any address descriptor, not including the 1-byte type
+	pub(crate) const MAX_LEN: u16 = 37;
 }
 
 impl Writeable for NetAddress {
@@ -1291,7 +1294,7 @@ impl Readable for UnsignedNodeAnnouncement {
 
 impl_writeable_len_match!(NodeAnnouncement, {
 		{ NodeAnnouncement { contents: UnsignedNodeAnnouncement { ref features, ref addresses, ref excess_address_data, ref excess_data, ..}, .. },
-			64 + 76 + features.byte_count() + addresses.len()*38 + excess_address_data.len() + excess_data.len() }
+			64 + 76 + features.byte_count() + addresses.len()*(NetAddress::MAX_LEN as usize + 1) + excess_address_data.len() + excess_data.len() }
 	}, {
 	signature,
 	contents
