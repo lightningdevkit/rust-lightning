@@ -305,6 +305,58 @@ impl NetAddress {
 	}
 }
 
+/// A "set" of addresses which enforces that there can be only up to one of each net address type.
+pub struct NetAddressSet {
+	v4: Option<NetAddress>,
+	v6: Option<NetAddress>,
+	onion2: Option<NetAddress>,
+	onion3: Option<NetAddress>,
+}
+impl NetAddressSet {
+	/// Creates a new, empty, NetAddressSet
+	pub fn new() -> Self {
+		NetAddressSet { v4: None, v6: None, onion2: None, onion3: None }
+	}
+
+	/// Sets the IPv4 socket address in this set, overwriting any previous IPv4 socket addresses
+	/// (if any).
+	pub fn set_v4(&mut self, addr: [u8; 4], port: u16) {
+		self.v4 = Some(NetAddress::IPv4 { addr, port });
+	}
+	/// Sets the IPv6 socket address in this set, overwriting any previous IPv4 socket addresses
+	/// (if any).
+	pub fn set_v6(&mut self, addr: [u8; 16], port: u16) {
+		self.v6 = Some(NetAddress::IPv6 { addr, port });
+	}
+	/// Sets the Tor Onion v2 socket address in this set, overwriting any previous IPv4 socket
+	/// address (if any).
+	pub fn set_onion_v2(&mut self, addr: [u8; 10], port: u16) {
+		self.onion2 = Some(NetAddress::OnionV2 { addr, port });
+	}
+	/// Sets the Tor Onion v3 socket address in this set, overwriting any previous IPv4 socket
+	/// address (if any).
+	pub fn set_onion_v3(&mut self, ed25519_pubkey: [u8; 32], checksum: u16, version: u8, port: u16) {
+		self.onion3 = Some(NetAddress::OnionV3 { ed25519_pubkey, checksum, version, port });
+	}
+
+	pub(crate) fn to_vec(mut self) -> Vec<NetAddress> {
+		let mut res = Vec::new();
+		if let Some(addr) = self.v4.take() {
+			res.push(addr);
+		}
+		if let Some(addr) = self.v6.take() {
+			res.push(addr);
+		}
+		if let Some(addr) = self.onion2.take() {
+			res.push(addr);
+		}
+		if let Some(addr) = self.onion3.take() {
+			res.push(addr);
+		}
+		res
+	}
+}
+
 impl Writeable for NetAddress {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
