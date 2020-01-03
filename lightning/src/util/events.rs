@@ -195,11 +195,19 @@ pub enum MessageSendEvent {
 	},
 	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
 	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
+	///
+	/// Note that after doing so, you very likely (unless you did so very recently) want to call
+	/// ChannelManager::broadcast_node_announcement to trigger a BroadcastNodeAnnouncement event.
 	BroadcastChannelAnnouncement {
 		/// The channel_announcement which should be sent.
 		msg: msgs::ChannelAnnouncement,
 		/// The followup channel_update which should be sent.
 		update_msg: msgs::ChannelUpdate,
+	},
+	/// Used to indicate that a node_announcement should be broadcast to all peers.
+	BroadcastNodeAnnouncement {
+		/// The node_announcement which should be sent.
+		msg: msgs::NodeAnnouncement,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
 	BroadcastChannelUpdate {

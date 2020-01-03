@@ -136,6 +136,14 @@ impl Peer {
 			InitSyncTracker::NodesSyncing(_) => true,
 		}
 	}
+
+	fn should_forward_node(&self, node_id: PublicKey) -> bool {
+		match self.sync_status {
+			InitSyncTracker::NoSyncRequested => true,
+			InitSyncTracker::ChannelsSyncing(_) => false,
+			InitSyncTracker::NodesSyncing(pk) => pk < node_id,
+		}
+	}
 }
 
 struct PeerHolder<Descriptor: SocketDescriptor> {
@@ -1003,6 +1011,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								}
 								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
 								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_update_msg[..]));
+								self.do_attempt_write_data(&mut (*descriptor).clone(), peer);
+							}
+						}
+					},
+					MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
+						log_trace!(self, "Handling BroadcastNodeAnnouncement event in peer_handler");
+						if self.message_handler.route_handler.handle_node_announcement(msg).is_ok() {
+							let encoded_msg = encode_msg!(msg, 257);
+
+							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+										!peer.should_forward_node(msg.contents.node_id) {
+									continue
+								}
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
 								self.do_attempt_write_data(&mut (*descriptor).clone(), peer);
 							}
 						}
