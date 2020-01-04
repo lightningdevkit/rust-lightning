@@ -30,7 +30,7 @@ use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use ln::features::{InitFeatures, NodeFeatures};
-use ln::router::Route;
+use ln::router::{Route, RouteHop};
 use ln::msgs;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
@@ -136,7 +136,7 @@ struct ClaimableHTLC {
 pub(super) enum HTLCSource {
 	PreviousHopData(HTLCPreviousHopData),
 	OutboundRoute {
-		route: Route,
+		path: Vec<RouteHop>,
 		session_priv: SecretKey,
 		/// Technically we can recalculate this from the route, but we cache it here to avoid
 		/// doing a double-pass on route when we get a failure back
@@ -147,7 +147,7 @@ pub(super) enum HTLCSource {
 impl HTLCSource {
 	pub fn dummy() -> Self {
 		HTLCSource::OutboundRoute {
-			route: Route { hops: Vec::new() },
+			path: Vec::new(),
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 		}
@@ -1231,13 +1231,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
 	pub fn send_payment(&self, route: Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), APIError> {
-		if route.hops.len() < 1 || route.hops.len() > 20 {
-			return Err(APIError::RouteError{err: "Route didn't go anywhere/had bogus size"});
+		if route.paths.len() < 1 || route.paths.len() > 1 {
+			return Err(APIError::RouteError{err: "We currently don't support MPP, and we need at least one path"});
+		}
+		if route.paths[0].len() < 1 || route.paths[0].len() > 20 {
+			return Err(APIError::RouteError{err: "Path didn't go anywhere/had bogus size"});
 		}
 		let our_node_id = self.get_our_node_id();
-		for (idx, hop) in route.hops.iter().enumerate() {
-			if idx != route.hops.len() - 1 && hop.pubkey == our_node_id {
-				return Err(APIError::RouteError{err: "Route went through us but wasn't a simple rebalance loop to us"});
+		for (idx, hop) in route.paths[0].iter().enumerate() {
+			if idx != route.paths[0].len() - 1 && hop.pubkey == our_node_id {
+				return Err(APIError::RouteError{err: "Path went through us but wasn't a simple rebalance loop to us"});
 			}
 		}
 
@@ -1245,9 +1248,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 
-		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
+		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route.paths[0], &session_priv),
 				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, payment_secret, cur_height)?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], payment_secret, cur_height)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
 			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
 		}
@@ -1257,7 +1260,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
-			let id = match channel_lock.short_to_id.get(&route.hops.first().unwrap().short_channel_id) {
+			let id = match channel_lock.short_to_id.get(&route.paths[0].first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
 				Some(id) => id.clone(),
 			};
@@ -1265,14 +1268,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			let channel_state = &mut *channel_lock;
 			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
 				match {
-					if chan.get().get_their_node_id() != route.hops.first().unwrap().pubkey {
+					if chan.get().get_their_node_id() != route.paths[0].first().unwrap().pubkey {
 						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
 					}
 					if !chan.get().is_live() {
 						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!"});
 					}
 					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-						route: route.clone(),
+						path: route.paths[0].clone(),
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 					}, onion_packet), channel_state, chan)
@@ -1288,7 +1291,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						}
 
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: route.hops.first().unwrap().pubkey,
+							node_id: route.paths[0].first().unwrap().pubkey,
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: vec![update_add],
 								update_fulfill_htlcs: Vec::new(),
@@ -1305,7 +1308,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			return Ok(());
 		};
 
-		match handle_error!(self, err, route.hops.first().unwrap().pubkey) {
+		match handle_error!(self, err, route.paths[0].first().unwrap().pubkey) {
 			Ok(_) => unreachable!(),
 			Err(e) => { Err(APIError::ChannelUnavailable { err: e.err }) }
 		}
@@ -1750,7 +1753,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		//between the branches here. We should make this async and move it into the forward HTLCs
 		//timer handling.
 		match source {
-			HTLCSource::OutboundRoute { ref route, .. } => {
+			HTLCSource::OutboundRoute { ref path, .. } => {
 				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				mem::drop(channel_state_lock);
 				match &onion_error {
@@ -1792,7 +1795,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						self.pending_events.lock().unwrap().push(
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
-								rejected_by_dest: route.hops.len() == 1,
+								rejected_by_dest: path.len() == 1,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 							}
@@ -1856,9 +1859,19 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(payment_hash, *payment_secret));
 		if let Some(mut sources) = removed_source {
+			assert!(!sources.is_empty());
+			let valid_mpp_amount = if let &Some(ref data) = &sources[0].payment_data {
+				assert!(payment_secret.is_some());
+				data.total_msat == expected_amount
+			} else {
+				assert!(payment_secret.is_none());
+				false
+			};
+
+			let mut claimed_any_htlcs = false;
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				if htlc.value < expected_amount || htlc.value > expected_amount * 2 {
+				if !valid_mpp_amount && (htlc.value < expected_amount || htlc.value > expected_amount * 2) {
 					let mut htlc_msat_data = byte_utils::be64_to_array(htlc.value).to_vec();
 					let mut height_data = byte_utils::be32_to_array(self.latest_block_height.load(Ordering::Acquire) as u32).to_vec();
 					htlc_msat_data.append(&mut height_data);
@@ -1867,9 +1880,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_data });
 				} else {
 					self.claim_funds_internal(channel_state.take().unwrap(), HTLCSource::PreviousHopData(htlc.prev_hop), payment_preimage);
+					claimed_any_htlcs = true;
 				}
 			}
-			true
+			claimed_any_htlcs
 		} else { false }
 	}
 	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<ChanSigner>>, source: HTLCSource, payment_preimage: PaymentPreimage) {
@@ -3271,9 +3285,9 @@ impl Writeable for HTLCSource {
 				0u8.write(writer)?;
 				hop_data.write(writer)?;
 			},
-			&HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } => {
+			&HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat } => {
 				1u8.write(writer)?;
-				route.write(writer)?;
+				path.write(writer)?;
 				session_priv.write(writer)?;
 				first_hop_htlc_msat.write(writer)?;
 			}
@@ -3287,7 +3301,7 @@ impl Readable for HTLCSource {
 		match <u8 as Readable>::read(reader)? {
 			0 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
 			1 => Ok(HTLCSource::OutboundRoute {
-				route: Readable::read(reader)?,
+				path: Readable::read(reader)?,
 				session_priv: Readable::read(reader)?,
 				first_hop_htlc_msat: Readable::read(reader)?,
 			}),

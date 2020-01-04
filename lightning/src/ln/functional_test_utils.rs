@@ -897,8 +897,9 @@ pub const TEST_FINAL_CLTV: u32 = 32;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
-	assert_eq!(route.hops.len(), expected_route.len());
-	for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
+	assert_eq!(route.paths.len(), 1);
+	assert_eq!(route.paths[0].len(), expected_route.len());
+	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
 		assert_eq!(hop.pubkey, node.node.get_our_node_id());
 	}
 
@@ -907,8 +908,9 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
-	assert_eq!(route.hops.len(), expected_route.len());
-	for (node, hop) in expected_route.iter().zip(route.hops.iter()) {
+	assert_eq!(route.paths.len(), 1);
+	assert_eq!(route.paths[0].len(), expected_route.len());
+	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
 		assert_eq!(hop.pubkey, node.node.get_our_node_id());
 	}
 
