@@ -1,6 +1,6 @@
 use ln::channelmanager::{PaymentHash, HTLCSource};
 use ln::msgs;
-use ln::router::{Route,RouteHop};
+use ln::router::RouteHop;
 use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
@@ -63,11 +63,11 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 #[inline]
-pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
+pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
 	let mut blinded_priv = session_priv.clone();
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-	for hop in route.hops.iter() {
+	for hop in path.iter() {
 		let shared_secret = SharedSecret::new(&hop.pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
@@ -87,10 +87,10 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
-pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, route: &Route, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
-	let mut res = Vec::with_capacity(route.hops.len());
+pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+	let mut res = Vec::with_capacity(path.len());
 
-	construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
+	construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
 		let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret[..]);
 
 		res.push(OnionKeys {
@@ -108,13 +108,13 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(route: &Route, payment_secret_option: Option<&[u8; 32]>, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, payment_secret_option: Option<&[u8; 32]>, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
-	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(route.hops.len());
+	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(path.len());
 
-	for (idx, hop) in route.hops.iter().rev().enumerate() {
+	for (idx, hop) in path.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
@@ -313,7 +313,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 /// OutboundRoute).
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
 pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, logger: &Arc<Logger>, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>) {
-	if let &HTLCSource::OutboundRoute { ref route, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
+	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;
 		let mut error_code_ret = None;
@@ -321,7 +321,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<
 		let mut is_from_final_node = false;
 
 		// Handle packed channel/node updates for passing back for the route handler
-		construct_onion_keys_callback(secp_ctx, route, session_priv, |shared_secret, _, _, route_hop| {
+		construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _, _, route_hop| {
 			next_route_hop_ix += 1;
 			if res.is_some() { return; }
 
@@ -336,7 +336,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<
 			chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 			packet_decrypted = decryption_tmp;
 
-			is_from_final_node = route.hops.last().unwrap().pubkey == route_hop.pubkey;
+			is_from_final_node = path.last().unwrap().pubkey == route_hop.pubkey;
 
 			if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 				let um = gen_um_from_shared_secret(&shared_secret[..]);
@@ -369,7 +369,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<
 						}
 						else if error_code & PERM == PERM {
 							fail_channel_update = if payment_failed {None} else {Some(msgs::HTLCFailChannelUpdate::ChannelClosed {
-								short_channel_id: route.hops[next_route_hop_ix - if next_route_hop_ix == route.hops.len() { 1 } else { 0 }].short_channel_id,
+								short_channel_id: path[next_route_hop_ix - if next_route_hop_ix == path.len() { 1 } else { 0 }].short_channel_id,
 								is_permanent: true,
 							})};
 						}
@@ -480,7 +480,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let route = Route {
-			hops: vec!(
+			paths: vec![vec![
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
@@ -506,13 +506,13 @@ mod tests {
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
-			),
+			]],
 		};
 
 		let session_priv = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
 
-		let onion_keys = super::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
-		assert_eq!(onion_keys.len(), route.hops.len());
+		let onion_keys = super::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+		assert_eq!(onion_keys.len(), route.paths[0].len());
 		onion_keys
 	}
 

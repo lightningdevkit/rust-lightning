@@ -79,8 +79,11 @@ macro_rules! log_funding_info {
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
 impl<'a> std::fmt::Display for DebugRoute<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		for h in self.0.hops.iter() {
-			write!(f, "node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+		for (idx, p) in self.0.paths.iter().enumerate() {
+			write!(f, "path {}:\n", idx)?;
+			for h in p.iter() {
+				write!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+			}
 		}
 		Ok(())
 	}

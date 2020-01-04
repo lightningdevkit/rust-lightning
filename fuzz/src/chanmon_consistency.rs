@@ -413,14 +413,14 @@ pub fn do_test(data: &[u8]) {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
 				if let Err(_) = $source.send_payment(Route {
-					hops: vec![RouteHop {
+					paths: vec![vec![RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
-					}],
+					}]],
 				}, PaymentHash(payment_hash.into_inner()), None) {
 					// Probably ran out of funds
 					test_return!();
@@ -430,7 +430,7 @@ pub fn do_test(data: &[u8]) {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
 				if let Err(_) = $source.send_payment(Route {
-					hops: vec![RouteHop {
+					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
@@ -444,7 +444,7 @@ pub fn do_test(data: &[u8]) {
 						channel_features: ChannelFeatures::empty(),
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
-					}],
+					}]],
 				}, PaymentHash(payment_hash.into_inner()), None) {
 					// Probably ran out of funds
 					test_return!();
