@@ -115,6 +115,8 @@ struct Peer {
 	pending_read_is_header: bool,
 
 	sync_status: InitSyncTracker,
+
+	awaiting_pong: bool,
 }
 
 impl Peer {
@@ -286,6 +288,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			pending_read_is_header: false,
 
 			sync_status: InitSyncTracker::NoSyncRequested,
+
+			awaiting_pong: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -322,6 +326,8 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			pending_read_is_header: false,
 
 			sync_status: InitSyncTracker::NoSyncRequested,
+
+			awaiting_pong: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -680,9 +686,9 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												}
 											},
 											19 => {
+												peer.awaiting_pong = false;
 												try_potential_decodeerror!(msgs::Pong::read(&mut reader));
 											},
-
 											// Channel control:
 											32 => {
 												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
@@ -1088,6 +1094,48 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 			}
 		};
 	}
+
+	/// This function should be called roughly once every 30 seconds.
+	/// It will send pings to each peer and disconnect those which did not respond to the last round of pings.
+
+	/// Will most likely call send_data on all of the registered descriptors, thus, be very careful with reentrancy issues!
+	pub fn timer_tick_occured(&self) {
+		let mut peers_lock = self.peers.lock().unwrap();
+		{
+			let peers = peers_lock.borrow_parts();
+			let peers_needing_send = peers.peers_needing_send;
+			let node_id_to_descriptor = peers.node_id_to_descriptor;
+			let peers = peers.peers;
+
+			peers.retain(|descriptor, peer| {
+				if peer.awaiting_pong == true {
+					peers_needing_send.remove(descriptor);
+					match peer.their_node_id {
+						Some(node_id) => {
+							node_id_to_descriptor.remove(&node_id);
+							self.message_handler.chan_handler.peer_disconnected(&node_id, true);
+						},
+						None => {}
+					}
+				}
+
+				let ping = msgs::Ping {
+					ponglen: 0,
+					byteslen: 64,
+				};
+				peer.pending_outbound_buffer.push_back(encode_msg!(ping, 18));
+				let mut descriptor_clone = descriptor.clone();
+				self.do_attempt_write_data(&mut descriptor_clone, peer);
+
+				if peer.awaiting_pong {
+					false // Drop the peer
+				} else {
+					peer.awaiting_pong = true;
+					true
+				}
+			});
+		}
+	}
 }
 
 #[cfg(test)]
@@ -1169,6 +1217,21 @@ mod tests {
 		peers[0].message_handler.chan_handler = Arc::new(chan_handler);
 
 		peers[0].process_events();
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
+	}
+	#[test]
+	fn test_timer_tick_occured(){
+		// Create peers, a vector of two peer managers, perform initial set up and check that peers[0] has one Peer.
+		let peers = create_network(2);
+		establish_connection(&peers[0], &peers[1]);
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+
+		// peers[0] awaiting_pong is set to true, but the Peer is still connected
+		peers[0].timer_tick_occured();
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+
+		// Since timer_tick_occured() is called again when awaiting_pong is true, all Peers are disconnected
+		peers[0].timer_tick_occured();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 }
