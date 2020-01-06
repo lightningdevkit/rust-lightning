@@ -14,7 +14,8 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
-use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress,ChannelFeatures,NodeFeatures};
+use ln::features::{ChannelFeatures, NodeFeatures};
+use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer, ReadableArgs};
 use util::logger::Logger;
@@ -1011,7 +1012,8 @@ mod tests {
 	use chain::chaininterface;
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
-	use ln::msgs::{ChannelFeatures, NodeFeatures, LightningError, ErrorAction};
+	use ln::features::{ChannelFeatures, NodeFeatures};
+	use ln::msgs::{LightningError, ErrorAction};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;

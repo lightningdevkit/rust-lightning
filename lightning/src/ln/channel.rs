@@ -15,8 +15,9 @@ use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Signature};
 use secp256k1;
 
+use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
-use ln::msgs::{DecodeError, OptionalField, ChannelFeatures, InitFeatures, DataLossProtect};
+use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{LocalCommitmentTransaction,TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};

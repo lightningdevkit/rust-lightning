@@ -8,6 +8,7 @@
 
 use secp256k1::key::{SecretKey,PublicKey};
 
+use ln::features::InitFeatures;
 use ln::msgs;
 use util::ser::{Writeable, Writer, Readable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
@@ -103,7 +104,7 @@ struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
 	outbound: bool,
 	their_node_id: Option<PublicKey>,
-	their_features: Option<msgs::InitFeatures>,
+	their_features: Option<InitFeatures>,
 
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
@@ -567,7 +568,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut features = msgs::InitFeatures::supported();
+									let mut features = InitFeatures::supported();
 									if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
 										self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
 										features.set_initial_routing_sync();
@@ -638,7 +639,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												peer.their_features = Some(msg.features);
 
 												if !peer.outbound {
-													let mut features = msgs::InitFeatures::supported();
+													let mut features = InitFeatures::supported();
 													if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
 														self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
 														features.set_initial_routing_sync();
