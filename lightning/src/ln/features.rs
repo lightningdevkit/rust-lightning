@@ -187,7 +187,7 @@ impl<T: sealed::Context> Features<T> {
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
-				0 => (byte & 0b00010100),
+				0 => (byte & 0b01000100),
 				1 => (byte & 0b01010100),
 				_ => (byte & 0b01010101),
 			}) != 0
