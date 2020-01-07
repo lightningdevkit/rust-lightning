@@ -446,15 +446,6 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_P
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
-macro_rules! secp_call {
-	( $res: expr, $err: expr ) => {
-		match $res {
-			Ok(key) => key,
-			Err(_) => return Err($err),
-		}
-	};
-}
-
 /// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
@@ -489,6 +480,42 @@ pub struct ChannelDetails {
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) no monitor update failure is pending resolution.
 	pub is_live: bool,
+}
+
+/// If a payment fails to send, it can be in one of several states. This enum is returned as the
+/// Err() type describing which state the payment is in, see the description of individual enum
+/// states for more.
+#[derive(Debug)]
+pub enum PaymentSendFailure {
+	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
+	/// send the payment at all. No channel state has been changed or messages sent to peers, and
+	/// once you've changed the parameter at error, you can freely retry the payment in full.
+	ParameterError(APIError),
+	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
+	/// from attempting to send the payment at all. No channel state has been changed or messages
+	/// sent to peers, and once you've changed the parameter at error, you can freely retry the
+	/// payment in full.
+	///
+	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// send_payment.
+	PathParameterError(Vec<Result<(), APIError>>),
+	/// All paths which were attempted failed to send, with no channel state change taking place.
+	/// You can freely retry the payment in full (though you probably want to do so over different
+	/// paths than the ones selected).
+	AllFailedRetrySafe(Vec<APIError>),
+	/// Some paths which were attempted failed to send, though possibly not all. At least some
+	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
+	/// in over-/re-payment.
+	///
+	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// send_payment, and any Errs which are not APIError::MonitorUpdateFailed can be safely
+	/// retried (though there is currently no API with which to do so).
+	///
+	/// Any entries which contain Err(APIError::MonitorUpdateFailed) or Ok(()) MUST NOT be retried
+	/// as they will result in over-/re-payment. These HTLCs all either successfully sent (in the
+	/// case of Ok(())) or will send once channel_monitor_updated is called on the next-hop channel
+	/// with the latest update_id.
+	PartialFailure(Vec<Result<(), APIError>>),
 }
 
 macro_rules! handle_error {
@@ -1207,20 +1234,24 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	/// payment_preimage tracking (which you should already be doing as they represent "proof of
 	/// payment") and prevent double-sends yourself.
 	///
-	/// May generate a SendHTLCs message event on success, which should be relayed.
+	/// May generate SendHTLCs message(s) event on success, which should be relayed.
 	///
-	/// Raises APIError::RoutError when invalid route or forward parameter
-	/// (cltv_delta, fee, node public key) is specified.
-	/// Raises APIError::ChannelUnavailable if the next-hop channel is not available for updates
-	/// (including due to previous monitor update failure or new permanent monitor update failure).
-	/// Raised APIError::MonitorUpdateFailed if a new monitor update failure prevented sending the
-	/// relevant updates.
+	/// Each path may have a different return value, and PaymentSendValue may return a Vec with
+	/// each entry matching the corresponding-index entry in the route paths, see
+	/// PaymentSendFailure for more info.
 	///
-	/// In case of APIError::RouteError/APIError::ChannelUnavailable, the payment send has failed
-	/// and you may wish to retry via a different route immediately.
-	/// In case of APIError::MonitorUpdateFailed, the commitment update has been irrevocably
-	/// committed on our end and we're just waiting for a monitor update to send it. Do NOT retry
-	/// the payment via a different route unless you intend to pay twice!
+	/// In general, a path may raise:
+	///  * APIError::RouteError when an invalid route or forwarding parameter (cltv_delta, fee,
+	///    node public key) is specified.
+	///  * APIError::ChannelUnavailable if the next-hop channel is not available for updates
+	///    (including due to previous monitor update failure or new permanent monitor update
+	///    failure).
+	///  * APIError::MonitorUpdateFailed if a new monitor update failure prevented sending the
+	///    relevant updates.
+	///
+	/// Note that depending on the type of the PaymentSendFailure the HTLC may have been
+	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
+	/// different route unless you intend to pay twice!
 	///
 	/// payment_secret is unrelated to payment_hash (or PaymentPreimage) and exists to authenticate
 	/// the sender to the recipient and prevent payment-probing (deanonymization) attacks. For
@@ -1230,87 +1261,142 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	/// If a payment_secret *is* provided, we assume that the invoice had the payment_secret feature
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
-	pub fn send_payment(&self, route: Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), APIError> {
-		if route.paths.len() < 1 || route.paths.len() > 1 {
-			return Err(APIError::RouteError{err: "We currently don't support MPP, and we need at least one path"});
+	pub fn send_payment(&self, route: Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), PaymentSendFailure> {
+		if route.paths.len() < 1 {
+			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}
-		if route.paths[0].len() < 1 || route.paths[0].len() > 20 {
-			return Err(APIError::RouteError{err: "Path didn't go anywhere/had bogus size"});
+		if route.paths.len() > 10 {
+			// This limit is completely arbitrary - there aren't any real fundamental path-count
+			// limits. After we support retrying individual paths we should likely bump this, but
+			// for now more than 10 paths likely carries too much one-path failure.
+			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "Sending over more than 10 paths is not currently supported"}));
 		}
+		let mut total_value = 0;
 		let our_node_id = self.get_our_node_id();
-		for (idx, hop) in route.paths[0].iter().enumerate() {
-			if idx != route.paths[0].len() - 1 && hop.pubkey == our_node_id {
-				return Err(APIError::RouteError{err: "Path went through us but wasn't a simple rebalance loop to us"});
+		let mut path_errs = Vec::with_capacity(route.paths.len());
+		'path_check: for path in route.paths.iter() {
+			if path.len() < 1 || path.len() > 20 {
+				path_errs.push(Err(APIError::RouteError{err: "Path didn't go anywhere/had bogus size"}));
+				continue 'path_check;
 			}
+			for (idx, hop) in path.iter().enumerate() {
+				if idx != path.len() - 1 && hop.pubkey == our_node_id {
+					path_errs.push(Err(APIError::RouteError{err: "Path went through us but wasn't a simple rebalance loop to us"}));
+					continue 'path_check;
+				}
+			}
+			total_value += path.last().unwrap().fee_msat;
+			path_errs.push(Ok(()));
 		}
-
-		let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
+		if path_errs.iter().any(|e| e.is_err()) {
+			return Err(PaymentSendFailure::PathParameterError(path_errs));
+		}
 
 		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+		let mut results = Vec::new();
+		'path_loop: for path in route.paths.iter() {
+			macro_rules! check_res_push {
+				($res: expr) => { match $res {
+						Ok(r) => r,
+						Err(e) => {
+							results.push(Err(e));
+							continue 'path_loop;
+						},
+					}
+				}
+			}
 
-		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route.paths[0], &session_priv),
-				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], payment_secret, cur_height)?;
-		if onion_utils::route_size_insane(&onion_payloads) {
-			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
-		}
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, &payment_hash);
+			log_trace!(self, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
+			let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
 
-		let _ = self.total_consistency_lock.read().unwrap();
+			let onion_keys = check_res_push!(onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
+				.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"}));
+			let (onion_payloads, htlc_msat, htlc_cltv) = check_res_push!(onion_utils::build_onion_payloads(&path, total_value, payment_secret, cur_height));
+			if onion_utils::route_size_insane(&onion_payloads) {
+				check_res_push!(Err(APIError::RouteError{err: "Route size too large considering onion data"}));
+			}
+			let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, &payment_hash);
 
-		let err: Result<(), _> = loop {
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let id = match channel_lock.short_to_id.get(&route.paths[0].first().unwrap().short_channel_id) {
-				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
-				Some(id) => id.clone(),
+			let _ = self.total_consistency_lock.read().unwrap();
+
+			let err: Result<(), _> = loop {
+				let mut channel_lock = self.channel_state.lock().unwrap();
+				let id = match channel_lock.short_to_id.get(&path.first().unwrap().short_channel_id) {
+					None => check_res_push!(Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"})),
+					Some(id) => id.clone(),
+				};
+
+				let channel_state = &mut *channel_lock;
+				if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
+					match {
+						if chan.get().get_their_node_id() != path.first().unwrap().pubkey {
+							check_res_push!(Err(APIError::RouteError{err: "Node ID mismatch on first hop!"}));
+						}
+						if !chan.get().is_live() {
+							check_res_push!(Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!"}));
+						}
+						break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
+							path: path.clone(),
+							session_priv: session_priv.clone(),
+							first_hop_htlc_msat: htlc_msat,
+						}, onion_packet), channel_state, chan)
+					} {
+						Some((update_add, commitment_signed, monitor_update)) => {
+							if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+								maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
+								// Note that MonitorUpdateFailed here indicates (per function docs)
+								// that we will resend the commitment update once monitor updating
+								// is restored. Therefore, we must return an error indicating that
+								// it is unsafe to retry the payment wholesale, which we do in the
+								// next check for MonitorUpdateFailed, below.
+								check_res_push!(Err(APIError::MonitorUpdateFailed));
+							}
+
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+								node_id: path.first().unwrap().pubkey,
+								updates: msgs::CommitmentUpdate {
+									update_add_htlcs: vec![update_add],
+									update_fulfill_htlcs: Vec::new(),
+									update_fail_htlcs: Vec::new(),
+									update_fail_malformed_htlcs: Vec::new(),
+									update_fee: None,
+									commitment_signed,
+								},
+							});
+						},
+						None => {},
+					}
+				} else { unreachable!(); }
+				results.push(Ok(()));
+				continue 'path_loop;
 			};
 
-			let channel_state = &mut *channel_lock;
-			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
-				match {
-					if chan.get().get_their_node_id() != route.paths[0].first().unwrap().pubkey {
-						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
-					}
-					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!"});
-					}
-					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-						path: route.paths[0].clone(),
-						session_priv: session_priv.clone(),
-						first_hop_htlc_msat: htlc_msat,
-					}, onion_packet), channel_state, chan)
-				} {
-					Some((update_add, commitment_signed, monitor_update)) => {
-						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
-							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
-							// Note that MonitorUpdateFailed here indicates (per function docs)
-							// that we will resent the commitment update once we unfree monitor
-							// updating, so we have to take special care that we don't return
-							// something else in case we will resend later!
-							return Err(APIError::MonitorUpdateFailed);
-						}
-
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: route.paths[0].first().unwrap().pubkey,
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: vec![update_add],
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: Vec::new(),
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: None,
-								commitment_signed,
-							},
-						});
-					},
-					None => {},
-				}
-			} else { unreachable!(); }
-			return Ok(());
-		};
-
-		match handle_error!(self, err, route.paths[0].first().unwrap().pubkey) {
-			Ok(_) => unreachable!(),
-			Err(e) => { Err(APIError::ChannelUnavailable { err: e.err }) }
+			match handle_error!(self, err, path.first().unwrap().pubkey) {
+				Ok(_) => unreachable!(),
+				Err(e) => {
+					check_res_push!(Err(APIError::ChannelUnavailable { err: e.err }));
+				},
+			}
+		}
+		let mut has_ok = false;
+		let mut has_err = false;
+		for res in results.iter() {
+			if res.is_ok() { has_ok = true; }
+			if res.is_err() { has_err = true; }
+			if let &Err(APIError::MonitorUpdateFailed) = res {
+				// MonitorUpdateFailed is inherently unsafe to retry, so we call it a
+				// PartialFailure.
+				has_err = true;
+				has_ok = true;
+				break;
+			}
+		}
+		if has_err && has_ok {
+			Err(PaymentSendFailure::PartialFailure(results))
+		} else if has_err {
+			Err(PaymentSendFailure::AllFailedRetrySafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
+		} else {
+			Ok(())
 		}
 	}
 

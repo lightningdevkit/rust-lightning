@@ -4,7 +4,7 @@
 use chain::chaininterface;
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
-use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use ln::router::{Route, Router, RouterReadArgs};
 use ln::features::InitFeatures;
@@ -269,6 +269,28 @@ macro_rules! get_local_commitment_txn {
 				}
 			}
 			commitment_txn.unwrap()
+		}
+	}
+}
+
+macro_rules! unwrap_send_err {
+	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
+		match &$res {
+			&Err(PaymentSendFailure::AllFailedRetrySafe(ref fails)) if $all_failed => {
+				assert_eq!(fails.len(), 1);
+				match fails[0] {
+					$type => { $check },
+					_ => panic!(),
+				}
+			},
+			&Err(PaymentSendFailure::PartialFailure(ref fails)) if !$all_failed => {
+				assert_eq!(fails.len(), 1);
+				match fails[0] {
+					Err($type) => { $check },
+					_ => panic!(),
+				}
+			},
+			_ => panic!(),
 		}
 	}
 }
@@ -915,12 +937,8 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	}
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(origin_node);
-
-	let err = origin_node.node.send_payment(route, our_payment_hash, &None).err().unwrap();
-	match err {
-		APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"),
-		_ => panic!("Unknown error variants"),
-	};
+	unwrap_send_err!(origin_node.node.send_payment(route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 }
 
 pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64, expected_value: u64)  {
