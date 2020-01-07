@@ -284,3 +284,38 @@ impl<R: ::std::io::Read, T: sealed::Context> Readable<R> for Features<T> {
 		})
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::{ChannelFeatures, InitFeatures, NodeFeatures};
+
+	#[test]
+	fn sanity_test_our_features() {
+		assert!(!ChannelFeatures::supported().requires_unknown_bits());
+		assert!(!ChannelFeatures::supported().supports_unknown_bits());
+		assert!(!InitFeatures::supported().requires_unknown_bits());
+		assert!(!InitFeatures::supported().supports_unknown_bits());
+		assert!(!NodeFeatures::supported().requires_unknown_bits());
+		assert!(!NodeFeatures::supported().supports_unknown_bits());
+
+		assert!(InitFeatures::supported().supports_upfront_shutdown_script());
+		assert!(NodeFeatures::supported().supports_upfront_shutdown_script());
+
+		assert!(InitFeatures::supported().supports_data_loss_protect());
+		assert!(NodeFeatures::supported().supports_data_loss_protect());
+
+		let mut init_features = InitFeatures::supported();
+		init_features.set_initial_routing_sync();
+		assert!(!init_features.requires_unknown_bits());
+		assert!(!init_features.supports_unknown_bits());
+	}
+
+	#[test]
+	fn sanity_test_unkown_bits_testing() {
+		let mut features = ChannelFeatures::supported();
+		features.set_require_unknown_bits();
+		assert!(features.requires_unknown_bits());
+		features.clear_require_unknown_bits();
+		assert!(!features.requires_unknown_bits());
+	}
+}
