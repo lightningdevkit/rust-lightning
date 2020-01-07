@@ -187,8 +187,14 @@ impl<T: sealed::Context> Features<T> {
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
-				0 => (byte & 0b00010100),
+				// Unknown bits are even bits which we don't understand, we list ones which we do
+				// here:
+				// unknown, upfront_shutdown_script, unknown (actually initial_routing_sync, but it
+				// is only valid as an optional feature), and data_loss_protect:
+				0 => (byte & 0b01000100),
+				// unknown, unknown, unknown, var_onion_optin:
 				1 => (byte & 0b01010100),
+				// fallback, all even bits set:
 				_ => (byte & 0b01010101),
 			}) != 0
 		})
@@ -197,7 +203,10 @@ impl<T: sealed::Context> Features<T> {
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
+				// unknown, upfront_shutdown_script, initial_routing_sync (is only valid as an
+				// optional feature), and data_loss_protect:
 				0 => (byte & 0b11000100),
+				// unknown, unknown, unknown, var_onion_optin:
 				1 => (byte & 0b11111100),
 				_ => byte,
 			}) != 0
