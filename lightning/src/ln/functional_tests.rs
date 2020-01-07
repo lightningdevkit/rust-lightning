@@ -6,7 +6,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 use chain::chaininterface::{ChainListener, ChainWatchInterfaceUtil, BlockNotifier};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
-use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
 use ln::channel::{Channel, ChannelError};
 use ln::onion_utils;
@@ -718,10 +718,8 @@ fn updates_shutdown_wait() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route_1, payment_hash, None) {}
-	else { panic!("New sends should fail!") };
-	if let Err(APIError::ChannelUnavailable {..}) = nodes[1].node.send_payment(route_2, payment_hash, None) {}
-	else { panic!("New sends should fail!") };
+	unwrap_send_err!(nodes[0].node.send_payment(route_1, payment_hash, None), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[1].node.send_payment(route_2, payment_hash, None), true, APIError::ChannelUnavailable {..}, {});
 
 	assert!(nodes[2].node.claim_funds(our_payment_preimage, &None, 100_000));
 	check_added_monitors!(nodes[2], 1);
@@ -1172,9 +1170,8 @@ fn holding_cell_htlc_counting() {
 	// another HTLC.
 	let route = nodes[1].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	if let APIError::ChannelUnavailable { err } = nodes[1].node.send_payment(route, payment_hash_1, None).unwrap_err() {
-		assert_eq!(err, "Cannot push more than their max accepted HTLCs");
-	} else { panic!("Unexpected event"); }
+	unwrap_send_err!(nodes[1].node.send_payment(route, payment_hash_1, None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot push more than their max accepted HTLCs"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
 
@@ -1413,11 +1410,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0 + 1);
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
-		let err = nodes[0].node.send_payment(route, our_payment_hash, None).err().unwrap();
-		match err {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"),
-			_ => panic!("Unknown error variants"),
-		}
+		unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+			assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
 	}
@@ -1451,11 +1445,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 		let recv_value = stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat;
 		// attempt to get channel_reserve violation
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
-		let err = nodes[0].node.send_payment(route.clone(), our_payment_hash, None).err().unwrap();
-		match err {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over their reserve value"),
-			_ => panic!("Unknown error variants"),
-		}
+		unwrap_send_err!(nodes[0].node.send_payment(route.clone(), our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+			assert_eq!(err, "Cannot send value that would put us over their reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over their reserve value".to_string(), 1);
 	}
@@ -1479,10 +1470,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat;
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
-		match nodes[0].node.send_payment(route, our_payment_hash, None).err().unwrap() {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over their reserve value"),
-			_ => panic!("Unknown error variants"),
-		}
+		unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+			assert_eq!(err, "Cannot send value that would put us over their reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over their reserve value".to_string(), 2);
 	}
@@ -1502,7 +1491,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], None, cur_height).unwrap();
+		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], recv_value_2 + 1, None, cur_height).unwrap();
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 		let msg = msgs::UpdateAddHTLC {
 			channel_id: chan_1.2,
@@ -1543,10 +1532,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 	// test with outbound holding cell amount > 0
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
-		match nodes[0].node.send_payment(route, our_payment_hash, None).err().unwrap() {
-			APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over their reserve value"),
-			_ => panic!("Unknown error variants"),
-		}
+		unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+			assert_eq!(err, "Cannot send value that would put us over their reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over their reserve value".to_string(), 3);
 	}
@@ -5018,7 +5005,7 @@ fn test_onion_failure() {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], None, cur_height).unwrap();
+		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, None, cur_height).unwrap();
 		let mut new_payloads = Vec::new();
 		for payload in onion_payloads.drain(..) {
 			new_payloads.push(BogusOnionHopData::new(payload));
@@ -5032,7 +5019,7 @@ fn test_onion_failure() {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], None, cur_height).unwrap();
+		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, None, cur_height).unwrap();
 		let mut new_payloads = Vec::new();
 		for payload in onion_payloads.drain(..) {
 			new_payloads.push(BogusOnionHopData::new(payload));
@@ -5215,7 +5202,7 @@ fn test_onion_failure() {
 		let height = 1;
 		route.paths[0][1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.paths[0][0].cltv_expiry_delta + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], None, height).unwrap();
+		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, None, height).unwrap();
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 		msg.cltv_expiry = htlc_cltv;
 		msg.onion_routing_packet = onion_packet;
@@ -5305,13 +5292,8 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 
 	route.paths[0][0].fee_msat = 0;
 
-	let err = nodes[0].node.send_payment(route, our_payment_hash, None);
-
-	if let Err(APIError::ChannelUnavailable{err}) = err {
-		assert_eq!(err, "Cannot send less than their minimum HTLC value");
-	} else {
-		assert!(false);
-	}
+	unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot send less than their minimum HTLC value"));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send less than their minimum HTLC value".to_string(), 1);
 }
@@ -5327,13 +5309,8 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000000, 500000001).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
-	let err = nodes[0].node.send_payment(route, our_payment_hash, None);
-
-	if let Err(APIError::RouteError{err}) = err {
-		assert_eq!(err, "Channel CLTV overflowed?!");
-	} else {
-		assert!(false);
-	}
+	unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::RouteError { err },
+		assert_eq!(err, "Channel CLTV overflowed?!"));
 }
 
 #[test]
@@ -5372,13 +5349,9 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	}
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	let err = nodes[0].node.send_payment(route, our_payment_hash, None);
+	unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot push more than their max accepted HTLCs"));
 
-	if let Err(APIError::ChannelUnavailable{err}) = err {
-		assert_eq!(err, "Cannot push more than their max accepted HTLCs");
-	} else {
-		assert!(false);
-	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
 }
@@ -5397,13 +5370,9 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], max_in_flight+1, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	let err = nodes[0].node.send_payment(route, our_payment_hash, None);
+	unwrap_send_err!(nodes[0].node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 
-	if let Err(APIError::ChannelUnavailable{err}) = err {
-		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept");
-	} else {
-		assert!(false);
-	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
 
@@ -5480,7 +5449,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], None, cur_height).unwrap();
+	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, None, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 
 	let mut msg = msgs::UpdateAddHTLC {

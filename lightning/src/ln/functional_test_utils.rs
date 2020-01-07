@@ -4,7 +4,7 @@
 use chain::chaininterface;
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
-use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSendFailure};
 use ln::router::{Route, Router};
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -167,6 +167,28 @@ macro_rules! get_feerate {
 			let chan_lock = $node.node.channel_state.lock().unwrap();
 			let chan = chan_lock.by_id.get(&$channel_id).unwrap();
 			chan.get_feerate()
+		}
+	}
+}
+
+macro_rules! unwrap_send_err {
+	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
+		match &$res {
+			&Err(PaymentSendFailure::AllFailedRetrySafe(ref fails)) if $all_failed => {
+				assert_eq!(fails.len(), 1);
+				match fails[0] {
+					$type => { $check },
+					_ => panic!(),
+				}
+			},
+			&Err(PaymentSendFailure::PartialFailure(ref fails)) if !$all_failed => {
+				assert_eq!(fails.len(), 1);
+				match fails[0] {
+					Err($type) => { $check },
+					_ => panic!(),
+				}
+			},
+			_ => panic!(),
 		}
 	}
 }
@@ -798,12 +820,8 @@ pub fn route_over_limit<'a, 'b>(origin_node: &Node<'a, 'b>, expected_route: &[&N
 	}
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(origin_node);
-
-	let err = origin_node.node.send_payment(route, our_payment_hash, None).err().unwrap();
-	match err {
-		APIError::ChannelUnavailable{err} => assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"),
-		_ => panic!("Unknown error variants"),
-	};
+	unwrap_send_err!(origin_node.node.send_payment(route, our_payment_hash, None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 }
 
 pub fn send_payment<'a, 'b>(origin: &Node<'a, 'b>, expected_route: &[&Node<'a, 'b>], recv_value: u64, expected_value: u64)  {

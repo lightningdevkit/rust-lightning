@@ -108,7 +108,7 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, payment_secret_option: Option<&[u8; 32]>, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, payment_secret_option: Option<&[u8; 32]>, starting_htlc_offset: u32) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
@@ -127,7 +127,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, payment_secret_option: 
 						payment_data: if let Some(payment_secret) = payment_secret_option {
 							Some(msgs::FinalOnionHopData {
 								payment_secret: payment_secret.clone(),
-								total_msat: hop.fee_msat,
+								total_msat,
 							})
 						} else { None },
 					}
