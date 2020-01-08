@@ -9,7 +9,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 
 use secp256k1;
-use secp256k1::key::SecretKey;
+use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::{Secp256k1, Signature};
 
 /// Enforces some rules on ChannelKeys calls. Eventually we will probably want to expose a variant
@@ -35,7 +35,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { self.inner.htlc_base_key() }
 	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }
 
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>, redeem_scripts: &Vec<Script>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_script: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>, redeem_scripts: &Vec<Script>, remote_per_commitment_point: &PublicKey) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { panic!(); }
 		if commitment_tx.output.len() != redeem_scripts.len() { panic!(); }
 
@@ -51,7 +51,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 			commitment_data.1 = cmp::max(commitment_number, commitment_data.1)
 		}
 
-		Ok(self.inner.sign_remote_commitment(channel_value_satoshis, channel_funding_script, feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx, redeem_scripts).unwrap())
+		Ok(self.inner.sign_remote_commitment(channel_value_satoshis, channel_funding_script, feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx, redeem_scripts, remote_per_commitment_point).unwrap())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

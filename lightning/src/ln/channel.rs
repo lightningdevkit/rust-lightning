@@ -1434,7 +1434,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw);
 		let remote_initial_commitment_tx = commitment_tx.0;
 		let scripts = commitment_tx.3;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx, &scripts)
+		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx, &scripts, &self.their_cur_commitment_point.unwrap())
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -3162,7 +3162,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw);
 		let remote_initial_commitment_tx = commitment_tx.0;
 		let scripts = commitment_tx.3;
-		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx, &scripts)
+		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx, &scripts, &self.their_cur_commitment_point.unwrap())
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0, remote_initial_commitment_tx))
 	}
 
@@ -3470,7 +3470,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx, &remote_commitment_tx.3)
+			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx, &remote_commitment_tx.3, &self.their_cur_commitment_point.unwrap())
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?;
 			signature = res.0;
 			htlc_signatures = res.1;
