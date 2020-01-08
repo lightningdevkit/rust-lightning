@@ -800,7 +800,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Note that below-dust HTLCs are included in the third return value, but not the second, and
 	/// sources are provided only for outbound HTLCs in the third return value.
 	#[inline]
-	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u64) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) {
+	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u64) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, Vec<Script>) {
 		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
@@ -814,7 +814,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			ins
 		};
 
-		let mut txouts: Vec<(TxOut, Option<(HTLCOutputInCommitment, Option<&HTLCSource>)>)> = Vec::with_capacity(self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len() + 2);
+		let mut txouts: Vec<(TxOut, Option<(HTLCOutputInCommitment, Option<&HTLCSource>)>, Script)> = Vec::with_capacity(self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len() + 2);
 		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 
 		let dust_limit_satoshis = if local { self.our_dust_limit_satoshis } else { self.their_dust_limit_satoshis };
@@ -842,10 +842,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
 					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
 						log_trace!(self, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
+						let script = chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys);
 						txouts.push((TxOut {
-							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
+							script_pubkey: script.to_v0_p2wsh(),
 							value: $htlc.amount_msat / 1000
-						}, Some((htlc_in_tx, $source))));
+						}, Some((htlc_in_tx, $source)), script));
 					} else {
 						log_trace!(self, "   ...including {} {} dust HTLC {} (hash {}) with value {} due to dust limit", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						included_dust_htlcs.push((htlc_in_tx, $source));
@@ -854,10 +855,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
 					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
 						log_trace!(self, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
+						let script = chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys);
 						txouts.push((TxOut { // "received HTLC output"
-							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
+							script_pubkey: script.to_v0_p2wsh(),
 							value: $htlc.amount_msat / 1000
-						}, Some((htlc_in_tx, $source))));
+						}, Some((htlc_in_tx, $source)), script));
 					} else {
 						log_trace!(self, "   ...including {} {} dust HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						included_dust_htlcs.push((htlc_in_tx, $source));
@@ -957,25 +959,29 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		if value_to_a >= (dust_limit_satoshis as i64) {
 			log_trace!(self, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
+			let script = chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
+			                                                     if local { self.their_to_self_delay } else { self.our_to_self_delay },
+			                                                     &keys.a_delayed_payment_key);
 			txouts.push((TxOut {
-				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
-				                                                       if local { self.their_to_self_delay } else { self.our_to_self_delay },
-				                                                       &keys.a_delayed_payment_key).to_v0_p2wsh(),
+				script_pubkey: script.to_v0_p2wsh(),
 				value: value_to_a as u64
-			}, None));
+			}, None, script));
 		}
 
 		if value_to_b >= (dust_limit_satoshis as i64) {
 			log_trace!(self, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
+			let script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+				.push_slice(&Hash160::hash(&keys.b_payment_key.serialize())[..])
+				.into_script();
+			// p2wpkh doesn't need a redeem script. Provide a placeholder.
+			let redeem_script = Builder::new().into_script();
 			txouts.push((TxOut {
-				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&Hash160::hash(&keys.b_payment_key.serialize())[..])
-				                             .into_script(),
+				script_pubkey: script,
 				value: value_to_b as u64
-			}, None));
+			}, None, redeem_script));
 		}
 
-		transaction_utils::sort_outputs(&mut txouts, |a, b| {
+		transaction_utils::sort_outputs2(&mut txouts, |a, b| {
 			if let &Some(ref a_htlc) = a {
 				if let &Some(ref b_htlc) = b {
 					a_htlc.0.cltv_expiry.cmp(&b_htlc.0.cltv_expiry)
@@ -990,9 +996,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		});
 
 		let mut outputs: Vec<TxOut> = Vec::with_capacity(txouts.len());
+		let mut scripts: Vec<Script> = Vec::with_capacity(txouts.len());
 		let mut htlcs_included: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(txouts.len() + included_dust_htlcs.len());
 		for (idx, mut out) in txouts.drain(..).enumerate() {
 			outputs.push(out.0);
+			scripts.push(out.2);
 			if let Some((mut htlc, source_option)) = out.1.take() {
 				htlc.transaction_output_index = Some(idx as u32);
 				htlcs_included.push((htlc, source_option));
@@ -1006,7 +1014,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			lock_time: ((0x20 as u32) << 8*3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
 			input: txins,
 			output: outputs,
-		}, non_dust_htlc_count, htlcs_included)
+		}, non_dust_htlc_count, htlcs_included, scripts)
 	}
 
 	#[inline]
@@ -1423,8 +1431,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap());
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		let commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw);
+		let remote_initial_commitment_tx = commitment_tx.0;
+		let scripts = commitment_tx.3;
+		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx, &scripts)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -1743,7 +1753,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut local_commitment_tx = {
 			let mut commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, feerate_per_kw);
 			let htlcs_cloned: Vec<_> = commitment_tx.2.drain(..).map(|htlc| (htlc.0, htlc.1.map(|h| h.clone()))).collect();
-			(commitment_tx.0, commitment_tx.1, htlcs_cloned)
+			(commitment_tx.0, commitment_tx.1, htlcs_cloned, commitment_tx.3)
 		};
 		let local_commitment_txid = local_commitment_tx.0.txid();
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]);
@@ -3149,8 +3159,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
 	fn get_outbound_funding_created_signature(&mut self) -> Result<(Signature, Transaction), ChannelError> {
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		let commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw);
+		let remote_initial_commitment_tx = commitment_tx.0;
+		let scripts = commitment_tx.3;
+		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx, &scripts)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0, remote_initial_commitment_tx))
 	}
 
@@ -3458,7 +3470,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
+			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx, &remote_commitment_tx.3)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?;
 			signature = res.0;
 			htlc_signatures = res.1;

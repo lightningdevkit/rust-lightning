@@ -142,7 +142,7 @@ pub trait ChannelKeys : Send {
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>, redeem_scripts: &Vec<Script>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a (proposed) closing transaction.
 	///
@@ -184,8 +184,9 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>, redeem_scripts: &Vec<Script>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
+		if commitment_tx.output.len() != redeem_scripts.len() { return Err(()); }
 		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
 
