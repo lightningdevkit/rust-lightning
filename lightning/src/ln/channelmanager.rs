@@ -28,7 +28,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use ln::features::{InitFeatures, NodeFeatures};
 use ln::router::{Route, RouteHop};
 use ln::msgs;
@@ -76,6 +76,7 @@ enum PendingHTLCRouting {
 	},
 	Receive {
 		payment_data: Option<msgs::FinalOnionHopData>,
+		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
 }
 
@@ -129,6 +130,7 @@ struct ClaimableHTLC {
 	/// payment_secret which prevents path-probing attacks and can associate different HTLCs which
 	/// are part of the same payment.
 	payment_data: Option<msgs::FinalOnionHopData>,
+	cltv_expiry: u32,
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -296,8 +298,6 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	/// TODO: We need to time out HTLCs sitting here which are waiting on other AMP HTLCs to
-	/// arrive.
 	claimable_htlcs: HashMap<(PaymentHash, Option<PaymentSecret>), Vec<ClaimableHTLC>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
@@ -1063,7 +1063,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				// delay) once they've send us a commitment_signed!
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					routing: PendingHTLCRouting::Receive { payment_data },
+					routing: PendingHTLCRouting::Receive {
+						payment_data,
+						incoming_cltv_expiry: msg.cltv_expiry,
+					},
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.amt_to_forward,
@@ -1686,7 +1689,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing: PendingHTLCRouting::Receive { payment_data },
+									routing: PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry },
 									incoming_shared_secret, payment_hash, amt_to_forward, .. }, } => {
 								let prev_hop = HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
@@ -1703,6 +1706,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 									prev_hop,
 									value: amt_to_forward,
 									payment_data: payment_data.clone(),
+									cltv_expiry: incoming_cltv_expiry,
 								});
 								if let &Some(ref data) = &payment_data {
 									for htlc in htlcs.iter() {
@@ -2958,6 +2962,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
+		let mut timed_out_htlcs = Vec::new();
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
@@ -3026,9 +3031,34 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 				}
 				true
 			});
+
+			channel_state.claimable_htlcs.retain(|&(ref payment_hash, _), htlcs| {
+				htlcs.retain(|htlc| {
+					// If height is approaching the number of blocks we think it takes us to get
+					// our commitment transaction confirmed before the HTLC expires, plus the
+					// number of blocks we generally consider it to take to do a commitment update,
+					// just give up on it and fail the HTLC.
+					if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
+						let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
+						htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(height));
+						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(), HTLCFailReason::Reason {
+							failure_code: 0x4000 | 15,
+							data: htlc_msat_height_data
+						}));
+						false
+					} else { true }
+				});
+				!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
+			});
 		}
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
+		}
+
+		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
+			// Call it incorrect_or_unknown_payment_details as the issue, ultimately, is that the
+			// user failed to provide us a preimage within the cltv_expiry time window.
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header_hash;
@@ -3320,9 +3350,10 @@ impl Writeable for PendingHTLCInfo {
 				onion_packet.write(writer)?;
 				short_channel_id.write(writer)?;
 			},
-			&PendingHTLCRouting::Receive { ref payment_data } => {
+			&PendingHTLCRouting::Receive { ref payment_data, ref incoming_cltv_expiry } => {
 				1u8.write(writer)?;
 				payment_data.write(writer)?;
+				incoming_cltv_expiry.write(writer)?;
 			},
 		}
 		self.incoming_shared_secret.write(writer)?;
@@ -3343,6 +3374,7 @@ impl Readable for PendingHTLCInfo {
 				},
 				1u8 => PendingHTLCRouting::Receive {
 					payment_data: Readable::read(reader)?,
+					incoming_cltv_expiry: Readable::read(reader)?,
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			},
@@ -3415,7 +3447,8 @@ impl_writeable!(HTLCPreviousHopData, 0, {
 impl_writeable!(ClaimableHTLC, 0, {
 	prev_hop,
 	value,
-	payment_data
+	payment_data,
+	cltv_expiry
 });
 
 impl Writeable for HTLCSource {

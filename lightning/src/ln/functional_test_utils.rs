@@ -717,7 +717,7 @@ macro_rules! get_payment_preimage_hash {
 	}
 }
 
-macro_rules! expect_pending_htlcs_forwardable {
+macro_rules! expect_pending_htlcs_forwardable_ignore {
 	($node: expr) => {{
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -725,6 +725,12 @@ macro_rules! expect_pending_htlcs_forwardable {
 			Event::PendingHTLCsForwardable { .. } => { },
 			_ => panic!("Unexpected event"),
 		};
+	}}
+}
+
+macro_rules! expect_pending_htlcs_forwardable {
+	($node: expr) => {{
+		expect_pending_htlcs_forwardable_ignore!($node);
 		$node.node.process_pending_htlc_forwards();
 	}}
 }

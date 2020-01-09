@@ -2320,6 +2320,8 @@ fn claim_htlc_outputs_single_tx() {
 		check_added_monitors!(nodes[0], 1);
 		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
 		check_added_monitors!(nodes[1], 1);
+		expect_pending_htlcs_forwardable_ignore!(nodes[0]);
+
 		connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 200, true, header.bitcoin_hash());
 
 		let events = nodes[1].node.get_and_clear_pending_events();
@@ -3651,6 +3653,60 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	check_added_monitors!(nodes[0], 1);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
+}
+
+#[test]
+fn test_htlc_timeout() {
+	// If the user fails to claim/fail an HTLC within the HTLC CLTV timeout we fail it for them
+	// to avoid our counterparty failing the channel.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 100000);
+
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected_checked(&header, 101, &[], &[]);
+	nodes[1].block_notifier.block_connected_checked(&header, 101, &[], &[]);
+	for i in 102..TEST_FINAL_CLTV + 100 + 1 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
+		header.prev_blockhash = header.bitcoin_hash();
+		nodes[0].block_notifier.block_connected_checked(&header, i, &[], &[]);
+		nodes[1].block_notifier.block_connected_checked(&header, i, &[], &[]);
+	}
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	check_added_monitors!(nodes[1], 1);
+	let htlc_timeout_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(htlc_timeout_updates.update_add_htlcs.is_empty());
+	assert_eq!(htlc_timeout_updates.update_fail_htlcs.len(), 1);
+	assert!(htlc_timeout_updates.update_fail_malformed_htlcs.is_empty());
+	assert!(htlc_timeout_updates.update_fee.is_none());
+
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	match &events[0] {
+		&Event::PaymentFailed { payment_hash, rejected_by_dest, error_code, ref error_data } => {
+			assert_eq!(payment_hash, our_payment_hash);
+			assert!(rejected_by_dest);
+			assert_eq!(error_code.unwrap(), 0x4000 | 15);
+			// 100_000 msat as u64, followed by a height of 123 as u32
+			assert_eq!(&error_data.as_ref().unwrap()[..], &[
+				((100_000u64 >> 7*8) & 0xff) as u8,
+				((100_000u64 >> 6*8) & 0xff) as u8,
+				((100_000u64 >> 5*8) & 0xff) as u8,
+				((100_000u64 >> 4*8) & 0xff) as u8,
+				((100_000u64 >> 3*8) & 0xff) as u8,
+				((100_000u64 >> 2*8) & 0xff) as u8,
+				((100_000u64 >> 1*8) & 0xff) as u8,
+				((100_000u64 >> 0*8) & 0xff) as u8,
+				0, 0, 0, 123]);
+		},
+		_ => panic!("Unexpected event"),
+	}
 }
 
 #[test]
@@ -7140,6 +7196,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	// Broadcast set of revoked txn on A
 	let header_128 = connect_blocks(&nodes[0].block_notifier, 128, 0, true, header.bitcoin_hash());
+	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
+
 	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, 129);
 	let first;
@@ -7472,6 +7530,8 @@ fn test_bump_txn_sanitize_tracking_maps() {
 
 	// Broadcast set of revoked txn on A
 	let header_128 = connect_blocks(&nodes[0].block_notifier, 128, 0,  false, Default::default());
+	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
+
 	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_local_txn[0].clone()] }, 129);
 	check_closed_broadcast!(nodes[0], false);
