@@ -139,12 +139,19 @@ pub trait ChannelKeys : Send {
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
 	///
+	/// The commitment_tx follows BIP-69 lexicographical ordering.
+	///
+	/// The redeem_scripts vector is 1-1 mapped to commitment_tx outputs.  For p2wpkh, the
+	/// redeem script should be empty.
+	///
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
 	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>, redeem_scripts: &Vec<Script>, remote_per_commitment_point: &PublicKey) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a (proposed) closing transaction.
+	///
+	/// The closing_tx follows BIP-69 lexicographical ordering.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
