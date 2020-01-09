@@ -57,6 +57,9 @@ pub enum Event {
 	/// ChannelManager::fail_htlc_backwards to free up resources for this HTLC.
 	/// The amount paid should be considered 'incorrect' when it is less than or more than twice
 	/// the amount expected.
+	/// If you fail to call either ChannelManager::claim_funds of
+	/// ChannelManager::fail_htlc_backwards within the HTLC's timeout, the HTLC will be
+	/// automatically failed with PaymentFailReason::PreimageUnknown.
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
