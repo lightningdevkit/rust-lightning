@@ -24,7 +24,7 @@ use util::logger::Logger;
 use util::ser::Writeable;
 
 use ln::chan_utils;
-use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
+use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript};
 use ln::msgs;
 
 use std::sync::Arc;
@@ -142,7 +142,7 @@ pub trait ChannelKeys : Send {
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a (proposed) closing transaction.
 	///
@@ -157,6 +157,12 @@ pub trait ChannelKeys : Send {
 	/// our counterparty may (though likely will not) close the channel on us for violating the
 	/// protocol.
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+
+	/// Set the remote funding key.  This is done immediately on incoming channels
+	/// and as soon as the channel is accepted on outgoing channels.
+	///
+	/// Will be called before any signatures are applied.
+	fn set_remote_funding_pubkey(&mut self, key: &PublicKey);
 }
 
 #[derive(Clone)]
@@ -174,6 +180,8 @@ pub struct InMemoryChannelKeys {
 	pub htlc_base_key: SecretKey,
 	/// Commitment seed
 	pub commitment_seed: [u8; 32],
+	/// Remote funding pubkey
+	pub remote_funding_pubkey: Option<PublicKey>,
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -184,8 +192,13 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 
-	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
+
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let remote_funding_pubkey = self.remote_funding_pubkey.as_ref().expect("must set remote funding key before signing");
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, remote_funding_pubkey);
+
 		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
 
@@ -222,6 +235,11 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
+
+	fn set_remote_funding_pubkey(&mut self, key: &PublicKey) {
+		assert!(self.remote_funding_pubkey.is_none(), "Already set remote funding key");
+		self.remote_funding_pubkey = Some(*key);
+	}
 }
 
 impl_writeable!(InMemoryChannelKeys, 0, {
@@ -230,7 +248,8 @@ impl_writeable!(InMemoryChannelKeys, 0, {
 	payment_base_key,
 	delayed_payment_base_key,
 	htlc_base_key,
-	commitment_seed
+	commitment_seed,
+	remote_funding_pubkey
 });
 
 /// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
@@ -379,6 +398,7 @@ impl KeysInterface for KeysManager {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
+			remote_funding_pubkey: None,
 		}
 	}
 

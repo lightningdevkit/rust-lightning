@@ -20,7 +20,7 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{LocalCommitmentTransaction,TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
+use ln::chan_utils::{LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
@@ -545,7 +545,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
-		let chan_keys = keys_provider.get_channel_keys(true);
+		let mut chan_keys = keys_provider.get_channel_keys(true);
+		chan_keys.set_remote_funding_pubkey(&msg.funding_pubkey);
 		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -1111,16 +1112,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// pays to get_funding_redeemscript().to_v0_p2wsh()).
 	/// Panics if called before accept_channel/new_from_req
 	pub fn get_funding_redeemscript(&self) -> Script {
-		let builder = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2);
-		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()).serialize();
-		let their_funding_key = self.their_funding_pubkey.expect("get_funding_redeemscript only allowed after accept_channel").serialize();
-		if our_funding_key[..] < their_funding_key[..] {
-			builder.push_slice(&our_funding_key)
-				.push_slice(&their_funding_key)
-		} else {
-			builder.push_slice(&their_funding_key)
-				.push_slice(&our_funding_key)
-		}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
+		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key());
+		let their_funding_key = self.their_funding_pubkey.expect("get_funding_redeemscript only allowed after accept_channel");
+		make_funding_redeemscript(&our_funding_key, &their_funding_key)
 	}
 
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
@@ -1407,6 +1401,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, self.channel_value_satoshis, obscure_factor);
 
 		self.channel_state = ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32;
+		self.local_keys.set_remote_funding_pubkey(&msg.funding_pubkey);
 
 		Ok(())
 	}
@@ -1425,7 +1420,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -2645,6 +2640,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		self.channel_update_count += 1;
+
 		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
 	}
 
@@ -3151,7 +3147,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn get_outbound_funding_created_signature(&mut self) -> Result<(Signature, Transaction), ChannelError> {
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0, remote_initial_commitment_tx))
 	}
 
@@ -3459,7 +3455,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, &self.get_funding_redeemscript(), feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
+			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -4131,6 +4127,7 @@ mod tests {
 			// These aren't set in the test vectors:
 			revocation_base_key: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+			remote_funding_pubkey: None,
 		};
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
