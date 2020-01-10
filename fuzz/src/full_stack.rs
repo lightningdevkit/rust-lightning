@@ -406,6 +406,27 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					Err(_) => return,
 				}
 			},
+			15 => {
+				let value = slice_to_be24(get_slice!(3)) as u64;
+				let mut route = match router.get_route(&get_pubkey!(), None, &Vec::new(), value, 42) {
+					Ok(route) => route,
+					Err(_) => return,
+				};
+				route.paths.push(route.paths[0].clone());
+				let mut payment_hash = PaymentHash([0; 32]);
+				payment_hash.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				let mut sha = Sha256::engine();
+				sha.input(&payment_hash.0[..]);
+				payment_hash.0 = Sha256::from_engine(sha).into_inner();
+				payments_sent += 1;
+				let mut payment_secret = PaymentSecret([0; 32]);
+				payment_secret.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
+				payments_sent += 1;
+				match channelmanager.send_payment(&route, payment_hash, &Some(payment_secret)) {
+					Ok(_) => {},
+					Err(_) => return,
+				}
+			},
 			5 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
@@ -513,6 +534,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
 				channelmanager.force_close_channel(&channels[channel_id].channel_id);
 			},
+			// 15 is above
 			_ => return,
 		}
 		loss_detector.handler.process_events();
