@@ -426,7 +426,7 @@ pub fn do_test(data: &[u8]) {
 					test_return!();
 				}
 			} };
-			($source: expr, $middle: expr, $dest: expr) => { {
+			($source: expr, $middle: expr, $dest: expr, false) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
 				if let Err(_) = $source.send_payment(Route {
@@ -446,6 +446,46 @@ pub fn do_test(data: &[u8]) {
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), None) {
+					// Probably ran out of funds
+					test_return!();
+				}
+			} };
+			($source: expr, $middle: expr, $dest: expr, true) => { {
+				let payment_hash = Sha256::hash(&[payment_id; 1]);
+				payment_id = payment_id.wrapping_add(1);
+				let payment_secret = Sha256::hash(&[payment_id; 1]);
+				payment_id = payment_id.wrapping_add(1);
+				if let Err(_) = $source.send_payment(Route {
+					paths: vec![vec![RouteHop {
+						pubkey: $middle.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $middle.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 50000,
+						cltv_expiry_delta: 100,
+					},RouteHop {
+						pubkey: $dest.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $dest.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 5000000,
+						cltv_expiry_delta: 200,
+					}],vec![RouteHop {
+						pubkey: $middle.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $middle.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 50000,
+						cltv_expiry_delta: 100,
+					},RouteHop {
+						pubkey: $dest.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $dest.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 5000000,
+						cltv_expiry_delta: 200,
+					}]],
+				}, PaymentHash(payment_hash.into_inner()), Some(&payment_secret.into_inner())) {
 					// Probably ran out of funds
 					test_return!();
 				}
@@ -603,12 +643,12 @@ pub fn do_test(data: &[u8]) {
 				});
 				for event in events.drain(..) {
 					match event {
-						events::Event::PaymentReceived { payment_hash, .. } => {
+						events::Event::PaymentReceived { payment_hash, payment_secret, .. } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
-									assert!(nodes[$node].fail_htlc_backwards(&payment_hash, &None));
+									assert!(nodes[$node].fail_htlc_backwards(&payment_hash, &payment_secret));
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), &None, 5_000_000));
+									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), &payment_secret, 5_000_000));
 								}
 							}
 						},
@@ -637,8 +677,8 @@ pub fn do_test(data: &[u8]) {
 			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a)),
 			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b)),
 			0x0c => send_payment!(nodes[2], (&nodes[1], chan_b)),
-			0x0d => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
-			0x0e => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
+			0x0d => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), false),
+			0x0e => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), false),
 			0x0f => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
@@ -721,6 +761,8 @@ pub fn do_test(data: &[u8]) {
 				nodes[2] = node_c.clone();
 				monitor_c = new_monitor_c;
 			},
+			0x22 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), true),
+			0x23 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), true),
 			_ => test_return!(),
 		}
 
