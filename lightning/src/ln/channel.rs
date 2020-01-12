@@ -1993,6 +1993,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)
 			.map_err(|e| ChannelError::Close(e.0))?;
 
+		if self.channel_state & ChannelState::AwaitingRemoteRevoke as u32 == 0 {
+			// Our counterparty seems to have burned their coins to us (by revoking a state when we
+			// haven't given them a new commitment transaction to broadcast). We should probably
+			// take advantage of this by updating our channel monitor, sending them an error, and
+			// waiting for them to broadcast their latest (now-revoked claim). But, that would be a
+			// lot of work, and there's some chance this is all a misunderstanding anyway.
+			// We have to do *something*, though, since our signer may get mad at us for otherwise
+			// jumping a remote commitment number, so best to just force-close and move on.
+			return Err(ChannelError::Close("Got a revoke when we weren't expecting one"));
+		}
+
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
 		// OK, we step the channel here and *then* if the new generation fails we can fail the
