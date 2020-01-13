@@ -105,6 +105,7 @@ impl FeatureContextInitNode for FeatureContextNode {}
 /// appears.
 pub struct Features<T: FeatureContext> {
 	#[cfg(not(test))]
+	/// Note that, for convinience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,
 	// Used to test encoding of diverse msgs
 	#[cfg(test)]
@@ -265,18 +266,25 @@ impl Features<FeatureContextInit> {
 impl<T: FeatureContext> Writeable for Features<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(self.flags.len() + 2);
-		self.flags.write(w)
+		(self.flags.len() as u16).write(w)?;
+		for f in self.flags.iter().rev() { // We have to swap the endianness back to BE for writing
+			f.write(w)?;
+		}
+		Ok(())
 	}
 }
 
 impl<R: ::std::io::Read, T: FeatureContext> Readable<R> for Features<T> {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let mut flags: Vec<u8> = Readable::read(r)?;
+		flags.reverse(); // Swap to big-endian
 		Ok(Self {
-			flags: Readable::read(r)?,
+			flags,
 			mark: PhantomData,
 		})
 	}
 }
+
 /// An init message to be sent or received from a peer
 pub struct Init {
 	pub(crate) features: InitFeatures,
