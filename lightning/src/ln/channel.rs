@@ -3225,7 +3225,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let our_bitcoin_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key());
 
 		let msg = msgs::UnsignedChannelAnnouncement {
-			features: ChannelFeatures::new(),
+			features: ChannelFeatures::supported(),
 			chain_hash: chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { our_node_id } else { self.get_their_node_id() },

@@ -567,7 +567,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut features = msgs::InitFeatures::new();
+									let mut features = msgs::InitFeatures::supported();
 									if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
 										self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
 										features.set_initial_routing_sync();
@@ -638,7 +638,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 												peer.their_features = Some(msg.features);
 
 												if !peer.outbound {
-													let mut features = msgs::InitFeatures::new();
+													let mut features = msgs::InitFeatures::supported();
 													if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
 														self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
 														features.set_initial_routing_sync();

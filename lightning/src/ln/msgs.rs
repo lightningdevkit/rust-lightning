@@ -140,16 +140,16 @@ pub type NodeFeatures = Features<FeatureContextNode>;
 pub type ChannelFeatures = Features<FeatureContextChannel>;
 
 impl<T: FeatureContextInitNode> Features<T> {
-	/// Create a blank Features flags (visibility extended for fuzz tests)
+	/// Create a Features with the features we support
 	#[cfg(not(feature = "fuzztarget"))]
-	pub(crate) fn new() -> Features<T> {
+	pub(crate) fn supported() -> Features<T> {
 		Features {
 			flags: vec![2 | 1 << 5],
 			mark: PhantomData,
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
-	pub fn new() -> Features<T> {
+	pub fn supported() -> Features<T> {
 		Features {
 			flags: vec![2 | 1 << 5],
 			mark: PhantomData,
@@ -158,16 +158,16 @@ impl<T: FeatureContextInitNode> Features<T> {
 }
 
 impl Features<FeatureContextChannel> {
-	/// Create a blank Features flags (visibility extended for fuzz tests)
+	/// Create a Features with the features we support
 	#[cfg(not(feature = "fuzztarget"))]
-	pub(crate) fn new() -> Features<FeatureContextChannel> {
+	pub(crate) fn supported() -> Features<FeatureContextChannel> {
 		Features {
 			flags: Vec::new(),
 			mark: PhantomData,
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
-	pub fn new() -> Features<FeatureContextChannel> {
+	pub fn supported() -> Features<FeatureContextChannel> {
 		Features {
 			flags: Vec::new(),
 			mark: PhantomData,
@@ -176,6 +176,14 @@ impl Features<FeatureContextChannel> {
 }
 
 impl<T: FeatureContext> Features<T> {
+	/// Create a blank Features with no fetures set
+	pub fn empty() -> Features<T> {
+		Features {
+			flags: Vec::new(),
+			mark: PhantomData,
+		}
+	}
+
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			( idx != 0 && (byte & 0x55) != 0 ) || ( idx == 0 && (byte & 0x14) != 0 )
@@ -1617,7 +1625,7 @@ mod tests {
 		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
-		let mut features = ChannelFeatures::new();
+		let mut features = ChannelFeatures::supported();
 		if unknown_features_bits {
 			features.flags = vec![0xFF, 0xFF];
 		}
@@ -1673,9 +1681,12 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
-		let mut features = NodeFeatures::new();
+		let mut features = NodeFeatures::empty();
 		if unknown_features_bits {
 			features.flags = vec![0xFF, 0xFF];
+		} else {
+			// Set to some features we may support
+			features.flags = vec![2 | 1 << 5];
 		}
 		let mut addresses = Vec::new();
 		if ipv4 {

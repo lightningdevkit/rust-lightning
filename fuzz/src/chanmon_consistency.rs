@@ -252,7 +252,7 @@ pub fn do_test(data: &[u8]) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$dest.handle_open_channel(&$source.get_our_node_id(), Features::<FeatureContextInit>::new(), &open_channel);
+			$dest.handle_open_channel(&$source.get_our_node_id(), Features::<FeatureContextInit>::supported(), &open_channel);
 			let accept_channel = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -261,7 +261,7 @@ pub fn do_test(data: &[u8]) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$source.handle_accept_channel(&$dest.get_our_node_id(), Features::<FeatureContextInit>::new(), &accept_channel);
+			$source.handle_accept_channel(&$dest.get_our_node_id(), Features::<FeatureContextInit>::supported(), &accept_channel);
 			{
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
