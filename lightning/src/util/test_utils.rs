@@ -3,9 +3,9 @@ use chain::chaininterface::ConfirmationTarget;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::channelmonitor;
+use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::LocalFeatures;
-use ln::msgs::{LightningError};
+use ln::msgs::LightningError;
 use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
@@ -100,8 +100,8 @@ impl TestChannelMessageHandler {
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::OpenChannel) {}
-	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_local_features: LocalFeatures, _msg: &msgs::AcceptChannel) {}
+	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &msgs::OpenChannel) {}
+	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &msgs::AcceptChannel) {}
 	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) {}
 	fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingSigned) {}
 	fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingLocked) {}

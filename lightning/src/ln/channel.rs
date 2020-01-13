@@ -15,8 +15,9 @@ use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Signature};
 use secp256k1;
 
+use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
-use ln::msgs::{DecodeError, OptionalField, LocalFeatures, DataLossProtect};
+use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{LocalCommitmentTransaction,TxCreationKeys,HTLCOutputInCommitment,HTLC_SUCCESS_TX_WEIGHT,HTLC_TIMEOUT_TX_WEIGHT};
@@ -543,7 +544,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_local_features: LocalFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
+	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
 		let chan_keys = keys_provider.get_channel_keys(true);
 		let mut local_config = (*config).channel_options.clone();
 
@@ -648,7 +649,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		                                          chan_keys.htlc_base_key(), chan_keys.payment_base_key(), &keys_provider.get_shutdown_pubkey(), config.own_channel_config.our_to_self_delay,
 		                                          keys_provider.get_destination_script(), logger.clone());
 
-		let their_shutdown_scriptpubkey = if their_local_features.supports_upfront_shutdown_script() {
+		let their_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
 				&OptionalField::Present(ref script) => {
 					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. We enforce it while receiving shutdown msg
@@ -1306,7 +1307,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_local_features: LocalFeatures) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: InitFeatures) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer"));
@@ -1365,7 +1366,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("We consider the minimum depth to be unreasonably large"));
 		}
 
-		let their_shutdown_scriptpubkey = if their_local_features.supports_upfront_shutdown_script() {
+		let their_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
 				&OptionalField::Present(ref script) => {
 					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. We enforce it while receiving shutdown msg
@@ -3225,7 +3226,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let our_bitcoin_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key());
 
 		let msg = msgs::UnsignedChannelAnnouncement {
-			features: msgs::GlobalFeatures::new(),
+			features: ChannelFeatures::supported(),
 			chain_hash: chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { our_node_id } else { self.get_their_node_id() },

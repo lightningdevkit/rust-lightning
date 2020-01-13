@@ -14,7 +14,8 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
-use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress,GlobalFeatures};
+use ln::features::{ChannelFeatures, NodeFeatures};
+use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer, ReadableArgs};
 use util::logger::Logger;
@@ -111,7 +112,7 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 
 #[derive(PartialEq)]
 struct ChannelInfo {
-	features: GlobalFeatures,
+	features: ChannelFeatures,
 	one_to_two: DirectionalChannelInfo,
 	two_to_one: DirectionalChannelInfo,
 	//this is cached here so we can send out it later if required by route_init_sync
@@ -143,7 +144,7 @@ struct NodeInfo {
 	lowest_inbound_channel_fee_base_msat: u32,
 	lowest_inbound_channel_fee_proportional_millionths: u32,
 
-	features: GlobalFeatures,
+	features: NodeFeatures,
 	last_update: u32,
 	rgb: [u8; 3],
 	alias: [u8; 32],
@@ -414,10 +415,6 @@ impl RoutingMessageHandler for Router {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
-		if msg.contents.features.requires_unknown_bits() {
-			panic!("Unknown-required-features NodeAnnouncements should never deserialize!");
-		}
-
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement", action: ErrorAction::IgnoreError}),
@@ -432,7 +429,7 @@ impl RoutingMessageHandler for Router {
 				node.alias = msg.contents.alias;
 				node.addresses = msg.contents.addresses.clone();
 
-				let should_relay = msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty() && !msg.contents.features.supports_unknown_bits();
+				let should_relay = msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty();
 				node.announcement_message = if should_relay { Some(msg.clone()) } else { None };
 				Ok(should_relay)
 			}
@@ -449,10 +446,6 @@ impl RoutingMessageHandler for Router {
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
-
-		if msg.contents.features.requires_unknown_bits() {
-			panic!("Unknown-required-features ChannelAnnouncements should never deserialize!");
-		}
 
 		let checked_utxo = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
 			Ok((script_pubkey, _value)) => {
@@ -483,7 +476,7 @@ impl RoutingMessageHandler for Router {
 		let mut network_lock = self.network_map.write().unwrap();
 		let network = network_lock.borrow_parts();
 
-		let should_relay = msg.contents.excess_data.is_empty() && !msg.contents.features.supports_unknown_bits();
+		let should_relay = msg.contents.excess_data.is_empty();
 
 		let chan_info = ChannelInfo {
 				features: msg.contents.features.clone(),
@@ -546,7 +539,7 @@ impl RoutingMessageHandler for Router {
 							channels: vec!(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)),
 							lowest_inbound_channel_fee_base_msat: u32::max_value(),
 							lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
-							features: GlobalFeatures::new(),
+							features: NodeFeatures::empty(),
 							last_update: 0,
 							rgb: [0; 3],
 							alias: [0; 32],
@@ -748,7 +741,7 @@ impl Router {
 			channels: Vec::new(),
 			lowest_inbound_channel_fee_base_msat: u32::max_value(),
 			lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
-			features: GlobalFeatures::new(),
+			features: NodeFeatures::empty(),
 			last_update: 0,
 			rgb: [0; 3],
 			alias: [0; 32],
@@ -939,19 +932,23 @@ impl Router {
 					}
 				}
 
-				for chan_id in $node.channels.iter() {
-					let chan = network.channels.get(chan_id).unwrap();
-					if chan.one_to_two.src_node_id == *$node_id {
-						// ie $node is one, ie next hop in A* is two, via the two_to_one channel
-						if first_hops.is_none() || chan.two_to_one.src_node_id != network.our_node_id {
-							if chan.two_to_one.enabled {
-								add_entry!(chan_id, chan.one_to_two.src_node_id, chan.two_to_one, $fee_to_target_msat);
-							}
-						}
-					} else {
-						if first_hops.is_none() || chan.one_to_two.src_node_id != network.our_node_id {
-							if chan.one_to_two.enabled {
-								add_entry!(chan_id, chan.two_to_one.src_node_id, chan.one_to_two, $fee_to_target_msat);
+				if !$node.features.requires_unknown_bits() {
+					for chan_id in $node.channels.iter() {
+						let chan = network.channels.get(chan_id).unwrap();
+						if !chan.features.requires_unknown_bits() {
+							if chan.one_to_two.src_node_id == *$node_id {
+								// ie $node is one, ie next hop in A* is two, via the two_to_one channel
+								if first_hops.is_none() || chan.two_to_one.src_node_id != network.our_node_id {
+									if chan.two_to_one.enabled {
+										add_entry!(chan_id, chan.one_to_two.src_node_id, chan.two_to_one, $fee_to_target_msat);
+									}
+								}
+							} else {
+								if first_hops.is_none() || chan.one_to_two.src_node_id != network.our_node_id {
+									if chan.one_to_two.enabled {
+										add_entry!(chan_id, chan.two_to_one.src_node_id, chan.one_to_two, $fee_to_target_msat);
+									}
+								}
 							}
 						}
 					}
@@ -1015,7 +1012,8 @@ mod tests {
 	use chain::chaininterface;
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
-	use ln::msgs::GlobalFeatures;
+	use ln::features::{ChannelFeatures, NodeFeatures};
+	use ln::msgs::{LightningError, ErrorAction};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -1115,7 +1113,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(1, zero_hash.clone()), NetworkMap::get_key(3, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 100,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1123,7 +1121,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(1, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
 					last_update: 0,
@@ -1149,7 +1147,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(2, zero_hash.clone()), NetworkMap::get_key(4, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1157,7 +1155,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(2, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
 					last_update: 0,
@@ -1183,7 +1181,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1191,7 +1189,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
 					last_update: 0,
@@ -1223,7 +1221,7 @@ mod tests {
 					NetworkMap::get_key(7, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1231,7 +1229,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(3, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node1.clone(),
 					last_update: 0,
@@ -1254,7 +1252,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(4, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node2.clone(),
 					last_update: 0,
@@ -1277,7 +1275,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node8.clone(),
 					last_update: 0,
@@ -1303,7 +1301,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(5, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1311,7 +1309,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(5, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1337,7 +1335,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(6, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1345,7 +1343,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(6, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1368,7 +1366,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(11, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node5.clone(),
 					last_update: 0,
@@ -1394,7 +1392,7 @@ mod tests {
 				channels: vec!(NetworkMap::get_key(7, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: GlobalFeatures::new(),
+				features: NodeFeatures::empty(),
 				last_update: 1,
 				rgb: [0; 3],
 				alias: [0; 32],
@@ -1402,7 +1400,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(7, zero_hash.clone()), ChannelInfo {
-				features: GlobalFeatures::new(),
+				features: ChannelFeatures::empty(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
 					last_update: 0,
@@ -1440,6 +1438,98 @@ mod tests {
 			assert_eq!(route.hops[1].fee_msat, 100);
 			assert_eq!(route.hops[1].cltv_expiry_delta, 42);
 		}
+
+		{ // Disable channels 4 and 12 by requiring unknown feature bits
+			let mut network = router.network_map.write().unwrap();
+			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_require_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_require_unknown_bits();
+		}
+
+		{ // If all the channels require some features we don't understand, route should fail
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = router.get_route(&node3, None, &Vec::new(), 100, 42) {
+				assert_eq!(err, "Failed to find a path to the given destination");
+			} else { panic!(); }
+		}
+
+		{ // If we specify a channel to node8, that overrides our local channel view and that gets used
+			let our_chans = vec![channelmanager::ChannelDetails {
+				channel_id: [0; 32],
+				short_channel_id: Some(42),
+				remote_network_id: node8.clone(),
+				channel_value_satoshis: 0,
+				user_id: 0,
+				outbound_capacity_msat: 0,
+				inbound_capacity_msat: 0,
+				is_live: true,
+			}];
+			let route = router.get_route(&node3, Some(&our_chans), &Vec::new(), 100, 42).unwrap();
+			assert_eq!(route.hops.len(), 2);
+
+			assert_eq!(route.hops[0].pubkey, node8);
+			assert_eq!(route.hops[0].short_channel_id, 42);
+			assert_eq!(route.hops[0].fee_msat, 200);
+			assert_eq!(route.hops[0].cltv_expiry_delta, (13 << 8) | 1);
+
+			assert_eq!(route.hops[1].pubkey, node3);
+			assert_eq!(route.hops[1].short_channel_id, 13);
+			assert_eq!(route.hops[1].fee_msat, 100);
+			assert_eq!(route.hops[1].cltv_expiry_delta, 42);
+		}
+
+		{ // Re-enable channels 4 and 12 by wiping the unknown feature bits
+			let mut network = router.network_map.write().unwrap();
+			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_require_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_require_unknown_bits();
+		}
+
+		{ // Disable nodes 1, 2, and 8 by requiring unknown feature bits
+			let mut network = router.network_map.write().unwrap();
+			network.nodes.get_mut(&node1).unwrap().features.set_require_unknown_bits();
+			network.nodes.get_mut(&node2).unwrap().features.set_require_unknown_bits();
+			network.nodes.get_mut(&node8).unwrap().features.set_require_unknown_bits();
+		}
+
+		{ // If all nodes require some features we don't understand, route should fail
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = router.get_route(&node3, None, &Vec::new(), 100, 42) {
+				assert_eq!(err, "Failed to find a path to the given destination");
+			} else { panic!(); }
+		}
+
+		{ // If we specify a channel to node8, that overrides our local channel view and that gets used
+			let our_chans = vec![channelmanager::ChannelDetails {
+				channel_id: [0; 32],
+				short_channel_id: Some(42),
+				remote_network_id: node8.clone(),
+				channel_value_satoshis: 0,
+				user_id: 0,
+				outbound_capacity_msat: 0,
+				inbound_capacity_msat: 0,
+				is_live: true,
+			}];
+			let route = router.get_route(&node3, Some(&our_chans), &Vec::new(), 100, 42).unwrap();
+			assert_eq!(route.hops.len(), 2);
+
+			assert_eq!(route.hops[0].pubkey, node8);
+			assert_eq!(route.hops[0].short_channel_id, 42);
+			assert_eq!(route.hops[0].fee_msat, 200);
+			assert_eq!(route.hops[0].cltv_expiry_delta, (13 << 8) | 1);
+
+			assert_eq!(route.hops[1].pubkey, node3);
+			assert_eq!(route.hops[1].short_channel_id, 13);
+			assert_eq!(route.hops[1].fee_msat, 100);
+			assert_eq!(route.hops[1].cltv_expiry_delta, 42);
+		}
+
+		{ // Re-enable nodes 1, 2, and 8
+			let mut network = router.network_map.write().unwrap();
+			network.nodes.get_mut(&node1).unwrap().features.clear_require_unknown_bits();
+			network.nodes.get_mut(&node2).unwrap().features.clear_require_unknown_bits();
+			network.nodes.get_mut(&node8).unwrap().features.clear_require_unknown_bits();
+		}
+
+		// Note that we don't test disabling node 3 and failing to route to it, as we (somewhat
+		// naively) assume that the user checked the feature bits on the invoice, which override
+		// the node_announcement.
 
 		{ // Route to 1 via 2 and 3 because our channel to 1 is disabled
 			let route = router.get_route(&node1, None, &Vec::new(), 100, 42).unwrap();
