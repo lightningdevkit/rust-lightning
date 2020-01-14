@@ -31,9 +31,8 @@ use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::chan_utils;
-use ln::chan_utils::{HTLCOutputInCommitment, LocalCommitmentTransaction};
+use ln::chan_utils::{HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
@@ -2676,10 +2675,10 @@ impl ChannelMonitor {
 
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
-			let revocation_sig_claim = (input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33)
-				|| (input.witness.len() == 3 && input.witness[2].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT && input.witness[1].len() == 33);
-			let accepted_preimage_claim = input.witness.len() == 5 && input.witness[4].len() == ACCEPTED_HTLC_SCRIPT_WEIGHT;
-			let offered_preimage_claim = input.witness.len() == 3 && input.witness[2].len() == OFFERED_HTLC_SCRIPT_WEIGHT;
+			let revocation_sig_claim = (input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC) && input.witness[1].len() == 33)
+				|| (input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::AcceptedHTLC) && input.witness[1].len() == 33);
+			let accepted_preimage_claim = input.witness.len() == 5 && HTLCType::scriptlen_to_htlctype(input.witness[4].len()) == Some(HTLCType::AcceptedHTLC);
+			let offered_preimage_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC);
 
 			macro_rules! log_claim {
 				($tx_info: expr, $local_tx: expr, $htlc: expr, $source_avail: expr) => {
@@ -2870,7 +2869,8 @@ impl ChannelMonitor {
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
 				&InputMaterial::Revoked { ref script, ref is_htlc, ref amount, .. } => {
-					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if script.len() == OFFERED_HTLC_SCRIPT_WEIGHT { &[InputDescriptors::RevokedOfferedHTLC] } else if script.len() == ACCEPTED_HTLC_SCRIPT_WEIGHT { &[InputDescriptors::RevokedReceivedHTLC] } else { &[] });
+					log_trace!(self, "Is HLTC ? {}", is_htlc);
+					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { unreachable!() });
 					amt += *amount;
 				},
 				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
@@ -2910,7 +2910,7 @@ impl ChannelMonitor {
 						bumped_tx.input[i].witness.push(vec!(1));
 					}
 					bumped_tx.input[i].witness.push(script.clone().into_bytes());
-					log_trace!(self, "Going to broadcast bumped Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}", bumped_tx.txid(), if !is_htlc { "to_local" } else if script.len() == OFFERED_HTLC_SCRIPT_WEIGHT { "offered" } else if script.len() == ACCEPTED_HTLC_SCRIPT_WEIGHT { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
+					log_trace!(self, "Going to broadcast bumped Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 				},
 				&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
 					if !preimage.is_some() { bumped_tx.lock_time = *locktime };
