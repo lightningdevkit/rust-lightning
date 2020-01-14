@@ -519,6 +519,7 @@ pub enum PaymentSendFailure {
 	PartialFailure(Vec<Result<(), APIError>>),
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! handle_error {
 	($self: ident, $internal: expr, $their_node_id: expr) => {
 		match $internal {
@@ -562,6 +563,7 @@ macro_rules! handle_error {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! break_chan_entry {
 	($self: ident, $res: expr, $channel_state: expr, $entry: expr) => {
 		match $res {
@@ -581,6 +583,7 @@ macro_rules! break_chan_entry {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! try_chan_entry {
 	($self: ident, $res: expr, $channel_state: expr, $entry: expr) => {
 		match $res {
@@ -619,6 +622,7 @@ macro_rules! try_chan_entry {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! handle_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new())
@@ -669,6 +673,7 @@ macro_rules! handle_monitor_err {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! return_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		return handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment);
@@ -679,6 +684,7 @@ macro_rules! return_monitor_err {
 }
 
 // Does not break in case of TemporaryFailure!
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! maybe_break_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		match (handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment), $err) {
@@ -938,6 +944,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	}
 
 	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder<ChanSigner>>) {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
@@ -981,6 +988,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		}
 
 		let mut channel_state = None;
+
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
@@ -2161,6 +2170,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			}
 			htlc_failures.append(&mut pending_failures);
 
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! handle_cs { () => {
 				if let Some(update) = commitment_update {
 					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -2169,6 +2179,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					});
 				}
 			} }
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! handle_raa { () => {
 				if let Some(revoke_and_ack) = raa {
 					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
@@ -2802,6 +2813,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						msg
 					});
 				}
+				#[cfg_attr(rustfmt, rustfmt_skip)]
 				macro_rules! send_raa { () => {
 					if let Some(msg) = revoke_and_ack {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
@@ -2810,6 +2822,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						});
 					}
 				} }
+
+				#[cfg_attr(rustfmt, rustfmt_skip)]
 				macro_rules! send_cu { () => {
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {

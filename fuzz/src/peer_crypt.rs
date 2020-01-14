@@ -14,6 +14,7 @@ fn slice_to_be16(v: &[u8]) -> u16 {
 #[inline]
 pub fn do_test(data: &[u8]) {
 	let mut read_pos = 0;
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice {
 		($len: expr) => {
 			{

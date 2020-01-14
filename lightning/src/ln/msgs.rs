@@ -1409,6 +1409,7 @@ mod tests {
 		);
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_keys_from {
 		($slice: expr, $secp_ctx: expr) => {
 			{
@@ -1419,6 +1420,7 @@ mod tests {
 		}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_sig_on {
 		($privkey: expr, $ctx: expr, $string: expr) => {
 			{

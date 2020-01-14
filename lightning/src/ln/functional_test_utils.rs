@@ -188,6 +188,7 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b,
 	(announcement, as_update, bs_update, channel_id, tx)
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_revoke_commit_msgs {
 	($node: expr, $node_id: expr) => {
 		{
@@ -215,6 +216,7 @@ macro_rules! get_revoke_commit_msgs {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path, $node_id: expr) => {
 		{
@@ -231,6 +233,7 @@ macro_rules! get_event_msg {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
 		{
@@ -247,6 +250,7 @@ macro_rules! get_htlc_update_msgs {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_feerate {
 	($node: expr, $channel_id: expr) => {
 		{
@@ -257,6 +261,7 @@ macro_rules! get_feerate {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
@@ -273,6 +278,7 @@ macro_rules! get_local_commitment_txn {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! unwrap_send_err {
 	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
 		match &$res {
@@ -295,6 +301,7 @@ macro_rules! unwrap_send_err {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
 		{
@@ -470,6 +477,7 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
 		{
@@ -485,6 +493,7 @@ macro_rules! check_spends {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_closing_signed_broadcast {
 	($node: expr, $dest_pubkey: expr) => {
 		{
@@ -509,6 +518,7 @@ macro_rules! get_closing_signed_broadcast {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {{
 		let events = $node.node.get_and_clear_pending_msg_events();
@@ -625,6 +635,7 @@ impl SendEvent {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! commitment_signed_dance {
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
 		{
@@ -706,6 +717,7 @@ macro_rules! commitment_signed_dance {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_payment_preimage_hash {
 	($node: expr) => {
 		{
@@ -717,6 +729,7 @@ macro_rules! get_payment_preimage_hash {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! expect_pending_htlcs_forwardable_ignore {
 	($node: expr) => {{
 		let events = $node.node.get_and_clear_pending_events();
@@ -728,6 +741,7 @@ macro_rules! expect_pending_htlcs_forwardable_ignore {
 	}}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! expect_pending_htlcs_forwardable {
 	($node: expr) => {{
 		expect_pending_htlcs_forwardable_ignore!($node);
@@ -735,6 +749,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -750,6 +765,7 @@ macro_rules! expect_payment_received {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -763,6 +779,7 @@ macro_rules! expect_payment_sent {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -857,6 +874,7 @@ pub fn claim_payment_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 
 	assert!(expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage, &our_payment_secret, expected_amount));
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! msgs_from_ev {
 		($ev: expr) => {
 			match $ev {
@@ -883,6 +901,7 @@ pub fn claim_payment_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 
 		let mut next_msgs = Some(path_msgs);
 		let mut expected_next_node = next_hop;
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! last_update_fulfill_dance {
 			($node: expr, $prev_node: expr) => {
 				{
@@ -893,6 +912,7 @@ pub fn claim_payment_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 
 				}
 			}
 		}
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! mid_update_fulfill_dance {
 			($node: expr, $prev_node: expr, $new_msgs: expr) => {
 				{
@@ -983,6 +1003,7 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	check_added_monitors!(expected_route.last().unwrap(), 1);
 
 	let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! update_fail_dance {
 		($node: expr, $prev_node: expr, $last_node: expr) => {
 			{
@@ -1242,6 +1263,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_channel_value_stat {
 	($node: expr, $channel_id: expr) => {{
 		let chan_lock = $node.node.channel_state.lock().unwrap();
@@ -1250,6 +1272,7 @@ macro_rules! get_channel_value_stat {
 	}}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! get_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {
 		{
@@ -1267,6 +1290,7 @@ macro_rules! get_chan_reestablish_msgs {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! handle_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {
 		{

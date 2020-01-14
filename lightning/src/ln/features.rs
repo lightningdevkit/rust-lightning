@@ -43,6 +43,7 @@ mod sealed {
 	/// feature identifiers.
 	///
 	/// [`Context`]: trait.Context.html
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! define_context {
 		($context: ident {
 			required_features: [$( $( $required_feature: ident )|*, )*],
@@ -130,6 +131,7 @@ mod sealed {
 	/// useful for manipulating feature flags.
 	///
 	/// [`Context`]: trait.Context.html
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! define_feature {
 		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr) => {
 			#[doc = $doc]

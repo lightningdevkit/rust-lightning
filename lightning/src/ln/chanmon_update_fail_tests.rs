@@ -234,6 +234,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[0], 0);
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! disconnect_reconnect_peers { () => { {
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -358,6 +359,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let as_commitment_update;
 	let bs_second_commitment_update;
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! handle_bs_raa { () => {
 		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack);
 		as_commitment_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -369,6 +371,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		check_added_monitors!(nodes[0], 1);
 	} }
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! handle_initial_raa { () => {
 		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &initial_revoke_and_ack);
 		bs_second_commitment_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

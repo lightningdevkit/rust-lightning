@@ -102,6 +102,7 @@ pub(super) enum InputDescriptors {
 	RevokedOutput, // either a revoked to_local output on commitment tx, a revoked HTLC-Timeout output or a revoked HTLC-Success output
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! subtract_high_prio_fee {
 	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
 		{
@@ -443,6 +444,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			}],
 		};
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! RBF_bump {
 			($amount: expr, $old_feerate: expr, $fee_estimator: expr, $predicted_weight: expr) => {
 				{
@@ -659,6 +661,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							}
 						}
 
+						#[cfg_attr(rustfmt, rustfmt_skip)]
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
 								let new_event = OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() };

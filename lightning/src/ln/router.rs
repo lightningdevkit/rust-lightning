@@ -426,6 +426,7 @@ impl ReadableArgs<RouterReadArgs> for Router {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr ) => {
 		match $secp_ctx.verify($msg, $sig, $pubkey) {
@@ -557,6 +558,7 @@ impl RoutingMessageHandler for Router {
 			}
 		};
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! add_channel_to_node {
 			( $node_id: expr ) => {
 				match network.nodes.entry($node_id) {
@@ -624,6 +626,7 @@ impl RoutingMessageHandler for Router {
 		match network.channels.get_mut(&NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
 			None => return Err(LightningError{err: "Couldn't find channel for update", action: ErrorAction::IgnoreError}),
 			Some(channel) => {
+				#[cfg_attr(rustfmt, rustfmt_skip)]
 				macro_rules! maybe_update_channel_info {
 					( $target: expr) => {
 						if $target.last_update >= msg.contents.timestamp {
@@ -822,6 +825,7 @@ impl Router {
 	}
 
 	fn remove_channel_in_nodes(nodes: &mut BTreeMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
 				if let BtreeEntry::Occupied(mut entry) = nodes.entry($node_id) {
@@ -909,6 +913,7 @@ impl Router {
 			}
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! add_entry {
 			// Adds entry which goes from the node pointed to by $directional_info to
 			// $dest_node_id over the channel with id $chan_id with fees described in
@@ -969,6 +974,7 @@ impl Router {
 			};
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! add_entries_to_cheapest_to_target_node {
 			( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 				if first_hops.is_some() {
@@ -1185,6 +1191,7 @@ mod tests {
 
 		let zero_hash = BlockHash::hash(&[0; 32]);
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! id_to_feature_flags {
 			// Set the feature flags to the id'th odd (ie non-required) feature bit so that we can
 			// test for it later.

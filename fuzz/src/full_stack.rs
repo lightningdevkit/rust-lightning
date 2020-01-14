@@ -303,6 +303,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		input: input.clone(),
 	});
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice {
 		($len: expr) => {
 			match input.get_slice($len as usize) {
@@ -312,6 +313,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_pubkey {
 		() => {
 			match PublicKey::from_slice(get_slice!(33)) {

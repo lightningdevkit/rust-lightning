@@ -75,6 +75,7 @@ mod real_chacha {
 
 	impl Clone for ChaCha20 { fn clone(&self) -> ChaCha20 { *self } }
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! swizzle {
 		($b: expr, $c: expr, $d: expr) => {{
 			let u32x4(b10, b11, b12, b13) = $b;
@@ -86,6 +87,7 @@ mod real_chacha {
 		}}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! state_to_buffer {
 		($state: expr, $output: expr) => {{
 			let u32x4(a1, a2, a3, a4) = $state.a;
@@ -104,6 +106,7 @@ mod real_chacha {
 		}}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! round{
 		($state: expr) => {{
 			$state.a = $state.a + $state.b;
@@ -117,6 +120,7 @@ mod real_chacha {
 		}}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! rotate {
 		($a: expr, $b: expr, $c:expr) => {{
 			let v = $a ^ $b;

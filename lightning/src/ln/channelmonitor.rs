@@ -925,6 +925,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 
 		self.commitment_secrets.write(writer)?;
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! serialize_htlc_in_commitment {
 			($htlc_output: expr) => {
 				writer.write_all(&[$htlc_output.offered as u8; 1])?;
@@ -961,6 +962,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! serialize_local_tx {
 			($local_tx: expr) => {
 				$local_tx.txid.write(writer)?;
@@ -1432,6 +1434,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.remote_claimable_outpoints.get(&commitment_txid);
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
 				match $thing {
@@ -1494,6 +1497,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				watch_outputs.append(&mut tx.output.clone());
 				self.remote_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 
+				#[cfg_attr(rustfmt, rustfmt_skip)]
 				macro_rules! check_htlc_fails {
 					($txid: expr, $commitment_tx: expr) => {
 						if let Some(ref outpoints) = self.remote_claimable_outpoints.get($txid) {
@@ -1543,6 +1547,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 			log_trace!(self, "Got broadcast of non-revoked remote commitment transaction {}", commitment_txid);
 
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! check_htlc_fails {
 				($txid: expr, $commitment_tx: expr, $id: tt) => {
 					if let Some(ref latest_outpoints) = self.remote_claimable_outpoints.get($txid) {
@@ -1642,6 +1647,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			return (Vec::new(), None)
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
 				match $thing {
@@ -1703,6 +1709,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! wait_threshold_conf {
 			($height: expr, $source: expr, $commitment_tx: expr, $payment_hash: expr) => {
 				log_trace!(self, "Failing HTLC with payment_hash {} from {} local commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, height + ANTI_REORG_DELAY - 1);
@@ -1726,6 +1733,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! append_onchain_update {
 			($updates: expr) => {
 				claim_requests = $updates.0;
@@ -1751,6 +1759,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! fail_dust_htlcs_after_threshold_conf {
 			($local_tx: expr) => {
 				for &(ref htlc, _, ref source) in &$local_tx.htlc_outputs {
@@ -1967,6 +1976,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// to the source, and if we don't fail the channel we will have to ensure that the next
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! scan_commitment {
 			($htlcs: expr, $local_tx: expr) => {
 				for ref htlc in $htlcs {
@@ -2029,6 +2039,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let accepted_preimage_claim = input.witness.len() == 5 && HTLCType::scriptlen_to_htlctype(input.witness[4].len()) == Some(HTLCType::AcceptedHTLC);
 			let offered_preimage_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC);
 
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! log_claim {
 				($tx_info: expr, $local_tx: expr, $htlc: expr, $source_avail: expr) => {
 					// We found the output in question, but aren't failing it backwards
@@ -2051,6 +2062,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				}
 			}
 
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! check_htlc_valid_remote {
 				($remote_txid: expr, $htlc_output: expr) => {
 					if let Some(txid) = $remote_txid {
@@ -2067,6 +2079,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				}
 			}
 
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! scan_commitment {
 				($htlcs: expr, $tx_info: expr, $local_tx: expr) => {
 					for (ref htlc_output, source_option) in $htlcs {
@@ -2211,6 +2224,7 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 
 impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (BlockHash, ChannelMonitor<ChanSigner>) {
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! unwrap_obj {
 			($key: expr) => {
 				match $key {
@@ -2287,6 +2301,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (BlockHas
 
 		let commitment_secrets = Readable::read(reader)?;
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! read_htlc_in_commitment {
 			() => {
 				{
@@ -2342,6 +2357,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (BlockHas
 			}
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! read_local_tx {
 			() => {
 				{
@@ -2554,6 +2570,7 @@ mod tests {
 			}
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! preimages_slice_to_htlc_outputs {
 			($preimages_slice: expr) => {
 				{
@@ -2571,6 +2588,8 @@ mod tests {
 				}
 			}
 		}
+
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! preimages_to_local_htlcs {
 			($preimages_slice: expr) => {
 				{
@@ -2581,6 +2600,7 @@ mod tests {
 			}
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! test_preimages_exist {
 			($preimages_slice: expr, $monitor: expr) => {
 				for preimage in $preimages_slice {
@@ -2660,6 +2680,7 @@ mod tests {
 		let pubkey = PublicKey::from_secret_key(&secp_ctx, &privkey);
 		let mut sum_actual_sigs = 0;
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! sign_input {
 			($sighash_parts: expr, $input: expr, $idx: expr, $amount: expr, $input_type: expr, $sum_actual_sigs: expr) => {
 				let htlc = HTLCOutputInCommitment {

@@ -23,6 +23,7 @@ impl Writer for VecWriter {
 // Tests a message that must survive roundtrip exactly, though may not empty the read buffer
 // entirely
 #[macro_export]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! test_msg {
 	($MsgType: path, $data: ident) => {
 		{
@@ -43,6 +44,7 @@ macro_rules! test_msg {
 // Tests a message that may lose data on roundtrip, but shoulnd't lose data compared to our
 // re-serialization.
 #[macro_export]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! test_msg_simple {
 	($MsgType: path, $data: ident) => {
 		{
@@ -64,6 +66,7 @@ macro_rules! test_msg_simple {
 // Tests a message that must survive roundtrip exactly, and must exactly empty the read buffer and
 // split it back out on re-serialization.
 #[macro_export]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! test_msg_exact {
 	($MsgType: path, $data: ident) => {
 		{
@@ -81,6 +84,7 @@ macro_rules! test_msg_exact {
 // Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to 0s on
 // re-serialization.
 #[macro_export]
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! test_msg_hole {
 	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {
 		{

@@ -141,6 +141,7 @@ impl Connection {
 			PeerDisconnected
 		};
 		let disconnect_type = loop {
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! shutdown_socket {
 				($err: expr, $need_disconnect: expr) => { {
 					println!("Disconnecting peer due to {}!", $err);
@@ -148,6 +149,7 @@ impl Connection {
 				} }
 			}
 
+			#[cfg_attr(rustfmt, rustfmt_skip)]
 			macro_rules! prepare_read_write_call {
 				() => { {
 					let mut us_lock = us.lock().unwrap();

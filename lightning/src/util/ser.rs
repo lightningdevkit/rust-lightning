@@ -288,6 +288,7 @@ impl Readable for BigSize {
 #[cfg_attr(test, derive(PartialEq, Debug))]
 pub(crate) struct HighZeroBytesDroppedVarInt<T>(pub T);
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! impl_writeable_primitive {
 	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
 		impl Writeable for $val_type {
@@ -376,6 +377,7 @@ impl Readable for bool {
 }
 
 // u8 arrays
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! impl_array {
 	( $size:expr ) => (
 		impl Writeable for [u8; $size]
@@ -682,6 +684,7 @@ impl Readable for OutPoint {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! impl_consensus_ser {
 	($bitcoin_type: ty) => {
 		impl Writeable for $bitcoin_type {

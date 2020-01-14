@@ -101,6 +101,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
 	});
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice_nonadvancing {
 		($len: expr) => {
 			match input.get_slice_nonadvancing($len as usize) {
@@ -109,6 +110,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			}
 		}
 	}
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice {
 		($len: expr) => {
 			match input.get_slice($len as usize) {
@@ -118,6 +120,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! decode_msg {
 		($MsgType: path, $len: expr) => {{
 			let mut reader = ::std::io::Cursor::new(get_slice!($len));
@@ -135,6 +138,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		}}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! decode_msg_with_len16 {
 		($MsgType: path, $begin_len: expr, $excess: expr) => {
 			{
@@ -144,6 +148,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_pubkey {
 		() => {
 			match PublicKey::from_slice(get_slice!(33)) {

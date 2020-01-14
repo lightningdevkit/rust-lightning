@@ -1515,6 +1515,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	let mut stat12 = get_channel_value_stat!(nodes[1], chan_2.2);
 	let mut stat22 = get_channel_value_stat!(nodes[2], chan_2.2);
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_route_and_payment_hash {
 		($recv_value: expr) => {{
 			let route = nodes[0].router.get_route(&nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV).unwrap();
@@ -1523,6 +1524,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		}}
 	};
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! expect_forward {
 		($node: expr) => {{
 			let mut events = $node.node.get_and_clear_pending_msg_events();
@@ -1960,6 +1962,7 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 	assert_eq!(nodes[2].node.list_channels().len(), 1);
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! claim_funds {
 		($node: expr, $prev_node: expr, $preimage: expr, $amount: expr) => {
 			{
@@ -2435,6 +2438,7 @@ fn test_htlc_on_chain_success() {
 		},
 		_ => panic!("Unexpected event"),
 	};
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! check_tx_local_broadcast {
 		($node: expr, $htlc_offered: expr, $commitment_tx: expr, $chan_tx: expr) => { {
 			let mut node_txn = $node.tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -3784,6 +3788,7 @@ fn test_invalid_channel_announcement() {
 
 	let mut chan_announcement;
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! dummy_unsigned_msg {
 		() => {
 			msgs::UnsignedChannelAnnouncement {
@@ -3799,6 +3804,7 @@ fn test_invalid_channel_announcement() {
 		}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
 			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
@@ -4087,6 +4093,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! check_spendable_outputs {
 	($node: expr, $der_idx: expr) => {
 		{
@@ -5292,6 +5299,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 		nodes[ix].block_notifier.block_connected_checked(&header, 1, &[], &[]);
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! expect_event {
 		($node: expr, $event_type: path) => {{
 			let events = $node.node.get_and_clear_pending_events();
@@ -5303,6 +5311,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 		}}
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! expect_htlc_forward {
 		($node: expr) => {{
 			expect_event!($node, Event::PendingHTLCsForwardable);

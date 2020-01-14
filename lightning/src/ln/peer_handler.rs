@@ -203,6 +203,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref> where CM::Target
 	logger: Arc<Logger>,
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! encode_msg {
 	($msg: expr) => {{
 		let mut buffer = VecWriter(Vec::new());
@@ -339,6 +340,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	}
 
 	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! encode_and_send_msg {
 			($msg: expr) => {
 				{
@@ -481,6 +483,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						if peer.pending_read_buffer_pos == peer.pending_read_buffer.len() {
 							peer.pending_read_buffer_pos = 0;
 
+							#[cfg_attr(rustfmt, rustfmt_skip)]
 							macro_rules! encode_and_send_msg {
 								($msg: expr) => {
 									{
@@ -491,6 +494,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								}
 							}
 
+							#[cfg_attr(rustfmt, rustfmt_skip)]
 							macro_rules! try_potential_handleerror {
 								($thing: expr) => {
 									match $thing {
@@ -517,6 +521,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								}
 							}
 
+							#[cfg_attr(rustfmt, rustfmt_skip)]
 							macro_rules! insert_node_id {
 								() => {
 									match peers.node_id_to_descriptor.entry(peer.their_node_id.unwrap()) {
@@ -803,6 +808,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			let mut peers_lock = self.peers.lock().unwrap();
 			let peers = &mut *peers_lock;
 			for event in events_generated.drain(..) {
+				#[cfg_attr(rustfmt, rustfmt_skip)]
 				macro_rules! get_peer_for_forwarding {
 					($node_id: expr, $handle_no_such_peer: block) => {
 						{

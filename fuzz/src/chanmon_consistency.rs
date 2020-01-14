@@ -190,6 +190,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let fee_est = Arc::new(FuzzEstimator{});
 	let broadcast = Arc::new(TestBroadcaster{});
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! make_node {
 		($node_id: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
@@ -206,6 +207,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		} }
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
@@ -244,6 +246,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	let mut channel_txn = Vec::new();
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
 			$source.create_channel($dest.get_our_node_id(), 10000000, 42, 0, None).unwrap();
@@ -307,6 +310,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		} }
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! confirm_txn {
 		($node: expr) => { {
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -324,6 +328,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		} }
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! lock_fundings {
 		($nodes: expr) => { {
 			let mut node_events = Vec::new();
@@ -386,6 +391,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let mut node_c_ser = VecWriter(Vec::new());
 	nodes[2].write(&mut node_c_ser).unwrap();
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! test_return {
 		() => { {
 			assert_eq!(nodes[0].list_channels().len(), 1);
@@ -396,6 +402,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	let mut read_pos = 0;
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice {
 		($len: expr) => {
 			{
@@ -410,6 +417,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	loop {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! send_payment {
 			($source: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
@@ -453,6 +461,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				}
 			} }
 		}
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! send_payment_with_secret {
 			($source: expr, $middle: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
@@ -496,6 +505,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			} }
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! process_msg_events {
 			($node: expr, $corrupt_forward: expr) => { {
 				let events = if $node == 1 {
@@ -569,6 +579,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			} }
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! drain_msg_events_on_disconnect {
 			($counterparty_id: expr) => { {
 				if $counterparty_id == 0 {
@@ -622,6 +633,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			} }
 		}
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! process_events {
 			($node: expr, $fail: expr) => { {
 				// In case we get 256 payments we may have a hash collision, resulting in the

@@ -734,6 +734,7 @@ mod tests {
 		let mut secrets: Vec<[u8; 32]> = Vec::new();
 		let mut monitor;
 
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! test_secrets {
 			() => {
 				let mut idx = 281474976710655;

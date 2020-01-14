@@ -1,3 +1,4 @@
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! encode_tlv {
 	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
 		use util::ser::{BigSize, LengthCalculatingWriter};
@@ -11,6 +12,7 @@ macro_rules! encode_tlv {
 	} }
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! encode_varint_length_prefixed_tlv {
 	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
 		use util::ser::{BigSize, LengthCalculatingWriter};
@@ -32,6 +34,7 @@ macro_rules! encode_varint_length_prefixed_tlv {
 	} }
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! decode_tlv {
 	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),*}, {$(($type: expr, $field: ident)),*}) => { {
 		use ln::msgs::DecodeError;
@@ -104,6 +107,7 @@ macro_rules! decode_tlv {
 	} }
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! impl_writeable {
 	($st:ident, $len: expr, {$($field:ident),*}) => {
 		impl ::util::ser::Writeable for $st {
@@ -125,6 +129,7 @@ macro_rules! impl_writeable {
 		}
 	}
 }
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! impl_writeable_len_match {
 	($st:ident, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
 		impl Writeable for $st {
@@ -239,6 +244,7 @@ mod tests {
 
 	#[test]
 	fn bolt_tlv_bogus_stream() {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! do_test {
 			($stream: expr, $reason: ident) => {
 				if let Err(DecodeError::$reason) = tlv_reader_n1(&::hex::decode($stream).unwrap()[..]) {
@@ -264,6 +270,7 @@ mod tests {
 
 	#[test]
 	fn bolt_tlv_bogus_n1_stream() {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! do_test {
 			($stream: expr, $reason: ident) => {
 				if let Err(DecodeError::$reason) = tlv_reader_n1(&::hex::decode($stream).unwrap()[..]) {
@@ -304,6 +311,7 @@ mod tests {
 
 	#[test]
 	fn bolt_tlv_valid_n1_stream() {
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! do_test {
 			($stream: expr, $tlv1: expr, $tlv2: expr, $tlv3: expr, $tlv4: expr) => {
 				if let Ok((tlv1, tlv2, tlv3, tlv4)) = tlv_reader_n1(&::hex::decode($stream).unwrap()[..]) {

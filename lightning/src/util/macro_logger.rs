@@ -19,6 +19,7 @@ impl<'a> std::fmt::Display for DebugPubKey<'a> {
 		Ok(())
 	}
 }
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_pubkey {
 	($obj: expr) => {
 		::util::macro_logger::DebugPubKey(&$obj)
@@ -34,6 +35,7 @@ impl<'a> std::fmt::Display for DebugBytes<'a> {
 		Ok(())
 	}
 }
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_bytes {
 	($obj: expr) => {
 		::util::macro_logger::DebugBytes(&$obj)
@@ -49,6 +51,7 @@ impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 		Ok(())
 	}
 }
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_funding_channel_id {
 	($funding_txid: expr, $funding_txo: expr) => {
 		::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
@@ -61,6 +64,7 @@ impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
 		DebugBytes(&(self.0).0.to_channel_id()[..]).fmt(f)
 	}
 }
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
 		::util::macro_logger::DebugFundingInfo(&$key_storage.funding_info)
@@ -79,6 +83,7 @@ impl<'a> std::fmt::Display for DebugRoute<'a> {
 		Ok(())
 	}
 }
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_route {
 	($obj: expr) => {
 		::util::macro_logger::DebugRoute(&$obj)
@@ -116,6 +121,7 @@ impl<'a> std::fmt::Display for DebugTx<'a> {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_tx {
 	($obj: expr) => {
 		::util::macro_logger::DebugTx(&$obj)
@@ -140,18 +146,21 @@ impl<'a> std::fmt::Display for DebugSpendable<'a> {
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_spendable {
 	($obj: expr) => {
 		::util::macro_logger::DebugSpendable(&$obj)
 	}
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_internal {
 	($self: ident, $lvl:expr, $($arg:tt)+) => (
 		&$self.logger.log(&::util::logger::Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()));
 	);
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_error {
 	($self: ident, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off")))]
@@ -159,6 +168,7 @@ macro_rules! log_error {
 	)
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_warn {
 	($self: ident, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error")))]
@@ -166,6 +176,7 @@ macro_rules! log_warn {
 	)
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_info {
 	($self: ident, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn")))]
@@ -173,6 +184,7 @@ macro_rules! log_info {
 	)
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_debug {
 	($self: ident, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info")))]
@@ -180,6 +192,7 @@ macro_rules! log_debug {
 	)
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! log_trace {
 	($self: ident, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug")))]

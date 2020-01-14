@@ -587,6 +587,7 @@ impl KeysInterface for KeysManager {
 			sha.input(&b"commitment seed"[..]);
 			Sha256::from_engine(sha).into_inner()
 		};
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! key_step {
 			($info: expr, $prev_key: expr) => {{
 				let mut sha = Sha256::engine();

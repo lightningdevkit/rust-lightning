@@ -1,3 +1,4 @@
+#[cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! hash_to_message {
 	($slice: expr) => {
 		{

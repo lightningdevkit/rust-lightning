@@ -112,6 +112,7 @@ mod tests {
 		Script::from(decode(hex_str).unwrap())
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! bip_txout_tests {
 		($($name:ident: $value:expr,)*) => {
 			$(
