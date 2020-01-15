@@ -33,6 +33,14 @@ mod sealed { // You should just use the type aliases instead.
 	pub trait VariableLengthOnion: Context {}
 	impl VariableLengthOnion for InitContext {}
 	impl VariableLengthOnion for NodeContext {}
+
+	pub trait PaymentSecret: Context {}
+	impl PaymentSecret for InitContext {}
+	impl PaymentSecret for NodeContext {}
+
+	pub trait BasicMPP: Context {}
+	impl BasicMPP for InitContext {}
+	impl BasicMPP for NodeContext {}
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -73,7 +81,7 @@ impl InitFeatures {
 	/// Create a Features with the features we support
 	pub fn supported() -> InitFeatures {
 		InitFeatures {
-			flags: vec![2 | 1 << 5, 1 << (9-8)],
+			flags: vec![2 | 1 << 5, 1 << (9-8) | 1 << (15 - 8), 1 << (17 - 8*2)],
 			mark: PhantomData,
 		}
 	}
@@ -136,14 +144,14 @@ impl NodeFeatures {
 	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) fn supported() -> NodeFeatures {
 		NodeFeatures {
-			flags: vec![2 | 1 << 5, 1 << (9-8)],
+			flags: vec![2 | 1 << 5, 1 << (9 - 8) | 1 << (15 - 8), 1 << (17 - 8*2)],
 			mark: PhantomData,
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
 	pub fn supported() -> NodeFeatures {
 		NodeFeatures {
-			flags: vec![2 | 1 << 5, 1 << (9-8)],
+			flags: vec![2 | 1 << 5, 1 << (9 - 8) | 1 << (15 - 8), 1 << (17 - 8*2)],
 			mark: PhantomData,
 		}
 	}
@@ -199,8 +207,10 @@ impl<T: sealed::Context> Features<T> {
 				// unknown, upfront_shutdown_script, unknown (actually initial_routing_sync, but it
 				// is only valid as an optional feature), and data_loss_protect:
 				0 => (byte & 0b01000100),
-				// unknown, unknown, unknown, var_onion_optin:
-				1 => (byte & 0b01010100),
+				// payment_secret, unknown, unknown, var_onion_optin:
+				1 => (byte & 0b00010100),
+				// unknown, unknown, unknown, basic_mpp:
+				2 => (byte & 0b01010100),
 				// fallback, all even bits set:
 				_ => (byte & 0b01010101),
 			}) != 0
@@ -213,8 +223,10 @@ impl<T: sealed::Context> Features<T> {
 				// unknown, upfront_shutdown_script, initial_routing_sync (is only valid as an
 				// optional feature), and data_loss_protect:
 				0 => (byte & 0b11000100),
-				// unknown, unknown, unknown, var_onion_optin:
-				1 => (byte & 0b11111100),
+				// payment_secret, unknown, unknown, var_onion_optin:
+				1 => (byte & 0b00111100),
+				// unknown, unknown, unknown, basic_mpp:
+				2 => (byte & 0b11111100),
 				_ => byte,
 			}) != 0
 		})
@@ -228,16 +240,19 @@ impl<T: sealed::Context> Features<T> {
 
 	#[cfg(test)]
 	pub(crate) fn set_require_unknown_bits(&mut self) {
-		let newlen = cmp::max(2, self.flags.len());
+		let newlen = cmp::max(3, self.flags.len());
 		self.flags.resize(newlen, 0u8);
-		self.flags[1] |= 0x40;
+		self.flags[2] |= 0x40;
 	}
 
 	#[cfg(test)]
 	pub(crate) fn clear_require_unknown_bits(&mut self) {
-		let newlen = cmp::max(2, self.flags.len());
+		let newlen = cmp::max(3, self.flags.len());
 		self.flags.resize(newlen, 0u8);
-		self.flags[1] &= !0x40;
+		self.flags[2] &= !0x40;
+		if self.flags.len() == 3 && self.flags[2] == 0 {
+			self.flags.resize(2, 0u8);
+		}
 		if self.flags.len() == 2 && self.flags[1] == 0 {
 			self.flags.resize(1, 0u8);
 		}
@@ -276,6 +291,24 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 		} else {
 			self.flags[0] |= 1 << 3;
 		}
+	}
+}
+
+impl<T: sealed::PaymentSecret> Features<T> {
+	#[allow(dead_code)]
+	// Note that we never need to test this since what really matters is the invoice - iff the
+	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
+	// supports payment_secret).
+	pub(crate) fn payment_secret(&self) -> bool {
+		self.flags.len() > 1 && (self.flags[1] & (3 << (14-8))) != 0
+	}
+}
+
+impl<T: sealed::BasicMPP> Features<T> {
+	// We currently never test for this since we don't actually *generate* multipath routes.
+	#[allow(dead_code)]
+	pub(crate) fn basic_mpp(&self) -> bool {
+		self.flags.len() > 2 && (self.flags[2] & (3 << (16-8*2))) != 0
 	}
 }
 
