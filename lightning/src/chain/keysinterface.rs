@@ -202,17 +202,6 @@ impl ChannelKeys for InMemoryChannelKeys {
 		if commitment_tx.input.len() != 1 { return Err(()); }
 		if commitment_tx.output.len() != redeem_scripts.len() { return Err(()); }
 
-		for (out, redeem_script) in commitment_tx.output.iter().zip(redeem_scripts.iter()) {
-			if out.script_pubkey.is_v0_p2wpkh() {
-				if !redeem_script.is_empty() {
-					return Err(())
-				}
-			} else {
-				if out.script_pubkey != redeem_script.to_v0_p2wsh() {
-					return Err(())
-				}
-			}
-		}
 		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
 

@@ -39,6 +39,18 @@ impl ChannelKeys for EnforcingChannelKeys {
 		if commitment_tx.input.len() != 1 { panic!(); }
 		if commitment_tx.output.len() != redeem_scripts.len() { panic!(); }
 
+		for (out, redeem_script) in commitment_tx.output.iter().zip(redeem_scripts.iter()) {
+			if out.script_pubkey.is_v0_p2wpkh() {
+				if !redeem_script.is_empty() {
+					return Err(())
+				}
+			} else {
+				if out.script_pubkey != redeem_script.to_v0_p2wsh() {
+					return Err(())
+				}
+			}
+		}
+
 		let obscured_commitment_transaction_number = (commitment_tx.lock_time & 0xffffff) as u64 | ((commitment_tx.input[0].sequence as u64 & 0xffffff) << 3*8);
 
 		{
