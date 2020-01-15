@@ -36,6 +36,9 @@ use std::default::Default;
 use std::{cmp,mem,fmt};
 use std::sync::{Arc};
 
+#[cfg(all(test, feature = "mutation_testing"))]
+use mutagen::mutate;
+
 #[cfg(test)]
 pub struct ChannelValueStat {
 	pub value_to_self_msat: u64,
@@ -2369,6 +2372,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
+	#[cfg_attr(all(test, feature = "mutation_testing"), mutate)]
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
 		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
 		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), self.cur_local_commitment_transaction_number + 2);

@@ -13,7 +13,6 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 [features]
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
 non_bitcoin_chain_hash_routing = []
-fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget", "bitcoin_hashes/fuzztarget"]
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
@@ -21,10 +20,15 @@ max_level_warn = []
 max_level_info = []
 max_level_debug = []
 
+# Testing only features, don't enable these unless you want to run rust-lightning tests!
+fuzztarget = ["secp256k1/fuzztarget", "bitcoin/fuzztarget", "bitcoin_hashes/fuzztarget"]
+mutation_testing = ["mutagen"]
+
 [dependencies]
 bitcoin = "0.21"
 bitcoin_hashes = "0.7"
 secp256k1 = "0.15"
+mutagen = { git = "https://github.com/TheBlueMatt/mutagen", optional = true }
 
 [dev-dependencies.bitcoin]
 version = "0.21"

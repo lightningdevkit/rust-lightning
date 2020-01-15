@@ -23,8 +23,15 @@ extern crate bitcoin_hashes;
 extern crate secp256k1;
 #[cfg(test)] extern crate rand;
 #[cfg(test)] extern crate hex;
+#[cfg(all(test, feature = "mutation_testing"))] extern crate mutagen;
 
 #[macro_use]
 pub mod util;
 pub mod chain;
 pub mod ln;
+
+#[cfg(all(
+		any(feature = "mutation_testing", feature = "fuzztarget"),
+		not(any(test, debug_assertions))
+		))]
+const ERR: () = "You should never be building with feature = mutation_testing or feature = fuzztarget! They are used to compile with broken code for testing only!";
