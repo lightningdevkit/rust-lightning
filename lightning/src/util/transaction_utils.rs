@@ -12,16 +12,6 @@ pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>
 	});
 }
 
-pub fn sort_outputs2<T, T1, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T, T1)>, tie_breaker: C) {
-	outputs.sort_unstable_by(|a, b| {
-		a.0.value.cmp(&b.0.value).then_with(|| {
-			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| {
-				tie_breaker(&a.1, &b.1)
-			})
-		})
-	});
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
