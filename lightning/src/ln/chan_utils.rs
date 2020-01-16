@@ -255,6 +255,22 @@ pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKey
 	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key)
 }
 
+/// Gets the redeemscript for a funding output from the two funding public keys.
+/// Note that the order of funding public keys does not matter.
+pub fn make_funding_redeemscript(a: &PublicKey, b: &PublicKey) -> Script {
+	let our_funding_key = a.serialize();
+	let their_funding_key = b.serialize();
+
+	let builder = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2);
+	if our_funding_key[..] < their_funding_key[..] {
+		builder.push_slice(&our_funding_key)
+			.push_slice(&their_funding_key)
+	} else {
+		builder.push_slice(&their_funding_key)
+			.push_slice(&our_funding_key)
+	}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
+}
+
 /// panics if htlc.transaction_output_index.is_none()!
 pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
