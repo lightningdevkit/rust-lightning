@@ -240,7 +240,10 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	channel_value_satoshis: u64,
 
+	#[cfg(not(test))]
 	local_keys: ChanSigner,
+	#[cfg(test)]
+	pub(super) local_keys: ChanSigner,
 	shutdown_pubkey: PublicKey,
 
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction

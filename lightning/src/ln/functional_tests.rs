@@ -9,7 +9,7 @@ use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
 use ln::channel::{Channel, ChannelError};
-use ln::onion_utils;
+use ln::{chan_utils, onion_utils};
 use ln::router::{Route, RouteHop};
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::msgs;
@@ -6970,6 +6970,32 @@ fn test_set_outpoints_partial_claiming() {
 		assert_eq!(node_txn.len(), 0);
 		node_txn.clear();
 	}
+}
+
+#[test]
+fn test_counterparty_raa_skip_no_crash() {
+	// Previously, if our counterparty sent two RAAs in a row without us having provided a
+	// commitment transaction, we would have happily carried on and provided them the next
+	// commitment transaction based on one RAA forward. This would probably eventually have led to
+	// channel closure, but it would not have resulted in funds loss. Still, our
+	// EnforcingChannelKeys would have paniced as it doesn't like jumps into the future. Here, we
+	// check simply that the channel is closed in response to such an RAA, but don't check whether
+	// we decide to punish our counterparty for revoking their funds (as we don't currently
+	// implement that).
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()).2;
+
+	let commitment_seed = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&channel_id).unwrap().local_keys.commitment_seed().clone();
+	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
+		&SecretKey::from_slice(&chan_utils::build_commitment_secret(&commitment_seed, INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+	let per_commitment_secret = chan_utils::build_commitment_secret(&commitment_seed, INITIAL_COMMITMENT_NUMBER);
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
+		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });
+	assert_eq!(check_closed_broadcast!(nodes[1], true).unwrap().data, "Received an unexpected revoke_and_ack");
 }
 
 #[test]
