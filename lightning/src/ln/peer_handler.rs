@@ -143,20 +143,6 @@ struct PeerHolder<Descriptor: SocketDescriptor> {
 	/// Only add to this set when noise completes:
 	node_id_to_descriptor: HashMap<PublicKey, Descriptor>,
 }
-struct MutPeerHolder<'a, Descriptor: SocketDescriptor + 'a> {
-	peers: &'a mut HashMap<Descriptor, Peer>,
-	peers_needing_send: &'a mut HashSet<Descriptor>,
-	node_id_to_descriptor: &'a mut HashMap<PublicKey, Descriptor>,
-}
-impl<Descriptor: SocketDescriptor> PeerHolder<Descriptor> {
-	fn borrow_parts(&mut self) -> MutPeerHolder<Descriptor> {
-		MutPeerHolder {
-			peers: &mut self.peers,
-			peers_needing_send: &mut self.peers_needing_send,
-			node_id_to_descriptor: &mut self.node_id_to_descriptor,
-		}
-	}
-}
 
 #[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
 fn _check_usize_is_32_or_64() {
@@ -451,7 +437,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) -> Result<bool, PeerHandleError> {
 		let pause_read = {
 			let mut peers_lock = self.peers.lock().unwrap();
-			let peers = peers_lock.borrow_parts();
+			let peers = &mut *peers_lock;
 			let pause_read = match peers.peers.get_mut(peer_descriptor) {
 				None => panic!("Descriptor for read_event is not already known to PeerManager"),
 				Some(peer) => {
@@ -814,7 +800,7 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 
 			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
 			let mut peers_lock = self.peers.lock().unwrap();
-			let peers = peers_lock.borrow_parts();
+			let peers = &mut *peers_lock;
 			for event in events_generated.drain(..) {
 				macro_rules! get_peer_for_forwarding {
 					($node_id: expr, $handle_no_such_peer: block) => {
@@ -1097,10 +1083,10 @@ impl<Descriptor: SocketDescriptor> PeerManager<Descriptor> {
 	pub fn timer_tick_occured(&self) {
 		let mut peers_lock = self.peers.lock().unwrap();
 		{
-			let peers = peers_lock.borrow_parts();
-			let peers_needing_send = peers.peers_needing_send;
-			let node_id_to_descriptor = peers.node_id_to_descriptor;
-			let peers = peers.peers;
+			let peers = &mut *peers_lock;
+			let peers_needing_send = &mut peers.peers_needing_send;
+			let node_id_to_descriptor = &mut peers.node_id_to_descriptor;
+			let peers = &mut peers.peers;
 
 			peers.retain(|descriptor, peer| {
 				if peer.awaiting_pong == true {
