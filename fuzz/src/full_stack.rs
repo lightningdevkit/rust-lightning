@@ -136,9 +136,9 @@ impl<'a> Hash for Peer<'a> {
 }
 
 struct MoneyLossDetector<'a> {
-	manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>,
+	manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>>>,
 	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>,
-	handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>>,
+	handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>>>>,
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
@@ -150,9 +150,9 @@ struct MoneyLossDetector<'a> {
 }
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
-	           manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>,
+	           manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>>>,
 	           monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>,
-	           handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>>) -> Self {
+	           handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>>>>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -333,7 +333,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone() as Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>, broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
+	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
