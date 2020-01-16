@@ -4134,7 +4134,7 @@ mod tests {
 			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
 		}
 
-		fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> InMemoryChannelKeys {
+		fn get_channel_keys(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemoryChannelKeys {
 			self.chan_keys.clone()
 		}
 		fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) { panic!(); }

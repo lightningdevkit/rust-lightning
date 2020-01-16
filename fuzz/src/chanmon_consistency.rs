@@ -191,7 +191,7 @@ pub fn do_test(data: &[u8]) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone() as Arc<channelmonitor::ManyChannelMonitor>, broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap()),
+			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap()),
 			monitor)
 		} }
 	}
@@ -222,14 +222,14 @@ pub fn do_test(data: &[u8]) {
 			let read_args = ChannelManagerReadArgs {
 				keys_manager,
 				fee_estimator: fee_est.clone(),
-				monitor: monitor.clone() as Arc<channelmonitor::ManyChannelMonitor>,
+				monitor: monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
 				channel_monitors: &mut monitor_refs,
 			};
 
-			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
+			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
 			for (_, was_good) in $old_monitors.latest_updates_good_at_last_ser.lock().unwrap().iter() {
 				if !was_good {
 					// If the last time we updated a monitor we didn't successfully update (and we
