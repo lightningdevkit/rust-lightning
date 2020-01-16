@@ -67,14 +67,6 @@ pub type ChannelFeatures = Features<sealed::ChannelContext>;
 
 impl InitFeatures {
 	/// Create a Features with the features we support
-	#[cfg(not(feature = "fuzztarget"))]
-	pub(crate) fn supported() -> InitFeatures {
-		InitFeatures {
-			flags: vec![2 | 1 << 5],
-			mark: PhantomData,
-		}
-	}
-	#[cfg(feature = "fuzztarget")]
 	pub fn supported() -> InitFeatures {
 		InitFeatures {
 			flags: vec![2 | 1 << 5],
