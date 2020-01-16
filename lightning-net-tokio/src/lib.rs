@@ -19,6 +19,7 @@ use tokio::net::TcpStream;
 
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
+use lightning::ln::msgs::ChannelMessageHandler;
 
 use std::mem;
 use std::net::SocketAddr;
@@ -42,7 +43,7 @@ pub struct Connection {
 	id: u64,
 }
 impl Connection {
-	fn schedule_read(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor>>, us: Arc<Mutex<Self>>, reader: futures::stream::SplitStream<tokio_codec::Framed<TcpStream, tokio_codec::BytesCodec>>) {
+	fn schedule_read<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor<CMH>, Arc<CMH>>>, us: Arc<Mutex<Self>>, reader: futures::stream::SplitStream<tokio_codec::Framed<TcpStream, tokio_codec::BytesCodec>>) {
 		let us_ref = us.clone();
 		let us_close_ref = us.clone();
 		let peer_manager_ref = peer_manager.clone();
@@ -110,7 +111,7 @@ impl Connection {
 	///
 	/// You should poll the Receive end of event_notify and call get_and_clear_pending_events() on
 	/// ChannelManager and ChannelMonitor objects.
-	pub fn setup_inbound(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor>>, event_notify: mpsc::Sender<()>, stream: TcpStream) {
+	pub fn setup_inbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor<CMH>, Arc<CMH>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) {
 		let (reader, us) = Self::new(event_notify, stream);
 
 		if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone(), peer_manager.clone())) {
@@ -124,7 +125,7 @@ impl Connection {
 	///
 	/// You should poll the Receive end of event_notify and call get_and_clear_pending_events() on
 	/// ChannelManager and ChannelMonitor objects.
-	pub fn setup_outbound(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) {
+	pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor<CMH>, Arc<CMH>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) {
 		let (reader, us) = Self::new(event_notify, stream);
 
 		if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone(), peer_manager.clone())) {
@@ -142,7 +143,7 @@ impl Connection {
 	///
 	/// You should poll the Receive end of event_notify and call get_and_clear_pending_events() on
 	/// ChannelManager and ChannelMonitor objects.
-	pub fn connect_outbound(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) {
+	pub fn connect_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor<CMH>, Arc<CMH>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) {
 		let connect_timeout = Delay::new(Instant::now() + Duration::from_secs(10)).then(|_| {
 			future::err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout reached"))
 		});
@@ -157,19 +158,18 @@ impl Connection {
 	}
 }
 
-#[derive(Clone)]
-pub struct SocketDescriptor {
+pub struct SocketDescriptor<CMH: ChannelMessageHandler + 'static> {
 	conn: Arc<Mutex<Connection>>,
 	id: u64,
-	peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor>>,
+	peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor<CMH>, Arc<CMH>>>,
 }
-impl SocketDescriptor {
-	fn new(conn: Arc<Mutex<Connection>>, peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor>>) -> Self {
+impl<CMH: ChannelMessageHandler> SocketDescriptor<CMH> {
+	fn new(conn: Arc<Mutex<Connection>>, peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor<CMH>, Arc<CMH>>>) -> Self {
 		let id = conn.lock().unwrap().id;
 		Self { conn, id, peer_manager }
 	}
 }
-impl peer_handler::SocketDescriptor for SocketDescriptor {
+impl<CMH: ChannelMessageHandler> peer_handler::SocketDescriptor for SocketDescriptor<CMH> {
 	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
 		macro_rules! schedule_read {
 			($us_ref: expr) => {
@@ -256,13 +256,22 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 		us.read_paused = true;
 	}
 }
-impl Eq for SocketDescriptor {}
-impl PartialEq for SocketDescriptor {
+impl<CMH: ChannelMessageHandler> Clone for SocketDescriptor<CMH> {
+	fn clone(&self) -> Self {
+		Self {
+			conn: Arc::clone(&self.conn),
+			id: self.id,
+			peer_manager: Arc::clone(&self.peer_manager),
+		}
+	}
+}
+impl<CMH: ChannelMessageHandler> Eq for SocketDescriptor<CMH> {}
+impl<CMH: ChannelMessageHandler> PartialEq for SocketDescriptor<CMH> {
 	fn eq(&self, o: &Self) -> bool {
 		self.id == o.id
 	}
 }
-impl Hash for SocketDescriptor {
+impl<CMH: ChannelMessageHandler> Hash for SocketDescriptor<CMH> {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		self.id.hash(state);
 	}

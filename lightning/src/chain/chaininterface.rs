@@ -14,9 +14,11 @@ use bitcoin::network::constants::Network;
 
 use util::logger::Logger;
 
-use std::sync::{Mutex,Weak,MutexGuard,Arc};
+use std::sync::{Mutex, MutexGuard, Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
+use std::ops::Deref;
+use std::marker::PhantomData;
 
 /// Used to give chain error details upstream
 pub enum ChainError {
@@ -205,26 +207,48 @@ impl ChainWatchedUtil {
 	}
 }
 
+/// BlockNotifierArc is useful when you need a BlockNotifier that points to ChainListeners with
+/// static lifetimes, e.g. when you're using lightning-net-tokio (since tokio::spawn requires
+/// parameters with static lifetimes). Other times you can afford a reference, which is more
+/// efficient, in which case BlockNotifierRef is a more appropriate type. Defining these type
+/// aliases prevents issues such as overly long function definitions.
+pub type BlockNotifierArc = Arc<BlockNotifier<'static, Arc<ChainListener>>>;
+
+/// BlockNotifierRef is useful when you want a BlockNotifier that points to ChainListeners
+/// with nonstatic lifetimes. This is useful for when static lifetimes are not needed. Nonstatic
+/// lifetimes are more efficient but less flexible, and should be used by default unless static
+/// lifetimes are required, e.g. when you're using lightning-net-tokio (since tokio::spawn
+/// requires parameters with static lifetimes), in which case BlockNotifierArc is a more
+/// appropriate type. Defining these type aliases for common usages prevents issues such as
+/// overly long function definitions.
+pub type BlockNotifierRef<'a> = BlockNotifier<'a, &'a ChainListener>;
+
 /// Utility for notifying listeners about new blocks, and handling block rescans if new watch
 /// data is registered.
-pub struct BlockNotifier {
-	listeners: Mutex<Vec<Weak<ChainListener>>>, //TODO(vmw): try removing Weak
+///
+/// Rather than using a plain BlockNotifier, it is preferable to use either a BlockNotifierArc
+/// or a BlockNotifierRef for conciseness. See their documentation for more details, but essentially
+/// you should default to using a BlockNotifierRef, and use a BlockNotifierArc instead when you
+/// require ChainListeners with static lifetimes, such as when you're using lightning-net-tokio.
+pub struct BlockNotifier<'a, CL: Deref<Target = ChainListener + 'a> + 'a> {
+	listeners: Mutex<Vec<CL>>,
 	chain_monitor: Arc<ChainWatchInterface>,
+	phantom: PhantomData<&'a ()>,
 }
 
-impl BlockNotifier {
+impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 	/// Constructs a new BlockNotifier without any listeners.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier<'a, CL> {
 		BlockNotifier {
 			listeners: Mutex::new(Vec::new()),
 			chain_monitor,
+			phantom: PhantomData,
 		}
 	}
 
-	/// Register the given listener to receive events. Only a weak pointer is provided and
-	/// the registration should be freed once that pointer expires.
+	/// Register the given listener to receive events.
 	// TODO: unregister
-	pub fn register_listener(&self, listener: Weak<ChainListener>) {
+	pub fn register_listener(&self, listener: CL) {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
 	}
@@ -250,12 +274,9 @@ impl BlockNotifier {
 	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
 		let last_seen = self.chain_monitor.reentered();
 
-		let listeners = self.listeners.lock().unwrap().clone();
+		let listeners = self.listeners.lock().unwrap();
 		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_connected(header, height, txn_matched, indexes_of_txn_matched),
-				None => ()
-			}
+			listener.block_connected(header, height, txn_matched, indexes_of_txn_matched);
 		}
 		return last_seen != self.chain_monitor.reentered();
 	}
@@ -263,12 +284,9 @@ impl BlockNotifier {
 
 	/// Notify listeners that a block was disconnected.
 	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let listeners = self.listeners.lock().unwrap().clone();
+		let listeners = self.listeners.lock().unwrap();
 		for listener in listeners.iter() {
-			match listener.upgrade() {
-				Some(arc) => arc.block_disconnected(&header, disconnected_height),
-				None => ()
-			}
+			listener.block_disconnected(&header, disconnected_height);
 		}
 	}
 

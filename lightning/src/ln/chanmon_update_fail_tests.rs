@@ -19,11 +19,13 @@ use ln::functional_test_utils::*;
 #[test]
 fn test_simple_monitor_permanent_update_fail() {
 	// Test that we handle a simple permanent monitor update failure
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-	let (_, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
 	if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
@@ -49,11 +51,13 @@ fn test_simple_monitor_permanent_update_fail() {
 fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// Test that we can recover from a simple temporary monitor update failure optionally with
 	// a disconnect in between
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route.clone(), payment_hash_1) {} else { panic!(); }
@@ -95,7 +99,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
 
 	// Now set it to failed again...
-	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash_2) = get_payment_preimage_hash!(&nodes[0]);
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 	if let Err(APIError::MonitorUpdateFailed) = nodes[0].node.send_payment(route, payment_hash_2) {} else { panic!(); }
 	check_added_monitors!(nodes[0], 1);
@@ -148,7 +152,9 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	// * We then walk through more message exchanges to get the original update_add_htlc
 	//   through, swapping message ordering based on disconnect_count & 8 and optionally
 	//   disconnect/reconnecting based on disconnect_count.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -474,7 +480,9 @@ fn test_monitor_temporary_update_fail_c() {
 #[test]
 fn test_monitor_update_fail_cs() {
 	// Tests handling of a monitor update failure when processing an incoming commitment_signed
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
@@ -553,7 +561,9 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	// Tests handling of a monitor update failure when no message rebroadcasting on
 	// test_restore_channel_monitor() is required. Backported from
 	// chanmon_fail_consistency fuzz tests.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
@@ -595,7 +605,9 @@ fn test_monitor_update_fail_no_rebroadcast() {
 fn test_monitor_update_raa_while_paused() {
 	// Tests handling of an RAA while monitor updating has already been marked failed.
 	// Backported from chanmon_fail_consistency fuzz tests as this used to be broken.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	send_payment(&nodes[0], &[&nodes[1]], 5000000, 5_000_000);
@@ -662,7 +674,9 @@ fn test_monitor_update_raa_while_paused() {
 
 fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Tests handling of a monitor update failure when processing an incoming RAA
-	let mut nodes = create_network(3, &[None, None, None]);
+	let node_cfgs = create_node_cfgs(3);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
 
@@ -915,7 +929,9 @@ fn test_monitor_update_fail_reestablish() {
 	// Simple test for message retransmission after monitor update failure on
 	// channel_reestablish generating a monitor update (which comes from freeing holding cell
 	// HTLCs).
-	let mut nodes = create_network(3, &[None, None, None]);
+	let node_cfgs = create_node_cfgs(3);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
 
@@ -993,7 +1009,9 @@ fn raa_no_response_awaiting_raa_state() {
 	// due to a previous monitor update failure, we still set AwaitingRemoteRevoke on the channel
 	// in question (assuming it intends to respond with a CS after monitor updating is restored).
 	// Backported from chanmon_fail_consistency fuzz tests as this used to be broken.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
@@ -1106,7 +1124,9 @@ fn claim_while_disconnected_monitor_update_fail() {
 	// Backported from chanmon_fail_consistency fuzz tests as an unmerged version of the handling
 	// code introduced a regression in this test (specifically, this caught a removal of the
 	// channel_reestablish handling ensuring the order was sensical given the messages used).
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	// Forward a payment for B to claim
@@ -1221,7 +1241,9 @@ fn monitor_failed_no_reestablish_response() {
 	// response to a commitment_signed.
 	// Backported from chanmon_fail_consistency fuzz tests as it caught a long-standing
 	// debug_assert!() failure in channel_reestablish handling.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
@@ -1287,7 +1309,9 @@ fn first_message_on_recv_ordering() {
 	// have no pending response but will want to send a RAA/CS (with the updates for the second
 	// payment applied).
 	// Backported from chanmon_fail_consistency fuzz tests as it caught a bug here.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	// Route the first payment outbound, holding the last RAA for B until we are set up so that we
@@ -1372,7 +1396,9 @@ fn test_monitor_update_fail_claim() {
 	// update to claim the payment. We then send a payment C->B->A, making the forward of this
 	// payment from B to A fail due to the paused channel. Finally, we restore the channel monitor
 	// updating and claim the payment on B.
-	let mut nodes = create_network(3, &[None, None, None]);
+	let node_cfgs = create_node_cfgs(3);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
 
@@ -1445,7 +1471,9 @@ fn test_monitor_update_on_pending_forwards() {
 	// We do this with a simple 3-node network, sending a payment from A to C and one from C to A.
 	// The payment from A to C will be failed by C and pending a back-fail to A, while the payment
 	// from C to A will be pending a forward to A.
-	let mut nodes = create_network(3, &[None, None, None]);
+	let node_cfgs = create_node_cfgs(3);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
 
@@ -1510,7 +1538,9 @@ fn monitor_update_claim_fail_no_response() {
 	// to channel being AwaitingRAA).
 	// Backported from chanmon_fail_consistency fuzz tests as an unmerged version of the handling
 	// code was broken.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	// Forward a payment for B to claim
@@ -1569,7 +1599,9 @@ fn monitor_update_claim_fail_no_response() {
 fn do_during_funding_monitor_fail(fail_on_generate: bool, restore_between_fails: bool, fail_on_signed: bool, confirm_a_first: bool, restore_b_before_conf: bool) {
 	// Test that if the monitor update generated by funding_transaction_generated fails we continue
 	// the channel setup happily after the update is restored.
-	let mut nodes = create_network(2, &[None, None]);
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 43).unwrap();
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
