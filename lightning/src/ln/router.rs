@@ -275,21 +275,6 @@ impl<R: ::std::io::Read> Readable<R> for NetworkMap {
 	}
 }
 
-struct MutNetworkMap<'a> {
-	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	channels: &'a mut BTreeMap<(u64, Sha256dHash), ChannelInfo>,
-	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	channels: &'a mut BTreeMap<u64, ChannelInfo>,
-	nodes: &'a mut BTreeMap<PublicKey, NodeInfo>,
-}
-impl NetworkMap {
-	fn borrow_parts(&mut self) -> MutNetworkMap {
-		MutNetworkMap {
-			channels: &mut self.channels,
-			nodes: &mut self.nodes,
-		}
-	}
-}
 impl std::fmt::Display for NetworkMap {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		write!(f, "Node id {} network map\n[Channels]\n", log_pubkey!(self.our_node_id))?;
@@ -474,7 +459,7 @@ impl RoutingMessageHandler for Router {
 		};
 
 		let mut network_lock = self.network_map.write().unwrap();
-		let network = network_lock.borrow_parts();
+		let network = &mut *network_lock;
 
 		let should_relay = msg.contents.excess_data.is_empty();
 
@@ -517,7 +502,7 @@ impl RoutingMessageHandler for Router {
 					// b) we don't track UTXOs of channels we know about and remove them if they
 					//    get reorg'd out.
 					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
-					Self::remove_channel_in_nodes(network.nodes, &entry.get(), msg.contents.short_channel_id);
+					Self::remove_channel_in_nodes(&mut network.nodes, &entry.get(), msg.contents.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
 					return Err(LightningError{err: "Already have knowledge of channel", action: ErrorAction::IgnoreError})
