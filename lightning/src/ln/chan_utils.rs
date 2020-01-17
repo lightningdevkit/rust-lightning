@@ -18,7 +18,7 @@ use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 
-use secp256k1::key::{SecretKey,PublicKey};
+use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 

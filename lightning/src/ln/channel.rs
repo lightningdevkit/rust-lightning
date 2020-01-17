@@ -335,11 +335,8 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	//implied by OUR_MAX_HTLCS: our_max_accepted_htlcs: u16,
 	minimum_depth: u32,
 
-	their_funding_pubkey: Option<PublicKey>,
-	their_revocation_basepoint: Option<PublicKey>,
-	their_payment_basepoint: Option<PublicKey>,
-	their_delayed_payment_basepoint: Option<PublicKey>,
-	their_htlc_basepoint: Option<PublicKey>,
+	their_pubkeys: Option<ChannelPublicKeys>,
+
 	their_cur_commitment_point: Option<PublicKey>,
 
 	their_prev_commitment_point: Option<PublicKey>,
@@ -512,11 +509,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_max_accepted_htlcs: 0,
 			minimum_depth: 0, // Filled in in accept_channel
 
-			their_funding_pubkey: None,
-			their_revocation_basepoint: None,
-			their_payment_basepoint: None,
-			their_delayed_payment_basepoint: None,
-			their_htlc_basepoint: None,
+			their_pubkeys: None,
 			their_cur_commitment_point: None,
 
 			their_prev_commitment_point: None,
@@ -546,14 +539,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
 		let mut chan_keys = keys_provider.get_channel_keys(true);
-		let channel_pubkeys = ChannelPublicKeys {
+		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
 			revocation_basepoint: msg.revocation_basepoint,
 			payment_basepoint: msg.payment_basepoint,
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			htlc_basepoint: msg.htlc_basepoint
 		};
-		chan_keys.set_remote_channel_pubkeys(&channel_pubkeys);
+		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
 		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -735,11 +728,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
 			minimum_depth: config.own_channel_config.minimum_depth,
 
-			their_funding_pubkey: Some(msg.funding_pubkey),
-			their_revocation_basepoint: Some(msg.revocation_basepoint),
-			their_payment_basepoint: Some(msg.payment_basepoint),
-			their_delayed_payment_basepoint: Some(msg.delayed_payment_basepoint),
-			their_htlc_basepoint: Some(msg.htlc_basepoint),
+			their_pubkeys: Some(their_pubkeys),
 			their_cur_commitment_point: Some(msg.first_per_commitment_point),
 
 			their_prev_commitment_point: None,
@@ -774,11 +763,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut sha = Sha256::engine();
 		let our_payment_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key());
 
+		let their_payment_basepoint = &self.their_pubkeys.as_ref().unwrap().payment_basepoint.serialize();
 		if self.channel_outbound {
 			sha.input(&our_payment_basepoint.serialize());
-			sha.input(&self.their_payment_basepoint.unwrap().serialize());
+			sha.input(their_payment_basepoint);
 		} else {
-			sha.input(&self.their_payment_basepoint.unwrap().serialize());
+			sha.input(their_payment_basepoint);
 			sha.input(&our_payment_basepoint.serialize());
 		}
 		let res = Sha256::from_engine(sha).into_inner();
@@ -1097,8 +1087,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number));
 		let delayed_payment_base = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key());
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key());
+		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &self.their_revocation_basepoint.unwrap(), &self.their_payment_basepoint.unwrap(), &self.their_htlc_basepoint.unwrap()), "Local tx keys generation got bogus keys"))
+		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.payment_basepoint, &their_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys"))
 	}
 
 	#[inline]
@@ -1111,8 +1102,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let payment_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key());
 		let revocation_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key());
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key());
+		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &self.their_delayed_payment_basepoint.unwrap(), &self.their_htlc_basepoint.unwrap(), &revocation_basepoint, &payment_basepoint, &htlc_basepoint), "Remote tx keys generation got bogus keys"))
+		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &their_pubkeys.delayed_payment_basepoint, &their_pubkeys.htlc_basepoint, &revocation_basepoint, &payment_basepoint, &htlc_basepoint), "Remote tx keys generation got bogus keys"))
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -1120,8 +1112,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Panics if called before accept_channel/new_from_req
 	pub fn get_funding_redeemscript(&self) -> Script {
 		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key());
-		let their_funding_key = self.their_funding_pubkey.expect("get_funding_redeemscript only allowed after accept_channel");
-		make_funding_redeemscript(&our_funding_key, &their_funding_key)
+		make_funding_redeemscript(&our_funding_key, self.their_funding_pubkey())
 	}
 
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
@@ -1395,11 +1386,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.their_to_self_delay = msg.to_self_delay;
 		self.their_max_accepted_htlcs = msg.max_accepted_htlcs;
 		self.minimum_depth = msg.minimum_depth;
-		self.their_funding_pubkey = Some(msg.funding_pubkey);
-		self.their_revocation_basepoint = Some(msg.revocation_basepoint);
-		self.their_payment_basepoint = Some(msg.payment_basepoint);
-		self.their_delayed_payment_basepoint = Some(msg.delayed_payment_basepoint);
-		self.their_htlc_basepoint = Some(msg.htlc_basepoint);
+
+		let their_pubkeys = ChannelPublicKeys {
+			funding_pubkey: msg.funding_pubkey,
+			revocation_basepoint: msg.revocation_basepoint,
+			payment_basepoint: msg.payment_basepoint,
+			delayed_payment_basepoint: msg.delayed_payment_basepoint,
+			htlc_basepoint: msg.htlc_basepoint
+		};
+
+		self.local_keys.set_remote_channel_pubkeys(&their_pubkeys);
+		self.their_pubkeys = Some(their_pubkeys);
+
 		self.their_cur_commitment_point = Some(msg.first_per_commitment_point);
 		self.their_shutdown_scriptpubkey = their_shutdown_scriptpubkey;
 
@@ -1408,14 +1406,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, self.channel_value_satoshis, obscure_factor);
 
 		self.channel_state = ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32;
-		let channel_pubkeys = ChannelPublicKeys {
-			funding_pubkey: msg.funding_pubkey,
-			revocation_basepoint: msg.revocation_basepoint,
-			payment_basepoint: msg.payment_basepoint,
-			delayed_payment_basepoint: msg.delayed_payment_basepoint,
-			htlc_basepoint: msg.htlc_basepoint
-		};
-		self.local_keys.set_remote_channel_pubkeys(&channel_pubkeys);
 
 		Ok(())
 	}
@@ -1428,9 +1418,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
 
 		// They sign the "local" commitment transaction...
-		secp_check!(self.secp_ctx.verify(&local_sighash, &sig, &self.their_funding_pubkey.unwrap()), "Invalid funding_created signature from peer");
+		secp_check!(self.secp_ctx.verify(&local_sighash, &sig, self.their_funding_pubkey()), "Invalid funding_created signature from peer");
 
-		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap());
+		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey());
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
@@ -1439,6 +1429,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
 		Ok((remote_initial_commitment_tx, localtx, remote_signature, local_keys))
+	}
+
+	fn their_funding_pubkey(&self) -> &PublicKey {
+		&self.their_pubkeys.as_ref().expect("their_funding_pubkey() only allowed after accept_channel").funding_pubkey
 	}
 
 	pub fn funding_created(&mut self, msg: &msgs::FundingCreated) -> Result<(msgs::FundingSigned, ChannelMonitor), ChannelError> {
@@ -1505,11 +1499,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
 
+		let their_funding_pubkey = &self.their_pubkeys.as_ref().unwrap().funding_pubkey;
+
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
-		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid funding_signed signature from peer");
+		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, their_funding_pubkey), "Invalid funding_signed signature from peer");
 
 		self.channel_monitor.provide_latest_local_commitment_tx_info(
-			LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap()),
+			LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey),
 			local_keys, self.feerate_per_kw, Vec::new());
 		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
 		self.cur_local_commitment_transaction_number -= 1;
@@ -1757,8 +1753,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		};
 		let local_commitment_txid = local_commitment_tx.0.txid();
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]);
-		log_trace!(self, "Checking commitment tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.signature.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey.unwrap().serialize()), encode::serialize_hex(&local_commitment_tx.0), encode::serialize_hex(&funding_script));
-		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid commitment tx signature from peer");
+		log_trace!(self, "Checking commitment tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.signature.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_commitment_tx.0), encode::serialize_hex(&funding_script));
+		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey()), "Invalid commitment tx signature from peer");
 
 		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
 		if update_fee {
@@ -1806,9 +1802,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
+		let their_funding_pubkey = self.their_pubkeys.as_ref().unwrap().funding_pubkey;
 
 		self.channel_monitor.provide_latest_local_commitment_tx_info(
-			LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey.as_ref().unwrap()),
+			LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), &their_funding_pubkey),
 			local_keys, self.feerate_per_kw, htlcs_and_sigs);
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
@@ -2666,7 +2663,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
 		let our_funding_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()).serialize();
-		let their_funding_key = self.their_funding_pubkey.unwrap().serialize();
+		let their_funding_key = self.their_funding_pubkey().serialize();
 		if our_funding_key[..] < their_funding_key[..] {
 			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
 			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
@@ -2701,14 +2698,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		let mut sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
 
-		match self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey.unwrap()) {
+		let their_funding_pubkey = &self.their_pubkeys.as_ref().unwrap().funding_pubkey;
+
+		match self.secp_ctx.verify(&sighash, &msg.signature, their_funding_pubkey) {
 			Ok(_) => {},
 			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
 				sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
-				secp_check!(self.secp_ctx.verify(&sighash, &msg.signature, &self.their_funding_pubkey.unwrap()), "Invalid closing tx signature from peer");
+				secp_check!(self.secp_ctx.verify(&sighash, &msg.signature, self.their_funding_pubkey()), "Invalid closing tx signature from peer");
 			},
 		};
 
@@ -3241,8 +3240,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { our_node_id } else { self.get_their_node_id() },
 			node_id_2: if were_node_one { self.get_their_node_id() } else { our_node_id },
-			bitcoin_key_1: if were_node_one { our_bitcoin_key } else { self.their_funding_pubkey.unwrap() },
-			bitcoin_key_2: if were_node_one { self.their_funding_pubkey.unwrap() } else { our_bitcoin_key },
+			bitcoin_key_1: if were_node_one { our_bitcoin_key } else { self.their_funding_pubkey().clone() },
+			bitcoin_key_2: if were_node_one { self.their_funding_pubkey().clone() } else { our_bitcoin_key },
 			excess_data: Vec::new(),
 		};
 
@@ -3805,11 +3804,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.their_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
-		write_option!(self.their_funding_pubkey);
-		write_option!(self.their_revocation_basepoint);
-		write_option!(self.their_payment_basepoint);
-		write_option!(self.their_delayed_payment_basepoint);
-		write_option!(self.their_htlc_basepoint);
+		write_option!(self.their_pubkeys);
 		write_option!(self.their_cur_commitment_point);
 
 		write_option!(self.their_prev_commitment_point);
@@ -3959,11 +3954,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 		let their_max_accepted_htlcs = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
-		let their_funding_pubkey = Readable::read(reader)?;
-		let their_revocation_basepoint = Readable::read(reader)?;
-		let their_payment_basepoint = Readable::read(reader)?;
-		let their_delayed_payment_basepoint = Readable::read(reader)?;
-		let their_htlc_basepoint = Readable::read(reader)?;
+		let their_pubkeys = Readable::read(reader)?;
 		let their_cur_commitment_point = Readable::read(reader)?;
 
 		let their_prev_commitment_point = Readable::read(reader)?;
@@ -4036,11 +4027,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 			their_max_accepted_htlcs,
 			minimum_depth,
 
-			their_funding_pubkey,
-			their_revocation_basepoint,
-			their_payment_basepoint,
-			their_delayed_payment_basepoint,
-			their_htlc_basepoint,
+			their_pubkeys,
 			their_cur_commitment_point,
 
 			their_prev_commitment_point,
@@ -4070,14 +4057,14 @@ mod tests {
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::chan_utils;
-	use ln::chan_utils::LocalCommitmentTransaction;
+	use ln::chan_utils::{LocalCommitmentTransaction, ChannelPublicKeys};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
 	use util::test_utils;
 	use util::logger::Logger;
-	use secp256k1::{Secp256k1,Message,Signature};
+	use secp256k1::{Secp256k1, Message, Signature, All};
 	use secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -4125,6 +4112,10 @@ mod tests {
 		fn get_channel_id(&self) -> [u8; 32] { [0; 32] }
 	}
 
+	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
+	}
+
 	#[test]
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendix C:
@@ -4157,19 +4148,22 @@ mod tests {
 		let funding_info = OutPoint::new(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
 		chan.channel_monitor.set_funding_info((funding_info, Script::new()));
 
-		chan.their_payment_basepoint = Some(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("4444444444444444444444444444444444444444444444444444444444444444").unwrap()[..]).unwrap()));
-		assert_eq!(chan.their_payment_basepoint.unwrap().serialize()[..],
-				hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
+		let their_pubkeys = ChannelPublicKeys {
+			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
+			revocation_basepoint: PublicKey::from_slice(&hex::decode("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap(),
+			payment_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
+			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
+			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
+		};
 
-		chan.their_funding_pubkey = Some(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13").unwrap()[..]).unwrap()));
-		assert_eq!(chan.their_funding_pubkey.unwrap().serialize()[..],
-				hex::decode("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]);
+		assert_eq!(their_pubkeys.payment_basepoint.serialize()[..],
+		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
 
-		chan.their_htlc_basepoint = Some(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("4444444444444444444444444444444444444444444444444444444444444444").unwrap()[..]).unwrap()));
-		assert_eq!(chan.their_htlc_basepoint.unwrap().serialize()[..],
-				hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
+		assert_eq!(their_pubkeys.funding_pubkey.serialize()[..],
+		           hex::decode("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]);
 
-		chan.their_revocation_basepoint = Some(PublicKey::from_slice(&hex::decode("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap());
+		assert_eq!(their_pubkeys.htlc_basepoint.serialize()[..],
+		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
 
 		// We can't just use build_local_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
@@ -4178,7 +4172,9 @@ mod tests {
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 		let htlc_basepoint = PublicKey::from_secret_key(&secp_ctx, chan.local_keys.htlc_base_key());
-		let keys = TxCreationKeys::new(&secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &chan.their_revocation_basepoint.unwrap(), &chan.their_payment_basepoint.unwrap(), &chan.their_htlc_basepoint.unwrap()).unwrap();
+		let keys = TxCreationKeys::new(&secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.payment_basepoint, &their_pubkeys.htlc_basepoint).unwrap();
+
+		chan.their_pubkeys = Some(their_pubkeys);
 
 		let mut unsigned_tx: (Transaction, Vec<HTLCOutputInCommitment>);
 
@@ -4194,9 +4190,9 @@ mod tests {
 				let redeemscript = chan.get_funding_redeemscript();
 				let their_signature = Signature::from_der(&hex::decode($their_sig_hex).unwrap()[..]).unwrap();
 				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &redeemscript, chan.channel_value_satoshis)[..]).unwrap();
-				secp_ctx.verify(&sighash, &their_signature, &chan.their_funding_pubkey.unwrap()).unwrap();
+				secp_ctx.verify(&sighash, &their_signature, chan.their_funding_pubkey()).unwrap();
 
-				let mut localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey.as_ref().unwrap());
+				let mut localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey());
 				localtx.add_local_sig(chan.local_keys.funding_key(), &redeemscript, chan.channel_value_satoshis, &chan.secp_ctx);
 
 				assert_eq!(serialize(localtx.with_valid_witness())[..],
