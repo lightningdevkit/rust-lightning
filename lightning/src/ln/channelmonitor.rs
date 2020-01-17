@@ -2556,6 +2556,7 @@ impl ChannelMonitor {
 	}
 
 	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator) {
+		log_trace!(self, "Block {} at height {} disconnected", block_hash, height);
 		let mut bump_candidates = HashMap::new();
 		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
 			//We may discard:
