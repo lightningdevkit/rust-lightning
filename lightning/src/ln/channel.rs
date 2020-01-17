@@ -359,11 +359,18 @@ pub const OUR_MAX_HTLCS: u16 = 50; //TODO
 /// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
 /// really allow for this, so instead we're stuck closing it out at that point.
 const UNCONF_THRESHOLD: u32 = 6;
-/// Exposing these two constants for use in test in ChannelMonitor
-pub const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
-pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
+
+#[cfg(not(test))]
+const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
+#[cfg(test)]
+pub const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
+#[cfg(not(test))]
+const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+#[cfg(test)]
+pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+
 /// Maximmum `funding_satoshis` value, according to the BOLT #2 specification
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = (1 << 24);
