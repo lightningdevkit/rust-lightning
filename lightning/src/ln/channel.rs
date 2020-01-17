@@ -20,7 +20,7 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingForwardHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript};
+use ln::chan_utils::{LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
@@ -546,7 +546,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
 		let mut chan_keys = keys_provider.get_channel_keys(true);
-		chan_keys.set_remote_funding_pubkey(&msg.funding_pubkey);
+		let channel_pubkeys = ChannelPublicKeys {
+			funding_pubkey: msg.funding_pubkey,
+			revocation_basepoint: msg.revocation_basepoint,
+			payment_basepoint: msg.payment_basepoint,
+			delayed_payment_basepoint: msg.delayed_payment_basepoint,
+			htlc_basepoint: msg.htlc_basepoint
+		};
+		chan_keys.set_remote_channel_pubkeys(&channel_pubkeys);
 		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -1401,7 +1408,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, self.channel_value_satoshis, obscure_factor);
 
 		self.channel_state = ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32;
-		self.local_keys.set_remote_funding_pubkey(&msg.funding_pubkey);
+		let channel_pubkeys = ChannelPublicKeys {
+			funding_pubkey: msg.funding_pubkey,
+			revocation_basepoint: msg.revocation_basepoint,
+			payment_basepoint: msg.payment_basepoint,
+			delayed_payment_basepoint: msg.delayed_payment_basepoint,
+			htlc_basepoint: msg.htlc_basepoint
+		};
+		self.local_keys.set_remote_channel_pubkeys(&channel_pubkeys);
 
 		Ok(())
 	}
@@ -4127,7 +4141,7 @@ mod tests {
 			// These aren't set in the test vectors:
 			revocation_base_key: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-			remote_funding_pubkey: None,
+			remote_channel_pubkeys: None,
 		};
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
