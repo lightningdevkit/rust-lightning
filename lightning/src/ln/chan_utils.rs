@@ -124,15 +124,15 @@ pub struct TxCreationKeys {
 	pub per_commitment_point: PublicKey,
 	/// The revocation key which is used to allow the owner of the commitment transaction to
 	/// provide their counterparty the ability to punish them if they broadcast an old state.
-	pub revocation_key: PublicKey,
+	pub(crate) revocation_key: PublicKey,
 	/// A's HTLC Key
-	pub a_htlc_key: PublicKey,
+	pub(crate) a_htlc_key: PublicKey,
 	/// B's HTLC Key
-	pub b_htlc_key: PublicKey,
+	pub(crate) b_htlc_key: PublicKey,
 	/// A's Payment Key (which isn't allowed to be spent from for some delay)
-	pub a_delayed_payment_key: PublicKey,
+	pub(crate) a_delayed_payment_key: PublicKey,
 	/// B's Payment Key
-	pub b_payment_key: PublicKey,
+	pub(crate) b_payment_key: PublicKey,
 }
 
 /// One counterparty's public keys which do not change over the life of a channel.
