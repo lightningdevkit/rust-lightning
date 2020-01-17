@@ -876,6 +876,9 @@ pub fn create_network(node_count: usize, node_config: &[Option<UserConfig>]) -> 
 	nodes
 }
 
+pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 138; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
+pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
+
 #[derive(PartialEq)]
 pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 /// Tests that the given node has broadcast transactions for the given Channel

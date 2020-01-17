@@ -8,7 +8,7 @@ use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
-use ln::channel::{ACCEPTED_HTLC_SCRIPT_WEIGHT, OFFERED_HTLC_SCRIPT_WEIGHT, Channel, ChannelError};
+use ln::channel::{Channel, ChannelError};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
 use ln::features::{ChannelFeatures, InitFeatures};

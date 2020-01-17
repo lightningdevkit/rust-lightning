@@ -5,6 +5,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use secp256k1::key::PublicKey;
 
 use ln::router::Route;
+use ln::chan_utils::HTLCType;
 
 use std;
 
@@ -93,15 +94,29 @@ macro_rules! log_route {
 pub(crate) struct DebugTx<'a>(pub &'a Transaction);
 impl<'a> std::fmt::Display for DebugTx<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 && (self.0.input[0].sequence >> 8*3) as u8 == 0x80 { write!(f, "commitment tx")?; }
-		else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 { write!(f, "closing tx")?; }
-		else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 133 && self.0.input[0].witness.len() == 5 { write!(f, "HTLC-timeout tx")?; }
-		else if self.0.input.len() == 1 && (self.0.input[0].witness.last().unwrap().len() == 138 || self.0.input[0].witness.last().unwrap().len() == 139) && self.0.input[0].witness.len() == 5 { write!(f, "HTLC-success tx")?; }
-		else {
-			for inp in &self.0.input {
-				if inp.witness.last().unwrap().len() == 133 { write!(f, "preimage tx")?; break }
-				else if inp.witness.last().unwrap().len() == 138 { write!(f, "timeout tx")?; break }
+		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
+			if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 &&
+					(self.0.input[0].sequence >> 8*3) as u8 == 0x80 {
+				write!(f, "commitment tx")?;
+			} else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 {
+				write!(f, "closing tx")?;
+			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) &&
+					self.0.input[0].witness.len() == 5 {
+				write!(f, "HTLC-timeout tx")?;
+			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) &&
+					self.0.input[0].witness.len() == 5 {
+				write!(f, "HTLC-success tx")?;
+			} else {
+				for inp in &self.0.input {
+					if !inp.witness.is_empty() {
+						if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) { write!(f, "preimage-")?; break }
+						else if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) { write!(f, "timeout-")?; break }
+					}
+				}
+				write!(f, "tx")?;
 			}
+		} else {
+			write!(f, "INVALID TRANSACTION")?;
 		}
 		Ok(())
 	}

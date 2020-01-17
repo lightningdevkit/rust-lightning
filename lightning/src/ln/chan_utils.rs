@@ -25,6 +25,25 @@ use secp256k1;
 pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 pub(super) const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 
+#[derive(PartialEq)]
+pub(crate) enum HTLCType {
+	AcceptedHTLC,
+	OfferedHTLC
+}
+
+impl HTLCType {
+	/// Check if a given tx witnessScript len matchs one of a pre-signed HTLC
+	pub(crate) fn scriptlen_to_htlctype(witness_script_len: usize) ->  Option<HTLCType> {
+		if witness_script_len == 133 {
+			Some(HTLCType::OfferedHTLC)
+		} else if witness_script_len >= 136 && witness_script_len <= 139 {
+			Some(HTLCType::AcceptedHTLC)
+		} else {
+			None
+		}
+	}
+}
+
 // Various functions for key derivation and transaction creation for use within channels. Primarily
 // used in Channel and ChannelMonitor.
 
