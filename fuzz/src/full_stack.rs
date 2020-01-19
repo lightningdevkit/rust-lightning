@@ -542,12 +542,6 @@ mod tests {
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};
 
-	#[test]
-	fn duplicate_crash() {
-		let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
-		super::do_test(&::hex::decode("00").unwrap(), &logger);
-	}
-
 	struct TrackingLogger {
 		/// (module, message) -> count
 		pub lines: Mutex<HashMap<(String, String), usize>>,
