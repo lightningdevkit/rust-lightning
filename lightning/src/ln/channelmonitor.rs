@@ -2335,6 +2335,15 @@ impl ChannelMonitor {
 	}
 
 	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
+		for tx in txn_matched {
+			let mut output_val = 0;
+			for out in tx.output.iter() {
+				if out.value > 21_000_000_0000_0000 { panic!("Value-overflowing transaction provided to block connected"); }
+				output_val += out.value;
+				if output_val > 21_000_000_0000_0000 { panic!("Value-overflowing transaction provided to block connected"); }
+			}
+		}
+
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", block_hash, height, txn_matched.len());
 		let mut watch_outputs = Vec::new();
 		let mut spendable_outputs = Vec::new();

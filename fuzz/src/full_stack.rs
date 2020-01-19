@@ -487,6 +487,12 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				} else {
 					let txres: Result<Transaction, _> = deserialize(get_slice!(txlen));
 					if let Ok(tx) = txres {
+						let mut output_val = 0;
+						for out in tx.output.iter() {
+							if out.value > 21_000_000_0000_0000 { return; }
+							output_val += out.value;
+							if output_val > 21_000_000_0000_0000 { return; }
+						}
 						loss_detector.connect_block(&[tx]);
 					} else {
 						return;
