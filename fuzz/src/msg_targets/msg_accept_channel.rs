@@ -14,11 +14,3 @@ pub fn do_test(data: &[u8]) {
 pub extern "C" fn msg_accept_channel_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }
-
-#[cfg(test)]
-mod tests {
-	#[test]
-	fn duplicate_crash() {
-		super::do_test(&::hex::decode("00").unwrap());
-	}
-}
