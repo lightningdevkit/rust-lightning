@@ -18,7 +18,7 @@ use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 
-use secp256k1::key::{SecretKey,PublicKey};
+use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 
@@ -137,24 +137,57 @@ pub(super) fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx:
 
 /// The set of public keys which are used in the creation of one commitment transaction.
 /// These are derived from the channel base keys and per-commitment data.
+#[derive(PartialEq)]
 pub struct TxCreationKeys {
 	/// The per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
 	/// The revocation key which is used to allow the owner of the commitment transaction to
 	/// provide their counterparty the ability to punish them if they broadcast an old state.
-	pub revocation_key: PublicKey,
+	pub(crate) revocation_key: PublicKey,
 	/// A's HTLC Key
-	pub a_htlc_key: PublicKey,
+	pub(crate) a_htlc_key: PublicKey,
 	/// B's HTLC Key
-	pub b_htlc_key: PublicKey,
+	pub(crate) b_htlc_key: PublicKey,
 	/// A's Payment Key (which isn't allowed to be spent from for some delay)
-	pub a_delayed_payment_key: PublicKey,
+	pub(crate) a_delayed_payment_key: PublicKey,
 	/// B's Payment Key
-	pub b_payment_key: PublicKey,
+	pub(crate) b_payment_key: PublicKey,
 }
 
+/// One counterparty's public keys which do not change over the life of a channel.
+#[derive(Clone)]
+pub struct ChannelPublicKeys {
+	/// The public key which is used to sign all commitment transactions, as it appears in the
+	/// on-chain channel lock-in 2-of-2 multisig output.
+	pub funding_pubkey: PublicKey,
+	/// The base point which is used (with derive_public_revocation_key) to derive per-commitment
+	/// revocation keys. The per-commitment revocation private key is then revealed by the owner of
+	/// a commitment transaction so that their counterparty can claim all available funds if they
+	/// broadcast an old state.
+	pub revocation_basepoint: PublicKey,
+	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
+	/// public key which receives immediately-spendable non-HTLC-encumbered funds.
+	pub payment_basepoint: PublicKey,
+	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
+	/// public key which receives non-HTLC-encumbered funds which are only available for spending
+	/// after some delay (or can be claimed via the revocation path).
+	pub delayed_payment_basepoint: PublicKey,
+	/// The base point which is used (with derive_public_key) to derive a per-commitment public key
+	/// which is used to encumber HTLC-in-flight outputs.
+	pub htlc_basepoint: PublicKey,
+}
+
+impl_writeable!(ChannelPublicKeys, 33*5, {
+	funding_pubkey,
+	revocation_basepoint,
+	payment_basepoint,
+	delayed_payment_basepoint,
+	htlc_basepoint
+});
+
+
 impl TxCreationKeys {
-	pub(super) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
+	pub(crate) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
 			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)?,
