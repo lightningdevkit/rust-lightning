@@ -7,35 +7,33 @@ GEN_TEST() {
 	echo "pub mod $tn;" >> mod.rs
 }
 
-echo "mod utils;" > mod.rs
+echo "mod utils;
+" > mod.rs
 
 # Note when adding new targets here you should add a similar line in src/bin/gen_target.sh
 
 GEN_TEST AcceptChannel test_msg ""
 GEN_TEST AnnouncementSignatures test_msg ""
+GEN_TEST ChannelAnnouncement test_msg_exact ""
 GEN_TEST ChannelReestablish test_msg ""
+GEN_TEST ChannelUpdate test_msg_exact ""
 GEN_TEST ClosingSigned test_msg ""
 GEN_TEST CommitmentSigned test_msg ""
 GEN_TEST DecodedOnionErrorPacket test_msg ""
+GEN_TEST ErrorMessage test_msg_hole ", 32, 2"
 GEN_TEST FundingCreated test_msg ""
 GEN_TEST FundingLocked test_msg ""
 GEN_TEST FundingSigned test_msg ""
+GEN_TEST Init test_msg_simple ""
+GEN_TEST NodeAnnouncement test_msg_exact ""
+GEN_TEST OnionHopData test_msg_simple ""
 GEN_TEST OpenChannel test_msg ""
+GEN_TEST Ping test_msg_simple ""
+GEN_TEST Pong test_msg_simple ""
 GEN_TEST RevokeAndACK test_msg ""
 GEN_TEST Shutdown test_msg ""
+GEN_TEST UpdateAddHTLC test_msg_hole ", 85, 33"
 GEN_TEST UpdateFailHTLC test_msg ""
 GEN_TEST UpdateFailMalformedHTLC test_msg ""
 GEN_TEST UpdateFee test_msg ""
 GEN_TEST UpdateFulfillHTLC test_msg ""
-
-GEN_TEST ChannelAnnouncement test_msg_exact ""
-GEN_TEST ChannelUpdate test_msg_exact ""
-GEN_TEST NodeAnnouncement test_msg_exact ""
-
-GEN_TEST UpdateAddHTLC test_msg_hole ", 85, 33"
-GEN_TEST ErrorMessage test_msg_hole ", 32, 2"
-
-GEN_TEST Init test_msg_simple ""
-GEN_TEST OnionHopData test_msg_simple ""
-GEN_TEST Ping test_msg_simple ""
-GEN_TEST Pong test_msg_simple ""
