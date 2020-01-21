@@ -24,6 +24,7 @@ pub(crate) mod peer_channel_encryptor;
 
 mod channel;
 mod onion_utils;
+mod wire;
 
 #[cfg(test)]
 #[macro_use] mod functional_test_utils;

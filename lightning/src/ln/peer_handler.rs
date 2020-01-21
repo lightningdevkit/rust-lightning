@@ -12,11 +12,13 @@ use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
-use util::ser::{Writeable, Writer, Readable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
+use ln::wire;
+use ln::wire::Encode;
 use util::byte_utils;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
+use util::ser::Writer;
 
 use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
@@ -203,11 +205,10 @@ impl Writer for VecWriter {
 }
 
 macro_rules! encode_msg {
-	($msg: expr, $msg_code: expr) => {{
-		let mut msg = VecWriter(Vec::new());
-		($msg_code as u16).write(&mut msg).unwrap();
-		$msg.write(&mut msg).unwrap();
-		msg.0
+	($msg: expr) => {{
+		let mut buffer = VecWriter(Vec::new());
+		wire::write($msg, &mut buffer).unwrap();
+		buffer.0
 	}}
 }
 
@@ -344,10 +345,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
 		macro_rules! encode_and_send_msg {
-			($msg: expr, $msg_code: expr) => {
+			($msg: expr) => {
 				{
-					log_trace!(self, "Encoding and sending sync update message of type {} to {}", $msg_code, log_pubkey!(peer.their_node_id.unwrap()));
-					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!($msg, $msg_code)[..]));
+					log_trace!(self, "Encoding and sending sync update message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!($msg)[..]));
 				}
 			}
 		}
@@ -360,9 +361,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let steps = ((MSG_BUFF_SIZE - peer.pending_outbound_buffer.len() + 2) / 3) as u8;
 						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(0, steps);
 						for &(ref announce, ref update_a, ref update_b) in all_messages.iter() {
-							encode_and_send_msg!(announce, 256);
-							encode_and_send_msg!(update_a, 258);
-							encode_and_send_msg!(update_b, 258);
+							encode_and_send_msg!(announce);
+							encode_and_send_msg!(update_a);
+							encode_and_send_msg!(update_b);
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
 						}
 						if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -373,7 +374,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let steps = (MSG_BUFF_SIZE - peer.pending_outbound_buffer.len()) as u8;
 						let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
 						for msg in all_messages.iter() {
-							encode_and_send_msg!(msg, 256);
+							encode_and_send_msg!(msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						}
 						if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -385,7 +386,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let steps = (MSG_BUFF_SIZE - peer.pending_outbound_buffer.len()) as u8;
 						let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
 						for msg in all_messages.iter() {
-							encode_and_send_msg!(msg, 256);
+							encode_and_send_msg!(msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						}
 						if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -481,10 +482,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 							peer.pending_read_buffer_pos = 0;
 
 							macro_rules! encode_and_send_msg {
-								($msg: expr, $msg_code: expr) => {
+								($msg: expr) => {
 									{
-										log_trace!(self, "Encoding and sending message of type {} to {}", $msg_code, log_pubkey!(peer.their_node_id.unwrap()));
-										peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!($msg, $msg_code)[..]));
+										log_trace!(self, "Encoding and sending message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+										peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(&$msg)[..]));
 										peers.peers_needing_send.insert(peer_descriptor.clone());
 									}
 								}
@@ -507,7 +508,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 												},
 												msgs::ErrorAction::SendErrorMessage { msg } => {
 													log_trace!(self, "Got Err handling message, sending Error message because {}", e.err);
-													encode_and_send_msg!(msg, 17);
+													encode_and_send_msg!(msg);
 													continue;
 												},
 											}
@@ -583,9 +584,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 										self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
 										features.set_initial_routing_sync();
 									}
-									encode_and_send_msg!(msgs::Init {
-										features,
-									}, 16);
+
+									let resp = msgs::Init { features };
+									encode_and_send_msg!(resp);
 								},
 								NextNoiseStep::ActThree => {
 									let their_node_id = try_potential_handleerror!(peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]));
@@ -611,18 +612,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 										peer.pending_read_buffer = [0; 18].to_vec();
 										peer.pending_read_is_header = true;
 
-										let msg_type = byte_utils::slice_to_be16(&msg_data[0..2]);
-										log_trace!(self, "Received message of type {} from {}", msg_type, log_pubkey!(peer.their_node_id.unwrap()));
-										if msg_type != 16 && peer.their_features.is_none() {
-											// Need an init message as first message
+										let mut reader = ::std::io::Cursor::new(&msg_data[..]);
+										let message = try_potential_decodeerror!(wire::read(&mut reader));
+										log_trace!(self, "Received message of type {} from {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+
+										// Need an Init as first message
+										if let wire::Message::Init(_) = message {
+										} else if peer.their_features.is_none() {
 											log_trace!(self, "Peer {} sent non-Init first message", log_pubkey!(peer.their_node_id.unwrap()));
 											return Err(PeerHandleError{ no_connection_possible: false });
 										}
-										let mut reader = ::std::io::Cursor::new(&msg_data[2..]);
-										match msg_type {
-											// Connection control:
-											16 => {
-												let msg = try_potential_decodeerror!(msgs::Init::read(&mut reader));
+
+										match message {
+											// Setup and Control messages:
+											wire::Message::Init(msg) => {
 												if msg.features.requires_unknown_bits() {
 													log_info!(self, "Peer global features required unknown version bits");
 													return Err(PeerHandleError{ no_connection_possible: true });
@@ -654,16 +657,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 														features.set_initial_routing_sync();
 													}
 
-													encode_and_send_msg!(msgs::Init {
-														features,
-													}, 16);
+													let resp = msgs::Init { features };
+													encode_and_send_msg!(resp);
 												}
 
 												self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 												peer.their_features = Some(msg.features);
 											},
-											17 => {
-												let msg = try_potential_decodeerror!(msgs::ErrorMessage::read(&mut reader));
+											wire::Message::Error(msg) => {
 												let mut data_is_printable = true;
 												for b in msg.data.bytes() {
 													if b < 32 || b > 126 {
@@ -683,113 +684,97 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 												}
 											},
 
-											18 => {
-												let msg = try_potential_decodeerror!(msgs::Ping::read(&mut reader));
+											wire::Message::Ping(msg) => {
 												if msg.ponglen < 65532 {
 													let resp = msgs::Pong { byteslen: msg.ponglen };
-													encode_and_send_msg!(resp, 19);
+													encode_and_send_msg!(resp);
 												}
 											},
-											19 => {
+											wire::Message::Pong(_msg) => {
 												peer.awaiting_pong = false;
-												try_potential_decodeerror!(msgs::Pong::read(&mut reader));
 											},
-											// Channel control:
-											32 => {
-												let msg = try_potential_decodeerror!(msgs::OpenChannel::read(&mut reader));
+
+											// Channel messages:
+											wire::Message::OpenChannel(msg) => {
 												self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_features.clone().unwrap(), &msg);
 											},
-											33 => {
-												let msg = try_potential_decodeerror!(msgs::AcceptChannel::read(&mut reader));
+											wire::Message::AcceptChannel(msg) => {
 												self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_features.clone().unwrap(), &msg);
 											},
 
-											34 => {
-												let msg = try_potential_decodeerror!(msgs::FundingCreated::read(&mut reader));
+											wire::Message::FundingCreated(msg) => {
 												self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg);
 											},
-											35 => {
-												let msg = try_potential_decodeerror!(msgs::FundingSigned::read(&mut reader));
+											wire::Message::FundingSigned(msg) => {
 												self.message_handler.chan_handler.handle_funding_signed(&peer.their_node_id.unwrap(), &msg);
 											},
-											36 => {
-												let msg = try_potential_decodeerror!(msgs::FundingLocked::read(&mut reader));
+											wire::Message::FundingLocked(msg) => {
 												self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg);
 											},
 
-											38 => {
-												let msg = try_potential_decodeerror!(msgs::Shutdown::read(&mut reader));
+											wire::Message::Shutdown(msg) => {
 												self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg);
 											},
-											39 => {
-												let msg = try_potential_decodeerror!(msgs::ClosingSigned::read(&mut reader));
+											wire::Message::ClosingSigned(msg) => {
 												self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);
 											},
 
-											128 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateAddHTLC::read(&mut reader));
+											// Commitment messages:
+											wire::Message::UpdateAddHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
-											130 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFulfillHTLC::read(&mut reader));
+											wire::Message::UpdateFulfillHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
-											131 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFailHTLC::read(&mut reader));
+											wire::Message::UpdateFailHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
-											135 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFailMalformedHTLC::read(&mut reader));
+											wire::Message::UpdateFailMalformedHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg);
 											},
 
-											132 => {
-												let msg = try_potential_decodeerror!(msgs::CommitmentSigned::read(&mut reader));
+											wire::Message::CommitmentSigned(msg) => {
 												self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg);
 											},
-											133 => {
-												let msg = try_potential_decodeerror!(msgs::RevokeAndACK::read(&mut reader));
+											wire::Message::RevokeAndACK(msg) => {
 												self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg);
 											},
-											134 => {
-												let msg = try_potential_decodeerror!(msgs::UpdateFee::read(&mut reader));
+											wire::Message::UpdateFee(msg) => {
 												self.message_handler.chan_handler.handle_update_fee(&peer.their_node_id.unwrap(), &msg);
 											},
-											136 => {
-												let msg = try_potential_decodeerror!(msgs::ChannelReestablish::read(&mut reader));
+											wire::Message::ChannelReestablish(msg) => {
 												self.message_handler.chan_handler.handle_channel_reestablish(&peer.their_node_id.unwrap(), &msg);
 											},
 
-											// Routing control:
-											259 => {
-												let msg = try_potential_decodeerror!(msgs::AnnouncementSignatures::read(&mut reader));
+											// Routing messages:
+											wire::Message::AnnouncementSignatures(msg) => {
 												self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg);
 											},
-											256 => {
-												let msg = try_potential_decodeerror!(msgs::ChannelAnnouncement::read(&mut reader));
+											wire::Message::ChannelAnnouncement(msg) => {
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_announcement(&msg));
 
 												if should_forward {
 													// TODO: forward msg along to all our other peers!
 												}
 											},
-											257 => {
-												let msg = try_potential_decodeerror!(msgs::NodeAnnouncement::read(&mut reader));
+											wire::Message::NodeAnnouncement(msg) => {
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
 
 												if should_forward {
 													// TODO: forward msg along to all our other peers!
 												}
 											},
-											258 => {
-												let msg = try_potential_decodeerror!(msgs::ChannelUpdate::read(&mut reader));
+											wire::Message::ChannelUpdate(msg) => {
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
 
 												if should_forward {
 													// TODO: forward msg along to all our other peers!
 												}
 											},
-											_ => {
+
+											// Unknown messages:
+											wire::Message::Unknown(msg_type) => {
+												// Fail the channel if message is an even, unknown type as per BOLT #1.
 												if (msg_type & 1) == 0 {
 													return Err(PeerHandleError{ no_connection_possible: true });
 												}
@@ -857,7 +842,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 33)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
@@ -867,7 +852,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 32)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendFundingCreated { ref node_id, ref msg } => {
@@ -879,7 +864,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								//TODO: generate a DiscardFunding event indicating to the wallet that
 								//they should just throw away this funding transaction
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 34)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendFundingSigned { ref node_id, ref msg } => {
@@ -890,7 +875,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								//TODO: generate a DiscardFunding event indicating to the wallet that
 								//they should just throw away this funding transaction
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 35)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
@@ -900,7 +885,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 36)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
@@ -911,7 +896,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								//TODO: generate a DiscardFunding event indicating to the wallet that
 								//they should just throw away this funding transaction
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 259)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
@@ -925,21 +910,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
 						for msg in update_add_htlcs {
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 128)));
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						}
 						for msg in update_fulfill_htlcs {
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 130)));
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						}
 						for msg in update_fail_htlcs {
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 131)));
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						}
 						for msg in update_fail_malformed_htlcs {
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 135)));
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						}
 						if let &Some(ref msg) = update_fee {
-							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 134)));
+							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						}
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed, 132)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(commitment_signed)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
@@ -949,7 +934,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 133)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
@@ -959,7 +944,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 39)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendShutdown { ref node_id, ref msg } => {
@@ -969,7 +954,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 38)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
@@ -979,14 +964,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 								//TODO: Do whatever we're gonna do for handling dropped messages
 							});
-						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 136)));
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 						log_trace!(self, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_announcement(msg).is_ok() && self.message_handler.route_handler.handle_channel_update(update_msg).is_ok() {
-							let encoded_msg = encode_msg!(msg, 256);
-							let encoded_update_msg = encode_msg!(update_msg, 258);
+							let encoded_msg = encode_msg!(msg);
+							let encoded_update_msg = encode_msg!(update_msg);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
 								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
@@ -1010,7 +995,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 						log_trace!(self, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_update(msg).is_ok() {
-							let encoded_msg = encode_msg!(msg, 258);
+							let encoded_msg = encode_msg!(msg);
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
 								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
@@ -1035,7 +1020,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 											log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
 													log_pubkey!(node_id),
 													msg.data);
-											peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
+											peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 											// This isn't guaranteed to work, but if there is enough free
 											// room in the send buffer, put the error message there...
 											self.do_attempt_write_data(&mut descriptor, &mut peer);
@@ -1055,7 +1040,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {
 									//TODO: Do whatever we're gonna do for handling dropped messages
 								});
-								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg, 17)));
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 								self.do_attempt_write_data(&mut descriptor, peer);
 							},
 						}
@@ -1128,7 +1113,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					ponglen: 0,
 					byteslen: 64,
 				};
-				peer.pending_outbound_buffer.push_back(encode_msg!(ping, 18));
+				peer.pending_outbound_buffer.push_back(encode_msg!(&ping));
 				let mut descriptor_clone = descriptor.clone();
 				self.do_attempt_write_data(&mut descriptor_clone, peer);
 
