@@ -18,7 +18,7 @@ use util::byte_utils;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 
-use std::collections::{HashMap,hash_map,HashSet,LinkedList};
+use std::collections::{HashMap,hash_map,LinkedList};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
@@ -120,6 +120,10 @@ struct Peer {
 	sync_status: InitSyncTracker,
 
 	awaiting_pong: bool,
+
+	/// Indicates do_read_event() pushed a message into pending_outbound_buffer but didn't call
+	/// do_attempt_write_data() to avoid reentrancy. Cleared in process_events().
+	needing_send: bool,
 }
 
 impl Peer {
@@ -140,9 +144,6 @@ impl Peer {
 
 struct PeerHolder<Descriptor: SocketDescriptor> {
 	peers: HashMap<Descriptor, Peer>,
-	/// Added to by do_read_event for cases where we pushed a message onto the send buffer but
-	/// didn't call do_attempt_write_data to avoid reentrancy. Cleared in process_events()
-	peers_needing_send: HashSet<Descriptor>,
 	/// Only add to this set when noise completes:
 	node_id_to_descriptor: HashMap<PublicKey, Descriptor>,
 }
@@ -228,7 +229,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			message_handler: message_handler,
 			peers: Mutex::new(PeerHolder {
 				peers: HashMap::new(),
-				peers_needing_send: HashSet::new(),
 				node_id_to_descriptor: HashMap::new()
 			}),
 			our_node_secret: our_node_secret,
@@ -299,6 +299,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
 			awaiting_pong: false,
+			needing_send: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -336,6 +337,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
 			awaiting_pong: false,
+			needing_send: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -485,7 +487,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 									{
 										log_trace!(self, "Encoding and sending message of type {} to {}", $msg_code, log_pubkey!(peer.their_node_id.unwrap()));
 										peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!($msg, $msg_code)[..]));
-										peers.peers_needing_send.insert(peer_descriptor.clone());
+										peer.needing_send = true;
 									}
 								}
 							}
@@ -644,7 +646,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 												if msg.features.initial_routing_sync() {
 													peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
-													peers.peers_needing_send.insert(peer_descriptor.clone());
+													peer.needing_send = true;
 												}
 
 												if !peer.outbound {
@@ -1029,7 +1031,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						match *action {
 							msgs::ErrorAction::DisconnectPeer { ref msg } => {
 								if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
-									peers.peers_needing_send.remove(&descriptor);
 									if let Some(mut peer) = peers.peers.remove(&descriptor) {
 										if let Some(ref msg) = *msg {
 											log_trace!(self, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
@@ -1063,11 +1064,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 				}
 			}
 
-			for mut descriptor in peers.peers_needing_send.drain() {
-				match peers.peers.get_mut(&descriptor) {
-					Some(peer) => self.do_attempt_write_data(&mut descriptor, peer),
-					None => panic!("Inconsistent peers set state!"),
-				}
+			let peers_needing_send = peers.peers.iter_mut().filter(|(_, peer)| peer.needing_send);
+			for (descriptor, peer) in peers_needing_send {
+				peer.needing_send = false;
+				self.do_attempt_write_data(&mut descriptor.clone(), peer)
 			}
 		}
 	}
@@ -1084,9 +1084,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 	fn disconnect_event_internal(&self, descriptor: &Descriptor, no_connection_possible: bool) {
 		let mut peers = self.peers.lock().unwrap();
-		peers.peers_needing_send.remove(descriptor);
-		let peer_option = peers.peers.remove(descriptor);
-		match peer_option {
+		match peers.peers.remove(descriptor) {
 			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
 			Some(peer) => {
 				match peer.their_node_id {
@@ -1108,13 +1106,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 		let mut peers_lock = self.peers.lock().unwrap();
 		{
 			let peers = &mut *peers_lock;
-			let peers_needing_send = &mut peers.peers_needing_send;
 			let node_id_to_descriptor = &mut peers.node_id_to_descriptor;
 			let peers = &mut peers.peers;
 
 			peers.retain(|descriptor, peer| {
 				if peer.awaiting_pong == true {
-					peers_needing_send.remove(descriptor);
 					match peer.their_node_id {
 						Some(node_id) => {
 							node_id_to_descriptor.remove(&node_id);
