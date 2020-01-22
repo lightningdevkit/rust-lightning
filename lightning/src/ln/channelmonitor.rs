@@ -2219,7 +2219,8 @@ impl ChannelMonitor {
 				assert!(local_tx.tx.has_local_sig());
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, .. } => {
-						append_onchain_update!(self.broadcast_by_local_state(local_tx, delayed_payment_base_key, height));
+						let mut res = self.broadcast_by_local_state(local_tx, delayed_payment_base_key, height);
+						append_onchain_update!(res);
 					},
 					Storage::Watchtower { .. } => { }
 				}
@@ -2242,7 +2243,8 @@ impl ChannelMonitor {
 				assert!(local_tx.tx.has_local_sig());
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, .. } => {
-						append_onchain_update!(self.broadcast_by_local_state(local_tx, delayed_payment_base_key, height));
+						let mut res = self.broadcast_by_local_state(local_tx, delayed_payment_base_key, height);
+						append_onchain_update!(res);
 					},
 					Storage::Watchtower { .. } => { }
 				}
