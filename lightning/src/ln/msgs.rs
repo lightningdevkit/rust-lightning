@@ -56,7 +56,10 @@ pub enum DecodeError {
 
 /// An init message to be sent or received from a peer
 pub struct Init {
+	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) features: InitFeatures,
+	#[cfg(feature = "fuzztarget")]
+	pub features: InitFeatures,
 }
 
 /// An error message to be sent or received from a peer
@@ -571,7 +574,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
-	fn peer_connected(&self, their_node_id: &PublicKey);
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init);
 	/// Handle an incoming channel_reestablish message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 

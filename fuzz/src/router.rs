@@ -5,8 +5,9 @@ use bitcoin::blockdata::transaction::Transaction;
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
 use lightning::ln::channelmanager::ChannelDetails;
+use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
-use lightning::ln::msgs::{RoutingMessageHandler};
+use lightning::ln::msgs::RoutingMessageHandler;
 use lightning::ln::router::{Router, RouteHint};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
@@ -198,6 +199,7 @@ pub fn do_test(data: &[u8]) {
 								channel_id: [0; 32],
 								short_channel_id: Some(slice_to_be64(get_slice!(8))),
 								remote_network_id: get_pubkey!(),
+								counterparty_features: InitFeatures::empty(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
 								inbound_capacity_msat: 0,

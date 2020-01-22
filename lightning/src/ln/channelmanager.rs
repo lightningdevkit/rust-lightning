@@ -275,6 +275,12 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	pub(super) pending_msg_events: Vec<events::MessageSendEvent>,
 }
 
+/// State we hold per-peer. In the future we should put channels in here, but for now we only hold
+/// the latest Init features we heard from the peer.
+struct PeerState {
+	latest_features: InitFeatures,
+}
+
 #[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
 const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assume they're the same) for ChannelManager::latest_block_height";
 
@@ -327,6 +333,14 @@ pub struct ChannelManager<ChanSigner: ChannelKeys> {
 	#[cfg(not(test))]
 	channel_state: Mutex<ChannelHolder<ChanSigner>>,
 	our_network_key: SecretKey,
+
+	/// The bulk of our storage will eventually be here (channels and message queues and the like).
+	/// If we are connected to a peer we always at least have an entry here, even if no channels
+	/// are currently open with that peer.
+	/// Because adding or removing an entry is rare, we usually take an outer read lock and then
+	/// operate on the inner value freely. Sadly, this prevents parallel operation when opening a
+	/// new channel.
+	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 
 	pending_events: Mutex<Vec<events::Event>>,
 	/// Used when we have to take a BIG lock to make sure everything is self-consistent.
@@ -390,6 +404,10 @@ pub struct ChannelDetails {
 	pub short_channel_id: Option<u64>,
 	/// The node_id of our counterparty
 	pub remote_network_id: PublicKey,
+	/// The Features the channel counterparty provided upon last connection.
+	/// Useful for routing as it is the most up-to-date copy of the counterparty's features and
+	/// many routing-relevant features are present in the init context.
+	pub counterparty_features: InitFeatures,
 	/// The value, in satoshis, of this channel as appears in the funding output
 	pub channel_value_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
@@ -610,6 +628,8 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 			}),
 			our_network_key: keys_manager.get_node_secret(),
 
+			per_peer_state: RwLock::new(HashMap::new()),
+
 			pending_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
 
@@ -660,25 +680,39 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 		Ok(())
 	}
 
+	fn list_channels_with_filter<F: FnMut(&(&[u8; 32], &Channel<ChanSigner>)) -> bool>(&self, f: F) -> Vec<ChannelDetails> {
+		let mut res = Vec::new();
+		{
+			let channel_state = self.channel_state.lock().unwrap();
+			res.reserve(channel_state.by_id.len());
+			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
+				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
+				res.push(ChannelDetails {
+					channel_id: (*channel_id).clone(),
+					short_channel_id: channel.get_short_channel_id(),
+					remote_network_id: channel.get_their_node_id(),
+					counterparty_features: InitFeatures::empty(),
+					channel_value_satoshis: channel.get_value_satoshis(),
+					inbound_capacity_msat,
+					outbound_capacity_msat,
+					user_id: channel.get_user_id(),
+					is_live: channel.is_live(),
+				});
+			}
+		}
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		for chan in res.iter_mut() {
+			if let Some(peer_state) = per_peer_state.get(&chan.remote_network_id) {
+				chan.counterparty_features = peer_state.lock().unwrap().latest_features.clone();
+			}
+		}
+		res
+	}
+
 	/// Gets the list of open channels, in random order. See ChannelDetail field documentation for
 	/// more information.
 	pub fn list_channels(&self) -> Vec<ChannelDetails> {
-		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(channel_state.by_id.len());
-		for (channel_id, channel) in channel_state.by_id.iter() {
-			let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
-			res.push(ChannelDetails {
-				channel_id: (*channel_id).clone(),
-				short_channel_id: channel.get_short_channel_id(),
-				remote_network_id: channel.get_their_node_id(),
-				channel_value_satoshis: channel.get_value_satoshis(),
-				inbound_capacity_msat,
-				outbound_capacity_msat,
-				user_id: channel.get_user_id(),
-				is_live: channel.is_live(),
-			});
-		}
-		res
+		self.list_channels_with_filter(|_| true)
 	}
 
 	/// Gets the list of usable channels, in random order. Useful as an argument to
@@ -687,27 +721,10 @@ impl<ChanSigner: ChannelKeys> ChannelManager<ChanSigner> {
 	/// These are guaranteed to have their is_live value set to true, see the documentation for
 	/// ChannelDetails::is_live for more info on exactly what the criteria are.
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
-		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(channel_state.by_id.len());
-		for (channel_id, channel) in channel_state.by_id.iter() {
-			// Note we use is_live here instead of usable which leads to somewhat confused
-			// internal/external nomenclature, but that's ok cause that's probably what the user
-			// really wanted anyway.
-			if channel.is_live() {
-				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
-				res.push(ChannelDetails {
-					channel_id: (*channel_id).clone(),
-					short_channel_id: channel.get_short_channel_id(),
-					remote_network_id: channel.get_their_node_id(),
-					channel_value_satoshis: channel.get_value_satoshis(),
-					inbound_capacity_msat,
-					outbound_capacity_msat,
-					user_id: channel.get_user_id(),
-					is_live: true,
-				});
-			}
-		}
-		res
+		// Note we use is_live here instead of usable which leads to somewhat confused
+		// internal/external nomenclature, but that's ok cause that's probably what the user
+		// really wanted anyway.
+		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
 	}
 
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
@@ -2780,6 +2797,7 @@ impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigne
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut failed_payments = Vec::new();
+		let mut no_channels_remain = true;
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
@@ -2818,6 +2836,8 @@ impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigne
 								short_to_id.remove(&short_id);
 							}
 							return false;
+						} else {
+							no_channels_remain = false;
 						}
 					}
 					true
@@ -2843,6 +2863,10 @@ impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigne
 				}
 			});
 		}
+		if no_channels_remain {
+			self.per_peer_state.write().unwrap().remove(their_node_id);
+		}
+
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
 		}
@@ -2853,10 +2877,25 @@ impl<ChanSigner: ChannelKeys> ChannelMessageHandler for ChannelManager<ChanSigne
 		}
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
 		log_debug!(self, "Generating channel_reestablish events for {}", log_pubkey!(their_node_id));
 
 		let _ = self.total_consistency_lock.read().unwrap();
+
+		{
+			let mut peer_state_lock = self.per_peer_state.write().unwrap();
+			match peer_state_lock.entry(their_node_id.clone()) {
+				hash_map::Entry::Vacant(e) => {
+					e.insert(Mutex::new(PeerState {
+						latest_features: init_msg.features.clone(),
+					}));
+				},
+				hash_map::Entry::Occupied(e) => {
+					e.get().lock().unwrap().latest_features = init_msg.features.clone();
+				},
+			}
+		}
+
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		let pending_msg_events = &mut channel_state.pending_msg_events;
@@ -3123,6 +3162,14 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for ChannelManager<ChanSigne
 			}
 		}
 
+		let per_peer_state = self.per_peer_state.write().unwrap();
+		(per_peer_state.len() as u64).write(writer)?;
+		for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
+			peer_pubkey.write(writer)?;
+			let peer_state = peer_state_mutex.lock().unwrap();
+			peer_state.latest_features.write(writer)?;
+		}
+
 		Ok(())
 	}
 }
@@ -3256,6 +3303,16 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArg
 			claimable_htlcs.insert(payment_hash, previous_hops);
 		}
 
+		let peer_count: u64 = Readable::read(reader)?;
+		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, 128));
+		for _ in 0..peer_count {
+			let peer_pubkey = Readable::read(reader)?;
+			let peer_state = PeerState {
+				latest_features: Readable::read(reader)?,
+			};
+			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
+		}
+
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
@@ -3274,6 +3331,8 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArg
 				pending_msg_events: Vec::new(),
 			}),
 			our_network_key: args.keys_manager.get_node_secret(),
+
+			per_peer_state: RwLock::new(per_peer_state),
 
 			pending_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),

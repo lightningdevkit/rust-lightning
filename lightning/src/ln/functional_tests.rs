@@ -11,7 +11,7 @@ use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD
 use ln::channel::{Channel, ChannelError};
 use ln::onion_utils;
 use ln::router::{Route, RouteHop};
-use ln::features::{ChannelFeatures, InitFeatures};
+use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
 use util::enforcing_trait_impls::EnforcingChannelKeys;
@@ -852,9 +852,9 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let node_0_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let node_1_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_reestablish);
@@ -916,9 +916,9 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let node_0_2nd_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	if recv_count == 0 {
 		// If all closing_signeds weren't delivered we can just resume where we left off...
 		let node_1_2nd_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
@@ -1029,19 +1029,25 @@ fn fake_network_test() {
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
 		pubkey: nodes[2].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_2.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_3.0.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[3].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_3.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_4.1.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[1].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_4.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 1000000,
 		cltv_expiry_delta: TEST_FINAL_CLTV,
 	});
@@ -1052,19 +1058,25 @@ fn fake_network_test() {
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
 		pubkey: nodes[3].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_4.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_3.1.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[2].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_3.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 0,
 		cltv_expiry_delta: chan_2.1.contents.cltv_expiry_delta as u32
 	});
 	hops.push(RouteHop {
 		pubkey: nodes[1].node.get_our_node_id(),
+		node_features: NodeFeatures::empty(),
 		short_channel_id: chan_2.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::empty(),
 		fee_msat: 1000000,
 		cltv_expiry_delta: TEST_FINAL_CLTV,
 	});
@@ -3254,10 +3266,10 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
 
@@ -3451,9 +3463,9 @@ fn test_no_txn_manager_serialize_deserialize() {
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
@@ -3586,9 +3598,9 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	//... and we can even still claim the payment!
 	claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage, 1_000_000);
 
-	nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish = get_event_msg!(nodes[3], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
-	nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish);
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
@@ -5380,10 +5392,10 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	//Disconnect and Reconnect
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
@@ -6155,8 +6167,8 @@ fn test_data_loss_protect() {
 
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 
 	let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
@@ -6297,10 +6309,10 @@ fn test_announce_disable_channels() {
 		}
 	}
 	// Reconnect peers
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 3);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 3);
 

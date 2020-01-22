@@ -118,6 +118,13 @@ impl ChannelFeatures {
 			mark: PhantomData,
 		}
 	}
+
+	/// Takes the flags that we know how to interpret in an init-context features that are also
+	/// relevant in a channel-context features and creates a channel-context features from them.
+	pub(crate) fn with_known_relevant_init_flags(_init_ctx: &InitFeatures) -> Self {
+		// There are currently no channel flags defined that we understand.
+		Self { flags: Vec::new(), mark: PhantomData, }
+	}
 }
 
 impl NodeFeatures {
@@ -135,6 +142,17 @@ impl NodeFeatures {
 			flags: vec![2 | 1 << 5],
 			mark: PhantomData,
 		}
+	}
+
+	/// Takes the flags that we know how to interpret in an init-context features that are also
+	/// relevant in a node-context features and creates a node-context features from them.
+	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
+		let mut flags = Vec::new();
+		if init_ctx.flags.len() > 0 {
+			// Pull out data_loss_protect and upfront_shutdown_script (bits 0, 1, 4, and 5)
+			flags.push(init_ctx.flags.last().unwrap() & 0b00110011);
+		}
+		Self { flags, mark: PhantomData, }
 	}
 }
 
