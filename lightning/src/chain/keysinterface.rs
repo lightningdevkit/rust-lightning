@@ -30,43 +30,56 @@ use ln::msgs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// When on-chain outputs are created by rust-lightning an event is generated which informs the
-/// user thereof. This enum describes the format of the output and provides the OutPoint.
+/// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
+/// claim at any point in the future) an event is generated which you must track and be able to
+/// spend on-chain. The information needed to do this is provided in this enum, including the
+/// outpoint describing which txid and output index is available, the full output which exists at
+/// that txid/index, and any keys or other information required to sign.
 pub enum SpendableOutputDescriptor {
-	/// Outpoint with an output to a script which was provided via KeysInterface, thus you should
-	/// have stored somewhere how to spend script_pubkey!
-	/// Outputs from a justice tx, claim tx or preimage tx
+	/// An output to a script which was provided via KeysInterface, thus you should already know
+	/// how to spend it. No keys are provided as rust-lightning was never given any keys - only the
+	/// script_pubkey as it appears in the output.
+	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
+	/// on-chain using the payment preimage or after it has timed out.
 	StaticOutput {
-		/// The outpoint spendable by user wallet
+		/// The outpoint which is spendable
 		outpoint: OutPoint,
-		/// The output which is referenced by the given outpoint
+		/// The output which is referenced by the given outpoint.
 		output: TxOut,
 	},
-	/// Outpoint commits to a P2WSH
-	/// P2WSH should be spend by the following witness :
-	/// <local_delayedsig> 0 <witnessScript>
-	/// With input nSequence set to_self_delay.
-	/// Outputs from a HTLC-Success/Timeout tx/commitment tx
+	/// An output to a P2WSH script which can be spent with a single signature after a CSV delay.
+	/// The private key which should be used to sign the transaction is provided, as well as the
+	/// full witness redeemScript which is hashed in the output script_pubkey.
+	/// The witness in the spending input should be:
+	/// <BIP 143 signature generated with the given key> <one zero byte aka OP_0>
+	/// <witness_script as provided>
+	/// Note that the nSequence field in the input must be set to_self_delay (which corresponds to
+	/// the transaction not being broadcastable until at least to_self_delay blocks after the input
+	/// confirms).
+	/// These are generally the result of a "revocable" output to us, spendable only by us unless
+	/// it is an output from us having broadcast an old state (which should never happen).
 	DynamicOutputP2WSH {
-		/// Outpoint spendable by user wallet
+		/// The outpoint which is spendable
 		outpoint: OutPoint,
-		/// local_delayedkey = delayed_payment_basepoint_secret + SHA256(per_commitment_point || delayed_payment_basepoint) OR
+		/// The secret key which must be used to sign the spending transaction
 		key: SecretKey,
-		/// witness redeemScript encumbering output.
+		/// The witness redeemScript which is hashed to create the script_pubkey in the given output
 		witness_script: Script,
-		/// nSequence input must commit to self_delay to satisfy script's OP_CSV
+		/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
+		/// the witness_script.
 		to_self_delay: u16,
 		/// The output which is referenced by the given outpoint
 		output: TxOut,
 	},
-	/// Outpoint commits to a P2WPKH
-	/// P2WPKH should be spend by the following witness :
-	/// <local_sig> <local_pubkey>
-	/// Outputs to_remote from a commitment tx
+	/// An output to a P2WPKH, spendable exclusively by the given private key.
+	/// The witness in the spending input, is, thus, simply:
+	/// <BIP 143 signature generated with the given key> <public key derived from the given key>
+	/// These are generally the result of our counterparty having broadcast the current state,
+	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
 	DynamicOutputP2WPKH {
-		/// Outpoint spendable by user wallet
+		/// The outpoint which is spendable
 		outpoint: OutPoint,
-		/// localkey = payment_basepoint_secret + SHA256(per_commitment_point || payment_basepoint
+		/// The secret key which must be used to sign the spending transaction
 		key: SecretKey,
 		/// The output which is reference by the given outpoint
 		output: TxOut,
