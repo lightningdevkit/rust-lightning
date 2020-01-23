@@ -22,7 +22,7 @@ use secp256k1::{SecretKey, PublicKey};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
 use std::{mem};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -80,9 +80,19 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
+	pub broadcasted_txn: Mutex<HashSet<Sha256dHash>> // Temporary field while refactoring out tx duplication
 }
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
+		{
+			if let Some(_) = self.broadcasted_txn.lock().unwrap().get(&tx.txid()) {
+				// If commitment tx, HTLC-timeout or HTLC-Success, duplicate broadcast are still ok
+				if tx.input[0].sequence == 0xfffffffd {
+					return;
+				}
+			}
+		}
+		self.broadcasted_txn.lock().unwrap().insert(tx.txid());
 		self.txn_broadcasted.lock().unwrap().push(tx.clone());
 	}
 }
