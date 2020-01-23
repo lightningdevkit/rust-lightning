@@ -420,7 +420,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	// Constructors:
 	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError> {
-		let chan_keys = keys_provider.get_channel_keys(false);
+		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
@@ -532,7 +532,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
-		let mut chan_keys = keys_provider.get_channel_keys(true);
+		let mut chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
 		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
 			revocation_basepoint: msg.revocation_basepoint,
@@ -1418,7 +1418,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		let remote_signature = self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -2563,7 +2563,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
 		let our_sig = self.local_keys
-			.sign_closing_transaction(self.channel_value_satoshis, &self.get_funding_redeemscript(), &closing_tx, &self.secp_ctx)
+			.sign_closing_transaction(&self.get_funding_redeemscript(), &closing_tx, &self.secp_ctx)
 			.ok();
 		if our_sig.is_none() { return None; }
 
@@ -2719,7 +2719,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
 				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 1000, false);
 				let our_sig = self.local_keys
-					.sign_closing_transaction(self.channel_value_satoshis, &funding_redeemscript, &closing_tx, &self.secp_ctx)
+					.sign_closing_transaction(&funding_redeemscript, &closing_tx, &self.secp_ctx)
 					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
 				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee, our_sig.clone()));
 				return Ok((Some(msgs::ClosingSigned {
@@ -2754,7 +2754,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let our_sig = self.local_keys
-			.sign_closing_transaction(self.channel_value_satoshis, &funding_redeemscript, &closing_tx, &self.secp_ctx)
+			.sign_closing_transaction(&funding_redeemscript, &closing_tx, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
 		self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
 
@@ -3154,7 +3154,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn get_outbound_funding_created_signature(&mut self) -> Result<(Signature, Transaction), ChannelError> {
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		Ok((self.local_keys.sign_remote_commitment(self.channel_value_satoshis, self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		Ok((self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0, remote_initial_commitment_tx))
 	}
 
@@ -3462,7 +3462,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(self.channel_value_satoshis, feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
+			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -4101,7 +4101,9 @@ mod tests {
 			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
 		}
 
-		fn get_channel_keys(&self, _inbound: bool) -> InMemoryChannelKeys { self.chan_keys.clone() }
+		fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> InMemoryChannelKeys {
+			self.chan_keys.clone()
+		}
 		fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) { panic!(); }
 		fn get_channel_id(&self) -> [u8; 32] { [0; 32] }
 	}
@@ -4127,6 +4129,7 @@ mod tests {
 			revocation_base_key: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			commitment_seed: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
 			remote_channel_pubkeys: None,
+			channel_value_satoshis: 7000000000,
 		};
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);

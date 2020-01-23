@@ -247,7 +247,7 @@ impl KeysInterface for KeyProvider {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap())
 	}
 
-	fn get_channel_keys(&self, inbound: bool) -> EnforcingChannelKeys {
+	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		EnforcingChannelKeys::new(if inbound {
 			InMemoryChannelKeys {
@@ -258,6 +258,7 @@ impl KeysInterface for KeyProvider {
 				htlc_base_key:             SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, ctr]).unwrap(),
 				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, ctr],
 				remote_channel_pubkeys: None,
+				channel_value_satoshis: channel_value_satoshis,
 			}
 		} else {
 			InMemoryChannelKeys {
@@ -268,6 +269,7 @@ impl KeysInterface for KeyProvider {
 				htlc_base_key:             SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, ctr]).unwrap(),
 				commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, ctr],
 				remote_channel_pubkeys: None,
+				channel_value_satoshis: channel_value_satoshis,
 			}
 		})
 	}

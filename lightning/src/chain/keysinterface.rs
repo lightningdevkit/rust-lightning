@@ -86,7 +86,7 @@ pub trait KeysInterface: Send + Sync {
 	fn get_shutdown_pubkey(&self) -> PublicKey;
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
-	fn get_channel_keys(&self, inbound: bool) -> Self::ChanKeySigner;
+	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner;
 	/// Get a secret and PRNG seed for construting an onion packet
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
 	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
@@ -142,13 +142,13 @@ pub trait ChannelKeys : Send {
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	/// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, channel_value_satoshis: u64, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
-	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
@@ -180,8 +180,10 @@ pub struct InMemoryChannelKeys {
 	pub htlc_base_key: SecretKey,
 	/// Commitment seed
 	pub commitment_seed: [u8; 32],
-	/// Remote funding pubkey
+	/// Remote public keys and base points
 	pub remote_channel_pubkeys: Option<ChannelPublicKeys>,
+	/// The total value of this channel
+	pub channel_value_satoshis: u64,
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -192,14 +194,14 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, channel_value_satoshis: u64, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
 
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
 
-		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
+		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
 
 		let commitment_txid = commitment_tx.txid();
@@ -221,13 +223,13 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok((commitment_sig, htlc_sigs))
 	}
 
-	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_value_satoshis: u64, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		if closing_tx.input.len() != 1 { return Err(()); }
 		if closing_tx.input[0].witness.len() != 0 { return Err(()); }
 		if closing_tx.output.len() > 2 { return Err(()); }
 
 		let sighash = hash_to_message!(&bip143::SighashComponents::new(closing_tx)
-			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, channel_value_satoshis)[..]);
+			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
 		Ok(secp_ctx.sign(&sighash, &self.funding_key))
 	}
 
@@ -249,7 +251,8 @@ impl_writeable!(InMemoryChannelKeys, 0, {
 	delayed_payment_base_key,
 	htlc_base_key,
 	commitment_seed,
-	remote_channel_pubkeys
+	remote_channel_pubkeys,
+	channel_value_satoshis
 });
 
 /// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
@@ -358,7 +361,7 @@ impl KeysInterface for KeysManager {
 		self.shutdown_pubkey.clone()
 	}
 
-	fn get_channel_keys(&self, _inbound: bool) -> InMemoryChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> InMemoryChannelKeys {
 		// We only seriously intend to rely on the channel_master_key for true secure
 		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
 		// starting_time provided in the constructor) to be unique.
@@ -399,6 +402,7 @@ impl KeysInterface for KeysManager {
 			htlc_base_key,
 			commitment_seed,
 			remote_channel_pubkeys: None,
+			channel_value_satoshis,
 		}
 	}
 
