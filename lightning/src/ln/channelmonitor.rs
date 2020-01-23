@@ -2059,7 +2059,7 @@ impl ChannelMonitor {
 			assert!(predicted_weight >= spend_tx.get_weight());
 			let outpoint = BitcoinOutPoint { txid: spend_tx.txid(), vout: 0 };
 			let output = spend_tx.output[0].clone();
-			let height_timer = Self::get_height_timer(height, self.their_to_self_delay.unwrap() as u32); // We can safely unwrap given we are past channel opening
+			let height_timer = Self::get_height_timer(height, height + self.our_to_self_delay as u32);
 			log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", spend_tx.input[0].previous_output.txid, spend_tx.input[0].previous_output.vout, height_timer);
 			let mut per_input_material = HashMap::with_capacity(1);
 			per_input_material.insert(spend_tx.input[0].previous_output, InputMaterial::Revoked { script: redeemscript, pubkey: None, key: revocation_key, is_htlc: false, amount: tx.output[0].value });
