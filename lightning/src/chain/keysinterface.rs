@@ -148,7 +148,7 @@ pub trait ChannelKeys : Send {
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
-	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
@@ -223,10 +223,14 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok((commitment_sig, htlc_sigs))
 	}
 
-	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		if closing_tx.input.len() != 1 { return Err(()); }
 		if closing_tx.input[0].witness.len() != 0 { return Err(()); }
 		if closing_tx.output.len() > 2 { return Err(()); }
+
+		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
 
 		let sighash = hash_to_message!(&bip143::SighashComponents::new(closing_tx)
 			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);

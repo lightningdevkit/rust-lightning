@@ -2563,7 +2563,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
 		let our_sig = self.local_keys
-			.sign_closing_transaction(&self.get_funding_redeemscript(), &closing_tx, &self.secp_ctx)
+			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.ok();
 		if our_sig.is_none() { return None; }
 
@@ -2719,7 +2719,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
 				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 1000, false);
 				let our_sig = self.local_keys
-					.sign_closing_transaction(&funding_redeemscript, &closing_tx, &self.secp_ctx)
+					.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
 				self.last_sent_closing_fee = Some(($new_feerate, used_total_fee, our_sig.clone()));
 				return Ok((Some(msgs::ClosingSigned {
@@ -2754,7 +2754,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let our_sig = self.local_keys
-			.sign_closing_transaction(&funding_redeemscript, &closing_tx, &self.secp_ctx)
+			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
 		self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
 

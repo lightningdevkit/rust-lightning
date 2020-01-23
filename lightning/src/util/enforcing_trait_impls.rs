@@ -6,7 +6,6 @@ use std::cmp;
 use std::sync::Mutex;
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::script::Script;
 
 use secp256k1;
 use secp256k1::key::{SecretKey, PublicKey};
@@ -74,8 +73,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx).unwrap())
 	}
 
-	fn sign_closing_transaction<T: secp256k1::Signing>(&self, channel_funding_redeemscript: &Script, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		Ok(self.inner.sign_closing_transaction(channel_funding_redeemscript, closing_tx, secp_ctx).unwrap())
+	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
