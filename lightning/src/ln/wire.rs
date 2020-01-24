@@ -47,12 +47,18 @@ pub enum Message {
 	NodeAnnouncement(msgs::NodeAnnouncement),
 	ChannelUpdate(msgs::ChannelUpdate),
 	/// A message that could not be decoded because its type is unknown.
-	Unknown(u16),
+	Unknown(MessageType),
+}
+
+/// A number identifying a message to determine how it is encoded on the wire.
+#[derive(Clone, Copy)]
+pub struct MessageType {
+	number: u16,
 }
 
 impl Message {
 	/// Returns the type that was used to decode the message payload.
-	pub fn type_id(&self) -> u16 {
+	pub fn type_id(&self) -> MessageType {
 		match self {
 			&Message::Init(ref msg) => msg.type_id(),
 			&Message::Error(ref msg) => msg.type_id(),
@@ -79,6 +85,19 @@ impl Message {
 			&Message::ChannelUpdate(ref msg) => msg.type_id(),
 			&Message::Unknown(type_id) => type_id,
 		}
+	}
+}
+
+impl MessageType {
+	/// Returns whether the message type is even, indicating both endpoints must support it.
+	pub fn is_even(&self) -> bool {
+		(self.number & 1) == 0
+	}
+}
+
+impl ::std::fmt::Display for MessageType {
+	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+		write!(f, "{}", self.number)
 	}
 }
 
@@ -161,7 +180,7 @@ pub fn read<R: ::std::io::Read>(buffer: &mut R) -> Result<Message, msgs::DecodeE
 			Ok(Message::ChannelUpdate(Readable::read(buffer)?))
 		},
 		_ => {
-			Ok(Message::Unknown(message_type))
+			Ok(Message::Unknown(MessageType { number: message_type }))
 		},
 	}
 }
@@ -189,8 +208,8 @@ pub trait Encode {
 
 	/// Returns the type identifying the message payload. Convenience method for accessing
 	/// [`TYPE`](TYPE).
-	fn type_id(&self) -> u16 {
-		Self::TYPE
+	fn type_id(&self) -> MessageType {
+		MessageType { number: Self::TYPE }
 	}
 }
 
@@ -339,7 +358,7 @@ mod tests {
 		let mut reader = ::std::io::Cursor::new(buffer);
 		let message = read(&mut reader).unwrap();
 		match message {
-			Message::Unknown(::std::u16::MAX) => (),
+			Message::Unknown(MessageType { number: ::std::u16::MAX }) => (),
 			_ => panic!("Expected message type {}; found: {}", ::std::u16::MAX, message.type_id()),
 		}
 	}
@@ -371,5 +390,17 @@ mod tests {
 			},
 			_ => panic!("Expected pong message; found message type: {}", decoded_message.type_id()),
 		}
+	}
+
+	#[test]
+	fn is_even_message_type() {
+		let message = Message::Unknown(MessageType { number: 42 });
+		assert!(message.type_id().is_even());
+	}
+
+	#[test]
+	fn is_odd_message_type() {
+		let message = Message::Unknown(MessageType { number: 43 });
+		assert!(!message.type_id().is_even());
 	}
 }

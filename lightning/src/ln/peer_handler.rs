@@ -773,12 +773,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 											},
 
 											// Unknown messages:
-											wire::Message::Unknown(msg_type) => {
+											wire::Message::Unknown(msg_type) if msg_type.is_even() => {
 												// Fail the channel if message is an even, unknown type as per BOLT #1.
-												if (msg_type & 1) == 0 {
-													return Err(PeerHandleError{ no_connection_possible: true });
-												}
+												return Err(PeerHandleError{ no_connection_possible: true });
 											},
+											wire::Message::Unknown(_) => {},
 										}
 									}
 								}
