@@ -99,8 +99,9 @@ pub enum Event {
 		time_forwardable: Duration,
 	},
 	/// Used to indicate that an output was generated on-chain which you should know how to spend.
-	/// Such an output will *not* ever be spent by rust-lightning, so you need to store them
-	/// somewhere and spend them when you create on-chain spends.
+	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
+	/// counterparty spending them due to some kind of timeout. Thus, you need to store them
+	/// somewhere and spend them when you create on-chain transactions.
 	SpendableOutputs {
 		/// The outputs which you should store as spendable by you.
 		outputs: Vec<SpendableOutputDescriptor>,
