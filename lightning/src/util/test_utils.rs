@@ -46,7 +46,7 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 
 pub struct TestChannelMonitor {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor)>>,
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
 impl TestChannelMonitor {
