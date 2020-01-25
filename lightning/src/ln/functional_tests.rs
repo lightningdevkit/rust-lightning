@@ -6692,30 +6692,46 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	// Connect three more block to see if bumped penalty are issued for HTLC txn
 	let header_132 = connect_blocks(&nodes[0].block_notifier, 3, 129, true, header_129.bitcoin_hash());
-	let node_txn = {
+	let penalty_local_tx;
+	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 5); // 2 bumped penalty txn on offered/received HTLC outputs of revoked commitment tx + 1 penalty tx on to_local of revoked commitment tx + 2 bumped penalty tx on revoked HTLC txn
+		assert_eq!(node_txn.len(), 3); // 2 bumped penalty txn on offered/received HTLC outputs of revoked commitment tx + 1 penalty tx on to_local of revoked commitment tx + 2 bumped penalty tx on revoked HTLC txn
 
 		check_spends!(node_txn[0], revoked_local_txn[0].clone());
 		check_spends!(node_txn[1], revoked_local_txn[0].clone());
 
-		let mut penalty_local = ::std::usize::MAX;
+		check_spends!(node_txn[2], revoked_local_txn[0].clone());
+
+		penalty_local_tx = node_txn[2].clone();
+		node_txn.clear();
+	};
+	// Few more blocks to broadcast and confirm penalty_local_tx
+	let header_133 = BlockHeader { version: 0x20000000, prev_blockhash: header_132, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_133, txdata: vec![penalty_local_tx] }, 133);
+	let header_135 = connect_blocks(&nodes[0].block_notifier, 2, 133, true, header_133.bitcoin_hash());
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], revoked_local_txn[0].clone());
+		node_txn.clear();
+	}
+	let header_144 = connect_blocks(&nodes[0].block_notifier, 9, 135, true, header_135);
+	let node_txn = {
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 2);
+
 		let mut penalty_offered = ::std::usize::MAX;
 		let mut penalty_received = ::std::usize::MAX;
 
 		{
-			let iter_txn = node_txn[2..].iter();
-			for (i, tx) in iter_txn.enumerate() {
-				if tx.input[0].previous_output.txid == revoked_local_txn[0].txid() {
-					penalty_local = 2 + i;
-				} else if tx.input[0].previous_output.txid == revoked_htlc_txn[offered].txid() {
-					penalty_offered = 2+ i;
+			for (i, tx) in node_txn.iter().enumerate() {
+				if tx.input[0].previous_output.txid == revoked_htlc_txn[offered].txid() {
+					penalty_offered = i;
 				} else if tx.input[0].previous_output.txid == revoked_htlc_txn[received].txid() {
-					penalty_received = 2 + i;
+					penalty_received = i;
 				}
 			}
 		}
-		check_spends!(node_txn[penalty_local], revoked_local_txn[0].clone());
 
 		assert_eq!(node_txn[penalty_received].input.len(), 1);
 		assert_eq!(node_txn[penalty_received].output.len(), 1);
@@ -6733,24 +6749,17 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		let fee = revoked_htlc_txn[received].output[0].value - node_txn[penalty_received].output[0].value;
 		let new_feerate = fee * 1000 / node_txn[penalty_received].get_weight() as u64;
 		assert!(new_feerate * 100 > feerate_2 * 125);
-		let txn = vec![node_txn[2].clone(), node_txn[3].clone(), node_txn[4].clone()];
+		let txn = vec![node_txn[0].clone(), node_txn[1].clone()];
 		node_txn.clear();
 		txn
 	};
 	// Broadcast claim txn and confirm blocks to avoid further bumps on this outputs
-	let header_133 = BlockHeader { version: 0x20000000, prev_blockhash: header_132, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_133, txdata: node_txn }, 133);
-	let header_140 = connect_blocks(&nodes[0].block_notifier, 6, 134, true, header_133.bitcoin_hash());
+	let header_145 = BlockHeader { version: 0x20000000, prev_blockhash: header_144, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_145, txdata: node_txn }, 145);
+	connect_blocks(&nodes[0].block_notifier, 20, 145, true, header_145.bitcoin_hash());
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		node_txn.clear();
-	}
-
-	// Connect few more blocks and check only penalty transaction for to_local output have been issued
-	connect_blocks(&nodes[0].block_notifier, 7, 140, true, header_140);
-	{
-		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 2); //TODO: should be zero when we fix check_spend_remote_htlc
+		assert_eq!(node_txn.len(), 2); //TODO: fix check_spend_remote_htlc lack of watch output
 		node_txn.clear();
 	}
 	check_closed_broadcast!(nodes[0], false);
