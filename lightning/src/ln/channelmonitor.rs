@@ -1771,11 +1771,11 @@ impl ChannelMonitor {
 					let mut inputs_info = Vec::new();
 
 					macro_rules! sign_input {
-						($sighash_parts: expr, $input: expr, $amount: expr, $preimage: expr) => {
+						($sighash_parts: expr, $input: expr, $amount: expr, $preimage: expr, $idx: expr) => {
 							{
 								let (sig, redeemscript, htlc_key) = match self.key_storage {
 									Storage::Local { ref htlc_base_key, .. } => {
-										let htlc = &per_commitment_option.unwrap()[$input.sequence as usize].0;
+										let htlc = &per_commitment_option.unwrap()[$idx as usize].0;
 										let redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 										let sighash = hash_to_message!(&$sighash_parts.sighash_all(&$input, &redeemscript, $amount)[..]);
 										let htlc_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &htlc_base_key));
@@ -1804,19 +1804,19 @@ impl ChannelMonitor {
 							}
 							if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 								if htlc.offered {
-									let input = TxIn {
+									let mut input = TxIn {
 										previous_output: BitcoinOutPoint {
 											txid: commitment_txid,
 											vout: transaction_output_index,
 										},
 										script_sig: Script::new(),
-										sequence: idx as u32, // reset to 0xfffffffd in sign_input
+										sequence: 0xff_ff_ff_fd,
 										witness: Vec::new(),
 									};
 									if htlc.cltv_expiry > height + CLTV_SHARED_CLAIM_BUFFER {
 										inputs.push(input);
 										inputs_desc.push(if htlc.offered { InputDescriptors::OfferedHTLC } else { InputDescriptors::ReceivedHTLC });
-										inputs_info.push((payment_preimage, tx.output[transaction_output_index as usize].value, htlc.cltv_expiry));
+										inputs_info.push((payment_preimage, tx.output[transaction_output_index as usize].value, htlc.cltv_expiry, idx));
 										total_value += tx.output[transaction_output_index as usize].value;
 									} else {
 										let mut single_htlc_tx = Transaction {
@@ -1833,7 +1833,7 @@ impl ChannelMonitor {
 										let mut used_feerate;
 										if subtract_high_prio_fee!(self, fee_estimator, single_htlc_tx.output[0].value, predicted_weight, used_feerate) {
 											let sighash_parts = bip143::SighashComponents::new(&single_htlc_tx);
-											let (redeemscript, htlc_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec());
+											let (redeemscript, htlc_key) = sign_input!(sighash_parts, single_htlc_tx.input[0], htlc.amount_msat / 1000, payment_preimage.0.to_vec(), idx);
 											assert!(predicted_weight >= single_htlc_tx.get_weight());
 											spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 												outpoint: BitcoinOutPoint { txid: single_htlc_tx.txid(), vout: 0 },
@@ -1864,7 +1864,7 @@ impl ChannelMonitor {
 										vout: transaction_output_index,
 									},
 									script_sig: Script::new(),
-									sequence: idx as u32,
+									sequence: 0xff_ff_ff_fd,
 									witness: Vec::new(),
 								};
 								let mut timeout_tx = Transaction {
@@ -1881,7 +1881,7 @@ impl ChannelMonitor {
 								let mut used_feerate;
 								if subtract_high_prio_fee!(self, fee_estimator, timeout_tx.output[0].value, predicted_weight, used_feerate) {
 									let sighash_parts = bip143::SighashComponents::new(&timeout_tx);
-									let (redeemscript, htlc_key) = sign_input!(sighash_parts, timeout_tx.input[0], htlc.amount_msat / 1000, vec![0]);
+									let (redeemscript, htlc_key) = sign_input!(sighash_parts, timeout_tx.input[0], htlc.amount_msat / 1000, vec![0], idx);
 									assert!(predicted_weight >= timeout_tx.get_weight());
 									//TODO: track SpendableOutputDescriptor
 									log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", timeout_tx.input[0].previous_output.txid, timeout_tx.input[0].previous_output.vout, height_timer);
@@ -1933,7 +1933,7 @@ impl ChannelMonitor {
 					let height_timer = Self::get_height_timer(height, soonest_timelock);
 					let spend_txid = spend_tx.txid();
 					for (input, info) in spend_tx.input.iter_mut().zip(inputs_info.iter()) {
-						let (redeemscript, htlc_key) = sign_input!(sighash_parts, input, info.1, (info.0).0.to_vec());
+						let (redeemscript, htlc_key) = sign_input!(sighash_parts, input, info.1, (info.0).0.to_vec(), info.3);
 						log_trace!(self, "Outpoint {}:{} is being being claimed, if it doesn't succeed, a bumped claiming txn is going to be broadcast at height {}", input.previous_output.txid, input.previous_output.vout, height_timer);
 						per_input_material.insert(input.previous_output, InputMaterial::RemoteHTLC { script: redeemscript, key: htlc_key, preimage: Some(*(info.0)), amount: info.1, locktime: 0});
 						match self.claimable_outpoints.entry(input.previous_output) {
@@ -2871,7 +2871,6 @@ impl ChannelMonitor {
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
 				&InputMaterial::Revoked { ref script, ref is_htlc, ref amount, .. } => {
-					log_trace!(self, "Is HLTC ? {}", is_htlc);
 					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { unreachable!() });
 					amt += *amount;
 				},
