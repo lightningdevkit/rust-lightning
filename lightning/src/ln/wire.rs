@@ -52,9 +52,7 @@ pub enum Message {
 
 /// A number identifying a message to determine how it is encoded on the wire.
 #[derive(Clone, Copy)]
-pub struct MessageType {
-	number: u16,
-}
+pub struct MessageType(u16);
 
 impl Message {
 	/// Returns the type that was used to decode the message payload.
@@ -91,13 +89,13 @@ impl Message {
 impl MessageType {
 	/// Returns whether the message type is even, indicating both endpoints must support it.
 	pub fn is_even(&self) -> bool {
-		(self.number & 1) == 0
+		(self.0 & 1) == 0
 	}
 }
 
 impl ::std::fmt::Display for MessageType {
 	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-		write!(f, "{}", self.number)
+		write!(f, "{}", self.0)
 	}
 }
 
@@ -180,7 +178,7 @@ pub fn read<R: ::std::io::Read>(buffer: &mut R) -> Result<Message, msgs::DecodeE
 			Ok(Message::ChannelUpdate(Readable::read(buffer)?))
 		},
 		_ => {
-			Ok(Message::Unknown(MessageType { number: message_type }))
+			Ok(Message::Unknown(MessageType(message_type)))
 		},
 	}
 }
@@ -209,7 +207,7 @@ pub trait Encode {
 	/// Returns the type identifying the message payload. Convenience method for accessing
 	/// [`TYPE`](TYPE).
 	fn type_id(&self) -> MessageType {
-		MessageType { number: Self::TYPE }
+		MessageType(Self::TYPE)
 	}
 }
 
@@ -358,7 +356,7 @@ mod tests {
 		let mut reader = ::std::io::Cursor::new(buffer);
 		let message = read(&mut reader).unwrap();
 		match message {
-			Message::Unknown(MessageType { number: ::std::u16::MAX }) => (),
+			Message::Unknown(MessageType(::std::u16::MAX)) => (),
 			_ => panic!("Expected message type {}; found: {}", ::std::u16::MAX, message.type_id()),
 		}
 	}
@@ -394,13 +392,13 @@ mod tests {
 
 	#[test]
 	fn is_even_message_type() {
-		let message = Message::Unknown(MessageType { number: 42 });
+		let message = Message::Unknown(MessageType(42));
 		assert!(message.type_id().is_even());
 	}
 
 	#[test]
 	fn is_odd_message_type() {
-		let message = Message::Unknown(MessageType { number: 43 });
+		let message = Message::Unknown(MessageType(43));
 		assert!(!message.type_id().is_even());
 	}
 }
