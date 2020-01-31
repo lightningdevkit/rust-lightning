@@ -16,6 +16,7 @@ use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::Secp256k1;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1;
+use std::marker::PhantomData;
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -126,6 +127,7 @@ pub(super) fn build_onion_payloads(route: &Route, starting_htlc_offset: u32) -> 
 				short_channel_id: last_short_channel_id,
 				amt_to_forward: value_msat,
 				outgoing_cltv_value: cltv,
+				padding: PhantomData,
 			},
 			hmac: [0; 32],
 		});
@@ -429,6 +431,8 @@ mod tests {
 	use ln::router::{Route, RouteHop};
 	use ln::msgs;
 	use util::ser::Writeable;
+	
+	use std::marker::PhantomData;
 
 	use hex;
 
@@ -521,6 +525,7 @@ mod tests {
 					short_channel_id: 0,
 					amt_to_forward: 0,
 					outgoing_cltv_value: 0,
+					padding: PhantomData,
 				},
 				hmac: [0; 32],
 			},
@@ -530,6 +535,7 @@ mod tests {
 					short_channel_id: 0x0101010101010101,
 					amt_to_forward: 0x0100000001,
 					outgoing_cltv_value: 0,
+					padding: PhantomData,
 				},
 				hmac: [0; 32],
 			},
@@ -539,6 +545,7 @@ mod tests {
 					short_channel_id: 0x0202020202020202,
 					amt_to_forward: 0x0200000002,
 					outgoing_cltv_value: 0,
+					padding: PhantomData,
 				},
 				hmac: [0; 32],
 			},
@@ -548,6 +555,7 @@ mod tests {
 					short_channel_id: 0x0303030303030303,
 					amt_to_forward: 0x0300000003,
 					outgoing_cltv_value: 0,
+					padding: PhantomData,
 				},
 				hmac: [0; 32],
 			},
@@ -557,6 +565,7 @@ mod tests {
 					short_channel_id: 0x0404040404040404,
 					amt_to_forward: 0x0400000004,
 					outgoing_cltv_value: 0,
+					padding: PhantomData,
 				},
 				hmac: [0; 32],
 			},

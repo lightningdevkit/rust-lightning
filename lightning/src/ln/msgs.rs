@@ -27,6 +27,7 @@ use std::error::Error;
 use std::{cmp, fmt};
 use std::io::Read;
 use std::result::Result;
+use std::marker::PhantomData;
 
 use util::events;
 use util::ser::{Readable, Writeable, Writer};
@@ -610,7 +611,7 @@ pub(crate) struct OnionRealm0HopData {
 	pub(crate) short_channel_id: u64,
 	pub(crate) amt_to_forward: u64,
 	pub(crate) outgoing_cltv_value: u32,
-	// 12 bytes of 0-padding
+	pub(crate) padding: PhantomData<[u8; 12]>,
 }
 
 mod fuzzy_internal_msgs {
@@ -964,7 +965,7 @@ impl Writeable for OnionRealm0HopData {
 		self.short_channel_id.write(w)?;
 		self.amt_to_forward.write(w)?;
 		self.outgoing_cltv_value.write(w)?;
-		w.write_all(&[0;12])?;
+		self.padding.write(w)?;
 		Ok(())
 	}
 }
@@ -974,11 +975,8 @@ impl<R: Read> Readable<R> for OnionRealm0HopData {
 		Ok(OnionRealm0HopData {
 			short_channel_id: Readable::read(r)?,
 			amt_to_forward: Readable::read(r)?,
-			outgoing_cltv_value: {
-				let v: u32 = Readable::read(r)?;
-				r.read_exact(&mut [0; 12])?;
-				v
-			}
+			outgoing_cltv_value: Readable::read(r)?,
+			padding: Readable::read(r)?,
 		})
 	}
 }

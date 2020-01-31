@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Mutex;
+use std::marker::PhantomData;
 
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
@@ -208,6 +209,7 @@ macro_rules! impl_array {
 impl_array!(3); // for rgb
 impl_array!(4); // for IPv4
 impl_array!(10); // for OnionV2
+impl_array!(12); // for OnionRealm0HopData
 impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
 impl_array!(33); // for PublicKey
@@ -389,6 +391,20 @@ impl<R: Read> Readable<R> for PaymentPreimage {
 impl Writeable for PaymentHash {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.0.write(w)
+	}
+}
+
+impl<R: Read> Readable<R> for PhantomData<[u8; 12]> {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		let _buf: [u8; 12] = Readable::read(r)?; 
+		Ok(PhantomData)
+	}
+}
+
+impl Writeable for PhantomData<[u8; 12]> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.write_all(&[0; 12])?;
+		Ok(())
 	}
 }
 
