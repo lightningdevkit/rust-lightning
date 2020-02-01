@@ -384,7 +384,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			3 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
+				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0])) {
 					Ok(res) => assert!(!res),
 					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
 				}

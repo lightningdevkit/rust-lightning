@@ -62,7 +62,7 @@ impl Connection {
 			//TODO: There's a race where we don't meet the requirements of socket_disconnected if its
 			//called right here, after we release the us_ref lock in the scope above, but before we
 			//call read_event!
-			match peer_manager.read_event(&mut SocketDescriptor::new(us_ref.clone(), peer_manager.clone()), pending_read) {
+			match peer_manager.read_event(&mut SocketDescriptor::new(us_ref.clone(), peer_manager.clone()), &pending_read) {
 				Ok(pause_read) => {
 					if pause_read {
 						let mut lock = us_ref.lock().unwrap();
@@ -181,7 +181,7 @@ impl<CMH: ChannelMessageHandler> peer_handler::SocketDescriptor for SocketDescri
 					}
 					if !read_data.is_empty() {
 						let mut us_clone = $us_ref.clone();
-						match $us_ref.peer_manager.read_event(&mut us_clone, read_data) {
+						match $us_ref.peer_manager.read_event(&mut us_clone, &read_data) {
 							Ok(pause_read) => {
 								if pause_read { return Ok(()); }
 							},
