@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Mutex;
+use std::cmp;
 
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
@@ -67,6 +68,85 @@ impl Writer for VecWriter {
 	}
 }
 
+/// Writer that only tracks the amount of data written - useful if you need to calculate the length
+/// of some data when serialized but don't yet need the full data.
+pub(crate) struct LengthCalculatingWriter(pub usize);
+impl Writer for LengthCalculatingWriter {
+	#[inline]
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+		self.0 += buf.len();
+		Ok(())
+	}
+	#[inline]
+	fn size_hint(&mut self, _size: usize) {}
+}
+
+/// Essentially std::io::Take but a bit simpler and with a method to walk the underlying stream
+/// forward to ensure we always consume exactly the fixed length specified.
+pub(crate) struct FixedLengthReader<R: Read> {
+	read: R,
+	bytes_read: u64,
+	total_bytes: u64,
+}
+impl<R: Read> FixedLengthReader<R> {
+	pub fn new(read: R, total_bytes: u64) -> Self {
+		Self { read, bytes_read: 0, total_bytes }
+	}
+
+	pub fn bytes_remain(&mut self) -> bool {
+		self.bytes_read != self.total_bytes
+	}
+
+	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
+		::std::io::copy(self, &mut ::std::io::sink()).unwrap();
+		if self.bytes_read != self.total_bytes {
+			Err(DecodeError::ShortRead)
+		} else {
+			Ok(())
+		}
+	}
+}
+impl<R: Read> Read for FixedLengthReader<R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
+		if self.total_bytes == self.bytes_read {
+			Ok(0)
+		} else {
+			let read_len = cmp::min(dest.len() as u64, self.total_bytes - self.bytes_read);
+			match self.read.read(&mut dest[0..(read_len as usize)]) {
+				Ok(v) => {
+					self.bytes_read += v as u64;
+					Ok(v)
+				},
+				Err(e) => Err(e),
+			}
+		}
+	}
+}
+
+/// A Read which tracks whether any bytes have been read at all. This allows us to distinguish
+/// between "EOF reached before we started" and "EOF reached mid-read".
+pub(crate) struct ReadTrackingReader<R: Read> {
+	read: R,
+	pub have_read: bool,
+}
+impl<R: Read> ReadTrackingReader<R> {
+	pub fn new(read: R) -> Self {
+		Self { read, have_read: false }
+	}
+}
+impl<R: Read> Read for ReadTrackingReader<R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
+		match self.read.read(dest) {
+			Ok(0) => Ok(0),
+			Ok(len) => {
+				self.have_read = true;
+				Ok(len)
+			},
+			Err(e) => Err(e),
+		}
+	}
+}
+
 /// A trait that various rust-lightning types implement allowing them to be written out to a Writer
 pub trait Writeable {
 	/// Writes self out to the given Writer
@@ -125,6 +205,76 @@ impl<R: Read> Readable<R> for U48 {
 	}
 }
 
+/// Lightning TLV uses a custom variable-length integer called BigSize. It is similar to Bitcoin's
+/// variable-length integers except that it is serialized in big-endian instead of little-endian.
+///
+/// Like Bitcoin's variable-length integer, it exhibits ambiguity in that certain values can be
+/// encoded in several different ways, which we must check for at deserialization-time. Thus, if
+/// you're looking for an example of a variable-length integer to use for your own project, move
+/// along, this is a rather poor design.
+pub(crate) struct BigSize(pub u64);
+impl Writeable for BigSize {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self.0 {
+			0...0xFC => {
+				(self.0 as u8).write(writer)
+			},
+			0xFD...0xFFFF => {
+				0xFDu8.write(writer)?;
+				(self.0 as u16).write(writer)
+			},
+			0x10000...0xFFFFFFFF => {
+				0xFEu8.write(writer)?;
+				(self.0 as u32).write(writer)
+			},
+			_ => {
+				0xFFu8.write(writer)?;
+				(self.0 as u64).write(writer)
+			},
+		}
+	}
+}
+impl<R: Read> Readable<R> for BigSize {
+	#[inline]
+	fn read(reader: &mut R) -> Result<BigSize, DecodeError> {
+		let n: u8 = Readable::read(reader)?;
+		match n {
+			0xFF => {
+				let x: u64 = Readable::read(reader)?;
+				if x < 0x100000000 {
+					Err(DecodeError::InvalidValue)
+				} else {
+					Ok(BigSize(x))
+				}
+			}
+			0xFE => {
+				let x: u32 = Readable::read(reader)?;
+				if x < 0x10000 {
+					Err(DecodeError::InvalidValue)
+				} else {
+					Ok(BigSize(x as u64))
+				}
+			}
+			0xFD => {
+				let x: u16 = Readable::read(reader)?;
+				if x < 0xFD {
+					Err(DecodeError::InvalidValue)
+				} else {
+					Ok(BigSize(x as u64))
+				}
+			}
+			n => Ok(BigSize(n as u64))
+		}
+	}
+}
+
+/// In TLV we occasionally send fields which only consist of, or potentially end with, a
+/// variable-length integer which is simply truncated by skipping high zero bytes. This type
+/// encapsulates such integers implementing Readable/Writeable for them.
+#[cfg_attr(test, derive(PartialEq, Debug))]
+pub(crate) struct HighZeroBytesDroppedVarInt<T>(pub T);
+
 macro_rules! impl_writeable_primitive {
 	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
 		impl Writeable for $val_type {
@@ -133,12 +283,43 @@ macro_rules! impl_writeable_primitive {
 				writer.write_all(&$meth_write(*self))
 			}
 		}
+		impl Writeable for HighZeroBytesDroppedVarInt<$val_type> {
+			#[inline]
+			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+				// Skip any full leading 0 bytes when writing (in BE):
+				writer.write_all(&$meth_write(self.0)[(self.0.leading_zeros()/8) as usize..$len])
+			}
+		}
 		impl<R: Read> Readable<R> for $val_type {
 			#[inline]
 			fn read(reader: &mut R) -> Result<$val_type, DecodeError> {
 				let mut buf = [0; $len];
 				reader.read_exact(&mut buf)?;
 				Ok($meth_read(&buf))
+			}
+		}
+		impl<R: Read> Readable<R> for HighZeroBytesDroppedVarInt<$val_type> {
+			#[inline]
+			fn read(reader: &mut R) -> Result<HighZeroBytesDroppedVarInt<$val_type>, DecodeError> {
+				// We need to accept short reads (read_len == 0) as "EOF" and handle them as simply
+				// the high bytes being dropped. To do so, we start reading into the middle of buf
+				// and then convert the appropriate number of bytes with extra high bytes out of
+				// buf.
+				let mut buf = [0; $len*2];
+				let mut read_len = reader.read(&mut buf[$len..])?;
+				let mut total_read_len = read_len;
+				while read_len != 0 && total_read_len != $len {
+					read_len = reader.read(&mut buf[($len + total_read_len)..])?;
+					total_read_len += read_len;
+				}
+				if total_read_len == 0 || buf[$len] != 0 {
+					let first_byte = $len - ($len - total_read_len);
+					Ok(HighZeroBytesDroppedVarInt($meth_read(&buf[first_byte..first_byte + $len])))
+				} else {
+					// If the encoding had extra zero bytes, return a failure even though we know
+					// what they meant (as the TLV test vectors require this)
+					Err(DecodeError::InvalidValue)
+				}
 			}
 		}
 	}
