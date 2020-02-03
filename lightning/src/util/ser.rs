@@ -57,7 +57,7 @@ impl<'a, W: Writer + 'a> Write for WriterWriteAdaptor<'a, W> {
 	}
 }
 
-struct VecWriter(Vec<u8>);
+pub(crate) struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.extend_from_slice(buf);
