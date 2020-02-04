@@ -121,8 +121,8 @@ impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMon
 		ret
 	}
 
-	fn fetch_pending_htlc_updated(&self) -> Vec<HTLCUpdate> {
-		return self.simple_monitor.fetch_pending_htlc_updated();
+	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
+		return self.simple_monitor.get_and_clear_pending_htlcs_updated();
 	}
 }
 

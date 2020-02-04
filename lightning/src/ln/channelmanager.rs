@@ -2549,7 +2549,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> events::MessageSendEventsProvider for Ch
 		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
 		{
 			//TODO: This behavior should be documented.
-			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
+			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
 					log_trace!(self, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
@@ -2574,7 +2574,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> events::EventsProvider for ChannelManage
 		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
 		{
 			//TODO: This behavior should be documented.
-			for htlc_update in self.monitor.fetch_pending_htlc_updated() {
+			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
 					log_trace!(self, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
