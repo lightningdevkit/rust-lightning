@@ -3,26 +3,30 @@ use ln::msgs;
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
 use std::cmp;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
 
 use bitcoin::blockdata::transaction::Transaction;
 
 use secp256k1;
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::{Secp256k1, Signature};
+use util::ser::{Writeable, Writer, Readable};
+use std::io::Error;
+use ln::msgs::DecodeError;
 
 /// Enforces some rules on ChannelKeys calls. Eventually we will probably want to expose a variant
 /// of this which would essentially be what you'd want to run on a hardware wallet.
+#[derive(Clone)]
 pub struct EnforcingChannelKeys {
 	pub inner: InMemoryChannelKeys,
-	commitment_number_obscure_and_last: Mutex<(Option<u64>, u64)>,
+	commitment_number_obscure_and_last: Arc<Mutex<(Option<u64>, u64)>>,
 }
 
 impl EnforcingChannelKeys {
 	pub fn new(inner: InMemoryChannelKeys) -> Self {
 		Self {
 			inner,
-			commitment_number_obscure_and_last: Mutex::new((None, 0)),
+			commitment_number_obscure_and_last: Arc::new(Mutex::new((None, 0))),
 		}
 	}
 }
@@ -30,9 +34,9 @@ impl EnforcingChannelKeys {
 impl EnforcingChannelKeys {
 	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
 	                                                               keys: &TxCreationKeys) {
-		let revocation_base = PublicKey::from_secret_key(secp_ctx, &self.inner.revocation_base_key);
-		let payment_base = PublicKey::from_secret_key(secp_ctx, &self.inner.payment_base_key);
-		let htlc_base = PublicKey::from_secret_key(secp_ctx, &self.inner.htlc_base_key);
+		let revocation_base = PublicKey::from_secret_key(secp_ctx, &self.inner.revocation_base_key());
+		let payment_base = PublicKey::from_secret_key(secp_ctx, &self.inner.payment_base_key());
+		let htlc_base = PublicKey::from_secret_key(secp_ctx, &self.inner.htlc_base_key());
 
 		let remote_points = self.inner.remote_channel_pubkeys.as_ref().unwrap();
 
@@ -54,6 +58,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 	fn delayed_payment_base_key(&self) -> &SecretKey { self.inner.delayed_payment_base_key() }
 	fn htlc_base_key(&self) -> &SecretKey { self.inner.htlc_base_key() }
 	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }
+	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { self.inner.pubkeys() }
 
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
@@ -86,8 +91,23 @@ impl ChannelKeys for EnforcingChannelKeys {
 	}
 }
 
+impl Writeable for EnforcingChannelKeys {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		self.inner.write(writer)?;
+		let (obscure, last) = *self.commitment_number_obscure_and_last.lock().unwrap();
+		obscure.write(writer)?;
+		last.write(writer)?;
+		Ok(())
+	}
+}
 
-impl_writeable!(EnforcingChannelKeys, 0, {
-	inner,
-	commitment_number_obscure_and_last
-});
+impl<R: ::std::io::Read> Readable<R> for EnforcingChannelKeys {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		let inner = Readable::read(reader)?;
+		let obscure_and_last = Readable::read(reader)?;
+		Ok(EnforcingChannelKeys {
+			inner: inner,
+			commitment_number_obscure_and_last: Arc::new(Mutex::new(obscure_and_last))
+		})
+	}
+}

@@ -3,7 +3,7 @@
 //! claim outputs on-chain.
 
 use chain::transaction::OutPoint;
-use chain::keysinterface::{KeysInterface, SpendableOutputDescriptor};
+use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
 use chain::chaininterface::{ChainListener, ChainWatchInterfaceUtil, BlockNotifier};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT};
@@ -3432,8 +3432,8 @@ fn test_invalid_channel_announcement() {
 
 	nodes[0].router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
-	let as_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &as_chan.get_local_keys().inner.funding_key);
-	let bs_bitcoin_key = PublicKey::from_secret_key(&secp_ctx, &bs_chan.get_local_keys().inner.funding_key);
+	let as_bitcoin_key = as_chan.get_local_keys().inner.local_channel_pubkeys.funding_pubkey;
+	let bs_bitcoin_key = bs_chan.get_local_keys().inner.local_channel_pubkeys.funding_pubkey;
 
 	let as_network_key = nodes[0].node.get_our_node_id();
 	let bs_network_key = nodes[1].node.get_our_node_id();
@@ -3460,8 +3460,8 @@ fn test_invalid_channel_announcement() {
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
 			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
-			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().inner.funding_key);
-			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().inner.funding_key);
+			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().inner.funding_key());
+			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().inner.funding_key());
 			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
 			let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].keys_manager.get_node_secret());
 			chan_announcement = msgs::ChannelAnnouncement {
@@ -3510,7 +3510,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }));
 	nodes[0].chan_monitor = &new_chan_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+	let (_, mut chan_0_monitor) = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
@@ -3580,7 +3580,7 @@ fn test_simple_manager_serialize_deserialize() {
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }));
 	nodes[0].chan_monitor = &new_chan_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+	let (_, mut chan_0_monitor) = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
@@ -3647,7 +3647,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(Sha256dHash, ChannelMonitor)>::read(&mut read, Arc::new(test_utils::TestLogger::new())).unwrap();
+		let (_, monitor) = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, Arc::new(test_utils::TestLogger::new())).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}
@@ -6310,7 +6310,7 @@ fn test_data_loss_protect() {
 
 	// Restore node A from previous state
 	let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::with_id(format!("node {}", 0)));
-	let mut chan_monitor = <(Sha256dHash, ChannelMonitor)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0), Arc::clone(&logger)).unwrap().1;
+	let mut chan_monitor = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0), Arc::clone(&logger)).unwrap().1;
 	let chain_monitor = Arc::new(ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
 	let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });

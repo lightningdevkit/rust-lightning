@@ -16,12 +16,12 @@ use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin_hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::{Secp256k1, Signature};
+use secp256k1::{Secp256k1, Signature, Signing};
 use secp256k1;
 
 use util::byte_utils;
 use util::logger::Logger;
-use util::ser::Writeable;
+use util::ser::{Writeable, Writer, Readable};
 
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys};
@@ -29,6 +29,8 @@ use ln::msgs;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::io::Error;
+use ln::msgs::DecodeError;
 
 /// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
 /// claim at any point in the future) an event is generated which you must track and be able to
@@ -133,7 +135,8 @@ pub trait KeysInterface: Send + Sync {
 /// (TODO: We shouldn't require that, and should have an API to get them at deser time, due mostly
 /// to the possibility of reentrancy issues by calling the user's code during our deserialization
 /// routine).
-pub trait ChannelKeys : Send {
+/// TODO: remove Clone once we start returning ChannelUpdate objects instead of copying ChannelMonitor
+pub trait ChannelKeys : Send+Clone {
 	/// Gets the private key for the anchor tx
 	fn funding_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key for blinded revocation pubkey
@@ -147,6 +150,8 @@ pub trait ChannelKeys : Send {
 	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the commitment seed
 	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
+	/// Gets the local channel public keys and basepoints
+	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys;
 
 	/// Create a signature for a remote commitment transaction and associated HTLC transactions.
 	///
@@ -182,21 +187,68 @@ pub trait ChannelKeys : Send {
 /// A simple implementation of ChannelKeys that just keeps the private keys in memory.
 pub struct InMemoryChannelKeys {
 	/// Private key of anchor tx
-	pub funding_key: SecretKey,
+	funding_key: SecretKey,
 	/// Local secret key for blinded revocation pubkey
-	pub revocation_base_key: SecretKey,
+	revocation_base_key: SecretKey,
 	/// Local secret key used in commitment tx htlc outputs
-	pub payment_base_key: SecretKey,
+	payment_base_key: SecretKey,
 	/// Local secret key used in HTLC tx
-	pub delayed_payment_base_key: SecretKey,
+	delayed_payment_base_key: SecretKey,
 	/// Local htlc secret key used in commitment tx htlc outputs
-	pub htlc_base_key: SecretKey,
+	htlc_base_key: SecretKey,
 	/// Commitment seed
-	pub commitment_seed: [u8; 32],
+	commitment_seed: [u8; 32],
+	/// Local public keys and basepoints
+	pub(crate) local_channel_pubkeys: ChannelPublicKeys,
 	/// Remote public keys and base points
-	pub remote_channel_pubkeys: Option<ChannelPublicKeys>,
+	pub(crate) remote_channel_pubkeys: Option<ChannelPublicKeys>,
 	/// The total value of this channel
-	pub channel_value_satoshis: u64,
+	channel_value_satoshis: u64,
+}
+
+impl InMemoryChannelKeys {
+	/// Create a new InMemoryChannelKeys
+	pub fn new<C: Signing>(
+		secp_ctx: &Secp256k1<C>,
+		funding_key: SecretKey,
+		revocation_base_key: SecretKey,
+		payment_base_key: SecretKey,
+		delayed_payment_base_key: SecretKey,
+		htlc_base_key: SecretKey,
+		commitment_seed: [u8; 32],
+		channel_value_satoshis: u64) -> InMemoryChannelKeys {
+		let local_channel_pubkeys =
+			InMemoryChannelKeys::make_local_keys(secp_ctx, &funding_key, &revocation_base_key,
+			                                     &payment_base_key, &delayed_payment_base_key,
+			                                     &htlc_base_key);
+		InMemoryChannelKeys {
+			funding_key,
+			revocation_base_key,
+			payment_base_key,
+			delayed_payment_base_key,
+			htlc_base_key,
+			commitment_seed,
+			channel_value_satoshis,
+			local_channel_pubkeys,
+			remote_channel_pubkeys: None,
+		}
+	}
+
+	fn make_local_keys<C: Signing>(secp_ctx: &Secp256k1<C>,
+	                               funding_key: &SecretKey,
+	                               revocation_base_key: &SecretKey,
+	                               payment_base_key: &SecretKey,
+	                               delayed_payment_base_key: &SecretKey,
+	                               htlc_base_key: &SecretKey) -> ChannelPublicKeys {
+		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
+		ChannelPublicKeys {
+			funding_pubkey: from_secret(&funding_key),
+			revocation_basepoint: from_secret(&revocation_base_key),
+			payment_basepoint: from_secret(&payment_base_key),
+			delayed_payment_basepoint: from_secret(&delayed_payment_base_key),
+			htlc_basepoint: from_secret(&htlc_base_key),
+		}
+	}
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -206,6 +258,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
+	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { &self.local_channel_pubkeys }
 
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
@@ -261,16 +314,50 @@ impl ChannelKeys for InMemoryChannelKeys {
 	}
 }
 
-impl_writeable!(InMemoryChannelKeys, 0, {
-	funding_key,
-	revocation_base_key,
-	payment_base_key,
-	delayed_payment_base_key,
-	htlc_base_key,
-	commitment_seed,
-	remote_channel_pubkeys,
-	channel_value_satoshis
-});
+impl Writeable for InMemoryChannelKeys {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		self.funding_key.write(writer)?;
+		self.revocation_base_key.write(writer)?;
+		self.payment_base_key.write(writer)?;
+		self.delayed_payment_base_key.write(writer)?;
+		self.htlc_base_key.write(writer)?;
+		self.commitment_seed.write(writer)?;
+		self.remote_channel_pubkeys.write(writer)?;
+		self.channel_value_satoshis.write(writer)?;
+
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for InMemoryChannelKeys {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		let funding_key = Readable::read(reader)?;
+		let revocation_base_key = Readable::read(reader)?;
+		let payment_base_key = Readable::read(reader)?;
+		let delayed_payment_base_key = Readable::read(reader)?;
+		let htlc_base_key = Readable::read(reader)?;
+		let commitment_seed = Readable::read(reader)?;
+		let remote_channel_pubkeys = Readable::read(reader)?;
+		let channel_value_satoshis = Readable::read(reader)?;
+		let secp_ctx = Secp256k1::signing_only();
+		let local_channel_pubkeys =
+			InMemoryChannelKeys::make_local_keys(&secp_ctx, &funding_key, &revocation_base_key,
+			                                     &payment_base_key, &delayed_payment_base_key,
+			                                     &htlc_base_key);
+
+		Ok(InMemoryChannelKeys {
+			funding_key,
+			revocation_base_key,
+			payment_base_key,
+			delayed_payment_base_key,
+			htlc_base_key,
+			commitment_seed,
+			channel_value_satoshis,
+			local_channel_pubkeys,
+			remote_channel_pubkeys
+		})
+	}
+}
 
 /// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
 /// and derives keys from that.
@@ -411,16 +498,16 @@ impl KeysInterface for KeysManager {
 		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_base_key);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 
-		InMemoryChannelKeys {
+		InMemoryChannelKeys::new(
+			&self.secp_ctx,
 			funding_key,
 			revocation_base_key,
 			payment_base_key,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			remote_channel_pubkeys: None,
-			channel_value_satoshis,
-		}
+			channel_value_satoshis
+		)
 	}
 
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
