@@ -10,7 +10,8 @@ use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
-use util::ser::{ReadableArgs, Writer};
+use util::ser::ReadableArgs;
+use util::ser::Writer;
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
@@ -45,8 +46,8 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct TestChannelMonitor {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
 impl TestChannelMonitor {
@@ -58,13 +59,13 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor)>::read(
+		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == monitor);
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...

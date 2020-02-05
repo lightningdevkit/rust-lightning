@@ -3,6 +3,7 @@
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
+use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::ln::channelmonitor;
 use lightning::util::ser::{ReadableArgs, Writer};
 
@@ -25,10 +26,10 @@ impl Writer for VecWriter {
 #[inline]
 pub fn do_test(data: &[u8]) {
 	let logger = Arc::new(test_logger::TestLogger::new("".to_owned()));
-	if let Ok((latest_block_hash, monitor)) = <(Sha256dHash, channelmonitor::ChannelMonitor)>::read(&mut Cursor::new(data), logger.clone()) {
+	if let Ok((latest_block_hash, monitor)) = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(data), logger.clone()) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		let deserialized_copy = <(Sha256dHash, channelmonitor::ChannelMonitor)>::read(&mut Cursor::new(&w.0), logger.clone()).unwrap();
+		let deserialized_copy = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&w.0), logger.clone()).unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);
 		w.0.clear();

@@ -75,7 +75,7 @@ impl Writer for VecWriter {
 
 static mut IN_RESTORE: bool = false;
 pub struct TestChannelMonitor {
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint>>,
+	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	pub latest_good_update: Mutex<HashMap<OutPoint, Vec<u8>>>,
 	pub latest_update_good: Mutex<HashMap<OutPoint, bool>>,
@@ -94,8 +94,8 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Ok(()) = ret {
 			let mut ser = VecWriter(Vec::new());
@@ -151,16 +151,17 @@ impl KeysInterface for KeyProvider {
 	}
 
 	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
-		EnforcingChannelKeys::new(InMemoryChannelKeys {
-			funding_key:               SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
-			revocation_base_key:       SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
-			payment_base_key:          SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
-			delayed_payment_base_key:  SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
-			htlc_base_key:             SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
-			commitment_seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
-			remote_channel_pubkeys: None,
+		let secp_ctx = Secp256k1::signing_only();
+		EnforcingChannelKeys::new(InMemoryChannelKeys::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
+			[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
 			channel_value_satoshis,
-		})
+		))
 	}
 
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
@@ -191,7 +192,7 @@ pub fn do_test(data: &[u8]) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone() as Arc<channelmonitor::ManyChannelMonitor>, broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap()),
+			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone() as Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>, broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap()),
 			monitor)
 		} }
 	}
@@ -211,7 +212,7 @@ pub fn do_test(data: &[u8]) {
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_good_update.lock().unwrap();
 			for (outpoint, monitor_ser) in old_monitors.drain() {
-				monitors.insert(outpoint, <(Sha256d, ChannelMonitor)>::read(&mut Cursor::new(&monitor_ser), Arc::clone(&logger)).expect("Failed to read monitor").1);
+				monitors.insert(outpoint, <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&monitor_ser), Arc::clone(&logger)).expect("Failed to read monitor").1);
 				monitor.latest_good_update.lock().unwrap().insert(outpoint, monitor_ser);
 			}
 			let mut monitor_refs = HashMap::new();
@@ -222,14 +223,14 @@ pub fn do_test(data: &[u8]) {
 			let read_args = ChannelManagerReadArgs {
 				keys_manager,
 				fee_estimator: fee_est.clone(),
-				monitor: monitor.clone() as Arc<channelmonitor::ManyChannelMonitor>,
+				monitor: monitor.clone() as Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>,
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
 				channel_monitors: &mut monitor_refs,
 			};
 
-			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
+			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
 			for (_, was_good) in $old_monitors.latest_updates_good_at_last_ser.lock().unwrap().iter() {
 				if !was_good {
 					// If the last time we updated a monitor we didn't successfully update (and we

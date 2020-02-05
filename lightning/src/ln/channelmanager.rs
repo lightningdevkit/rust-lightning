@@ -196,7 +196,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
+	fn from_chan_no_close<ChanSigner: ChannelKeys>(err: ChannelError<ChanSigner>, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: match err {
 				ChannelError::Ignore(msg) => LightningError {
@@ -337,7 +337,7 @@ pub type SimpleRefChannelManager<'a, M> = ChannelManager<InMemoryChannelKeys, &'
 /// essentially you should default to using a SimpleRefChannelManager, and use a
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
-pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref> where M::Target: ManyChannelMonitor {
+pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref> where M::Target: ManyChannelMonitor<ChanSigner> {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
@@ -479,7 +479,7 @@ macro_rules! break_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(ChannelError::Ignore(msg)) => {
-				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
+				break Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
@@ -499,7 +499,7 @@ macro_rules! try_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(ChannelError::Ignore(msg)) => {
-				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
+				return Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
@@ -516,7 +516,7 @@ macro_rules! try_chan_entry {
 					$channel_state.short_to_id.remove(&short_id);
 				}
 				if let Some(update) = update {
-					if let Err(e) = $self.monitor.add_update_monitor(update.get_funding_txo().unwrap(), update) {
+					if let Err(e) = $self.monitor.add_update_monitor(update.get_funding_txo().unwrap(), update.clone()) {
 						match e {
 							// Upstream channel is dead, but we want at least to fail backward HTLCs to save
 							// downstream channels. In case of PermanentFailure, we are not going to be able
@@ -582,7 +582,7 @@ macro_rules! handle_monitor_err {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
 				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
+				Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
 			},
 		}
 	}
@@ -609,7 +609,7 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor {
+impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
@@ -2196,7 +2196,8 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
-					try_chan_entry!(self, Err(ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set")), channel_state, chan);
+					let chan_err: ChannelError<ChanSigner> = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
+					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
 				Ok(())
@@ -2361,7 +2362,8 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
 				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
 						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
-					try_chan_entry!(self, Err(ChannelError::Close("Bad announcement_signatures node_signature")), channel_state, chan);
+					let chan_err: ChannelError<ChanSigner> = ChannelError::Close("Bad announcement_signatures node_signature");
+					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 
 				let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
@@ -2507,7 +2509,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor {
+impl<ChanSigner: ChannelKeys, M: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2532,7 +2534,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> events::MessageSendEventsProvider for Ch
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref> events::EventsProvider for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor {
+impl<ChanSigner: ChannelKeys, M: Deref> events::EventsProvider for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2557,7 +2559,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> events::EventsProvider for ChannelManage
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChainListener for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor {
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChainListener for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
@@ -2671,7 +2673,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChainListener for ChannelM
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChannelMessageHandler for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor {
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChannelMessageHandler for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let res = self.internal_open_channel(their_node_id, their_features, msg);
@@ -3141,7 +3143,7 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable, M: Deref> Writeable for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor {
+impl<ChanSigner: ChannelKeys + Writeable, M: Deref> Writeable for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
 
@@ -3212,7 +3214,7 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref> Writeable for ChannelManager
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
-pub struct ChannelManagerReadArgs<'a, ChanSigner: ChannelKeys, M: Deref> where M::Target: ManyChannelMonitor {
+pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref> where M::Target: ManyChannelMonitor<ChanSigner> {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
 	pub keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>,
@@ -3249,10 +3251,10 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: ChannelKeys, M: Deref> where M
 	///
 	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
 	/// this struct.
-	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor>,
+	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
 }
 
-impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref> ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner, M>> for (Sha256dHash, ChannelManager<ChanSigner, M>) where M::Target: ManyChannelMonitor {
+impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref> ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner, M>> for (Sha256dHash, ChannelManager<ChanSigner, M>) where M::Target: ManyChannelMonitor<ChanSigner> {
 	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;

@@ -155,7 +155,7 @@ pub struct TxCreationKeys {
 }
 
 /// One counterparty's public keys which do not change over the life of a channel.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ChannelPublicKeys {
 	/// The public key which is used to sign all commitment transactions, as it appears in the
 	/// on-chain channel lock-in 2-of-2 multisig output.

@@ -35,7 +35,7 @@ use ln::chan_utils::{HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCTyp
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::transaction::OutPoint;
-use chain::keysinterface::SpendableOutputDescriptor;
+use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable, U48};
 use util::{byte_utils, events};
@@ -114,13 +114,13 @@ pub struct HTLCUpdate {
 /// than calling these methods directly, the user should register implementors as listeners to the
 /// BlockNotifier and call the BlockNotifier's `block_(dis)connected` methods, which will notify
 /// all registered listeners in one go.
-pub trait ManyChannelMonitor: Send + Sync {
+pub trait ManyChannelMonitor<ChanSigner: ChannelKeys>: Send + Sync {
 	/// Adds or updates a monitor for the given `funding_txo`.
 	///
 	/// Implementor must also ensure that the funding_txo outpoint is registered with any relevant
 	/// ChainWatchInterfaces such that the provided monitor receives block_connected callbacks with
 	/// any spends of it.
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr>;
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Used by ChannelManager to get list of HTLC resolved onchain and which needed to be updated
 	/// with success or failure backward
@@ -138,11 +138,11 @@ pub trait ManyChannelMonitor: Send + Sync {
 ///
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
-pub struct SimpleManyChannelMonitor<Key> {
+pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys> {
 	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
-	pub monitors: Mutex<HashMap<Key, ChannelMonitor>>,
+	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	#[cfg(not(test))]
-	monitors: Mutex<HashMap<Key, ChannelMonitor>>,
+	monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	chain_monitor: Arc<ChainWatchInterface>,
 	broadcaster: Arc<BroadcasterInterface>,
 	pending_events: Mutex<Vec<events::Event>>,
@@ -151,7 +151,7 @@ pub struct SimpleManyChannelMonitor<Key> {
 	fee_estimator: Arc<FeeEstimator>
 }
 
-impl<'a, Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelMonitor<Key> {
+impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys> ChainListener for SimpleManyChannelMonitor<Key, ChanSigner> {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
 		let mut new_events: Vec<events::Event> = Vec::with_capacity(0);
@@ -215,10 +215,10 @@ impl<'a, Key : Send + cmp::Eq + hash::Hash> ChainListener for SimpleManyChannelM
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> {
+impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys> SimpleManyChannelMonitor<Key, ChanSigner> {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> SimpleManyChannelMonitor<Key> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> SimpleManyChannelMonitor<Key, ChanSigner> {
 		let res = SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
@@ -233,7 +233,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 	}
 
 	/// Adds or updates the monitor which monitors the channel referred to by the given key.
-	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor) -> Result<(), MonitorUpdateError> {
+	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
 		let mut monitors = self.monitors.lock().unwrap();
 		match monitors.get_mut(&key) {
 			Some(orig_monitor) => {
@@ -264,8 +264,8 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static> SimpleManyChannelMonitor<Key> 
 	}
 }
 
-impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor) -> Result<(), ChannelMonitorUpdateErr> {
+impl<ChanSigner: ChannelKeys> ManyChannelMonitor<ChanSigner> for SimpleManyChannelMonitor<OutPoint, ChanSigner> {
+	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.add_update_monitor_by_key(funding_txo, monitor) {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
@@ -288,7 +288,7 @@ impl ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint> {
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash> events::EventsProvider for SimpleManyChannelMonitor<Key> {
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner> {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
@@ -326,9 +326,10 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 /// keeping bumping another claim tx to solve the outpoint.
 pub(crate) const ANTI_REORG_DELAY: u32 = 6;
 
-#[derive(Clone, PartialEq)]
-enum Storage {
+#[derive(Clone)]
+enum Storage<ChanSigner: ChannelKeys> {
 	Local {
+		keys: ChanSigner,
 		funding_key: SecretKey,
 		revocation_base_key: SecretKey,
 		htlc_base_key: SecretKey,
@@ -342,6 +343,29 @@ enum Storage {
 	Watchtower {
 		revocation_base_key: PublicKey,
 		htlc_base_key: PublicKey,
+	}
+}
+
+#[cfg(any(test, feature = "fuzztarget"))]
+impl<ChanSigner: ChannelKeys> PartialEq for Storage<ChanSigner> {
+	fn eq(&self, other: &Self) -> bool {
+		match *self {
+			Storage::Local { ref keys, .. } => {
+				let k = keys;
+				match *other {
+					Storage::Local { ref keys, .. } => keys.pubkeys() == k.pubkeys(),
+					Storage::Watchtower { .. } => false,
+				}
+			},
+			Storage::Watchtower {ref revocation_base_key, ref htlc_base_key} => {
+				let (rbk, hbk) = (revocation_base_key, htlc_base_key);
+				match *other {
+					Storage::Local { .. } => false,
+					Storage::Watchtower {ref revocation_base_key, ref htlc_base_key} =>
+						revocation_base_key == rbk && htlc_base_key == hbk,
+				}
+			},
+		}
 	}
 }
 
@@ -563,10 +587,10 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
 #[derive(Clone)]
-pub struct ChannelMonitor {
+pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	commitment_transaction_number_obscure_factor: u64,
 
-	key_storage: Storage,
+	key_storage: Storage<ChanSigner>,
 	their_htlc_base_key: Option<PublicKey>,
 	their_delayed_payment_base_key: Option<PublicKey>,
 	funding_redeemscript: Option<Script>,
@@ -690,7 +714,7 @@ macro_rules! subtract_high_prio_fee {
 #[cfg(any(test, feature = "fuzztarget"))]
 /// Used only in testing and fuzztarget to check serialization roundtrips don't change the
 /// underlying object
-impl PartialEq for ChannelMonitor {
+impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 	fn eq(&self, other: &Self) -> bool {
 		if self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
 			self.key_storage != other.key_storage ||
@@ -726,397 +750,7 @@ impl PartialEq for ChannelMonitor {
 	}
 }
 
-impl ChannelMonitor {
-	pub(super) fn new(funding_key: &SecretKey, revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, payment_base_key: &SecretKey, shutdown_pubkey: &PublicKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<Logger>) -> ChannelMonitor {
-		ChannelMonitor {
-			commitment_transaction_number_obscure_factor: 0,
-
-			key_storage: Storage::Local {
-				funding_key: funding_key.clone(),
-				revocation_base_key: revocation_base_key.clone(),
-				htlc_base_key: htlc_base_key.clone(),
-				delayed_payment_base_key: delayed_payment_base_key.clone(),
-				payment_base_key: payment_base_key.clone(),
-				shutdown_pubkey: shutdown_pubkey.clone(),
-				funding_info: None,
-				current_remote_commitment_txid: None,
-				prev_remote_commitment_txid: None,
-			},
-			their_htlc_base_key: None,
-			their_delayed_payment_base_key: None,
-			funding_redeemscript: None,
-			channel_value_satoshis: None,
-			their_cur_revocation_points: None,
-
-			our_to_self_delay: our_to_self_delay,
-			their_to_self_delay: None,
-
-			old_secrets: [([0; 32], 1 << 48); 49],
-			remote_claimable_outpoints: HashMap::new(),
-			remote_commitment_txn_on_chain: HashMap::new(),
-			remote_hash_commitment_number: HashMap::new(),
-
-			prev_local_signed_commitment_tx: None,
-			current_local_signed_commitment_tx: None,
-			current_remote_commitment_number: 1 << 48,
-
-			payment_preimages: HashMap::new(),
-			destination_script: destination_script,
-			to_remote_rescue: None,
-
-			pending_claim_requests: HashMap::new(),
-
-			claimable_outpoints: HashMap::new(),
-
-			onchain_events_waiting_threshold_conf: HashMap::new(),
-
-			last_block_hash: Default::default(),
-			secp_ctx: Secp256k1::new(),
-			logger,
-		}
-	}
-
-	fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
-		let mut tx_weight = 2; // count segwit flags
-		for inp in inputs {
-			// We use expected weight (and not actual) as signatures and time lock delays may vary
-			tx_weight +=  match inp {
-				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
-				&InputDescriptors::RevokedOfferedHTLC => {
-					1 + 1 + 73 + 1 + 33 + 1 + 133
-				},
-				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
-				&InputDescriptors::RevokedReceivedHTLC => {
-					1 + 1 + 73 + 1 + 33 + 1 + 139
-				},
-				// number_of_witness_elements + sig_length + remotehtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
-				&InputDescriptors::OfferedHTLC => {
-					1 + 1 + 73 + 1 + 32 + 1 + 133
-				},
-				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
-				&InputDescriptors::ReceivedHTLC => {
-					1 + 1 + 73 + 1 + 1 + 1 + 139
-				},
-				// number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
-				&InputDescriptors::RevokedOutput => {
-					1 + 1 + 73 + 1 + 1 + 1 + 77
-				},
-			};
-		}
-		tx_weight
-	}
-
-	fn get_height_timer(current_height: u32, timelock_expiration: u32) -> u32 {
-		if timelock_expiration <= current_height || timelock_expiration - current_height <= 3 {
-			return current_height + 1
-		} else if timelock_expiration - current_height <= 15 {
-			return current_height + 3
-		}
-		current_height + 15
-	}
-
-	#[inline]
-	fn place_secret(idx: u64) -> u8 {
-		for i in 0..48 {
-			if idx & (1 << i) == (1 << i) {
-				return i
-			}
-		}
-		48
-	}
-
-	#[inline]
-	fn derive_secret(secret: [u8; 32], bits: u8, idx: u64) -> [u8; 32] {
-		let mut res: [u8; 32] = secret;
-		for i in 0..bits {
-			let bitpos = bits - 1 - i;
-			if idx & (1 << bitpos) == (1 << bitpos) {
-				res[(bitpos / 8) as usize] ^= 1 << (bitpos & 7);
-				res = Sha256::hash(&res).into_inner();
-			}
-		}
-		res
-	}
-
-	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
-	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
-	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
-		let pos = ChannelMonitor::place_secret(idx);
-		for i in 0..pos {
-			let (old_secret, old_idx) = self.old_secrets[i as usize];
-			if ChannelMonitor::derive_secret(secret, pos, old_idx) != old_secret {
-				return Err(MonitorUpdateError("Previous secret did not match new one"));
-			}
-		}
-		if self.get_min_seen_secret() <= idx {
-			return Ok(());
-		}
-		self.old_secrets[pos as usize] = (secret, idx);
-
-		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
-		// events for now-revoked/fulfilled HTLCs.
-		// TODO: We should probably consider whether we're really getting the next secret here.
-		if let Storage::Local { ref mut prev_remote_commitment_txid, .. } = self.key_storage {
-			if let Some(txid) = prev_remote_commitment_txid.take() {
-				for &mut (_, ref mut source) in self.remote_claimable_outpoints.get_mut(&txid).unwrap() {
-					*source = None;
-				}
-			}
-		}
-
-		if !self.payment_preimages.is_empty() {
-			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
-			let prev_local_signed_commitment_tx = self.prev_local_signed_commitment_tx.as_ref();
-			let min_idx = self.get_min_seen_secret();
-			let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
-
-			self.payment_preimages.retain(|&k, _| {
-				for &(ref htlc, _, _) in &local_signed_commitment_tx.htlc_outputs {
-					if k == htlc.payment_hash {
-						return true
-					}
-				}
-				if let Some(prev_local_commitment_tx) = prev_local_signed_commitment_tx {
-					for &(ref htlc, _, _) in prev_local_commitment_tx.htlc_outputs.iter() {
-						if k == htlc.payment_hash {
-							return true
-						}
-					}
-				}
-				let contains = if let Some(cn) = remote_hash_commitment_number.get(&k) {
-					if *cn < min_idx {
-						return true
-					}
-					true
-				} else { false };
-				if contains {
-					remote_hash_commitment_number.remove(&k);
-				}
-				false
-			});
-		}
-
-		Ok(())
-	}
-
-	/// Informs this monitor of the latest remote (ie non-broadcastable) commitment transaction.
-	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
-	/// possibly future revocation/preimage information) to claim outputs where possible.
-	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey) {
-		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
-		// so that a remote monitor doesn't learn anything unless there is a malicious close.
-		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
-		// timeouts)
-		for &(ref htlc, _) in &htlc_outputs {
-			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
-		}
-
-		let new_txid = unsigned_commitment_tx.txid();
-		log_trace!(self, "Tracking new remote commitment transaction with txid {} at commitment number {} with {} HTLC outputs", new_txid, commitment_number, htlc_outputs.len());
-		log_trace!(self, "New potential remote commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
-		if let Storage::Local { ref mut current_remote_commitment_txid, ref mut prev_remote_commitment_txid, .. } = self.key_storage {
-			*prev_remote_commitment_txid = current_remote_commitment_txid.take();
-			*current_remote_commitment_txid = Some(new_txid);
-		}
-		self.remote_claimable_outpoints.insert(new_txid, htlc_outputs);
-		self.current_remote_commitment_number = commitment_number;
-		//TODO: Merge this into the other per-remote-transaction output storage stuff
-		match self.their_cur_revocation_points {
-			Some(old_points) => {
-				if old_points.0 == commitment_number + 1 {
-					self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(their_revocation_point)));
-				} else if old_points.0 == commitment_number + 2 {
-					if let Some(old_second_point) = old_points.2 {
-						self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(their_revocation_point)));
-					} else {
-						self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
-					}
-				} else {
-					self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
-				}
-			},
-			None => {
-				self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
-			}
-		}
-	}
-
-	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
-		match self.key_storage {
-			Storage::Local { ref payment_base_key, .. } => {
-				if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &PublicKey::from_secret_key(&self.secp_ctx, &payment_base_key)) {
-					let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-						.push_slice(&Hash160::hash(&payment_key.serialize())[..])
-						.into_script();
-					if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &payment_base_key) {
-						self.to_remote_rescue = Some((to_remote_script, to_remote_key));
-					}
-				}
-			},
-			Storage::Watchtower { .. } => {}
-		}
-	}
-
-	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
-	/// monitor watches for timeouts and may broadcast it if we approach such a timeout. Thus, it
-	/// is important that any clones of this channel monitor (including remote clones) by kept
-	/// up-to-date as our local commitment transaction is updated.
-	/// Panics if set_their_to_self_delay has never been called.
-	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, commitment_tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) {
-		assert!(self.their_to_self_delay.is_some());
-		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
-		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
-			txid: commitment_tx.txid(),
-			tx: commitment_tx,
-			revocation_key: local_keys.revocation_key,
-			a_htlc_key: local_keys.a_htlc_key,
-			b_htlc_key: local_keys.b_htlc_key,
-			delayed_payment_key: local_keys.a_delayed_payment_key,
-			per_commitment_point: local_keys.per_commitment_point,
-			feerate_per_kw,
-			htlc_outputs,
-		});
-	}
-
-	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
-	/// commitment_tx_infos which contain the payment hash have been revoked.
-	pub(super) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
-		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
-	}
-
-	/// Combines this ChannelMonitor with the information contained in the other ChannelMonitor.
-	/// After a successful call this ChannelMonitor is up-to-date and is safe to use to monitor the
-	/// chain for new blocks/transactions.
-	pub fn insert_combine(&mut self, mut other: ChannelMonitor) -> Result<(), MonitorUpdateError> {
-		match self.key_storage {
-			Storage::Local { ref funding_info, .. } => {
-				if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
-				let our_funding_info = funding_info;
-				if let Storage::Local { ref funding_info, .. } = other.key_storage {
-					if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
-					// We should be able to compare the entire funding_txo, but in fuzztarget it's trivially
-					// easy to collide the funding_txo hash and have a different scriptPubKey.
-					if funding_info.as_ref().unwrap().0 != our_funding_info.as_ref().unwrap().0 {
-						return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
-					}
-				} else {
-					return Err(MonitorUpdateError("Try to combine a Local monitor with a Watchtower one !"));
-				}
-			},
-			Storage::Watchtower { .. } => {
-				if let Storage::Watchtower { .. } = other.key_storage {
-					unimplemented!();
-				} else {
-					return Err(MonitorUpdateError("Try to combine a Watchtower monitor with a Local one !"));
-				}
-			},
-		}
-		let other_min_secret = other.get_min_seen_secret();
-		let our_min_secret = self.get_min_seen_secret();
-		if our_min_secret > other_min_secret {
-			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap())?;
-		}
-		if let Some(ref local_tx) = self.current_local_signed_commitment_tx {
-			if let Some(ref other_local_tx) = other.current_local_signed_commitment_tx {
-				let our_commitment_number = 0xffffffffffff - ((((local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
-				let other_commitment_number = 0xffffffffffff - ((((other_local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (other_local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ other.commitment_transaction_number_obscure_factor);
-				if our_commitment_number >= other_commitment_number {
-					self.key_storage = other.key_storage;
-				}
-			}
-		}
-		// TODO: We should use current_remote_commitment_number and the commitment number out of
-		// local transactions to decide how to merge
-		if our_min_secret >= other_min_secret {
-			self.their_cur_revocation_points = other.their_cur_revocation_points;
-			for (txid, htlcs) in other.remote_claimable_outpoints.drain() {
-				self.remote_claimable_outpoints.insert(txid, htlcs);
-			}
-			if let Some(local_tx) = other.prev_local_signed_commitment_tx {
-				self.prev_local_signed_commitment_tx = Some(local_tx);
-			}
-			if let Some(local_tx) = other.current_local_signed_commitment_tx {
-				self.current_local_signed_commitment_tx = Some(local_tx);
-			}
-			self.payment_preimages = other.payment_preimages;
-			self.to_remote_rescue = other.to_remote_rescue;
-		}
-
-		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
-		Ok(())
-	}
-
-	/// Allows this monitor to scan only for transactions which are applicable. Note that this is
-	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
-	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
-	/// provides slightly better privacy.
-	/// It's the responsibility of the caller to register outpoint and script with passing the former
-	/// value as key to add_update_monitor.
-	pub(super) fn set_funding_info(&mut self, new_funding_info: (OutPoint, Script)) {
-		match self.key_storage {
-			Storage::Local { ref mut funding_info, .. } => {
-				*funding_info = Some(new_funding_info);
-			},
-			Storage::Watchtower { .. } => {
-				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
-			}
-		}
-	}
-
-	/// We log these base keys at channel opening to being able to rebuild redeemscript in case of leaked revoked commit tx
-	/// Panics if commitment_transaction_number_obscure_factor doesn't fit in 48 bits
-	pub(super) fn set_basic_channel_info(&mut self, their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey, their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64, commitment_transaction_number_obscure_factor: u64) {
-		self.their_htlc_base_key = Some(their_htlc_base_key.clone());
-		self.their_delayed_payment_base_key = Some(their_delayed_payment_base_key.clone());
-		self.their_to_self_delay = Some(their_to_self_delay);
-		self.funding_redeemscript = Some(funding_redeemscript);
-		self.channel_value_satoshis = Some(channel_value_satoshis);
-		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
-		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
-	}
-
-	pub(super) fn unset_funding_info(&mut self) {
-		match self.key_storage {
-			Storage::Local { ref mut funding_info, .. } => {
-				*funding_info = None;
-			},
-			Storage::Watchtower { .. } => {
-				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
-			},
-		}
-	}
-
-	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
-	pub fn get_funding_txo(&self) -> Option<OutPoint> {
-		match self.key_storage {
-			Storage::Local { ref funding_info, .. } => {
-				match funding_info {
-					&Some((outpoint, _)) => Some(outpoint),
-					&None => None
-				}
-			},
-			Storage::Watchtower { .. } => {
-				return None;
-			}
-		}
-	}
-
-	/// Gets the sets of all outpoints which this ChannelMonitor expects to hear about spends of.
-	/// Generally useful when deserializing as during normal operation the return values of
-	/// block_connected are sufficient to ensure all relevant outpoints are being monitored (note
-	/// that the get_funding_txo outpoint and transaction must also be monitored for!).
-	pub fn get_monitored_outpoints(&self) -> Vec<(Sha256dHash, u32, &Script)> {
-		let mut res = Vec::with_capacity(self.remote_commitment_txn_on_chain.len() * 2);
-		for (ref txid, &(_, ref outputs)) in self.remote_commitment_txn_on_chain.iter() {
-			for (idx, output) in outputs.iter().enumerate() {
-				res.push(((*txid).clone(), idx as u32, output));
-			}
-		}
-		res
-	}
-
+impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 	/// Serializes into a vec, with various modes for the exposed pub fns
 	fn write<W: Writer>(&self, writer: &mut W, for_local_storage: bool) -> Result<(), ::std::io::Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
@@ -1140,8 +774,9 @@ impl ChannelMonitor {
 		}
 
 		match self.key_storage {
-			Storage::Local { ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
+			Storage::Local { ref keys, ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
 				writer.write_all(&[0; 1])?;
+				keys.write(writer)?;
 				writer.write_all(&funding_key[..])?;
 				writer.write_all(&revocation_base_key[..])?;
 				writer.write_all(&htlc_base_key[..])?;
@@ -1355,12 +990,405 @@ impl ChannelMonitor {
 	pub fn write_for_watchtower<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.write(writer, false)
 	}
+}
+
+impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
+	pub(super) fn new(keys: ChanSigner, funding_key: &SecretKey, revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, payment_base_key: &SecretKey, shutdown_pubkey: &PublicKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<Logger>) -> ChannelMonitor<ChanSigner> {
+		ChannelMonitor {
+			commitment_transaction_number_obscure_factor: 0,
+
+			key_storage: Storage::Local {
+				keys,
+				funding_key: funding_key.clone(),
+				revocation_base_key: revocation_base_key.clone(),
+				htlc_base_key: htlc_base_key.clone(),
+				delayed_payment_base_key: delayed_payment_base_key.clone(),
+				payment_base_key: payment_base_key.clone(),
+				shutdown_pubkey: shutdown_pubkey.clone(),
+				funding_info: None,
+				current_remote_commitment_txid: None,
+				prev_remote_commitment_txid: None,
+			},
+			their_htlc_base_key: None,
+			their_delayed_payment_base_key: None,
+			funding_redeemscript: None,
+			channel_value_satoshis: None,
+			their_cur_revocation_points: None,
+
+			our_to_self_delay: our_to_self_delay,
+			their_to_self_delay: None,
+
+			old_secrets: [([0; 32], 1 << 48); 49],
+			remote_claimable_outpoints: HashMap::new(),
+			remote_commitment_txn_on_chain: HashMap::new(),
+			remote_hash_commitment_number: HashMap::new(),
+
+			prev_local_signed_commitment_tx: None,
+			current_local_signed_commitment_tx: None,
+			current_remote_commitment_number: 1 << 48,
+
+			payment_preimages: HashMap::new(),
+			destination_script: destination_script,
+			to_remote_rescue: None,
+
+			pending_claim_requests: HashMap::new(),
+
+			claimable_outpoints: HashMap::new(),
+
+			onchain_events_waiting_threshold_conf: HashMap::new(),
+
+			last_block_hash: Default::default(),
+			secp_ctx: Secp256k1::new(),
+			logger,
+		}
+	}
+
+	fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
+		let mut tx_weight = 2; // count segwit flags
+		for inp in inputs {
+			// We use expected weight (and not actual) as signatures and time lock delays may vary
+			tx_weight +=  match inp {
+				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+				&InputDescriptors::RevokedOfferedHTLC => {
+					1 + 1 + 73 + 1 + 33 + 1 + 133
+				},
+				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+				&InputDescriptors::RevokedReceivedHTLC => {
+					1 + 1 + 73 + 1 + 33 + 1 + 139
+				},
+				// number_of_witness_elements + sig_length + remotehtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
+				&InputDescriptors::OfferedHTLC => {
+					1 + 1 + 73 + 1 + 32 + 1 + 133
+				},
+				// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+				&InputDescriptors::ReceivedHTLC => {
+					1 + 1 + 73 + 1 + 1 + 1 + 139
+				},
+				// number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
+				&InputDescriptors::RevokedOutput => {
+					1 + 1 + 73 + 1 + 1 + 1 + 77
+				},
+			};
+		}
+		tx_weight
+	}
+
+	fn get_height_timer(current_height: u32, timelock_expiration: u32) -> u32 {
+		if timelock_expiration <= current_height || timelock_expiration - current_height <= 3 {
+			return current_height + 1
+		} else if timelock_expiration - current_height <= 15 {
+			return current_height + 3
+		}
+		current_height + 15
+	}
+
+	#[inline]
+	fn place_secret(idx: u64) -> u8 {
+		for i in 0..48 {
+			if idx & (1 << i) == (1 << i) {
+				return i
+			}
+		}
+		48
+	}
+
+	#[inline]
+	fn derive_secret(secret: [u8; 32], bits: u8, idx: u64) -> [u8; 32] {
+		let mut res: [u8; 32] = secret;
+		for i in 0..bits {
+			let bitpos = bits - 1 - i;
+			if idx & (1 << bitpos) == (1 << bitpos) {
+				res[(bitpos / 8) as usize] ^= 1 << (bitpos & 7);
+				res = Sha256::hash(&res).into_inner();
+			}
+		}
+		res
+	}
+
+	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
+	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
+	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
+	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
+		let pos = ChannelMonitor::<ChanSigner>::place_secret(idx);
+		for i in 0..pos {
+			let (old_secret, old_idx) = self.old_secrets[i as usize];
+			if ChannelMonitor::<ChanSigner>::derive_secret(secret, pos, old_idx) != old_secret {
+				return Err(MonitorUpdateError("Previous secret did not match new one"));
+			}
+		}
+		if self.get_min_seen_secret() <= idx {
+			return Ok(());
+		}
+		self.old_secrets[pos as usize] = (secret, idx);
+
+		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
+		// events for now-revoked/fulfilled HTLCs.
+		// TODO: We should probably consider whether we're really getting the next secret here.
+		if let Storage::Local { ref mut prev_remote_commitment_txid, .. } = self.key_storage {
+			if let Some(txid) = prev_remote_commitment_txid.take() {
+				for &mut (_, ref mut source) in self.remote_claimable_outpoints.get_mut(&txid).unwrap() {
+					*source = None;
+				}
+			}
+		}
+
+		if !self.payment_preimages.is_empty() {
+			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
+			let prev_local_signed_commitment_tx = self.prev_local_signed_commitment_tx.as_ref();
+			let min_idx = self.get_min_seen_secret();
+			let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
+
+			self.payment_preimages.retain(|&k, _| {
+				for &(ref htlc, _, _) in &local_signed_commitment_tx.htlc_outputs {
+					if k == htlc.payment_hash {
+						return true
+					}
+				}
+				if let Some(prev_local_commitment_tx) = prev_local_signed_commitment_tx {
+					for &(ref htlc, _, _) in prev_local_commitment_tx.htlc_outputs.iter() {
+						if k == htlc.payment_hash {
+							return true
+						}
+					}
+				}
+				let contains = if let Some(cn) = remote_hash_commitment_number.get(&k) {
+					if *cn < min_idx {
+						return true
+					}
+					true
+				} else { false };
+				if contains {
+					remote_hash_commitment_number.remove(&k);
+				}
+				false
+			});
+		}
+
+		Ok(())
+	}
+
+	/// Informs this monitor of the latest remote (ie non-broadcastable) commitment transaction.
+	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
+	/// possibly future revocation/preimage information) to claim outputs where possible.
+	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
+	pub(super) fn provide_latest_remote_commitment_tx_info(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey) {
+		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
+		// so that a remote monitor doesn't learn anything unless there is a malicious close.
+		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
+		// timeouts)
+		for &(ref htlc, _) in &htlc_outputs {
+			self.remote_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
+		}
+
+		let new_txid = unsigned_commitment_tx.txid();
+		log_trace!(self, "Tracking new remote commitment transaction with txid {} at commitment number {} with {} HTLC outputs", new_txid, commitment_number, htlc_outputs.len());
+		log_trace!(self, "New potential remote commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
+		if let Storage::Local { ref mut current_remote_commitment_txid, ref mut prev_remote_commitment_txid, .. } = self.key_storage {
+			*prev_remote_commitment_txid = current_remote_commitment_txid.take();
+			*current_remote_commitment_txid = Some(new_txid);
+		}
+		self.remote_claimable_outpoints.insert(new_txid, htlc_outputs);
+		self.current_remote_commitment_number = commitment_number;
+		//TODO: Merge this into the other per-remote-transaction output storage stuff
+		match self.their_cur_revocation_points {
+			Some(old_points) => {
+				if old_points.0 == commitment_number + 1 {
+					self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(their_revocation_point)));
+				} else if old_points.0 == commitment_number + 2 {
+					if let Some(old_second_point) = old_points.2 {
+						self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(their_revocation_point)));
+					} else {
+						self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+					}
+				} else {
+					self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+				}
+			},
+			None => {
+				self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+			}
+		}
+	}
+
+	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
+		match self.key_storage {
+			Storage::Local { ref payment_base_key, ref keys, .. } => {
+				if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &keys.pubkeys().payment_basepoint) {
+					let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+						.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+						.into_script();
+					if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &payment_base_key) {
+						self.to_remote_rescue = Some((to_remote_script, to_remote_key));
+					}
+				}
+			},
+			Storage::Watchtower { .. } => {}
+		}
+	}
+
+	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
+	/// monitor watches for timeouts and may broadcast it if we approach such a timeout. Thus, it
+	/// is important that any clones of this channel monitor (including remote clones) by kept
+	/// up-to-date as our local commitment transaction is updated.
+	/// Panics if set_their_to_self_delay has never been called.
+	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, commitment_tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) {
+		assert!(self.their_to_self_delay.is_some());
+		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
+		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
+			txid: commitment_tx.txid(),
+			tx: commitment_tx,
+			revocation_key: local_keys.revocation_key,
+			a_htlc_key: local_keys.a_htlc_key,
+			b_htlc_key: local_keys.b_htlc_key,
+			delayed_payment_key: local_keys.a_delayed_payment_key,
+			per_commitment_point: local_keys.per_commitment_point,
+			feerate_per_kw,
+			htlc_outputs,
+		});
+	}
+
+	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
+	/// commitment_tx_infos which contain the payment hash have been revoked.
+	pub(super) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
+		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
+	}
+
+	/// Combines this ChannelMonitor with the information contained in the other ChannelMonitor.
+	/// After a successful call this ChannelMonitor is up-to-date and is safe to use to monitor the
+	/// chain for new blocks/transactions.
+	pub fn insert_combine(&mut self, mut other: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
+		match self.key_storage {
+			Storage::Local { ref funding_info, .. } => {
+				if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
+				let our_funding_info = funding_info;
+				if let Storage::Local { ref funding_info, .. } = other.key_storage {
+					if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
+					// We should be able to compare the entire funding_txo, but in fuzztarget it's trivially
+					// easy to collide the funding_txo hash and have a different scriptPubKey.
+					if funding_info.as_ref().unwrap().0 != our_funding_info.as_ref().unwrap().0 {
+						return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
+					}
+				} else {
+					return Err(MonitorUpdateError("Try to combine a Local monitor with a Watchtower one !"));
+				}
+			},
+			Storage::Watchtower { .. } => {
+				if let Storage::Watchtower { .. } = other.key_storage {
+					unimplemented!();
+				} else {
+					return Err(MonitorUpdateError("Try to combine a Watchtower monitor with a Local one !"));
+				}
+			},
+		}
+		let other_min_secret = other.get_min_seen_secret();
+		let our_min_secret = self.get_min_seen_secret();
+		if our_min_secret > other_min_secret {
+			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap())?;
+		}
+		if let Some(ref local_tx) = self.current_local_signed_commitment_tx {
+			if let Some(ref other_local_tx) = other.current_local_signed_commitment_tx {
+				let our_commitment_number = 0xffffffffffff - ((((local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+				let other_commitment_number = 0xffffffffffff - ((((other_local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (other_local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ other.commitment_transaction_number_obscure_factor);
+				if our_commitment_number >= other_commitment_number {
+					self.key_storage = other.key_storage;
+				}
+			}
+		}
+		// TODO: We should use current_remote_commitment_number and the commitment number out of
+		// local transactions to decide how to merge
+		if our_min_secret >= other_min_secret {
+			self.their_cur_revocation_points = other.their_cur_revocation_points;
+			for (txid, htlcs) in other.remote_claimable_outpoints.drain() {
+				self.remote_claimable_outpoints.insert(txid, htlcs);
+			}
+			if let Some(local_tx) = other.prev_local_signed_commitment_tx {
+				self.prev_local_signed_commitment_tx = Some(local_tx);
+			}
+			if let Some(local_tx) = other.current_local_signed_commitment_tx {
+				self.current_local_signed_commitment_tx = Some(local_tx);
+			}
+			self.payment_preimages = other.payment_preimages;
+			self.to_remote_rescue = other.to_remote_rescue;
+		}
+
+		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
+		Ok(())
+	}
+
+	/// Allows this monitor to scan only for transactions which are applicable. Note that this is
+	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
+	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
+	/// provides slightly better privacy.
+	/// It's the responsibility of the caller to register outpoint and script with passing the former
+	/// value as key to add_update_monitor.
+	pub(super) fn set_funding_info(&mut self, new_funding_info: (OutPoint, Script)) {
+		match self.key_storage {
+			Storage::Local { ref mut funding_info, .. } => {
+				*funding_info = Some(new_funding_info);
+			},
+			Storage::Watchtower { .. } => {
+				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
+			}
+		}
+	}
+
+	/// We log these base keys at channel opening to being able to rebuild redeemscript in case of leaked revoked commit tx
+	/// Panics if commitment_transaction_number_obscure_factor doesn't fit in 48 bits
+	pub(super) fn set_basic_channel_info(&mut self, their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey, their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64, commitment_transaction_number_obscure_factor: u64) {
+		self.their_htlc_base_key = Some(their_htlc_base_key.clone());
+		self.their_delayed_payment_base_key = Some(their_delayed_payment_base_key.clone());
+		self.their_to_self_delay = Some(their_to_self_delay);
+		self.funding_redeemscript = Some(funding_redeemscript);
+		self.channel_value_satoshis = Some(channel_value_satoshis);
+		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
+		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
+	}
+
+	pub(super) fn unset_funding_info(&mut self) {
+		match self.key_storage {
+			Storage::Local { ref mut funding_info, .. } => {
+				*funding_info = None;
+			},
+			Storage::Watchtower { .. } => {
+				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
+			},
+		}
+	}
+
+	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
+	pub fn get_funding_txo(&self) -> Option<OutPoint> {
+		match self.key_storage {
+			Storage::Local { ref funding_info, .. } => {
+				match funding_info {
+					&Some((outpoint, _)) => Some(outpoint),
+					&None => None
+				}
+			},
+			Storage::Watchtower { .. } => {
+				return None;
+			}
+		}
+	}
+
+	/// Gets the sets of all outpoints which this ChannelMonitor expects to hear about spends of.
+	/// Generally useful when deserializing as during normal operation the return values of
+	/// block_connected are sufficient to ensure all relevant outpoints are being monitored (note
+	/// that the get_funding_txo outpoint and transaction must also be monitored for!).
+	pub fn get_monitored_outpoints(&self) -> Vec<(Sha256dHash, u32, &Script)> {
+		let mut res = Vec::with_capacity(self.remote_commitment_txn_on_chain.len() * 2);
+		for (ref txid, &(_, ref outputs)) in self.remote_commitment_txn_on_chain.iter() {
+			for (idx, output) in outputs.iter().enumerate() {
+				res.push(((*txid).clone(), idx as u32, output));
+			}
+		}
+		res
+	}
 
 	/// Can only fail if idx is < get_min_seen_secret
 	pub(super) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		for i in 0..self.old_secrets.len() {
 			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
-				return Some(ChannelMonitor::derive_secret(self.old_secrets[i].0, i as u8, idx))
+				return Some(ChannelMonitor::<ChanSigner>::derive_secret(self.old_secrets[i].0, i as u8, idx))
 			}
 		}
 		assert!(idx < self.get_min_seen_secret());
@@ -1418,10 +1446,10 @@ impl ChannelMonitor {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 			let (revocation_pubkey, b_htlc_key, local_payment_key) = match self.key_storage {
-				Storage::Local { ref revocation_base_key, ref htlc_base_key, ref payment_base_key, .. } => {
+				Storage::Local { ref keys, ref payment_base_key, .. } => {
 					let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-					(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &revocation_base_key))),
-					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &htlc_base_key))),
+					(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &keys.pubkeys().revocation_basepoint)),
+					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &keys.pubkeys().htlc_basepoint)),
 					Some(ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &payment_base_key))))
 				},
 				Storage::Watchtower { ref revocation_base_key, ref htlc_base_key, .. } => {
@@ -1733,9 +1761,9 @@ impl ChannelMonitor {
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
 					let (revocation_pubkey, b_htlc_key) = match self.key_storage {
-						Storage::Local { ref revocation_base_key, ref htlc_base_key, .. } => {
-							(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, revocation_point, &PublicKey::from_secret_key(&self.secp_ctx, &revocation_base_key))),
-							ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &PublicKey::from_secret_key(&self.secp_ctx, &htlc_base_key))))
+						Storage::Local { ref keys, .. } => {
+							(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, revocation_point, &keys.pubkeys().revocation_basepoint)),
+							ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &keys.pubkeys().htlc_basepoint)))
 						},
 						Storage::Watchtower { ref revocation_base_key, ref htlc_base_key, .. } => {
 							(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, revocation_point, &revocation_base_key)),
@@ -1988,8 +2016,8 @@ impl ChannelMonitor {
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 		let revocation_pubkey = match self.key_storage {
-			Storage::Local { ref revocation_base_key, .. } => {
-				ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &PublicKey::from_secret_key(&self.secp_ctx, &revocation_base_key)))
+			Storage::Local { ref keys, .. } => {
+				ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &keys.pubkeys().revocation_basepoint))
 			},
 			Storage::Watchtower { ref revocation_base_key, .. } => {
 				ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &revocation_base_key))
@@ -2944,7 +2972,7 @@ impl ChannelMonitor {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelMonitor) {
+impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelMonitor<ChanSigner>) {
 	fn read(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let secp_ctx = Secp256k1::new();
 		macro_rules! unwrap_obj {
@@ -2966,6 +2994,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 
 		let key_storage = match <u8 as Readable<R>>::read(reader)? {
 			0 => {
+				let keys = Readable::read(reader)?;
 				let funding_key = Readable::read(reader)?;
 				let revocation_base_key = Readable::read(reader)?;
 				let htlc_base_key = Readable::read(reader)?;
@@ -2982,6 +3011,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelM
 				let current_remote_commitment_txid = Readable::read(reader)?;
 				let prev_remote_commitment_txid = Readable::read(reader)?;
 				Storage::Local {
+					keys,
 					funding_key,
 					revocation_base_key,
 					htlc_base_key,
@@ -3265,12 +3295,14 @@ mod tests {
 	use secp256k1::Secp256k1;
 	use rand::{thread_rng,Rng};
 	use std::sync::Arc;
+	use chain::keysinterface::InMemoryChannelKeys;
+
 
 	#[test]
 	fn test_per_commitment_storage() {
 		// Test vectors from BOLT 3:
 		let mut secrets: Vec<[u8; 32]> = Vec::new();
-		let mut monitor: ChannelMonitor;
+		let mut monitor: ChannelMonitor<InMemoryChannelKeys>;
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
 
@@ -3286,9 +3318,20 @@ mod tests {
 			};
 		}
 
+		let keys = InMemoryChannelKeys::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			0,
+		);
+
 		{
 			// insert_secret correct sequence
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3334,7 +3377,7 @@ mod tests {
 
 		{
 			// insert_secret #1 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3350,7 +3393,7 @@ mod tests {
 
 		{
 			// insert_secret #2 incorrect (#1 derived from incorrect)
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3376,7 +3419,7 @@ mod tests {
 
 		{
 			// insert_secret #3 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3402,7 +3445,7 @@ mod tests {
 
 		{
 			// insert_secret #4 incorrect (1,2,3 derived from incorrect)
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3448,7 +3491,7 @@ mod tests {
 
 		{
 			// insert_secret #5 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3484,7 +3527,7 @@ mod tests {
 
 		{
 			// insert_secret #6 incorrect (5 derived from incorrect)
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3530,7 +3573,7 @@ mod tests {
 
 		{
 			// insert_secret #7 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3576,7 +3619,7 @@ mod tests {
 
 		{
 			// insert_secret #8 incorrect
-			monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 			secrets.clear();
 
 			secrets.push([0; 32]);
@@ -3689,9 +3732,20 @@ mod tests {
 			}
 		}
 
+		let keys = InMemoryChannelKeys::new(
+			&secp_ctx,
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			SecretKey::from_slice(&[41; 32]).unwrap(),
+			[41; 32],
+			0,
+		);
+
 		// Prune with one old state and a local commitment tx holding a few overlaps with the
 		// old state.
-		let mut monitor = ChannelMonitor::new(&SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+		let mut monitor = ChannelMonitor::new(keys, &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 		monitor.their_to_self_delay = Some(10);
 
 		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
@@ -3802,7 +3856,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -3824,7 +3878,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -3844,7 +3898,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + ChannelMonitor::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + ChannelMonitor::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
