@@ -517,37 +517,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								}
 							}
 
-							macro_rules! try_potential_decodeerror {
-								($thing: expr) => {
-									match $thing {
-										Ok(x) => x,
-										Err(e) => {
-											match e {
-												msgs::DecodeError::UnknownVersion => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::UnknownRequiredFeature => {
-													log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to update!");
-													continue;
-												},
-												msgs::DecodeError::InvalidValue => {
-													log_debug!(self, "Got an invalid value while deserializing message");
-													return Err(PeerHandleError{ no_connection_possible: false });
-												},
-												msgs::DecodeError::ShortRead => {
-													log_debug!(self, "Deserialization failed due to shortness of message");
-													return Err(PeerHandleError{ no_connection_possible: false });
-												},
-												msgs::DecodeError::ExtraAddressesPerType => {
-													log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
-													continue;
-												},
-												msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError{ no_connection_possible: false }),
-												msgs::DecodeError::Io(_) => return Err(PeerHandleError{ no_connection_possible: false }),
-											}
-										}
-									};
-								}
-							}
-
 							macro_rules! insert_node_id {
 								() => {
 									match peers.node_id_to_descriptor.entry(peer.their_node_id.unwrap()) {
@@ -613,7 +582,34 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 										peer.pending_read_is_header = true;
 
 										let mut reader = ::std::io::Cursor::new(&msg_data[..]);
-										let message = try_potential_decodeerror!(wire::read(&mut reader));
+										let message_result = wire::read(&mut reader);
+										let message = match message_result {
+											Ok(x) => x,
+											Err(e) => {
+												match e {
+													msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
+													msgs::DecodeError::UnknownRequiredFeature => {
+														log_debug!(self, "Got a channel/node announcement with an known required feature flag, you may want to update!");
+														continue;
+													}
+													msgs::DecodeError::InvalidValue => {
+														log_debug!(self, "Got an invalid value while deserializing message");
+														return Err(PeerHandleError { no_connection_possible: false });
+													}
+													msgs::DecodeError::ShortRead => {
+														log_debug!(self, "Deserialization failed due to shortness of message");
+														return Err(PeerHandleError { no_connection_possible: false });
+													}
+													msgs::DecodeError::ExtraAddressesPerType => {
+														log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
+														continue;
+													}
+													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
+													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
+												}
+											}
+										};
+
 										log_trace!(self, "Received message of type {} from {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
 
 										// Need an Init as first message
