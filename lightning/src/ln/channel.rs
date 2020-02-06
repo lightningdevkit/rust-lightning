@@ -240,6 +240,8 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	channel_value_satoshis: u64,
 
+	latest_monitor_update_id: u64,
+
 	#[cfg(not(test))]
 	local_keys: ChanSigner,
 	#[cfg(test)]
@@ -470,6 +472,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			secp_ctx: secp_ctx,
 			channel_value_satoshis: channel_value_satoshis,
 
+			latest_monitor_update_id: 0,
+
 			local_keys: chan_keys,
 			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
 			cur_local_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -690,6 +694,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
 			channel_outbound: false,
 			secp_ctx: secp_ctx,
+
+			latest_monitor_update_id: 0,
 
 			local_keys: chan_keys,
 			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
@@ -2908,6 +2914,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_update_count
 	}
 
+	pub fn get_latest_monitor_update_id(&self) -> u64 {
+		self.latest_monitor_update_id
+	}
+
 	pub fn should_announce(&self) -> bool {
 		self.config.announced_channel
 	}
@@ -3673,6 +3683,8 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.channel_outbound.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 
+		self.latest_monitor_update_id.write(writer)?;
+
 		self.local_keys.write(writer)?;
 		self.shutdown_pubkey.write(writer)?;
 
@@ -3870,6 +3882,8 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 		let channel_outbound = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
+		let latest_monitor_update_id = Readable::read(reader)?;
+
 		let local_keys = Readable::read(reader)?;
 		let shutdown_pubkey = Readable::read(reader)?;
 
@@ -4017,6 +4031,8 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 			channel_outbound,
 			secp_ctx: Secp256k1::new(),
 			channel_value_satoshis,
+
+			latest_monitor_update_id,
 
 			local_keys,
 			shutdown_pubkey,

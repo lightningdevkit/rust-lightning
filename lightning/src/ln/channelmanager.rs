@@ -1781,6 +1781,112 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 		PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key)
 	}
 
+	/// Restores a single, given channel to normal operation after a
+	/// ChannelMonitorUpdateErr::TemporaryFailure was returned from a channel monitor update
+	/// operation.
+	///
+	/// All ChannelMonitor updates up to and including highest_applied_update_id must have been
+	/// fully committed in every copy of the given channels' ChannelMonitors.
+	///
+	/// Note that there is no effect to calling with a highest_applied_update_id other than the
+	/// current latest ChannelMonitorUpdate and one call to this function after multiple
+	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
+	/// exists largely only to prevent races between this and concurrent update_monitor calls.
+	///
+	/// Thus, the anticipated use is, at a high level:
+	///  1) You register a ManyChannelMonitor with this ChannelManager,
+	///  2) it stores each update to disk, and begins updating any remote (eg watchtower) copies of
+	///     said ChannelMonitors as it can, returning ChannelMonitorUpdateErr::TemporaryFailures
+	///     any time it cannot do so instantly,
+	///  3) update(s) are applied to each remote copy of a ChannelMonitor,
+	///  4) once all remote copies are updated, you call this function with the update_id that
+	///     completed, and once it is the latest the Channel will be re-enabled.
+	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
+		let _ = self.total_consistency_lock.read().unwrap();
+
+		let mut close_results = Vec::new();
+		let mut htlc_forwards = Vec::new();
+		let mut htlc_failures = Vec::new();
+		let mut pending_events = Vec::new();
+
+		{
+			let mut channel_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_lock;
+			let short_to_id = &mut channel_state.short_to_id;
+			let pending_msg_events = &mut channel_state.pending_msg_events;
+			let channel = match channel_state.by_id.get_mut(&funding_txo.to_channel_id()) {
+				Some(chan) => chan,
+				None => return,
+			};
+			if !channel.is_awaiting_monitor_update() || channel.get_latest_monitor_update_id() != highest_applied_update_id {
+				return;
+			}
+
+			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored();
+			if !pending_forwards.is_empty() {
+				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), pending_forwards));
+			}
+			htlc_failures.append(&mut pending_failures);
+
+			macro_rules! handle_cs { () => {
+				if let Some(update) = commitment_update {
+					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id: channel.get_their_node_id(),
+						updates: update,
+					});
+				}
+			} }
+			macro_rules! handle_raa { () => {
+				if let Some(revoke_and_ack) = raa {
+					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+						node_id: channel.get_their_node_id(),
+						msg: revoke_and_ack,
+					});
+				}
+			} }
+			match order {
+				RAACommitmentOrder::CommitmentFirst => {
+					handle_cs!();
+					handle_raa!();
+				},
+				RAACommitmentOrder::RevokeAndACKFirst => {
+					handle_raa!();
+					handle_cs!();
+				},
+			}
+			if needs_broadcast_safe {
+				pending_events.push(events::Event::FundingBroadcastSafe {
+					funding_txo: channel.get_funding_txo().unwrap(),
+					user_channel_id: channel.get_user_id(),
+				});
+			}
+			if let Some(msg) = funding_locked {
+				pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+					node_id: channel.get_their_node_id(),
+					msg,
+				});
+				if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
+					pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						node_id: channel.get_their_node_id(),
+						msg: announcement_sigs,
+					});
+				}
+				short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
+			}
+		}
+
+		self.pending_events.lock().unwrap().append(&mut pending_events);
+
+		for failure in htlc_failures.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		}
+		self.forward_htlcs(&mut htlc_forwards[..]);
+
+		for res in close_results.drain(..) {
+			self.finish_force_close_channel(res);
+		}
+	}
+
 	/// Used to restore channels to normal operation after a
 	/// ChannelMonitorUpdateErr::TemporaryFailure was returned from a channel monitor update
 	/// operation.
@@ -3351,7 +3457,8 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref, T
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				if channel.get_cur_local_commitment_transaction_number() != monitor.get_cur_local_commitment_number() ||
 						channel.get_revoked_remote_commitment_transaction_number() != monitor.get_min_seen_secret() ||
-						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() {
+						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() ||
+						channel.get_latest_monitor_update_id() != monitor.get_latest_update_id() {
 					let mut force_close_res = channel.force_shutdown();
 					force_close_res.0 = monitor.get_latest_local_commitment_txn();
 					closed_channels.push(force_close_res);

@@ -121,6 +121,10 @@ impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMon
 		ret
 	}
 
+	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+		unimplemented!(); //TODO
+	}
+
 	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
 		return self.simple_monitor.get_and_clear_pending_htlcs_updated();
 	}

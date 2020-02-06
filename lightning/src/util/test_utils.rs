@@ -10,8 +10,7 @@ use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
-use util::ser::ReadableArgs;
-use util::ser::Writer;
+use util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
@@ -71,6 +70,28 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		assert!(self.simple_monitor.add_update_monitor(funding_txo, monitor).is_ok());
+		self.update_ret.lock().unwrap().clone()
+	}
+
+	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+		// Every monitor update should survive roundtrip
+		let mut w = TestVecWriter(Vec::new());
+		update.write(&mut w).unwrap();
+		assert!(channelmonitor::ChannelMonitorUpdate::read(
+				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
+
+		assert!(self.simple_monitor.update_monitor(funding_txo, update).is_ok());
+		// At every point where we get a monitor update, we should be able to send a useful monitor
+		// to a watchtower and disk...
+		let monitors = self.simple_monitor.monitors.lock().unwrap();
+		let monitor = monitors.get(&funding_txo).unwrap();
+		w.0.clear();
+		monitor.write_for_disk(&mut w).unwrap();
+		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == *monitor);
+		w.0.clear();
+		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
+		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		self.update_ret.lock().unwrap().clone()
 	}
 
