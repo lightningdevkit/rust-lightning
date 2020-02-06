@@ -2105,8 +2105,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let chan_monitor = try_chan_entry!(self, chan.get_mut().funding_signed(&msg), channel_state, chan);
-					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					let monitor_update = try_chan_entry!(self, chan.get_mut().funding_signed(&msg), channel_state, chan);
+					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
 					}
 					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())

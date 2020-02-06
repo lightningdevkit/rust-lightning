@@ -18,7 +18,7 @@ use secp256k1;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::channelmonitor::ChannelMonitor;
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep};
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
 use ln::chan_utils;
@@ -1487,7 +1487,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// Now that we're past error-generating stuff, update our local state:
 
 		self.channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
-		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx, local_keys, self.feerate_per_kw, Vec::new());
+		self.channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx, local_keys, self.feerate_per_kw, Vec::new()).unwrap();
 		self.channel_state = ChannelState::FundingSent as u32;
 		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
@@ -1501,7 +1501,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed(&mut self, msg: &msgs::FundingSigned) -> Result<ChannelMonitor<ChanSigner>, ChannelError<ChanSigner>> {
+	pub fn funding_signed(&mut self, msg: &msgs::FundingSigned) -> Result<ChannelMonitorUpdate, ChannelError<ChanSigner>> {
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?"));
 		}
@@ -1525,14 +1525,20 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
 		secp_check!(self.secp_ctx.verify(&local_sighash, &msg.signature, their_funding_pubkey), "Invalid funding_signed signature from peer");
 
-		self.channel_monitor.provide_latest_local_commitment_tx_info(
-			LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey),
-			local_keys, self.feerate_per_kw, Vec::new());
+		self.latest_monitor_update_id += 1;
+		let monitor_update = ChannelMonitorUpdate {
+			update_id: self.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
+				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey),
+				local_keys, feerate_per_kw: self.feerate_per_kw, htlc_outputs: Vec::new(),
+			}]
+		};
+		self.channel_monitor.update_monitor(monitor_update.clone()).unwrap();
 		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
 		self.cur_local_commitment_transaction_number -= 1;
 
 		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-			Ok(self.channel_monitor.clone())
+			Ok(monitor_update)
 		} else {
 			Err(ChannelError::Ignore("Previous monitor update failure prevented funding_signed from allowing funding broadcast"))
 		}
@@ -1827,7 +1833,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.channel_monitor.provide_latest_local_commitment_tx_info(
 			LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), &their_funding_pubkey),
-			local_keys, self.feerate_per_kw, htlcs_and_sigs);
+			local_keys, self.feerate_per_kw, htlcs_and_sigs).unwrap();
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {

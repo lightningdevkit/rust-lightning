@@ -246,7 +246,7 @@ pub(super) fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx:
 
 /// The set of public keys which are used in the creation of one commitment transaction.
 /// These are derived from the channel base keys and per-commitment data.
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct TxCreationKeys {
 	/// The per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
@@ -262,6 +262,8 @@ pub struct TxCreationKeys {
 	/// B's Payment Key
 	pub(crate) b_payment_key: PublicKey,
 }
+impl_writeable!(TxCreationKeys, 33*6,
+	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key, b_payment_key });
 
 /// One counterparty's public keys which do not change over the life of a channel.
 #[derive(Clone, PartialEq)]
@@ -343,6 +345,14 @@ pub struct HTLCOutputInCommitment {
 	/// value is spent to additional transaction fees).
 	pub transaction_output_index: Option<u32>,
 }
+
+impl_writeable!(HTLCOutputInCommitment, 1 + 8 + 4 + 32 + 5, {
+	offered,
+	amount_msat,
+	cltv_expiry,
+	payment_hash,
+	transaction_output_index
+});
 
 #[inline]
 pub(super) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {

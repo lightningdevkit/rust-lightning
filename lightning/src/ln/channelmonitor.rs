@@ -651,16 +651,56 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 #[cfg_attr(test, derive(PartialEq))]
 #[derive(Clone)]
 pub(super) enum ChannelMonitorUpdateStep {
+	LatestLocalCommitmentTXInfo {
+		// TODO: We really need to not be generating a fully-signed transaction in Channel and
+		// passing it here, we need to hold off so that the ChanSigner can enforce a
+		// only-sign-local-state-for-broadcast once invariant:
+		commitment_tx: LocalCommitmentTransaction,
+		local_keys: chan_utils::TxCreationKeys,
+		feerate_per_kw: u64,
+		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+	},
 }
 
 impl Writeable for ChannelMonitorUpdateStep {
-	fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { ref commitment_tx, ref local_keys, ref feerate_per_kw, ref htlc_outputs } => {
+				0u8.write(w)?;
+				commitment_tx.write(w)?;
+				local_keys.write(w)?;
+				feerate_per_kw.write(w)?;
+				(htlc_outputs.len() as u64).write(w)?;
+				for &(ref output, ref signature, ref source) in htlc_outputs.iter() {
+					output.write(w)?;
+					signature.write(w)?;
+					source.write(w)?;
+				}
+			}
+		}
 		Ok(())
 	}
 }
 impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
-	fn read(_r: &mut R) -> Result<Self, DecodeError> {
-		unimplemented!() // We don't have any enum variants to read (and never provide Monitor Updates)
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		match Readable::read(r)? {
+			0u8 => {
+				Ok(ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
+					commitment_tx: Readable::read(r)?,
+					local_keys: Readable::read(r)?,
+					feerate_per_kw: Readable::read(r)?,
+					htlc_outputs: {
+						let len: u64 = Readable::read(r)?;
+						let mut res = Vec::new();
+						for _ in 0..len {
+							res.push((Readable::read(r)?, Readable::read(r)?, Readable::read(r)?));
+						}
+						res
+					},
+				})
+			},
+			_ => Err(DecodeError::InvalidValue),
+		}
 	}
 }
 
@@ -1307,8 +1347,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our local commitment transaction is updated.
 	/// Panics if set_their_to_self_delay has never been called.
-	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, commitment_tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) {
-		assert!(self.their_to_self_delay.is_some());
+	pub(super) fn provide_latest_local_commitment_tx_info(&mut self, commitment_tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
+		if self.their_to_self_delay.is_none() {
+			return Err(MonitorUpdateError("Got a local commitment tx info update before we'd set basic information about the channel"));
+		}
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
 			txid: commitment_tx.txid(),
@@ -1321,6 +1363,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			feerate_per_kw,
 			htlc_outputs,
 		});
+		Ok(())
 	}
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
@@ -1339,6 +1382,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 		for update in updates.updates.drain(..) {
 			match update {
+				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } =>
+					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?,
 			}
 		}
 		self.latest_update_id = updates.update_id;
@@ -3514,7 +3559,7 @@ mod tests {
 		let mut monitor = ChannelMonitor::new(keys, &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
 		monitor.their_to_self_delay = Some(10);
 
-		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10]));
+		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10])).unwrap();
 		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key);
 		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key);
 		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key);
@@ -3540,7 +3585,7 @@ mod tests {
 
 		// Now update local commitment tx info, pruning only element 18 as we still care about the
 		// previous commitment tx's preimages too
-		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5]));
+		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..5])).unwrap();
 		secret[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 12);
@@ -3548,7 +3593,7 @@ mod tests {
 		test_preimages_exist!(&preimages[18..20], monitor);
 
 		// But if we do it again, we'll prune 5-10
-		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3]));
+		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..3])).unwrap();
 		secret[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 5);
