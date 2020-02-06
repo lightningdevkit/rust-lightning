@@ -303,6 +303,8 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 
 	last_sent_closing_fee: Option<(u64, u64, Signature)>, // (feerate, fee, our_sig)
 
+	funding_txo: Option<OutPoint>,
+
 	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
 	/// to detect unconfirmation after a serialize-unserialize roundtrip where we may not see a full
 	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
@@ -498,6 +500,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			last_sent_closing_fee: None,
 
+			funding_txo: None,
 			funding_tx_confirmed_in: None,
 			short_channel_id: None,
 			last_block_connected: Default::default(),
@@ -718,6 +721,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			last_sent_closing_fee: None,
 
+			funding_txo: None,
 			funding_tx_confirmed_in: None,
 			short_channel_id: None,
 			last_block_connected: Default::default(),
@@ -814,7 +818,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
-				previous_output: self.channel_monitor.get_funding_txo().unwrap().into_bitcoin_outpoint(),
+				previous_output: self.funding_txo.unwrap().into_bitcoin_outpoint(),
 				script_sig: Script::new(),
 				sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32),
 				witness: Vec::new(),
@@ -1033,7 +1037,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
-				previous_output: self.channel_monitor.get_funding_txo().unwrap().into_bitcoin_outpoint(),
+				previous_output: self.funding_txo.unwrap().into_bitcoin_outpoint(),
 				script_sig: Script::new(),
 				sequence: 0xffffffff,
 				witness: Vec::new(),
@@ -1461,16 +1465,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let funding_txo = OutPoint::new(msg.funding_txid, msg.funding_output_index);
-		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
-		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
+		self.funding_txo = Some(funding_txo.clone());
 
 		let (remote_initial_commitment_tx, local_initial_commitment_tx, our_signature, local_keys) = match self.funding_created_signature(&msg.signature) {
 			Ok(res) => res,
 			Err(e) => {
-				self.channel_monitor.unset_funding_info();
+				self.funding_txo = None;
 				return Err(e);
 			}
 		};
+
+		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
+		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
 
 		// Now that we're past error-generating stuff, update our local state:
 
@@ -2825,7 +2831,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Returns the funding_txo we either got from our peer, or were given by
 	/// get_outbound_funding_created.
 	pub fn get_funding_txo(&self) -> Option<OutPoint> {
-		self.channel_monitor.get_funding_txo()
+		self.funding_txo
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -3005,8 +3011,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for (ref tx, index_in_block) in txn_matched.iter().zip(indexes_of_txn_matched) {
-				if tx.txid() == self.channel_monitor.get_funding_txo().unwrap().txid {
-					let txo_idx = self.channel_monitor.get_funding_txo().unwrap().index as usize;
+				if tx.txid() == self.funding_txo.unwrap().txid {
+					let txo_idx = self.funding_txo.unwrap().index as usize;
 					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
 							tx.output[txo_idx].value != self.channel_value_satoshis {
 						if self.channel_outbound {
@@ -3209,18 +3215,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
-		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
-
+		self.funding_txo = Some(funding_txo.clone());
 		let (our_signature, commitment_tx) = match self.get_outbound_funding_created_signature() {
 			Ok(res) => res,
 			Err(e) => {
 				log_error!(self, "Got bad signatures: {:?}!", e);
-				self.channel_monitor.unset_funding_info();
+				self.funding_txo = None;
 				return Err(e);
 			}
 		};
 
+		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
+		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
 		let temporary_channel_id = self.channel_id;
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -3815,6 +3821,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			None => 0u8.write(writer)?,
 		}
 
+		write_option!(self.funding_txo);
 		write_option!(self.funding_tx_confirmed_in);
 		write_option!(self.short_channel_id);
 
@@ -3967,6 +3974,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
+		let funding_txo = Readable::read(reader)?;
 		let funding_tx_confirmed_in = Readable::read(reader)?;
 		let short_channel_id = Readable::read(reader)?;
 
@@ -4043,6 +4051,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 
 			last_sent_closing_fee,
 
+			funding_txo,
 			funding_tx_confirmed_in,
 			short_channel_id,
 			last_block_connected,
@@ -4183,7 +4192,7 @@ mod tests {
 		chan.our_dust_limit_satoshis = 546;
 
 		let funding_info = OutPoint::new(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
-		chan.channel_monitor.set_funding_info((funding_info, Script::new()));
+		chan.funding_txo = Some(funding_info);
 
 		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),

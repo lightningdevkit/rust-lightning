@@ -1293,8 +1293,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Allows this monitor to scan only for transactions which are applicable. Note that this is
 	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
-	/// avoid this (or call unset_funding_info) on a monitor you wish to send to a watchtower as it
-	/// provides slightly better privacy.
+	/// avoid this on a monitor you wish to send to a watchtower as it provides slightly better
+	/// privacy.
 	/// It's the responsibility of the caller to register outpoint and script with passing the former
 	/// value as key to add_update_monitor.
 	pub(super) fn set_funding_info(&mut self, new_funding_info: (OutPoint, Script)) {
@@ -1318,17 +1318,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		self.channel_value_satoshis = Some(channel_value_satoshis);
 		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
 		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
-	}
-
-	pub(super) fn unset_funding_info(&mut self) {
-		match self.key_storage {
-			Storage::Local { ref mut funding_info, .. } => {
-				*funding_info = None;
-			},
-			Storage::Watchtower { .. } => {
-				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
-			},
-		}
 	}
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.

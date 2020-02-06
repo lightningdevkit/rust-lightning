@@ -39,6 +39,8 @@ impl OutPoint {
 	}
 }
 
+impl_writeable!(OutPoint, 0, { txid, index });
+
 #[cfg(test)]
 mod tests {
 	use chain::transaction::OutPoint;

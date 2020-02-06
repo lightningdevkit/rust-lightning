@@ -3346,7 +3346,7 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref, T
 				return Err(DecodeError::InvalidValue);
 			}
 
-			let funding_txo = channel.channel_monitor().get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				if channel.get_cur_local_commitment_transaction_number() != monitor.get_cur_local_commitment_number() ||
