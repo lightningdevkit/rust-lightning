@@ -31,7 +31,7 @@ use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::chan_utils;
-use ln::chan_utils::{HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::transaction::OutPoint;
@@ -589,7 +589,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	our_to_self_delay: u16,
 	their_to_self_delay: Option<u16>,
 
-	old_secrets: [([u8; 32], u64); 49],
+	commitment_secrets: CounterpartyCommitmentSecrets,
 	remote_claimable_outpoints: HashMap<Sha256dHash, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
 	/// We cannot identify HTLC-Success or HTLC-Timeout transactions by themselves on the chain.
 	/// Nor can we figure out their commitment numbers without the commitment transaction they are
@@ -671,7 +671,6 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 	logger: Arc<Logger>,
 }
-
 macro_rules! subtract_high_prio_fee {
 	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
 		{
@@ -721,6 +720,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.their_cur_revocation_points != other.their_cur_revocation_points ||
 			self.our_to_self_delay != other.our_to_self_delay ||
 			self.their_to_self_delay != other.their_to_self_delay ||
+			self.commitment_secrets != other.commitment_secrets ||
 			self.remote_claimable_outpoints != other.remote_claimable_outpoints ||
 			self.remote_commitment_txn_on_chain != other.remote_commitment_txn_on_chain ||
 			self.remote_hash_commitment_number != other.remote_hash_commitment_number ||
@@ -738,11 +738,6 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 		{
 			false
 		} else {
-			for (&(ref secret, ref idx), &(ref o_secret, ref o_idx)) in self.old_secrets.iter().zip(other.old_secrets.iter()) {
-				if secret != o_secret || idx != o_idx {
-					return false
-				}
-			}
 			true
 		}
 	}
@@ -823,10 +818,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		writer.write_all(&byte_utils::be16_to_array(self.our_to_self_delay))?;
 		writer.write_all(&byte_utils::be16_to_array(self.their_to_self_delay.unwrap()))?;
 
-		for &(ref secret, ref idx) in self.old_secrets.iter() {
-			writer.write_all(secret)?;
-			writer.write_all(&byte_utils::be64_to_array(*idx))?;
-		}
+		self.commitment_secrets.write(writer)?;
 
 		macro_rules! serialize_htlc_in_commitment {
 			($htlc_output: expr) => {
@@ -1030,7 +1022,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			our_to_self_delay: our_to_self_delay,
 			their_to_self_delay: None,
 
-			old_secrets: [([0; 32], 1 << 48); 49],
+			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			remote_claimable_outpoints: HashMap::new(),
 			remote_commitment_txn_on_chain: HashMap::new(),
 			remote_hash_commitment_number: HashMap::new(),
@@ -1097,44 +1089,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		current_height + 15
 	}
 
-	#[inline]
-	fn place_secret(idx: u64) -> u8 {
-		for i in 0..48 {
-			if idx & (1 << i) == (1 << i) {
-				return i
-			}
-		}
-		48
-	}
-
-	#[inline]
-	fn derive_secret(secret: [u8; 32], bits: u8, idx: u64) -> [u8; 32] {
-		let mut res: [u8; 32] = secret;
-		for i in 0..bits {
-			let bitpos = bits - 1 - i;
-			if idx & (1 << bitpos) == (1 << bitpos) {
-				res[(bitpos / 8) as usize] ^= 1 << (bitpos & 7);
-				res = Sha256::hash(&res).into_inner();
-			}
-		}
-		res
-	}
-
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by local commitment transactions HTCLs nor by remote ones. Unless we haven't already seen remote
 	/// commitment transaction's secret, they are de facto pruned (we can use revocation key).
 	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
-		let pos = ChannelMonitor::<ChanSigner>::place_secret(idx);
-		for i in 0..pos {
-			let (old_secret, old_idx) = self.old_secrets[i as usize];
-			if ChannelMonitor::<ChanSigner>::derive_secret(secret, pos, old_idx) != old_secret {
-				return Err(MonitorUpdateError("Previous secret did not match new one"));
-			}
+		if let Err(()) = self.commitment_secrets.provide_secret(idx, secret) {
+			return Err(MonitorUpdateError("Previous secret did not match new one"));
 		}
-		if self.get_min_seen_secret() <= idx {
-			return Ok(());
-		}
-		self.old_secrets[pos as usize] = (secret, idx);
 
 		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
 		// events for now-revoked/fulfilled HTLCs.
@@ -1415,24 +1376,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Can only fail if idx is < get_min_seen_secret
 	pub(super) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
-		for i in 0..self.old_secrets.len() {
-			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
-				return Some(ChannelMonitor::<ChanSigner>::derive_secret(self.old_secrets[i].0, i as u8, idx))
-			}
-		}
-		assert!(idx < self.get_min_seen_secret());
-		None
+		self.commitment_secrets.get_secret(idx)
 	}
 
 	pub(super) fn get_min_seen_secret(&self) -> u64 {
-		//TODO This can be optimized?
-		let mut min = 1 << 48;
-		for &(_, idx) in self.old_secrets.iter() {
-			if idx < min {
-				min = idx;
-			}
-		}
-		min
+		self.commitment_secrets.get_min_seen_secret()
 	}
 
 	pub(super) fn get_cur_remote_commitment_number(&self) -> u64 {
@@ -3103,11 +3051,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 		let our_to_self_delay: u16 = Readable::read(reader)?;
 		let their_to_self_delay: Option<u16> = Some(Readable::read(reader)?);
 
-		let mut old_secrets = [([0; 32], 1 << 48); 49];
-		for &mut (ref mut secret, ref mut idx) in old_secrets.iter_mut() {
-			*secret = Readable::read(reader)?;
-			*idx = Readable::read(reader)?;
-		}
+		let commitment_secrets = Readable::read(reader)?;
 
 		macro_rules! read_htlc_in_commitment {
 			() => {
@@ -3320,7 +3264,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 			our_to_self_delay,
 			their_to_self_delay,
 
-			old_secrets,
+			commitment_secrets,
 			remote_claimable_outpoints,
 			remote_commitment_txn_on_chain,
 			remote_hash_commitment_number,
@@ -3372,373 +3316,6 @@ mod tests {
 	use rand::{thread_rng,Rng};
 	use std::sync::Arc;
 	use chain::keysinterface::InMemoryChannelKeys;
-
-
-	#[test]
-	fn test_per_commitment_storage() {
-		// Test vectors from BOLT 3:
-		let mut secrets: Vec<[u8; 32]> = Vec::new();
-		let mut monitor: ChannelMonitor<InMemoryChannelKeys>;
-		let secp_ctx = Secp256k1::new();
-		let logger = Arc::new(TestLogger::new());
-
-		macro_rules! test_secrets {
-			() => {
-				let mut idx = 281474976710655;
-				for secret in secrets.iter() {
-					assert_eq!(monitor.get_secret(idx).unwrap(), *secret);
-					idx -= 1;
-				}
-				assert_eq!(monitor.get_min_seen_secret(), idx + 1);
-				assert!(monitor.get_secret(idx).is_none());
-			};
-		}
-
-		let keys = InMemoryChannelKeys::new(
-			&secp_ctx,
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
-			[41; 32],
-			0,
-		);
-
-		{
-			// insert_secret correct sequence
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-		}
-
-		{
-			// insert_secret #1 incorrect
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #2 incorrect (#1 derived from incorrect)
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #3 incorrect
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #4 incorrect (1,2,3 derived from incorrect)
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("dddc3a8d14fddf2b68fa8c7fbad2748274937479dd0f8930d5ebb4ab6bd866a3").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c51a18b13e8527e579ec56365482c62f180b7d5760b46e9477dae59e87ed423a").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("ba65d7b0ef55a3ba300d4e87af29868f394f8f138d78a7011669c79b37b936f4").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #5 incorrect
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #6 incorrect (5 derived from incorrect)
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("631373ad5f9ef654bb3dade742d09504c567edd24320d2fcd68e3cc47e2ff6a6").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("b7e76a83668bde38b373970155c868a653304308f9896692f904a23731224bb1").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #7 incorrect
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("e7971de736e01da8ed58b94c2fc216cb1dca9e326f3a96e7194fe8ea8af6c0a3").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("05cde6323d949933f7f7b78776bcc1ea6d9b31447732e3802e1f7ac44b650e17").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-
-		{
-			// insert_secret #8 incorrect
-			monitor = ChannelMonitor::new(keys.clone(), &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
-			secrets.clear();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
-			monitor.provide_secret(281474976710655, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
-			monitor.provide_secret(281474976710654, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
-			monitor.provide_secret(281474976710653, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
-			monitor.provide_secret(281474976710652, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("c65716add7aa98ba7acb236352d665cab17345fe45b55fb879ff80e6bd0c41dd").unwrap());
-			monitor.provide_secret(281474976710651, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("969660042a28f32d9be17344e09374b379962d03db1574df5a8a5a47e19ce3f2").unwrap());
-			monitor.provide_secret(281474976710650, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a5a64476122ca0925fb344bdc1854c1c0a59fc614298e50a33e331980a220f32").unwrap());
-			monitor.provide_secret(281474976710649, secrets.last().unwrap().clone()).unwrap();
-			test_secrets!();
-
-			secrets.push([0; 32]);
-			secrets.last_mut().unwrap()[0..32].clone_from_slice(&hex::decode("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
-			assert_eq!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).unwrap_err().0,
-					"Previous secret did not match new one");
-		}
-	}
 
 	#[test]
 	fn test_prune_preimages() {
