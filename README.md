@@ -5,12 +5,16 @@ Rust-Lightning, not Rusty's Lightning!
 
 Documentation can be found at [docs.rs](https://docs.rs/lightning/)
 
-The project implements all of the BOLT specifications except for X, Y, Z. The
+The project implements all of the BOLT specifications in the 1.0 spec except
+for [channel queries](https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#query-messages). The
 implementation has pretty good test coverage that is expected to continue to
-improve. There are no known production uses of the library though. The current
-state is sufficient for a developer or project to experiment with it. Recent
-increased contribution rate to the project is expected to lead to a high quality,
-stable, production-worthy implementation in 2020.
+improve. There are a number of internal refactorings being done now that will
+make the code base more welcoming to new contributors. It is also anticipated
+that as developers begin using the API, the lessons from that will result in
+changes to the API, so any developer using LDK at this stage should be prepared
+to embrace that. The current state is sufficient for a developer or project to
+experiment with it. Recent increased contribution rate to the project is expected
+to lead to a high quality, stable, production-worthy implementation in 2020.
 
 The goal is to provide a full-featured but also incredibly flexible lightning
 implementation, allowing the user to decide how they wish to use it. With that
