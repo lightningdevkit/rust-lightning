@@ -5,8 +5,12 @@ Rust-Lightning, not Rusty's Lightning!
 
 Documentation can be found at [docs.rs](https://docs.rs/lightning/)
 
-Currently somewhere near 50% towards usable, published to see if there is any
-real interest from folks in using a lightning rust library.
+The project implements all of the BOLT specifications except for X, Y, Z. The
+implementation has pretty good test coverage that is expected to continue to
+improve. There are no known production uses of the library though. The current
+state is sufficient for a developer or project to experiment with it. Recent
+increased contribution rate to the project is expected to lead to a high quality,
+stable, production-worthy implementation in 2020.
 
 The goal is to provide a full-featured but also incredibly flexible lightning
 implementation, allowing the user to decide how they wish to use it. With that
