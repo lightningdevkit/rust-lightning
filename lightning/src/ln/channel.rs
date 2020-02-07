@@ -20,7 +20,7 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::ChannelMonitor;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
@@ -348,6 +348,7 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	their_shutdown_scriptpubkey: Option<Script>,
 
 	channel_monitor: ChannelMonitor<ChanSigner>,
+	commitment_secrets: CounterpartyCommitmentSecrets,
 
 	network_sync: UpdateStatus,
 
@@ -523,6 +524,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_shutdown_scriptpubkey: None,
 
 			channel_monitor: channel_monitor,
+			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
 			network_sync: UpdateStatus::Fresh,
 
@@ -743,6 +745,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_shutdown_scriptpubkey,
 
 			channel_monitor: channel_monitor,
+			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
 			network_sync: UpdateStatus::Fresh,
 
@@ -1451,7 +1454,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			// channel.
 			return Err(ChannelError::Close("Received funding_created after we got the channel!"));
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
 				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
@@ -1493,7 +1496,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_state & !(ChannelState::MonitorUpdateFailed as u32) != ChannelState::FundingCreated as u32 {
 			return Err(ChannelError::Close("Received funding_signed in strange state!"));
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER - 1 ||
 				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
@@ -2002,8 +2005,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				return Err(ChannelError::Close("Got a revoke commitment secret which didn't correspond to their current pubkey"));
 			}
 		}
+		self.commitment_secrets.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)
+			.map_err(|_| ChannelError::Close("Previous secrets did not match new one"))?;
 		self.channel_monitor.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)
-			.map_err(|e| ChannelError::Close(e.0))?;
+			.unwrap();
 
 		if self.channel_state & ChannelState::AwaitingRemoteRevoke as u32 == 0 {
 			// Our counterparty seems to have burned their coins to us (by revoking a state when we
@@ -3198,7 +3203,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
 			panic!("Tried to get a funding_created messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
 		}
-		if self.channel_monitor.get_min_seen_secret() != (1 << 48) ||
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
 				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
@@ -3277,7 +3282,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
 		assert_ne!(self.cur_remote_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		let data_loss_protect = if self.cur_remote_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
-			let remote_last_secret = self.channel_monitor.get_secret(self.cur_remote_commitment_transaction_number + 2).unwrap();
+			let remote_last_secret = self.commitment_secrets.get_secret(self.cur_remote_commitment_transaction_number + 2).unwrap();
 			log_trace!(self, "Enough info to generate a Data Loss Protect with per_commitment_secret {}", log_bytes!(remote_last_secret));
 			OptionalField::Present(DataLossProtect {
 				your_last_per_commitment_secret: remote_last_secret,
@@ -3835,6 +3840,8 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 
 		write_option!(self.their_shutdown_scriptpubkey);
 
+		self.commitment_secrets.write(writer)?;
+
 		self.channel_monitor.write_for_disk(writer)?;
 		Ok(())
 	}
@@ -3984,6 +3991,8 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 		let their_node_id = Readable::read(reader)?;
 
 		let their_shutdown_scriptpubkey = Readable::read(reader)?;
+		let commitment_secrets = Readable::read(reader)?;
+
 		let (monitor_last_block, channel_monitor) = ReadableArgs::read(reader, logger.clone())?;
 		// We drop the ChannelMonitor's last block connected hash cause we don't actually bother
 		// doing full block connection operations on the internal ChannelMonitor copies
@@ -4059,6 +4068,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 			their_shutdown_scriptpubkey,
 
 			channel_monitor,
+			commitment_secrets,
 
 			network_sync: UpdateStatus::Fresh,
 
