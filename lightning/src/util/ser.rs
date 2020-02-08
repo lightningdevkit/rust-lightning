@@ -11,7 +11,9 @@ use std::cmp;
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::transaction::OutPoint;
+use bitcoin::blockdata::transaction::{OutPoint, Transaction};
+use bitcoin::consensus;
+use bitcoin::consensus::Encodable;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
@@ -622,6 +624,27 @@ impl<R: Read> Readable<R> for OutPoint {
 			txid,
 			vout,
 		})
+	}
+}
+
+impl Writeable for Transaction {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self.consensus_encode(WriterWriteAdaptor(writer)) {
+			Ok(_) => Ok(()),
+			Err(consensus::encode::Error::Io(e)) => Err(e),
+			Err(_) => panic!("We shouldn't get a consensus::encode::Error unless our Write generated an std::io::Error"),
+		}
+	}
+}
+
+impl<R: Read> Readable<R> for Transaction {
+	fn read(r: &mut R) -> Result<Self, DecodeError> {
+		match consensus::encode::Decodable::consensus_decode(r) {
+			Ok(t) => Ok(t),
+			Err(consensus::encode::Error::Io(ref e)) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => Err(DecodeError::ShortRead),
+			Err(consensus::encode::Error::Io(e)) => Err(DecodeError::Io(e)),
+			Err(_) => Err(DecodeError::InvalidValue),
+		}
 	}
 }
 
