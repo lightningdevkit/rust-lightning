@@ -1215,31 +1215,43 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 }
 
 impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
-	pub(super) fn new(keys: ChanSigner, funding_key: &SecretKey, revocation_base_key: &SecretKey, delayed_payment_base_key: &SecretKey, htlc_base_key: &SecretKey, payment_base_key: &SecretKey, shutdown_pubkey: &PublicKey, our_to_self_delay: u16, destination_script: Script, logger: Arc<Logger>) -> ChannelMonitor<ChanSigner> {
+	pub(super) fn new(keys: ChanSigner, shutdown_pubkey: &PublicKey,
+			our_to_self_delay: u16, destination_script: &Script, funding_info: (OutPoint, Script),
+			their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey,
+			their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64,
+			commitment_transaction_number_obscure_factor: u64,
+			logger: Arc<Logger>) -> ChannelMonitor<ChanSigner> {
+
+		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
+		let funding_key = keys.funding_key().clone();
+		let revocation_base_key = keys.revocation_base_key().clone();
+		let htlc_base_key = keys.htlc_base_key().clone();
+		let delayed_payment_base_key = keys.delayed_payment_base_key().clone();
+		let payment_base_key = keys.payment_base_key().clone();
 		ChannelMonitor {
 			latest_update_id: 0,
-			commitment_transaction_number_obscure_factor: 0,
+			commitment_transaction_number_obscure_factor,
 
 			key_storage: Storage::Local {
 				keys,
-				funding_key: funding_key.clone(),
-				revocation_base_key: revocation_base_key.clone(),
-				htlc_base_key: htlc_base_key.clone(),
-				delayed_payment_base_key: delayed_payment_base_key.clone(),
-				payment_base_key: payment_base_key.clone(),
+				funding_key,
+				revocation_base_key,
+				htlc_base_key,
+				delayed_payment_base_key,
+				payment_base_key,
 				shutdown_pubkey: shutdown_pubkey.clone(),
-				funding_info: None,
+				funding_info: Some(funding_info),
 				current_remote_commitment_txid: None,
 				prev_remote_commitment_txid: None,
 			},
-			their_htlc_base_key: None,
-			their_delayed_payment_base_key: None,
-			funding_redeemscript: None,
-			channel_value_satoshis: None,
+			their_htlc_base_key: Some(their_htlc_base_key.clone()),
+			their_delayed_payment_base_key: Some(their_delayed_payment_base_key.clone()),
+			funding_redeemscript: Some(funding_redeemscript),
+			channel_value_satoshis: Some(channel_value_satoshis),
 			their_cur_revocation_points: None,
 
 			our_to_self_delay: our_to_self_delay,
-			their_to_self_delay: None,
+			their_to_self_delay: Some(their_to_self_delay),
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			remote_claimable_outpoints: HashMap::new(),
@@ -1253,7 +1265,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			payment_preimages: HashMap::new(),
 			pending_htlcs_updated: Vec::new(),
 
-			destination_script: destination_script,
+			destination_script: destination_script.clone(),
 			to_remote_rescue: None,
 
 			pending_claim_requests: HashMap::new(),
@@ -1557,35 +1569,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
 		Ok(())
-	}
-
-	/// Allows this monitor to scan only for transactions which are applicable. Note that this is
-	/// optional, without it this monitor cannot be used in an SPV client, but you may wish to
-	/// avoid this on a monitor you wish to send to a watchtower as it provides slightly better
-	/// privacy.
-	/// It's the responsibility of the caller to register outpoint and script with passing the former
-	/// value as key to add_update_monitor.
-	pub(super) fn set_funding_info(&mut self, new_funding_info: (OutPoint, Script)) {
-		match self.key_storage {
-			Storage::Local { ref mut funding_info, .. } => {
-				*funding_info = Some(new_funding_info);
-			},
-			Storage::Watchtower { .. } => {
-				panic!("Channel somehow ended up with its internal ChannelMonitor being in Watchtower mode?");
-			}
-		}
-	}
-
-	/// We log these base keys at channel opening to being able to rebuild redeemscript in case of leaked revoked commit tx
-	/// Panics if commitment_transaction_number_obscure_factor doesn't fit in 48 bits
-	pub(super) fn set_basic_channel_info(&mut self, their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey, their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64, commitment_transaction_number_obscure_factor: u64) {
-		self.their_htlc_base_key = Some(their_htlc_base_key.clone());
-		self.their_delayed_payment_base_key = Some(their_delayed_payment_base_key.clone());
-		self.their_to_self_delay = Some(their_to_self_delay);
-		self.funding_redeemscript = Some(funding_redeemscript);
-		self.channel_value_satoshis = Some(channel_value_satoshis);
-		assert!(commitment_transaction_number_obscure_factor < (1 << 48));
-		self.commitment_transaction_number_obscure_factor = commitment_transaction_number_obscure_factor;
 	}
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -3571,6 +3554,7 @@ mod tests {
 	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin_hashes::hex::FromHex;
 	use hex;
+	use chain::transaction::OutPoint;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use ln::channelmonitor::{ChannelMonitor, InputDescriptors};
 	use ln::chan_utils;
@@ -3663,7 +3647,13 @@ mod tests {
 
 		// Prune with one old state and a local commitment tx holding a few overlaps with the
 		// old state.
-		let mut monitor = ChannelMonitor::new(keys, &SecretKey::from_slice(&[41; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[43; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &SecretKey::from_slice(&[44; 32]).unwrap(), &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()), 0, Script::new(), logger.clone());
+		let mut monitor = ChannelMonitor::new(keys,
+			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
+			(OutPoint { txid: Sha256dHash::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
+			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
+			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()),
+			0, Script::new(), 46, 0, logger.clone());
+
 		monitor.their_to_self_delay = Some(10);
 
 		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), dummy_keys!(), 0, preimages_to_local_htlcs!(preimages[0..10])).unwrap();
