@@ -686,7 +686,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		} else { None };
 
-		let mut chan = Channel {
+		let chan = Channel {
 			user_id: user_id,
 			config: local_config,
 
@@ -761,10 +761,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			logger,
 		};
-
-		let obscure_factor = chan.get_commitment_transaction_number_obscure_factor();
-		let funding_redeemscript = chan.get_funding_redeemscript();
-		chan.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, msg.funding_satoshis, obscure_factor);
 
 		Ok(chan)
 	}
@@ -1435,10 +1431,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.their_cur_commitment_point = Some(msg.first_per_commitment_point);
 		self.their_shutdown_scriptpubkey = their_shutdown_scriptpubkey;
 
-		let obscure_factor = self.get_commitment_transaction_number_obscure_factor();
-		let funding_redeemscript = self.get_funding_redeemscript();
-		self.channel_monitor.set_basic_channel_info(&msg.htlc_basepoint, &msg.delayed_payment_basepoint, msg.to_self_delay, funding_redeemscript, self.channel_value_satoshis, obscure_factor);
-
 		self.channel_state = ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32;
 
 		Ok(())
@@ -1496,7 +1488,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		};
 
-		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
+		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
+		let funding_redeemscript = self.get_funding_redeemscript();
+		self.channel_monitor.set_basic_channel_info(&their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint, self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis, self.get_commitment_transaction_number_obscure_factor());
+
+		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -3314,7 +3310,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		};
 
-		let funding_txo_script = self.get_funding_redeemscript().to_v0_p2wsh();
+		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
+		let funding_redeemscript = self.get_funding_redeemscript();
+		self.channel_monitor.set_basic_channel_info(&their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint, self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis, self.get_commitment_transaction_number_obscure_factor());
+
+		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		self.channel_monitor.set_funding_info((funding_txo, funding_txo_script));
 		let temporary_channel_id = self.channel_id;
 
