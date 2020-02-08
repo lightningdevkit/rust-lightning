@@ -1203,8 +1203,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						first_hop_htlc_msat: htlc_msat,
 					}, onion_packet), channel_state, chan)
 				} {
-					Some((update_add, commitment_signed, chan_monitor)) => {
-						if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					Some((update_add, commitment_signed, monitor_update)) => {
+						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
 							// Note that MonitorUpdateFailed here indicates (per function docs)
 							// that we will resent the commitment update once we unfree monitor
@@ -1438,7 +1438,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						}
 
 						if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-							let (commitment_msg, monitor) = match chan.get_mut().send_commitment() {
+							let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment() {
 								Ok(res) => res,
 								Err(e) => {
 									// We surely failed send_commitment due to bad keys, in that case
@@ -1464,7 +1464,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 									}
 								}
 							};
-							if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+							if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 								handle_errors.push((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
 							}
@@ -1737,8 +1737,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 						match chan.get_mut().get_update_fulfill_htlc_and_commit(htlc_id, payment_preimage) {
 							Ok((msgs, monitor_option)) => {
-								if let Some(chan_monitor) = monitor_option {
-									if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+								if let Some(monitor_update) = monitor_option {
+									if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 										if was_frozen_for_monitor {
 											assert!(msgs.is_none());
 										} else {
@@ -2105,7 +2105,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let monitor_update = try_chan_entry!(self, chan.get_mut().funding_signed(&msg), channel_state, chan);
+					let monitor_update = match chan.get_mut().funding_signed(&msg) {
+						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
+						Err((Some(monitor_update), e)) => {
+							assert!(chan.get().is_awaiting_monitor_update());
+							let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update);
+							try_chan_entry!(self, Err(e), channel_state, chan);
+							unreachable!();
+						},
+						Ok(update) => update,
+					};
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
 					}
@@ -2363,9 +2372,18 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) =
-					try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &*self.fee_estimator), channel_state, chan);
-				if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
+						match chan.get_mut().commitment_signed(&msg, &*self.fee_estimator) {
+					Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
+					Err((Some(update), e)) => {
+						assert!(chan.get().is_awaiting_monitor_update());
+						let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), update);
+						try_chan_entry!(self, Err(e), channel_state, chan);
+						unreachable!();
+					},
+					Ok(res) => res
+				};
+				if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
@@ -2440,9 +2458,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) =
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
 						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
-					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
 							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA"));
@@ -2542,10 +2560,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, mut order, shutdown) =
+				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg), channel_state, chan);
-				if let Some(monitor) = channel_monitor {
-					if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+				if let Some(monitor_update) = monitor_update_opt {
+					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						// channel_reestablish doesn't guarantee the order it returns is sensical
 						// for the messages it returns, but if we're setting what messages to
 						// re-transmit on monitor update success, we need to make sure it is sane.
@@ -2628,10 +2646,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
 					}
 					their_node_id = chan.get().get_their_node_id();
-					if let Some((update_fee, commitment_signed, chan_monitor)) =
+					if let Some((update_fee, commitment_signed, monitor_update)) =
 							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw), channel_state, chan)
 					{
-						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						if let Err(_e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							unimplemented!();
 						}
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {

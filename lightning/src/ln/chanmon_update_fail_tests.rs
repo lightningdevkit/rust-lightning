@@ -201,6 +201,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 				}
 
 				nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+				check_added_monitors!(nodes[0], 1);
 				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 				nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 			}
@@ -791,6 +792,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		send_event = SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
 		nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send_event.msgs[0]);
 		nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &send_event.commitment_msg);
+		check_added_monitors!(nodes[1], 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1177,6 +1179,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_updates.commitment_signed);
+	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 	// Note that nodes[1] not updating monitor here is OK - it wont take action on the new HTLC
@@ -1374,6 +1377,7 @@ fn first_message_on_recv_ordering() {
 	// the appropriate HTLC acceptance).
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 
@@ -1655,7 +1659,7 @@ fn do_during_funding_monitor_fail(fail_on_generate: bool, restore_between_fails:
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		if fail_on_generate && !restore_between_fails {
 			nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented funding_signed from allowing funding broadcast".to_string(), 1);
-			check_added_monitors!(nodes[0], 0);
+			check_added_monitors!(nodes[0], 1);
 		} else {
 			nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 			check_added_monitors!(nodes[0], 1);

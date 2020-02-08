@@ -660,6 +660,19 @@ pub(super) enum ChannelMonitorUpdateStep {
 		feerate_per_kw: u64,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 	},
+	LatestRemoteCommitmentTXInfo {
+		unsigned_commitment_tx: Transaction, // TODO: We should actually only need the txid here
+		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
+		commitment_number: u64,
+		their_revocation_point: PublicKey,
+	},
+	PaymentPreimage {
+		payment_preimage: PaymentPreimage,
+	},
+	CommitmentSecret {
+		idx: u64,
+		secret: [u8; 32],
+	},
 }
 
 impl Writeable for ChannelMonitorUpdateStep {
@@ -677,6 +690,32 @@ impl Writeable for ChannelMonitorUpdateStep {
 					source.write(w)?;
 				}
 			}
+			&ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { ref unsigned_commitment_tx, ref htlc_outputs, ref commitment_number, ref their_revocation_point } => {
+				1u8.write(w)?;
+				unsigned_commitment_tx.write(w)?;
+				commitment_number.write(w)?;
+				their_revocation_point.write(w)?;
+				(htlc_outputs.len() as u64).write(w)?;
+				for &(ref output, ref source) in htlc_outputs.iter() {
+					output.write(w)?;
+					match source {
+						&None => 0u8.write(w)?,
+						&Some(ref s) => {
+							1u8.write(w)?;
+							s.write(w)?;
+						},
+					}
+				}
+			},
+			&ChannelMonitorUpdateStep::PaymentPreimage { ref payment_preimage } => {
+				2u8.write(w)?;
+				payment_preimage.write(w)?;
+			},
+			&ChannelMonitorUpdateStep::CommitmentSecret { ref idx, ref secret } => {
+				3u8.write(w)?;
+				idx.write(w)?;
+				secret.write(w)?;
+			},
 		}
 		Ok(())
 	}
@@ -697,6 +736,32 @@ impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
 						}
 						res
 					},
+				})
+			},
+			1u8 => {
+				Ok(ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo {
+					unsigned_commitment_tx: Readable::read(r)?,
+					commitment_number: Readable::read(r)?,
+					their_revocation_point: Readable::read(r)?,
+					htlc_outputs: {
+						let len: u64 = Readable::read(r)?;
+						let mut res = Vec::new();
+						for _ in 0..len {
+							res.push((Readable::read(r)?, <Option<HTLCSource> as Readable<R>>::read(r)?.map(|o| Box::new(o))));
+						}
+						res
+					},
+				})
+			},
+			2u8 => {
+				Ok(ChannelMonitorUpdateStep::PaymentPreimage {
+					payment_preimage: Readable::read(r)?,
+				})
+			},
+			3u8 => {
+				Ok(ChannelMonitorUpdateStep::CommitmentSecret {
+					idx: Readable::read(r)?,
+					secret: Readable::read(r)?,
 				})
 			},
 			_ => Err(DecodeError::InvalidValue),
@@ -1372,6 +1437,24 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 	}
 
+	/// Used in Channel to cheat wrt the update_ids since it plays games, will be removed soon!
+	pub(super) fn update_monitor_ooo(&mut self, mut updates: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
+		for update in updates.updates.drain(..) {
+			match update {
+				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } =>
+					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?,
+				ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
+					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point),
+				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
+				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
+					self.provide_secret(idx, secret)?
+			}
+		}
+		self.latest_update_id = updates.update_id;
+		Ok(())
+	}
+
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
 	/// itself.
 	///
@@ -1384,6 +1467,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			match update {
 				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } =>
 					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?,
+				ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
+					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point),
+				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
+				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
+					self.provide_secret(idx, secret)?
 			}
 		}
 		self.latest_update_id = updates.update_id;
