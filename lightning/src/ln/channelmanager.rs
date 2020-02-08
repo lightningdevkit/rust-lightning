@@ -210,7 +210,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn from_chan_no_close<ChanSigner: ChannelKeys>(err: ChannelError<ChanSigner>, channel_id: [u8; 32]) -> Self {
+	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: match err {
 				ChannelError::Ignore(msg) => LightningError {
@@ -484,7 +484,7 @@ macro_rules! break_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(ChannelError::Ignore(msg)) => {
-				break Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore(msg), $entry.key().clone()))
+				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
@@ -504,7 +504,7 @@ macro_rules! try_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(ChannelError::Ignore(msg)) => {
-				return Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore(msg), $entry.key().clone()))
+				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
@@ -520,16 +520,14 @@ macro_rules! try_chan_entry {
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
 				}
-				if let Some(update) = update {
-					if let Err(e) = $self.monitor.add_update_monitor(update.get_funding_txo().unwrap(), update.clone()) {
-						match e {
-							// Upstream channel is dead, but we want at least to fail backward HTLCs to save
-							// downstream channels. In case of PermanentFailure, we are not going to be able
-							// to claim back to_remote output on remote commitment transaction. Doesn't
-							// make a difference here, we are concern about HTLCs circuit, not onchain funds.
-							ChannelMonitorUpdateErr::PermanentFailure => {},
-							ChannelMonitorUpdateErr::TemporaryFailure => {},
-						}
+				if let Err(e) = $self.monitor.update_monitor(chan.get_funding_txo().unwrap(), update) {
+					match e {
+						// Upstream channel is dead, but we want at least to fail backward HTLCs to save
+						// downstream channels. In case of PermanentFailure, we are not going to be able
+						// to claim back to_remote output on remote commitment transaction. Doesn't
+						// make a difference here, we are concern about HTLCs circuit, not onchain funds.
+						ChannelMonitorUpdateErr::PermanentFailure => {},
+						ChannelMonitorUpdateErr::TemporaryFailure => {},
 					}
 				}
 				let mut shutdown_res = chan.force_shutdown();
@@ -587,7 +585,7 @@ macro_rules! handle_monitor_err {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
 				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
+				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
 			},
 		}
 	}
@@ -2354,7 +2352,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
-					let chan_err: ChannelError<ChanSigner> = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
+					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
 					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
@@ -2529,7 +2527,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
 				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
 						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
-					let chan_err: ChannelError<ChanSigner> = ChannelError::Close("Bad announcement_signatures node_signature");
+					let chan_err: ChannelError = ChannelError::Close("Bad announcement_signatures node_signature");
 					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 

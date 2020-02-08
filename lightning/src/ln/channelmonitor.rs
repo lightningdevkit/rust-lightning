@@ -673,6 +673,11 @@ pub(super) enum ChannelMonitorUpdateStep {
 		idx: u64,
 		secret: [u8; 32],
 	},
+	/// Indicates our channel is likely a stale version, we're closing, but this update should
+	/// allow us to spend what is ours if our counterparty broadcasts their latest state.
+	RescueRemoteCommitmentTXInfo {
+		their_current_per_commitment_point: PublicKey,
+	},
 }
 
 impl Writeable for ChannelMonitorUpdateStep {
@@ -715,6 +720,10 @@ impl Writeable for ChannelMonitorUpdateStep {
 				3u8.write(w)?;
 				idx.write(w)?;
 				secret.write(w)?;
+			},
+			&ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { ref their_current_per_commitment_point } => {
+				4u8.write(w)?;
+				their_current_per_commitment_point.write(w)?;
 			},
 		}
 		Ok(())
@@ -762,6 +771,11 @@ impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
 				Ok(ChannelMonitorUpdateStep::CommitmentSecret {
 					idx: Readable::read(r)?,
 					secret: Readable::read(r)?,
+				})
+			},
+			4u8 => {
+				Ok(ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo {
+					their_current_per_commitment_point: Readable::read(r)?,
 				})
 			},
 			_ => Err(DecodeError::InvalidValue),
@@ -1448,7 +1462,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(idx, secret)?
+					self.provide_secret(idx, secret)?,
+				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
+					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
 			}
 		}
 		self.latest_update_id = updates.update_id;
@@ -1472,7 +1488,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(idx, secret)?
+					self.provide_secret(idx, secret)?,
+				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
+					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
 			}
 		}
 		self.latest_update_id = updates.update_id;
