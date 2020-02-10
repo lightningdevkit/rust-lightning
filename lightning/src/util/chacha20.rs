@@ -56,6 +56,8 @@ mod real_chacha {
 		}
 	}
 
+	const BLOCK_SIZE: usize = 64;
+
 	#[derive(Clone,Copy)]
 	struct ChaChaState {
 		a: u32x4,
@@ -67,7 +69,7 @@ mod real_chacha {
 	#[derive(Copy)]
 	pub struct ChaCha20 {
 		state  : ChaChaState,
-		output : [u8; 64],
+		output : [u8; BLOCK_SIZE],
 		offset : usize,
 	}
 
@@ -135,7 +137,7 @@ mod real_chacha {
 			assert!(key.len() == 16 || key.len() == 32);
 			assert!(nonce.len() == 8 || nonce.len() == 12);
 
-			ChaCha20{ state: ChaCha20::expand(key, nonce), output: [0u8; 64], offset: 64 }
+			ChaCha20{ state: ChaCha20::expand(key, nonce), output: [0u8; BLOCK_SIZE], offset: 64 }
 		}
 
 		fn expand(key: &[u8], nonce: &[u8]) -> ChaChaState {
@@ -197,7 +199,7 @@ mod real_chacha {
 			}
 		}
 
-		// put the the next 64 keystream bytes into self.output
+		// put the the next BLOCK_SIZE keystream bytes into self.output
 		fn update(&mut self) {
 			let mut state = self.state;
 
@@ -234,12 +236,12 @@ mod real_chacha {
 			while i < len {
 				// If there is no keystream available in the output buffer,
 				// generate the next block.
-				if self.offset == 64 {
+				if self.offset == BLOCK_SIZE {
 					self.update();
 				}
 
 				// Process the min(available keystream, remaining input length).
-				let count = cmp::min(64 - self.offset, len - i);
+				let count = cmp::min(BLOCK_SIZE - self.offset, len - i);
 				// explicitly assert lengths to avoid bounds checks:
 				assert!(output.len() >= i + count);
 				assert!(input.len() >= i + count);
@@ -258,12 +260,12 @@ mod real_chacha {
 			while i < len {
 				// If there is no keystream available in the output buffer,
 				// generate the next block.
-				if self.offset == 64 {
+				if self.offset == BLOCK_SIZE {
 					self.update();
 				}
 
 				// Process the min(available keystream, remaining input length).
-				let count = cmp::min(64 - self.offset, len - i);
+				let count = cmp::min(BLOCK_SIZE - self.offset, len - i);
 				// explicitly assert lengths to avoid bounds checks:
 				assert!(input_output.len() >= i + count);
 				assert!(self.output.len() >= self.offset + count);
