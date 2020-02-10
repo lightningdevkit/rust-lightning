@@ -2977,7 +2977,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			self.channel_monitor.last_block_hash = self.last_block_connected;
 			if self.funding_tx_confirmations > 0 {
 				self.funding_tx_confirmations += 1;
-				if self.funding_tx_confirmations == self.minimum_depth as u64 {
+				if self.funding_tx_confirmations == self.minimum_depth as u64 || (self.minimum_depth == 1 && self.funding_tx_confirmations == self.minimum_depth as u64) {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
 						true
