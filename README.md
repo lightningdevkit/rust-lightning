@@ -11,7 +11,7 @@ implementation has pretty good test coverage that is expected to continue to
 improve. There are a number of internal refactorings being done now that will
 make the code base more welcoming to new contributors. It is also anticipated
 that as developers begin using the API, the lessons from that will result in
-changes to the API, so any developer using LDK at this stage should be prepared
+changes to the API, so any developer using this API at this stage should be prepared
 to embrace that. The current state is sufficient for a developer or project to
 experiment with it. Recent increased contribution rate to the project is expected
 to lead to a high quality, stable, production-worthy implementation in 2020.
