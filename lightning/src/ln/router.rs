@@ -1064,17 +1064,23 @@ mod tests {
 	use hex;
 
 	use secp256k1::key::{PublicKey,SecretKey};
+	use secp256k1::All;
 	use secp256k1::Secp256k1;
 
 	use std::sync::Arc;
 
-	#[test]
-	fn route_test() {
+	fn create_router() -> (Secp256k1<All>, PublicKey, Router) {
 		let secp_ctx = Secp256k1::new();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 		let router = Router::new(our_id, chain_monitor, Arc::clone(&logger));
+		(secp_ctx, our_id, router)
+	}
+
+	#[test]
+	fn route_test() {
+		let (secp_ctx, our_id, router) = create_router();
 
 		// Build network from our_id to node8:
 		//
