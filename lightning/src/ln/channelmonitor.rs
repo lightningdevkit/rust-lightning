@@ -2397,6 +2397,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 	}
 
+	/// Called by SimpleManyChannelMonitor::block_connected, which implements
+	/// ChainListener::block_connected.
+	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
+	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
+	/// on-chain.
 	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>, Vec<(HTLCSource, Option<PaymentPreimage>, PaymentHash)>) {
 		for tx in txn_matched {
 			let mut output_val = 0;
