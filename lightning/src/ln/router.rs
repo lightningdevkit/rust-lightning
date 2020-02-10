@@ -1051,7 +1051,7 @@ mod tests {
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs::{LightningError, ErrorAction};
+	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -1844,5 +1844,18 @@ mod tests {
 			network.write(&mut w).unwrap();
 			assert!(<NetworkMap>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == *network);
 		}
+	}
+
+	#[test]
+	fn request_full_sync_finite_times() {
+		let (secp_ctx, _, router) = create_router();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
+
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(!router.should_request_full_sync(&node_id));
 	}
 }
