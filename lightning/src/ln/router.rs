@@ -22,6 +22,7 @@ use util::logger::Logger;
 
 use std::cmp;
 use std::sync::{RwLock,Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap,BinaryHeap,BTreeMap};
 use std::collections::btree_map::Entry as BtreeEntry;
 use std;
@@ -347,6 +348,7 @@ pub struct RouteHint {
 pub struct Router {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
+	full_syncs_requested: AtomicUsize,
 	chain_monitor: Arc<ChainWatchInterface>,
 	logger: Arc<Logger>,
 }
@@ -390,6 +392,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, RouterReadArgs> for Router {
 		Ok(Router {
 			secp_ctx: Secp256k1::verification_only(),
 			network_map: RwLock::new(network_map),
+			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor: args.chain_monitor,
 			logger: args.logger,
 		})
@@ -406,6 +409,7 @@ macro_rules! secp_verify_sig {
 }
 
 impl RoutingMessageHandler for Router {
+
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
@@ -698,6 +702,17 @@ impl RoutingMessageHandler for Router {
 		}
 		result
 	}
+
+	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
+		//TODO: Determine whether to request a full sync based on the network map.
+		const FULL_SYNCS_TO_REQUEST: usize = 5;
+		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
+			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
+			true
+		} else {
+			false
+		}
+	}
 }
 
 #[derive(Eq, PartialEq)]
@@ -750,6 +765,7 @@ impl Router {
 				our_node_id: our_pubkey,
 				nodes: nodes,
 			}),
+			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
 			logger,
 		}
@@ -1035,7 +1051,7 @@ mod tests {
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs::{LightningError, ErrorAction};
+	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -1048,17 +1064,23 @@ mod tests {
 	use hex;
 
 	use secp256k1::key::{PublicKey,SecretKey};
+	use secp256k1::All;
 	use secp256k1::Secp256k1;
 
 	use std::sync::Arc;
 
-	#[test]
-	fn route_test() {
+	fn create_router() -> (Secp256k1<All>, PublicKey, Router) {
 		let secp_ctx = Secp256k1::new();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 		let router = Router::new(our_id, chain_monitor, Arc::clone(&logger));
+		(secp_ctx, our_id, router)
+	}
+
+	#[test]
+	fn route_test() {
+		let (secp_ctx, our_id, router) = create_router();
 
 		// Build network from our_id to node8:
 		//
@@ -1822,5 +1844,18 @@ mod tests {
 			network.write(&mut w).unwrap();
 			assert!(<NetworkMap>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == *network);
 		}
+	}
+
+	#[test]
+	fn request_full_sync_finite_times() {
+		let (secp_ctx, _, router) = create_router();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
+
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(router.should_request_full_sync(&node_id));
+		assert!(!router.should_request_full_sync(&node_id));
 	}
 }
