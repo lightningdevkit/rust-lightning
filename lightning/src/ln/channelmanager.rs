@@ -1268,7 +1268,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 	}
 
 	fn get_announcement_sigs(&self, chan: &Channel<ChanSigner>) -> Option<msgs::AnnouncementSignatures> {
-		if !chan.should_announce() { return None }
+		if !chan.should_announce() {
+			log_trace!(self, "Can't send announcement_signatures for private channel {}", log_bytes!(chan.channel_id()));
+			return None
+		}
 
 		let (announcement, our_bitcoin_sig) = match chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()) {
 			Ok(res) => res,
@@ -1984,6 +1987,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 				}
 				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
 				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
+					log_trace!(self, "Sending announcement_signatures for {} in response to funding_locked", log_bytes!(chan.get().channel_id()));
 					// If we see locking block before receiving remote funding_locked, we broadcast our
 					// announcement_sigs at remote funding_locked reception. If we receive remote
 					// funding_locked before seeing locking block, we broadcast our announcement_sigs at locking
@@ -2578,10 +2582,13 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChainListener for ChannelM
 						msg: funding_locked,
 					});
 					if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
+						log_trace!(self, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
 						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 							node_id: channel.get_their_node_id(),
 							msg: announcement_sigs,
 						});
+					} else {
+						log_trace!(self, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
 					}
 					short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 				} else if let Err(e) = chan_res {
