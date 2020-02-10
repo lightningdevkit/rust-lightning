@@ -155,6 +155,9 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
 		Vec::new()
 	}
+	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
+		true
+	}
 }
 
 pub struct TestLogger {

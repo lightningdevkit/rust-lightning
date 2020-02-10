@@ -604,6 +604,8 @@ pub trait RoutingMessageHandler : Send + Sync {
 	/// starting at the node *after* the provided publickey and including batch_amount entries.
 	/// If None is provided for starting_point, we start at the first node.
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
+	/// Returns whether a full sync should be requested from a peer.
+	fn should_request_full_sync(&self, node_id: &PublicKey) -> bool;
 }
 
 pub(crate) struct OnionRealm0HopData {

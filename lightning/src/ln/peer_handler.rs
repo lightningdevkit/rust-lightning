@@ -189,7 +189,6 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref> where CM::Target
 	peer_counter_low: AtomicUsize,
 	peer_counter_high: AtomicUsize,
 
-	initial_syncs_sent: AtomicUsize,
 	logger: Arc<Logger>,
 }
 
@@ -212,9 +211,6 @@ macro_rules! encode_msg {
 	}}
 }
 
-//TODO: Really should do something smarter for this
-const INITIAL_SYNCS_TO_SEND: usize = 5;
-
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
 /// PeerIds may repeat, but only after disconnect_event() has been called.
 impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where CM::Target: msgs::ChannelMessageHandler {
@@ -236,7 +232,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			ephemeral_key_midstate,
 			peer_counter_low: AtomicUsize::new(0),
 			peer_counter_high: AtomicUsize::new(0),
-			initial_syncs_sent: AtomicUsize::new(0),
 			logger,
 		}
 	}
@@ -580,8 +575,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
 									let mut features = InitFeatures::supported();
-									if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
-										self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
+									if self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
 										features.set_initial_routing_sync();
 									}
 
@@ -652,8 +646,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 												if !peer.outbound {
 													let mut features = InitFeatures::supported();
-													if self.initial_syncs_sent.load(Ordering::Acquire) < INITIAL_SYNCS_TO_SEND {
-														self.initial_syncs_sent.fetch_add(1, Ordering::AcqRel);
+													if self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
 														features.set_initial_routing_sync();
 													}
 

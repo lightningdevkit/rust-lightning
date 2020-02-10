@@ -22,6 +22,7 @@ use util::logger::Logger;
 
 use std::cmp;
 use std::sync::{RwLock,Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap,BinaryHeap,BTreeMap};
 use std::collections::btree_map::Entry as BtreeEntry;
 use std;
@@ -347,6 +348,7 @@ pub struct RouteHint {
 pub struct Router {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_map: RwLock<NetworkMap>,
+	full_syncs_requested: AtomicUsize,
 	chain_monitor: Arc<ChainWatchInterface>,
 	logger: Arc<Logger>,
 }
@@ -390,6 +392,7 @@ impl<R: ::std::io::Read> ReadableArgs<R, RouterReadArgs> for Router {
 		Ok(Router {
 			secp_ctx: Secp256k1::verification_only(),
 			network_map: RwLock::new(network_map),
+			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor: args.chain_monitor,
 			logger: args.logger,
 		})
@@ -406,6 +409,7 @@ macro_rules! secp_verify_sig {
 }
 
 impl RoutingMessageHandler for Router {
+
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
@@ -698,6 +702,17 @@ impl RoutingMessageHandler for Router {
 		}
 		result
 	}
+
+	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
+		//TODO: Determine whether to request a full sync based on the network map.
+		const FULL_SYNCS_TO_REQUEST: usize = 5;
+		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
+			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
+			true
+		} else {
+			false
+		}
+	}
 }
 
 #[derive(Eq, PartialEq)]
@@ -750,6 +765,7 @@ impl Router {
 				our_node_id: our_pubkey,
 				nodes: nodes,
 			}),
+			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
 			logger,
 		}
