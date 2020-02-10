@@ -379,6 +379,41 @@ fn test_multi_flight_update_fee() {
 }
 
 #[test]
+fn test_1_conf_open() {
+	// Previously, if the minium_depth config was set to 1, we'd never send a funding_locked. This
+	// tests that we properly send one in that case.
+	let mut alice_config = UserConfig::default();
+	alice_config.own_channel_config.minimum_depth = 1;
+	alice_config.channel_options.announced_channel = true;
+	alice_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	let mut bob_config = UserConfig::default();
+	bob_config.own_channel_config.minimum_depth = 1;
+	bob_config.channel_options.announced_channel = true;
+	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(alice_config), Some(bob_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::supported(), InitFeatures::supported());
+	assert!(nodes[0].chain_monitor.does_match_tx(&tx));
+	assert!(nodes[1].chain_monitor.does_match_tx(&tx));
+
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version; 1]);
+	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id()));
+
+	nodes[0].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version; 1]);
+	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+
+	for node in nodes {
+		assert!(node.router.handle_channel_announcement(&announcement).unwrap());
+		node.router.handle_channel_update(&as_update).unwrap();
+		node.router.handle_channel_update(&bs_update).unwrap();
+	}
+}
+
+#[test]
 fn test_update_fee_vanilla() {
 	let node_cfgs = create_node_cfgs(2);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
