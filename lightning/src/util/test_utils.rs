@@ -46,6 +46,7 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 
 pub struct TestChannelMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
+	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
 	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
@@ -53,13 +54,14 @@ impl<'a> TestChannelMonitor<'a> {
 	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
+			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
 		}
 	}
 }
 impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor<'a> {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
@@ -69,7 +71,8 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
-		assert!(self.simple_monitor.add_update_monitor(funding_txo, monitor).is_ok());
+		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
+		assert!(self.simple_monitor.add_monitor(funding_txo, monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
@@ -80,6 +83,7 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		assert!(channelmonitor::ChannelMonitorUpdate::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
 
+		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
 		assert!(self.simple_monitor.update_monitor(funding_txo, update).is_ok());
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...

@@ -131,9 +131,9 @@ pub enum ChannelMonitorUpdateErr {
 }
 
 /// General Err type for ChannelMonitor actions. Generally, this implies that the data provided is
-/// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::insert_combine this
-/// means you tried to merge two monitors for different channels or for a channel which was
-/// restored from a backup and then generated new commitment updates.
+/// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::update_monitor this
+/// means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
+/// corrupted.
 /// Contains a human-readable error message.
 #[derive(Debug)]
 pub struct MonitorUpdateError(pub &'static str);
@@ -150,7 +150,7 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 
 /// Simple trait indicating ability to track a set of ChannelMonitors and multiplex events between
 /// them. Generally should be implemented by keeping a local SimpleManyChannelMonitor and passing
-/// events to it, while also taking any add_update_monitor events and passing them to some remote
+/// events to it, while also taking any add/update_monitor events and passing them to some remote
 /// server(s).
 ///
 /// Note that any updates to a channel's monitor *must* be applied to each instance of the
@@ -164,7 +164,7 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 /// BlockNotifier and call the BlockNotifier's `block_(dis)connected` methods, which will notify
 /// all registered listeners in one go.
 pub trait ManyChannelMonitor<ChanSigner: ChannelKeys>: Send + Sync {
-	/// Adds or updates a monitor for the given `funding_txo`.
+	/// Adds a monitor for the given `funding_txo`.
 	///
 	/// Implementer must also ensure that the funding_txo txid *and* outpoint are registered with
 	/// any relevant ChainWatchInterfaces such that the provided monitor receives block_connected
@@ -176,7 +176,7 @@ pub trait ManyChannelMonitor<ChanSigner: ChannelKeys>: Send + Sync {
 	///
 	/// Any spends of outputs which should have been registered which aren't passed to
 	/// ChannelMonitors via block_connected may result in FUNDS LOSS.
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn add_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Updates a monitor for the given `funding_txo`.
 	///
@@ -279,14 +279,11 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 	}
 
 	/// Adds or updates the monitor which monitors the channel referred to by the given key.
-	pub fn add_update_monitor_by_key(&self, key: Key, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
+	pub fn add_monitor_by_key(&self, key: Key, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
 		let mut monitors = self.monitors.lock().unwrap();
-		match monitors.get_mut(&key) {
-			Some(orig_monitor) => {
-				log_trace!(self, "Updating Channel Monitor for channel {}", log_funding_info!(monitor.key_storage));
-				return orig_monitor.insert_combine(monitor);
-			},
-			None => {}
+		let entry = match monitors.entry(key) {
+			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given key is already present")),
+			hash_map::Entry::Vacant(e) => e,
 		};
 		match monitor.key_storage {
 			Storage::Local { ref funding_info, .. } => {
@@ -310,7 +307,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 				self.chain_monitor.install_watch_outpoint((*txid, idx as u32), script);
 			}
 		}
-		monitors.insert(key, monitor);
+		entry.insert(monitor);
 		Ok(())
 	}
 
@@ -330,8 +327,8 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send> ManyChannelMonitor<ChanSigner> for SimpleManyChannelMonitor<OutPoint, ChanSigner, T>
 	where T::Target: BroadcasterInterface
 {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.add_update_monitor_by_key(funding_txo, monitor) {
+	fn add_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+		match self.add_monitor_by_key(funding_txo, monitor) {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
 		}
@@ -879,7 +876,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 
 	// We simply modify last_block_hash in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
-	// (we do *not*, however, update them in insert_combine to ensure any local user copies keep
+	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
 	// their last_block_hash from its state and not based on updated copies that didn't run through
 	// the full block_connected).
 	pub(crate) last_block_hash: Sha256dHash,
@@ -1506,68 +1503,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 		self.latest_update_id = updates.update_id;
-		Ok(())
-	}
-
-	/// Combines this ChannelMonitor with the information contained in the other ChannelMonitor.
-	/// After a successful call this ChannelMonitor is up-to-date and is safe to use to monitor the
-	/// chain for new blocks/transactions.
-	pub fn insert_combine(&mut self, mut other: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
-		match self.key_storage {
-			Storage::Local { ref funding_info, .. } => {
-				if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
-				let our_funding_info = funding_info;
-				if let Storage::Local { ref funding_info, .. } = other.key_storage {
-					if funding_info.is_none() { return Err(MonitorUpdateError("Try to combine a Local monitor without funding_info")); }
-					// We should be able to compare the entire funding_txo, but in fuzztarget it's trivially
-					// easy to collide the funding_txo hash and have a different scriptPubKey.
-					if funding_info.as_ref().unwrap().0 != our_funding_info.as_ref().unwrap().0 {
-						return Err(MonitorUpdateError("Funding transaction outputs are not identical!"));
-					}
-				} else {
-					return Err(MonitorUpdateError("Try to combine a Local monitor with a Watchtower one !"));
-				}
-			},
-			Storage::Watchtower { .. } => {
-				if let Storage::Watchtower { .. } = other.key_storage {
-					unimplemented!();
-				} else {
-					return Err(MonitorUpdateError("Try to combine a Watchtower monitor with a Local one !"));
-				}
-			},
-		}
-		let other_min_secret = other.get_min_seen_secret();
-		let our_min_secret = self.get_min_seen_secret();
-		if our_min_secret > other_min_secret {
-			self.provide_secret(other_min_secret, other.get_secret(other_min_secret).unwrap())?;
-		}
-		if let Some(ref local_tx) = self.current_local_signed_commitment_tx {
-			if let Some(ref other_local_tx) = other.current_local_signed_commitment_tx {
-				let our_commitment_number = 0xffffffffffff - ((((local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
-				let other_commitment_number = 0xffffffffffff - ((((other_local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (other_local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ other.commitment_transaction_number_obscure_factor);
-				if our_commitment_number >= other_commitment_number {
-					self.key_storage = other.key_storage;
-				}
-			}
-		}
-		// TODO: We should use current_remote_commitment_number and the commitment number out of
-		// local transactions to decide how to merge
-		if our_min_secret >= other_min_secret {
-			self.their_cur_revocation_points = other.their_cur_revocation_points;
-			for (txid, htlcs) in other.remote_claimable_outpoints.drain() {
-				self.remote_claimable_outpoints.insert(txid, htlcs);
-			}
-			if let Some(local_tx) = other.prev_local_signed_commitment_tx {
-				self.prev_local_signed_commitment_tx = Some(local_tx);
-			}
-			if let Some(local_tx) = other.current_local_signed_commitment_tx {
-				self.current_local_signed_commitment_tx = Some(local_tx);
-			}
-			self.payment_preimages = other.payment_preimages;
-			self.to_remote_rescue = other.to_remote_rescue;
-		}
-
-		self.current_remote_commitment_number = cmp::min(self.current_remote_commitment_number, other.current_remote_commitment_number);
 		Ok(())
 	}
 
