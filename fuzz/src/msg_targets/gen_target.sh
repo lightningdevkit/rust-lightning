@@ -34,8 +34,8 @@ GEN_TEST NodeAnnouncement test_msg_exact ""
 
 GEN_TEST UpdateAddHTLC test_msg_hole ", 85, 33"
 GEN_TEST ErrorMessage test_msg_hole ", 32, 2"
-GEN_TEST OnionHopData test_msg_hole ", 1+8+8+4, 12"
 
 GEN_TEST Init test_msg_simple ""
+GEN_TEST OnionHopData test_msg_simple ""
 GEN_TEST Ping test_msg_simple ""
 GEN_TEST Pong test_msg_simple ""

@@ -18,7 +18,7 @@ use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
-use util::ser::{Writeable, ReadableArgs};
+use util::ser::{Writeable, Writer, ReadableArgs};
 use util::config::UserConfig;
 use util::logger::Logger;
 
@@ -44,7 +44,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
-use std::mem;
+use std::{mem, io};
 
 use rand::{thread_rng, Rng};
 
@@ -5007,6 +5007,20 @@ impl msgs::ChannelUpdate {
 	}
 }
 
+struct BogusOnionHopData {
+	data: Vec<u8>
+}
+impl BogusOnionHopData {
+	fn new(orig: msgs::OnionHopData) -> Self {
+		Self { data: orig.encode() }
+	}
+}
+impl Writeable for BogusOnionHopData {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		writer.write_all(&self.data[..])
+	}
+}
+
 #[test]
 fn test_onion_failure() {
 	use ln::msgs::ChannelUpdate;
@@ -5036,9 +5050,15 @@ fn test_onion_failure() {
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-		onion_payloads[0].realm = 3;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
-	}, ||{}, true, Some(PERM|1), Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: channels[1].0.contents.short_channel_id, is_permanent: true}));//XXX incremented channels idx here
+		let mut new_payloads = Vec::new();
+		for payload in onion_payloads.drain(..) {
+			new_payloads.push(BogusOnionHopData::new(payload));
+		}
+		// break the first (non-final) hop payload by swapping the realm (0) byte for a byte
+		// describing a length-1 TLV payload, which is obviously bogus.
+		new_payloads[0].data[0] = 1;
+		msg.onion_routing_packet = onion_utils::construct_onion_packet_bogus_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
+	}, ||{}, true, Some(PERM|22), Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: channels[1].0.contents.short_channel_id, is_permanent: true}));//XXX incremented channels idx here
 
 	// final node failure
 	run_onion_failure_test("invalid_realm", 3, &nodes, &route, &payment_hash, |msg| {
@@ -5046,9 +5066,15 @@ fn test_onion_failure() {
 		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route, &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height).unwrap();
-		onion_payloads[1].realm = 3;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
-	}, ||{}, false, Some(PERM|1), Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: channels[1].0.contents.short_channel_id, is_permanent: true}));
+		let mut new_payloads = Vec::new();
+		for payload in onion_payloads.drain(..) {
+			new_payloads.push(BogusOnionHopData::new(payload));
+		}
+		// break the last-hop payload by swapping the realm (0) byte for a byte describing a
+		// length-1 TLV payload, which is obviously bogus.
+		new_payloads[1].data[0] = 1;
+		msg.onion_routing_packet = onion_utils::construct_onion_packet_bogus_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
+	}, ||{}, false, Some(PERM|22), Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: channels[1].0.contents.short_channel_id, is_permanent: true}));
 
 	// the following three with run_onion_failure_test_with_fail_intercept() test only the origin node
 	// receiving simulated fail messages

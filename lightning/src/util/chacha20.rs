@@ -9,6 +9,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::io;
+
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chacha {
 	use std::cmp;
@@ -54,6 +56,8 @@ mod real_chacha {
 		}
 	}
 
+	const BLOCK_SIZE: usize = 64;
+
 	#[derive(Clone,Copy)]
 	struct ChaChaState {
 		a: u32x4,
@@ -65,7 +69,7 @@ mod real_chacha {
 	#[derive(Copy)]
 	pub struct ChaCha20 {
 		state  : ChaChaState,
-		output : [u8; 64],
+		output : [u8; BLOCK_SIZE],
 		offset : usize,
 	}
 
@@ -133,7 +137,7 @@ mod real_chacha {
 			assert!(key.len() == 16 || key.len() == 32);
 			assert!(nonce.len() == 8 || nonce.len() == 12);
 
-			ChaCha20{ state: ChaCha20::expand(key, nonce), output: [0u8; 64], offset: 64 }
+			ChaCha20{ state: ChaCha20::expand(key, nonce), output: [0u8; BLOCK_SIZE], offset: 64 }
 		}
 
 		fn expand(key: &[u8], nonce: &[u8]) -> ChaChaState {
@@ -195,7 +199,7 @@ mod real_chacha {
 			}
 		}
 
-		// put the the next 64 keystream bytes into self.output
+		// put the the next BLOCK_SIZE keystream bytes into self.output
 		fn update(&mut self) {
 			let mut state = self.state;
 
@@ -232,18 +236,41 @@ mod real_chacha {
 			while i < len {
 				// If there is no keystream available in the output buffer,
 				// generate the next block.
-				if self.offset == 64 {
+				if self.offset == BLOCK_SIZE {
 					self.update();
 				}
 
 				// Process the min(available keystream, remaining input length).
-				let count = cmp::min(64 - self.offset, len - i);
+				let count = cmp::min(BLOCK_SIZE - self.offset, len - i);
 				// explicitly assert lengths to avoid bounds checks:
 				assert!(output.len() >= i + count);
 				assert!(input.len() >= i + count);
 				assert!(self.output.len() >= self.offset + count);
 				for j in 0..count {
 					output[i + j] = input[i + j] ^ self.output[self.offset + j];
+				}
+				i += count;
+				self.offset += count;
+			}
+		}
+
+		pub fn process_in_place(&mut self, input_output: &mut [u8]) {
+			let len = input_output.len();
+			let mut i = 0;
+			while i < len {
+				// If there is no keystream available in the output buffer,
+				// generate the next block.
+				if self.offset == BLOCK_SIZE {
+					self.update();
+				}
+
+				// Process the min(available keystream, remaining input length).
+				let count = cmp::min(BLOCK_SIZE - self.offset, len - i);
+				// explicitly assert lengths to avoid bounds checks:
+				assert!(input_output.len() >= i + count);
+				assert!(self.output.len() >= self.offset + count);
+				for j in 0..count {
+					input_output[i + j] ^= self.output[self.offset + j];
 				}
 				i += count;
 				self.offset += count;
@@ -268,10 +295,26 @@ mod fuzzy_chacha {
 		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
 			output.copy_from_slice(input);
 		}
+
+		pub fn process_in_place(&mut self, _input_output: &mut [u8]) {}
 	}
 }
 #[cfg(feature = "fuzztarget")]
 pub use self::fuzzy_chacha::ChaCha20;
+
+pub(crate) struct ChaChaReader<'a, R: io::Read> {
+	pub chacha: &'a mut ChaCha20,
+	pub read: R,
+}
+impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
+		let res = self.read.read(dest)?;
+		if res > 0 {
+			self.chacha.process_in_place(&mut dest[0..res]);
+		}
+		Ok(res)
+	}
+}
 
 #[cfg(test)]
 mod test {

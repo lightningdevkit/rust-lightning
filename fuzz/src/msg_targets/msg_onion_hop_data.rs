@@ -7,7 +7,7 @@ use msg_targets::utils::VecWriter;
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	test_msg_hole!(msgs::OnionHopData, data, 1+8+8+4, 12);
+	test_msg_simple!(msgs::OnionHopData, data);
 }
 
 #[no_mangle]

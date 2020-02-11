@@ -38,20 +38,18 @@ use chain::keysinterface::{ChannelKeys, KeysInterface, InMemoryChannelKeys};
 use util::config::UserConfig;
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use util::chacha20::ChaCha20;
+use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::Logger;
 use util::errors::APIError;
 
 use std::{cmp, mem};
 use std::collections::{HashMap, hash_map, HashSet};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::marker::{Sync, Send};
 use std::ops::Deref;
-
-const SIXTY_FIVE_ZEROS: [u8; 65] = [0; 65];
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -906,22 +904,30 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 		}
 
 		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
-		let next_hop_data = {
-			let mut decoded = [0; 65];
-			chacha.process(&msg.onion_routing_packet.hop_data[0..65], &mut decoded);
-			match msgs::OnionHopData::read(&mut Cursor::new(&decoded[..])) {
+		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&msg.onion_routing_packet.hop_data[..]) };
+		let (next_hop_data, next_hop_hmac) = {
+			match msgs::OnionHopData::read(&mut chacha_stream) {
 				Err(err) => {
 					let error_code = match err {
 						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
+						msgs::DecodeError::UnknownRequiredFeature|
+						msgs::DecodeError::InvalidValue|
+						msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
 						_ => 0x2000 | 2, // Should never happen
 					};
 					return_err!("Unable to decode our hop data", error_code, &[0;0]);
 				},
-				Ok(msg) => msg
+				Ok(msg) => {
+					let mut hmac = [0; 32];
+					if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
+						return_err!("Unable to decode hop data", 0x4000 | 22, &[0;0]);
+					}
+					(msg, hmac)
+				},
 			}
 		};
 
-		let pending_forward_info = if next_hop_data.hmac == [0; 32] {
+		let pending_forward_info = if next_hop_hmac == [0; 32] {
 				#[cfg(test)]
 				{
 					// In tests, make sure that the initial onion pcket data is, at least, non-0.
@@ -931,10 +937,11 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					// as-is (and were originally 0s).
 					// Of course reverse path calculation is still pretty easy given naive routing
 					// algorithms, but this fixes the most-obvious case.
-					let mut new_packet_data = [0; 19*65];
-					chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
-					assert_ne!(new_packet_data[0..65], [0; 65][..]);
-					assert_ne!(new_packet_data[..], [0; 19*65][..]);
+					let mut next_bytes = [0; 32];
+					chacha_stream.read_exact(&mut next_bytes).unwrap();
+					assert_ne!(next_bytes[..], [0; 32][..]);
+					chacha_stream.read_exact(&mut next_bytes).unwrap();
+					assert_ne!(next_bytes[..], [0; 32][..]);
 				}
 
 				// OUR PAYMENT!
@@ -943,11 +950,11 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount
-				if next_hop_data.data.amt_to_forward > msg.amount_msat {
+				if next_hop_data.amt_to_forward > msg.amount_msat {
 					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
 				}
 				// final_incorrect_cltv_expiry
-				if next_hop_data.data.outgoing_cltv_value != msg.cltv_expiry {
+				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
 					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
 				}
 
@@ -961,13 +968,24 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
 					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
+					amt_to_forward: next_hop_data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
 			} else {
 				let mut new_packet_data = [0; 20*65];
-				chacha.process(&msg.onion_routing_packet.hop_data[65..], &mut new_packet_data[0..19*65]);
-				chacha.process(&SIXTY_FIVE_ZEROS[..], &mut new_packet_data[19*65..]);
+				let read_pos = chacha_stream.read(&mut new_packet_data).unwrap();
+				#[cfg(debug_assertions)]
+				{
+					// Check two things:
+					// a) that the behavior of our stream here will return Ok(0) even if the TLV
+					//    read above emptied out our buffer and the unwrap() wont needlessly panic
+					// b) that we didn't somehow magically end up with extra data.
+					let mut t = [0; 1];
+					debug_assert!(chacha_stream.read(&mut t).unwrap() == 0);
+				}
+				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
+				// fill the onion hop data we'll forward to our next-hop peer.
+				chacha_stream.chacha.process_in_place(&mut new_packet_data[read_pos..]);
 
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
@@ -986,16 +1004,24 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 					version: 0,
 					public_key,
 					hop_data: new_packet_data,
-					hmac: next_hop_data.hmac.clone(),
+					hmac: next_hop_hmac.clone(),
+				};
+
+				let short_channel_id = match next_hop_data.format {
+					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::FinalNode => {
+						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
+					},
 				};
 
 				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
-					short_channel_id: next_hop_data.data.short_channel_id,
+					short_channel_id: short_channel_id,
 					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.data.outgoing_cltv_value,
+					amt_to_forward: next_hop_data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
 			};
 
@@ -1137,6 +1163,9 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 		let onion_keys = secp_call!(onion_utils::construct_onion_keys(&self.secp_ctx, &route, &session_priv),
 				APIError::RouteError{err: "Pubkey along hop was maliciously selected"});
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route, cur_height)?;
+		if onion_utils::route_size_insane(&onion_payloads) {
+			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
+		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, &payment_hash);
 
 		let _ = self.total_consistency_lock.read().unwrap();

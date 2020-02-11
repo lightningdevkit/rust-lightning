@@ -12,13 +12,13 @@ use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
+use util::ser::VecWriter;
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
 use util::byte_utils;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
-use util::ser::Writer;
 
 use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
@@ -190,17 +190,6 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref> where CM::Target
 	peer_counter_high: AtomicUsize,
 
 	logger: Arc<Logger>,
-}
-
-struct VecWriter(Vec<u8>);
-impl Writer for VecWriter {
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
-		self.0.extend_from_slice(buf);
-		Ok(())
-	}
-	fn size_hint(&mut self, size: usize) {
-		self.0.reserve_exact(size);
-	}
 }
 
 macro_rules! encode_msg {
