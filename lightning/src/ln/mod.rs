@@ -13,6 +13,7 @@ pub mod channelmanager;
 pub mod channelmonitor;
 pub mod msgs;
 pub mod router;
+pub mod peers;
 pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;
@@ -27,7 +28,8 @@ mod onion_utils;
 mod wire;
 
 #[cfg(test)]
-#[macro_use] mod functional_test_utils;
+#[macro_use]
+mod functional_test_utils;
 #[cfg(test)]
 mod functional_tests;
 #[cfg(test)]
