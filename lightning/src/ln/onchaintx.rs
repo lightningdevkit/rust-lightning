@@ -14,7 +14,7 @@ use secp256k1::Secp256k1;
 use secp256k1;
 
 use ln::msgs::DecodeError;
-use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial};
+use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::chan_utils::HTLCType;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::SpendableOutputDescriptor;
@@ -471,7 +471,7 @@ impl OnchainTxHandler {
 		Some((new_timer, new_feerate, bumped_tx))
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: HashMap<Sha256dHash, Vec<(u32, bool, BitcoinOutPoint, InputMaterial)>>, height: u32, broadcaster: B, fee_estimator: F) -> Vec<SpendableOutputDescriptor>
+	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claim_requests: HashMap<Sha256dHash, Vec<ClaimRequest>>, height: u32, broadcaster: B, fee_estimator: F) -> Vec<SpendableOutputDescriptor>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
@@ -479,24 +479,24 @@ impl OnchainTxHandler {
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
 		let mut new_pending_claim_requests = HashMap::with_capacity(new_claims.len());
-		let mut new_claimable_outpoints = HashMap::with_capacity(claimable_outpoints.len());
+		let mut new_claimable_outpoints = HashMap::with_capacity(claim_requests.len());
 		let mut spendable_outputs = Vec::new();
 
 		// Try to aggregate outputs if they're 1) belong to same parent tx, 2) their
 		// timelock expiration isn't imminent (<= CLTV_SHARED_CLAIM_BUFFER).
-		for (_, siblings_outpoints) in claimable_outpoints {
-			for outp in siblings_outpoints {
+		for (_, siblings_requests) in claim_requests {
+			for req in siblings_requests {
 				// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-				if let Some(_) = self.claimable_outpoints.get(&outp.2) { log_trace!(self, "Bouncing off outpoint {}:{}, already registered its claiming request", outp.2.txid, outp.2.vout); } else {
-					log_trace!(self, "Test if outpoint can be aggregated with expiration {} against {}", outp.0, height + CLTV_SHARED_CLAIM_BUFFER);
-					if outp.0 <= height + CLTV_SHARED_CLAIM_BUFFER || !outp.1 { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
+				if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(self, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
+					log_trace!(self, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
+					if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
 						let mut single_input = HashMap::new();
-						single_input.insert(outp.2, outp.3);
-						new_claims.push((outp.0, single_input));
+						single_input.insert(req.outpoint, req.witness_data);
+						new_claims.push((req.absolute_timelock, single_input));
 					} else {
-						aggregated_claim.insert(outp.2, outp.3);
-						if outp.0 < aggregated_soonest {
-							aggregated_soonest = outp.0;
+						aggregated_claim.insert(req.outpoint, req.witness_data);
+						if req.absolute_timelock < aggregated_soonest {
+							aggregated_soonest = req.absolute_timelock;
 						}
 					}
 				}
