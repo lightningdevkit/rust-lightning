@@ -1,6 +1,5 @@
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
-use rand::{Rng, thread_rng};
 use secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::{chacha, hkdf};
