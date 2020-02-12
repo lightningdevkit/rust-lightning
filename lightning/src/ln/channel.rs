@@ -1488,16 +1488,25 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		self.channel_monitor = Some(ChannelMonitor::new(self.local_keys.clone(),
-		                                          &self.shutdown_pubkey, self.our_to_self_delay,
-		                                          &self.destination_script, (funding_txo, funding_txo_script),
-		                                          &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
-		                                          self.their_to_self_delay, funding_redeemscript, self.channel_value_satoshis,
-		                                          self.get_commitment_transaction_number_obscure_factor(),
-		                                          self.logger.clone()));
+		macro_rules! create_monitor {
+			() => { {
+				let mut channel_monitor = ChannelMonitor::new(self.local_keys.clone(),
+				                                              &self.shutdown_pubkey, self.our_to_self_delay,
+				                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
+				                                              &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
+				                                              self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+				                                              self.get_commitment_transaction_number_obscure_factor(),
+				                                              self.logger.clone());
 
-		self.channel_monitor.as_mut().unwrap().provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
-		self.channel_monitor.as_mut().unwrap().provide_latest_local_commitment_tx_info(local_initial_commitment_tx, local_keys, self.feerate_per_kw, Vec::new()).unwrap();
+				channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
+				channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx.clone(), local_keys.clone(), self.feerate_per_kw, Vec::new()).unwrap();
+				channel_monitor
+			} }
+		}
+
+		self.channel_monitor = Some(create_monitor!());
+		let channel_monitor = create_monitor!();
+
 		self.channel_state = ChannelState::FundingSent as u32;
 		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
@@ -1506,7 +1515,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
 			signature: our_signature
-		}, self.channel_monitor.as_ref().unwrap().clone()))
+		}, channel_monitor))
 	}
 
 	/// Handles a funding_signed message from the remote end.
@@ -3330,15 +3339,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		self.channel_monitor = Some(ChannelMonitor::new(self.local_keys.clone(),
-		                                          &self.shutdown_pubkey, self.our_to_self_delay,
-		                                          &self.destination_script, (funding_txo, funding_txo_script),
-		                                          &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
-		                                          self.their_to_self_delay, funding_redeemscript, self.channel_value_satoshis,
-		                                          self.get_commitment_transaction_number_obscure_factor(),
-		                                          self.logger.clone()));
+		macro_rules! create_monitor {
+			() => { {
+				let mut channel_monitor = ChannelMonitor::new(self.local_keys.clone(),
+				                                              &self.shutdown_pubkey, self.our_to_self_delay,
+				                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
+				                                              &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
+				                                              self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+				                                              self.get_commitment_transaction_number_obscure_factor(),
+				                                              self.logger.clone());
 
-		self.channel_monitor.as_mut().unwrap().provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
+				channel_monitor.provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
+				channel_monitor
+			} }
+		}
+
+		self.channel_monitor = Some(create_monitor!());
+		let channel_monitor = create_monitor!();
+
 		self.channel_state = ChannelState::FundingCreated as u32;
 		self.channel_id = funding_txo.to_channel_id();
 		self.cur_remote_commitment_transaction_number -= 1;
@@ -3348,7 +3366,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			funding_txid: funding_txo.txid,
 			funding_output_index: funding_txo.index,
 			signature: our_signature
-		}, self.channel_monitor.as_ref().unwrap().clone()))
+		}, channel_monitor))
 	}
 
 	/// Gets an UnsignedChannelAnnouncement, as well as a signature covering it using our

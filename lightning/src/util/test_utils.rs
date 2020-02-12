@@ -66,13 +66,14 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == monitor);
+		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
+		assert!(new_monitor == monitor);
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
-		assert!(self.simple_monitor.add_monitor(funding_txo, monitor).is_ok());
+		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
+		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
@@ -91,11 +92,12 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
-		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == *monitor);
+		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
+		assert!(new_monitor == *monitor);
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
+		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 		self.update_ret.lock().unwrap().clone()
 	}
 

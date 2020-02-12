@@ -390,7 +390,6 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 /// keeping bumping another claim tx to solve the outpoint.
 pub(crate) const ANTI_REORG_DELAY: u32 = 6;
 
-#[derive(Clone)]
 enum Storage<ChanSigner: ChannelKeys> {
 	Local {
 		keys: ChanSigner,
@@ -785,7 +784,6 @@ impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
 ///
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
-#[derive(Clone)]
 pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,

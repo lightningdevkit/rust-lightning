@@ -6577,7 +6577,7 @@ fn test_data_loss_protect() {
 		}).unwrap().1
 	};
 	nodes[0].node = &node_state_0;
-	assert!(monitor.add_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor.clone()).is_ok());
+	assert!(monitor.add_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor).is_ok());
 	nodes[0].chan_monitor = &monitor;
 	nodes[0].chain_monitor = chain_monitor;
 
