@@ -1832,7 +1832,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							}
 							if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 								if htlc.offered {
-									let mut input = TxIn {
+									let input = TxIn {
 										previous_output: BitcoinOutPoint {
 											txid: commitment_txid,
 											vout: transaction_output_index,
