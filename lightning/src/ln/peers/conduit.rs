@@ -31,14 +31,8 @@ impl Conduit {
 	}
 
 	pub(super) fn read(&mut self, data: &[u8]) {
-		let mut read_buffer = if let Some(buffer) = self.read_buffer.take() {
-			buffer
-		} else {
-			Vec::new()
-		};
-
+		let mut read_buffer = self.read_buffer.get_or_insert(Vec::new());
 		read_buffer.extend_from_slice(data);
-		self.read_buffer = Some(read_buffer);
 	}
 
 	/// Add newly received data from the peer node to the buffer and decrypt all possible messages
@@ -70,8 +64,6 @@ impl Conduit {
 				break;
 			}
 		}
-
-		self.read_buffer = Some(read_buffer);
 
 		messages
 	}

@@ -277,8 +277,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
-		let mut handshake = PeerHandshake::new(&self.our_node_secret, None);
-		let act_one = handshake.initiate(&self.get_ephemeral_key(), &their_node_id).unwrap();
+		let mut handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
+		let act_one = handshake.initiate(&their_node_id).unwrap();
 		let res = Act::One(act_one).serialize();
 
 		let mut peers = self.peers.lock().unwrap();
@@ -313,7 +313,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
-		let handshake = PeerHandshake::new(&self.our_node_secret, None);
+		let handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {

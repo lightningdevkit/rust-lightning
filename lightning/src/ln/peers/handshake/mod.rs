@@ -17,24 +17,18 @@ mod tests;
 pub struct PeerHandshake {
 	state: Option<HandshakeState>,
 	private_key: SecretKey,
+	ephemeral_private_key: SecretKey,
 
-	preset_ephemeral_private_key: Option<SecretKey>,
 	read_buffer: Vec<u8>,
 }
 
 impl PeerHandshake {
-	pub fn new(private_key: &SecretKey, ephemeral_private_key: Option<&SecretKey>) -> Self {
-		let preset_ephemeral_private_key = if let Some(key) = ephemeral_private_key {
-			// deref and clone
-			Some((*key).clone())
-		} else {
-			None
-		};
+	pub fn new(private_key: &SecretKey, ephemeral_private_key: &SecretKey) -> Self {
 
 		let handshake = PeerHandshake {
 			state: Some(HandshakeState::Blank),
 			private_key: (*private_key).clone(),
-			preset_ephemeral_private_key,
+			ephemeral_private_key: (*ephemeral_private_key).clone(),
 			read_buffer: Vec::new(),
 		};
 		handshake
@@ -80,9 +74,7 @@ impl PeerHandshake {
 		match &self.state {
 			Some(HandshakeState::Blank) => {
 				let remote_public_key = remote_public_key.ok_or("Call make_initiator() first")?;
-				let ephemeral_private_key = self.obtain_ephemeral_private_key();
-
-				let act_one = self.initiate(&ephemeral_private_key, &remote_public_key)?;
+				let act_one = self.initiate(&remote_public_key)?;
 				response = act_one.0.to_vec();
 			}
 			Some(HandshakeState::AwaitingActOne(_)) => {
@@ -95,9 +87,7 @@ impl PeerHandshake {
 				act_one_buffer.copy_from_slice(&self.read_buffer[..act_length]);
 				self.read_buffer.drain(..act_length);
 
-				let ephemeral_private_key = self.obtain_ephemeral_private_key();
-
-				let act_two = self.process_act_one(ActOne(act_one_buffer), &ephemeral_private_key)?;
+				let act_two = self.process_act_one(ActOne(act_one_buffer))?;
 				response = act_two.0.to_vec();
 			}
 			Some(HandshakeState::AwaitingActTwo(_)) => {
@@ -147,7 +137,7 @@ impl PeerHandshake {
 		Ok((response, connected_peer, remote_pubkey))
 	}
 
-	pub fn initiate(&mut self, ephemeral_private_key: &SecretKey, remote_public_key: &PublicKey) -> Result<ActOne, String> {
+	pub fn initiate(&mut self, remote_public_key: &PublicKey) -> Result<ActOne, String> {
 		if let Some(HandshakeState::Blank) = &self.state {} else {
 			return Err("incorrect state".to_string());
 		}
@@ -156,7 +146,7 @@ impl PeerHandshake {
 
 		// serialize act one
 		let (act_one, chaining_key, temporary_key) = self.calculate_act_message(
-			ephemeral_private_key,
+			&self.ephemeral_private_key,
 			remote_public_key,
 			chaining_key,
 			&mut hash,
@@ -166,13 +156,13 @@ impl PeerHandshake {
 			hash,
 			chaining_key,
 			temporary_key,
-			ephemeral_private_key: (*ephemeral_private_key).clone(),
+			ephemeral_private_key: (*&self.ephemeral_private_key).clone(),
 		}));
 
 		Ok(ActOne(act_one))
 	}
 
-	pub(crate) fn process_act_one(&mut self, act: ActOne, ephemeral_private_key: &SecretKey) -> Result<ActTwo, String> {
+	pub(crate) fn process_act_one(&mut self, act: ActOne) -> Result<ActTwo, String> {
 		let state = self.state.take();
 		let act_one_expectation = match state {
 			Some(HandshakeState::AwaitingActOne(act_state)) => act_state,
@@ -200,8 +190,10 @@ impl PeerHandshake {
 			&mut hash,
 		)?;
 
+		let ephemeral_private_key = (*&self.ephemeral_private_key).clone();
+
 		let (act_two, chaining_key, temporary_key) = self.calculate_act_message(
-			ephemeral_private_key,
+			&ephemeral_private_key,
 			&remote_ephemeral_public_key,
 			chaining_key,
 			&mut hash,
@@ -211,7 +203,7 @@ impl PeerHandshake {
 			hash,
 			chaining_key,
 			temporary_key,
-			ephemeral_private_key: (*ephemeral_private_key).clone(),
+			ephemeral_private_key,
 			remote_ephemeral_public_key,
 		}));
 
@@ -313,18 +305,6 @@ impl PeerHandshake {
 			read_buffer: None,
 		};
 		Ok((remote_pubkey, connected_peer))
-	}
-
-	fn obtain_ephemeral_private_key(&mut self) -> SecretKey {
-		if let Some(key) = self.preset_ephemeral_private_key.take() {
-			key
-		} else {
-			// generate a random ephemeral private key right here
-			let mut rng = thread_rng();
-			let mut ephemeral_bytes = [0; 32];
-			rng.fill_bytes(&mut ephemeral_bytes);
-			SecretKey::from_slice(&ephemeral_bytes).expect("You broke elliptic curve cryptography")
-		}
 	}
 
 	fn calculate_act_message(&self, local_private_key: &SecretKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], hash: &mut HandshakeHash) -> ([u8; 50], [u8; 32], [u8; 32]) {
