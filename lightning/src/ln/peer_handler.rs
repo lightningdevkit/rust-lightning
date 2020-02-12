@@ -114,7 +114,7 @@ enum PeerState {
 
 impl PeerState {
 	fn is_ready_for_encryption(&self) -> bool {
-		if let PeerState::Connected(_) = self {
+		if let &PeerState::Connected(_) = self {
 			true
 		} else {
 			false
@@ -285,7 +285,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 		if peers.peers.insert(descriptor, Peer {
 			encryptor: PeerState::Handshake(handshake),
 			outbound: true,
-			their_node_id: None,
+			their_node_id: Some(their_node_id.clone()),
 			their_features: None,
 
 			pending_outbound_buffer: LinkedList::new(),
@@ -313,7 +313,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
-		let handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
+		let mut handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
+		handshake.make_inbound();
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
@@ -465,78 +466,83 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					peer.pending_read_buffer.extend_from_slice(&data);
 					while peer.pending_read_buffer.len() > 0 {
 
-						macro_rules! encode_and_send_msg {
-							($msg: expr) => {
-								{
-									log_trace!(self, "Encoding and sending message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
-									if let PeerState::Connected(ref mut conduit) = peer.encryptor {
-										peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!(&$msg)[..]));
-									}
-									peers.peers_needing_send.insert(peer_descriptor.clone());
-								}
-							}
-						}
+						let mut conduit_option = None;
+						let mut remote_pubkey_option = None;
 
-						macro_rules! try_potential_handleerror {
-							($thing: expr) => {
-								match $thing {
-									Ok(x) => x,
-									Err(e) => {
-										match e.action {
-											msgs::ErrorAction::DisconnectPeer { msg: _ } => {
-												//TODO: Try to push msg
-												log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
-												return Err(PeerHandleError{ no_connection_possible: false });
-											},
-											msgs::ErrorAction::IgnoreError => {
-												log_trace!(self, "Got Err handling message, ignoring because {}", e.err);
-												continue;
-											},
-											msgs::ErrorAction::SendErrorMessage { msg } => {
-												log_trace!(self, "Got Err handling message, sending Error message because {}", e.err);
-												encode_and_send_msg!(msg);
-												continue;
-											},
-										}
-									}
-								};
-							}
-						}
-
-						macro_rules! insert_node_id {
-							() => {
-								match peers.node_id_to_descriptor.entry(peer.their_node_id.unwrap()) {
-									hash_map::Entry::Occupied(_) => {
-										log_trace!(self, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap()));
-										peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
-										return Err(PeerHandleError{ no_connection_possible: false })
-									},
-									hash_map::Entry::Vacant(entry) => {
-										log_trace!(self, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
-										entry.insert(peer_descriptor.clone())
-									},
-								};
-							}
-						}
-
-						if let PeerState::Handshake(ref mut handshake) = &mut peer.encryptor {
+						if let &mut PeerState::Handshake(ref mut handshake) = &mut peer.encryptor {
 							let (response, conduit, remote_pubkey) = handshake.process_act(&peer.pending_read_buffer, None).unwrap();
 							peer.pending_read_buffer.drain(..); // we read it all
 
+							if let Some(key) = remote_pubkey {
+								remote_pubkey_option = Some(key);
+							}
+
 							peer.pending_outbound_buffer.push_back(response);
 							if let Some(conduit) = conduit {
-								peer.encryptor = PeerState::Connected(conduit);
+								conduit_option = Some(conduit);
 							}
 						}
 
-						if let PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
-							let mut messages = conduit.decrypt_message_stream(Some(&peer.pending_read_buffer));
+						if let Some(key) = remote_pubkey_option {
+							peer.their_node_id = Some(key);
+						}
 
-							if messages.len() != 1 {
-								break; // the length should initially be one, though there will be a possibility of decrypting multiple messages at once in the future
+						if let Some(conduit) = conduit_option {
+							// Rust 1.22 does not allow assignment in a borrowed context, even if mutable
+							peer.encryptor = PeerState::Connected(conduit);
+						}
+
+						if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
+
+							macro_rules! encode_and_send_msg {
+								($msg: expr) => {
+									{
+										log_trace!(self, "Encoding and sending message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+										// we are in a context where conduit is known
+										peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!(&$msg)[..]));
+										peers.peers_needing_send.insert(peer_descriptor.clone());
+									}
+								}
 							}
 
-							let msg_data = messages.remove(1);
+							macro_rules! try_potential_handleerror {
+								($thing: expr) => {
+									match $thing {
+										Ok(x) => x,
+										Err(e) => {
+											match e.action {
+												msgs::ErrorAction::DisconnectPeer { msg: _ } => {
+													//TODO: Try to push msg
+													log_trace!(self, "Got Err handling message, disconnecting peer because {}", e.err);
+													return Err(PeerHandleError{ no_connection_possible: false });
+												},
+												msgs::ErrorAction::IgnoreError => {
+													log_trace!(self, "Got Err handling message, ignoring because {}", e.err);
+													continue;
+												},
+												msgs::ErrorAction::SendErrorMessage { msg } => {
+													log_trace!(self, "Got Err handling message, sending Error message because {}", e.err);
+													encode_and_send_msg!(msg);
+													continue;
+												},
+											}
+										}
+									};
+								}
+							}
+
+							let mut next_message_result = conduit.decrypt(&peer.pending_read_buffer);
+
+							let offset = next_message_result.1;
+							if offset == 0 {
+								// nothing got read
+								break;
+							}else{
+								peer.pending_read_buffer.drain(0..offset);
+							}
+
+							// something got read, so we definitely have a message
+							let msg_data = next_message_result.0.unwrap();
 
 							let mut reader = ::std::io::Cursor::new(&msg_data[..]);
 							let message_result = wire::read(&mut reader);

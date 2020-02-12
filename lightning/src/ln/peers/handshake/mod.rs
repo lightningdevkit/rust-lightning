@@ -1,3 +1,9 @@
+//! Execute handshakes for peer-to-peer connection establishment.
+//! Handshake states can be advanced automatically, or by manually calling the appropriate step.
+//! Once complete, returns an instance of Conduit.
+
+use secp256k1;
+
 use bitcoin_hashes::{Hash, HashEngine};
 use bitcoin_hashes::sha256::Hash as Sha256;
 use secp256k1::{PublicKey, SecretKey};
@@ -13,6 +19,8 @@ mod hash;
 mod states;
 mod tests;
 
+/// Object for managing handshakes.
+/// Currently requires explicit ephemeral private key specification.
 pub struct PeerHandshake {
 	state: Option<HandshakeState>,
 	private_key: SecretKey,
@@ -22,8 +30,8 @@ pub struct PeerHandshake {
 }
 
 impl PeerHandshake {
+	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
 	pub fn new(private_key: &SecretKey, ephemeral_private_key: &SecretKey) -> Self {
-
 		let handshake = PeerHandshake {
 			state: Some(HandshakeState::Blank),
 			private_key: (*private_key).clone(),
@@ -33,6 +41,7 @@ impl PeerHandshake {
 		handshake
 	}
 
+	/// Make the handshake object inbound in anticipation of a peer's first handshake act
 	pub fn make_inbound(&mut self) {
 		let public_key = Self::private_key_to_public_key(&self.private_key);
 		let (hash, chaining_key) = Self::initialize_state(&public_key);
@@ -71,12 +80,12 @@ impl PeerHandshake {
 		let read_buffer_length = self.read_buffer.len();
 
 		match &self.state {
-			Some(HandshakeState::Blank) => {
-				let remote_public_key = remote_public_key.ok_or("Call make_initiator() first")?;
+			&Some(HandshakeState::Blank) => {
+				let remote_public_key = remote_public_key.ok_or("remote_public_key must be Some for outbound connections")?;
 				let act_one = self.initiate(&remote_public_key)?;
 				response = act_one.0.to_vec();
 			}
-			Some(HandshakeState::AwaitingActOne(_)) => {
+			&Some(HandshakeState::AwaitingActOne(_)) => {
 				let act_length = 50;
 				if read_buffer_length < act_length {
 					return Err("need at least 50 bytes".to_string());
@@ -89,7 +98,7 @@ impl PeerHandshake {
 				let act_two = self.process_act_one(ActOne(act_one_buffer))?;
 				response = act_two.0.to_vec();
 			}
-			Some(HandshakeState::AwaitingActTwo(_)) => {
+			&Some(HandshakeState::AwaitingActTwo(_)) => {
 				let act_length = 50;
 				if read_buffer_length < act_length {
 					return Err("need at least 50 bytes".to_string());
@@ -109,7 +118,7 @@ impl PeerHandshake {
 				response = act_three.0.to_vec();
 				connected_peer = Some(conduit);
 			}
-			Some(HandshakeState::AwaitingActThree(_)) => {
+			&Some(HandshakeState::AwaitingActThree(_)) => {
 				let act_length = 66;
 				if read_buffer_length < act_length {
 					return Err("need at least 50 bytes".to_string());
@@ -136,8 +145,9 @@ impl PeerHandshake {
 		Ok((response, connected_peer, remote_pubkey))
 	}
 
+	/// Initiate the handshake with a peer and return the first act
 	pub fn initiate(&mut self, remote_public_key: &PublicKey) -> Result<ActOne, String> {
-		if let Some(HandshakeState::Blank) = &self.state {} else {
+		if let &Some(HandshakeState::Blank) = &self.state {} else {
 			return Err("incorrect state".to_string());
 		}
 
@@ -161,6 +171,7 @@ impl PeerHandshake {
 		Ok(ActOne(act_one))
 	}
 
+	/// Process a peer's incoming first act and return the second act
 	pub(crate) fn process_act_one(&mut self, act: ActOne) -> Result<ActTwo, String> {
 		let state = self.state.take();
 		let act_one_expectation = match state {
@@ -209,6 +220,7 @@ impl PeerHandshake {
 		Ok(ActTwo(act_two))
 	}
 
+	/// Process a peer's incoming second act and return the third act alongside a Conduit instance
 	pub(crate) fn process_act_two(&mut self, act: ActTwo) -> Result<(ActThree, Conduit), String> {
 		let state = self.state.take();
 		let act_two_expectation = match state {
@@ -258,6 +270,7 @@ impl PeerHandshake {
 		Ok((ActThree(act_three), connected_peer))
 	}
 
+	/// Process a peer's incoming third act and return a Conduit instance
 	pub(crate) fn process_act_three(&mut self, act: ActThree) -> Result<(PublicKey, Conduit), String> {
 		let state = self.state.take();
 		let act_three_expectation = match state {

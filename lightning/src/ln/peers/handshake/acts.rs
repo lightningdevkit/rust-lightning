@@ -1,15 +1,19 @@
+/// Wrapper for the first act message
 pub struct ActOne(
 	pub(super) [u8; 50]
 );
 
+/// Wrapper for the second act message
 pub struct ActTwo(
 	pub(super) [u8; 50]
 );
 
+/// Wrapper for the third act message
 pub struct ActThree(
 	pub(super) [u8; 66]
 );
 
+/// Wrapper for any act message
 pub enum Act {
 	One(ActOne),
 	Two(ActTwo),
@@ -17,15 +21,16 @@ pub enum Act {
 }
 
 impl Act {
+	/// Convert any act into a byte vector
 	pub fn serialize(&self) -> Vec<u8> {
 		match self {
-			Act::One(act) => {
+			&Act::One(ref act) => {
 				act.0.to_vec()
 			}
-			Act::Two(act) => {
+			&Act::Two(ref act) => {
 				act.0.to_vec()
 			}
-			Act::Three(act) => {
+			&Act::Three(ref act) => {
 				act.0.to_vec()
 			}
 		}

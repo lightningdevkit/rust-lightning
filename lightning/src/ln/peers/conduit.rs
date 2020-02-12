@@ -1,6 +1,11 @@
+//! Handles all over the wire message encryption and decryption upon handshake completion.
+
 use ln::peers::{chacha, hkdf};
+use util::byte_utils;
 
 /// Returned after a successful handshake to encrypt and decrypt communication with peer nodes
+/// Automatically handles key rotation.
+/// For decryption, it is recommended to call `decrypt_message_stream` for automatic buffering.
 pub struct Conduit {
 	pub(crate) sending_key: [u8; 32],
 	pub(crate) receiving_key: [u8; 32],
@@ -15,9 +20,10 @@ pub struct Conduit {
 }
 
 impl Conduit {
+	/// Encrypt data to be sent to peer
 	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
 		let length = buffer.len() as u16;
-		let length_bytes = length.to_be_bytes();
+		let length_bytes = byte_utils::be16_to_array(length);
 
 		let encrypted_length = chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes);
 		self.increment_sending_nonce();
@@ -69,7 +75,7 @@ impl Conduit {
 	}
 
 	/// Decrypt a single message. Buffer is an undelimited amount of bytes
-	fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) { // the response slice should have the same lifetime as the argument. It's the slice data is read from
+	pub(crate) fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) { // the response slice should have the same lifetime as the argument. It's the slice data is read from
 		if buffer.len() < 18 {
 			return (None, 0);
 		}
@@ -78,9 +84,9 @@ impl Conduit {
 		let length_vec = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap();
 		let mut length_bytes = [0u8; 2];
 		length_bytes.copy_from_slice(length_vec.as_slice());
-		let message_length = u16::from_be_bytes(length_bytes) as usize;
+		let message_length = byte_utils::slice_to_be16(&length_bytes) as usize;
 
-		let message_end_index = message_length + 18; // todo: abort if too short
+		let message_end_index = message_length + 18 + 16; // todo: abort if too short
 		if buffer.len() < message_end_index {
 			return (None, 0);
 		}
@@ -121,6 +127,7 @@ impl Conduit {
 
 #[cfg(test)]
 mod tests {
+	use hex;
 	use ln::peers::conduit::Conduit;
 
 	#[test]
@@ -147,6 +154,16 @@ mod tests {
 			read_buffer: None,
 		};
 
+		let mut remote_peer = Conduit {
+			sending_key: receiving_key,
+			receiving_key: sending_key,
+			sending_chaining_key: chaining_key,
+			receiving_chaining_key: chaining_key,
+			sending_nonce: 0,
+			receiving_nonce: 0,
+			read_buffer: None,
+		};
+
 		let message = hex::decode("68656c6c6f").unwrap();
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
 
@@ -161,5 +178,13 @@ mod tests {
 		assert_eq!(encrypted_messages[501], hex::decode("1b186c57d44eb6de4c057c49940d79bb838a145cb528d6e8fd26dbe50a60ca2c104b56b60e45bd").unwrap());
 		assert_eq!(encrypted_messages[1000], hex::decode("4a2f3cc3b5e78ddb83dcb426d9863d9d9a723b0337c89dd0b005d89f8d3c05c52b76b29b740f09").unwrap());
 		assert_eq!(encrypted_messages[1001], hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
+
+		for _ in 0..1002 {
+			let encrypted_message = encrypted_messages.remove(0);
+			let mut decrypted_messages = remote_peer.decrypt_message_stream(Some(&encrypted_message));
+			assert_eq!(decrypted_messages.len(), 1);
+			let decrypted_message = decrypted_messages.remove(0);
+			assert_eq!(decrypted_message, hex::decode("68656c6c6f").unwrap());
+		}
 	}
 }
