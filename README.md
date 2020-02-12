@@ -16,6 +16,12 @@ to embrace that. The current state is sufficient for a developer or project to
 experiment with it. Recent increased contribution rate to the project is expected
 to lead to a high quality, stable, production-worthy implementation in 2020.
 
+Communications for Rust-Lightning and Lightning Development Kit happens through
+[LDK slack](http://lightningdevkit.org/).
+
+Design Goal
+-----------
+
 The goal is to provide a full-featured but also incredibly flexible lightning
 implementation, allowing the user to decide how they wish to use it. With that
 in mind, everything should be exposed via simple, composable APIs. The user
@@ -32,8 +38,14 @@ non-optional/non-test/non-library dependencies. Really really do not add
 dependencies with dependencies. Do convince Andrew to cut down dependency usage
 in rust-bitcoin.
 
-Notes on coding style:
- * Use tabs. If you want to align lines, use spaces. Any desired alignment
-   should display fine at any tab-length display setting.
+Contributing
+------------
+
+Contributors are warmly welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Project Architecture
+---------------------
+
+COMING SOON.
 
 License is Apache-2.0.
