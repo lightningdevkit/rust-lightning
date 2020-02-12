@@ -9,7 +9,7 @@ use ln::peers::handshake::acts::{ActOne, ActThree, ActTwo};
 use ln::peers::handshake::hash::HandshakeHash;
 use ln::peers::handshake::states::{ActOneExpectation, ActThreeExpectation, ActTwoExpectation, HandshakeState};
 
-mod acts;
+pub(crate) mod acts;
 mod hash;
 mod states;
 mod tests;
