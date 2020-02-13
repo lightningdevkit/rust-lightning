@@ -17,6 +17,7 @@ jobs:
         include:
           - toolchain: stable
             build-net-tokio: true
+            check-fmt: true
           - toolchain: beta
             build-net-tokio: true
           - toolchain: 1.39.0
@@ -32,6 +33,9 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           override: true
           profile: minimal
+      - name: Check formatting
+        if: matrix.check-fmt
+        run: rustup component add rustfmt && cargo fmt --all -- --check && cd fuzz && cargo fmt --all -- --check
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
         if: matrix.build-net-tokio
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always

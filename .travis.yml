@@ -15,6 +15,8 @@ before_install:
   - sudo apt-get install -y binutils-dev libunwind8-dev libcurl4-openssl-dev libelf-dev libdw-dev cmake gcc binutils-dev libiberty-dev
 
 script:
+     # Check formatting
+     - if [ "$(rustup show | grep stable)" != "" ]; then rustup component add rustfmt && cargo fmt --all -- --check && cd fuzz && cargo fmt --all -- --check && cd ../ ; fi
      # Support lightning-net-tokio only on Rust stable, beta, and 1.39.0
      - if [ "$(rustup show | grep default | grep '1.39.0')" != "" ]; then export BUILD_NET_TOKIO=1; fi
      - if [ "$(rustup show | grep default | grep '1\.')" == "" ]; then export BUILD_NET_TOKIO=1; fi
