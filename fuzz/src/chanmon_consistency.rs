@@ -136,22 +136,27 @@ struct KeyProvider {
 impl KeysInterface for KeyProvider {
 	type ChanKeySigner = EnforcingChannelKeys;
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_node_secret(&self) -> SecretKey {
 		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap()
 	}
 
 	fn get_destination_script(&self) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
+
+		#[cfg_attr(rustfmt, rustfmt_skip)]
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_id]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_shutdown_pubkey(&self) -> PublicKey {
 		let secp_ctx = Secp256k1::signing_only();
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_id]).unwrap())
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
 		let secp_ctx = Secp256k1::signing_only();
 		EnforcingChannelKeys::new(InMemoryChannelKeys::new(
@@ -166,12 +171,14 @@ impl KeysInterface for KeyProvider {
 		))
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		let id = self.session_id.fetch_add(1, atomic::Ordering::Relaxed);
 		(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 10, self.node_id]).unwrap(),
 		[0; 32])
 	}
 
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	fn get_channel_id(&self) -> [u8; 32] {
 		let id = self.channel_id.fetch_add(1, atomic::Ordering::Relaxed);
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 11, self.node_id]

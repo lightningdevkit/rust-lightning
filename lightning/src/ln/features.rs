@@ -120,6 +120,7 @@ mod sealed {
 			BasicMPP,
 		],
 	});
+	#[cfg_attr(rustfmt, rustfmt_skip)]
 	define_context!(ChannelContext {
 		required_features: [],
 		optional_features: [],
