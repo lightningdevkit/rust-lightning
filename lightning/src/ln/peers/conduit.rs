@@ -3,7 +3,8 @@
 use ln::peers::{chacha, hkdf};
 use util::byte_utils;
 
-/// Returned after a successful handshake to encrypt and decrypt communication with peer nodes
+/// Returned after a successful handshake to encrypt and decrypt communication with peer nodes.
+/// It should not normally be manually instantiated.
 /// Automatically handles key rotation.
 /// For decryption, it is recommended to call `decrypt_message_stream` for automatic buffering.
 pub struct Conduit {
@@ -25,14 +26,14 @@ impl Conduit {
 		let length = buffer.len() as u16;
 		let length_bytes = byte_utils::be16_to_array(length);
 
-		let encrypted_length = chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes);
+		let mut ciphertext = vec![0u8; 18 + length as usize + 16];
+
+		ciphertext[0..18].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes));
 		self.increment_sending_nonce();
 
-		let encrypted_message = chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer);
+		ciphertext[18..].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer));
 		self.increment_sending_nonce();
 
-		let mut ciphertext = encrypted_length;
-		ciphertext.extend_from_slice(&encrypted_message);
 		ciphertext
 	}
 
