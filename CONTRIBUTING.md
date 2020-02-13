@@ -6,23 +6,23 @@ welcome to contribute towards development in the form of peer review, documentat
 testing and patches.
 
 Anyone is invited to contribute without regard to technical experience, "expertise", OSS
-experience, age, or other concern. Though developing cryptocurrencies demand a
+experience, age, or other concern. However, developing cryptocurrencies demand a
 high-level of rigor, adversial thinking, thorough testing and risk-minimization.
-Any bug may cost users real money. That said we're deeply welcoming people contributing
+Any bug may cost users real money. That said we deeply welcome people contributing
 for the first time to an open source project or pick up Rust while contributing. Don't be shy,
 you'll learn.
 
 Communications Channels
 -----------------------
 
-Communication about Rust-Lightning happens primarily on #ldk-dev on the LDK slack
+Communication about Rust-Lightning happens primarily on #ldk-dev on the [LDK slack](http://www.lightningdevkit.org/)
 or #rust-bitcoin on IRC Freenode.
 
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
 
 Contribution Workflow
---------------------
+---------------------
 
 The codebase is maintained using the "contributor workflow" where everyone
 without exception contributes patch proposals using "pull requests". This
@@ -33,7 +33,6 @@ To contribute a patch, the worflow is a as follows:
   1. Fork Repository
   2. Create topic branch
   3. Commit patches
-
 
 In general commits should be atomic and diffs should be easy to read.
 For this reason do not mix any formatting fixes or code moves with
@@ -46,12 +45,12 @@ must be given to the long term technical debt. Every new features should
 be covered by functional tests.
 
 When refactoring, structure your PR to make it easy to review and don't
-hesitant to split in multiple small, focused PRs.
+hestitate to split in multiple small, focused PRs.
 
 The Minimal Supported Rust Version is 1.22.0 (enforced by our Travis).
 
-Commit should expose both issues fixed and solutions rational.
-these [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
+Commit should cover both issues fixed and solutions rationale.
+These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
 
 Peer review
 -----------
@@ -63,7 +62,7 @@ be reviewed first on the conceptual level before focusing on code style or gramm
 fixes.
 
 Coding Conventions
-------------
+------------------
 
 Use tabs. If you want to align lines, use spaces. Any desired alignment should
 display fine at any tab-length display setting.
@@ -71,8 +70,8 @@ display fine at any tab-length display setting.
 Security
 --------
 
-Security is the primary focus of Rust-Lightning, disclosure of security vulnerabilites
-helps prevent user loss of funds. If you believe vulnerability may effect other Lightning
+Security is the primary focus of Rust-Lightning; disclosure of security vulnerabilites
+helps prevent user loss of funds. If you believe a vulnerability may affect other Lightning
 implementations please inform them.
 
 Note that Rust-Lightning is currently considered "pre-production" during this time, there
@@ -81,20 +80,20 @@ is no special handling of security issues. Please simpy open an issue on Github.
 Testing
 -------
 
-Deeply tied with the security aspect, Rust-Lightning developers take testing
+Related to the security aspect, Rust-Lightning developers take testing
 very seriously. Due to the modular nature of the project writing new functional
 tests is easy and good test coverage of the codebase is an important goal. Refactoring
-the project to enable fine-grained unit testing is also an ongoing work.
+the project to enable fine-grained unit testing is also an ongoing effort.
 
-Fuzzing is heavily-encouraged, you will find all related fuzzing stuff under `fuzz/`
+Fuzzing is heavily encouraged: you will find all related fuzzing stuff under `fuzz/`
 
-Mutation testing is work-in-progess, any contribution there would be warmly welcomed.
+Mutation testing is work-in-progess; any contribution there would be warmly welcomed.
 
 Going further
 -------------
 
 You may be interested by Jon Atack guide on [How to review Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-review-bitcoin-core-prs.md)
 and [How to make Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-make-bitcoin-core-prs.md).
-Modulo projects context and diffference of maturity there is a lot to stick to.
+While there are differences between the projects in terms of context and maturity, many of the suggestions offered apply to this project.
 
 Overall, have fun :)
