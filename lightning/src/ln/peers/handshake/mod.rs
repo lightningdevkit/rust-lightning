@@ -252,11 +252,9 @@ impl PeerHandshake {
 		let authentication_tag = chacha::encrypt(&temporary_key, 0, &hash.value, &[0; 0]);
 		let (sending_key, receiving_key) = hkdf::derive(&chaining_key, &[0; 0]);
 
-		let mut act_three_vec = [0u8].to_vec();
-		act_three_vec.extend_from_slice(&tagged_encrypted_pubkey);
-		act_three_vec.extend_from_slice(authentication_tag.as_slice());
 		let mut act_three = [0u8; 66];
-		act_three.copy_from_slice(act_three_vec.as_slice());
+		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
+		act_three[50..].copy_from_slice(authentication_tag.as_slice());
 
 		let connected_peer = Conduit {
 			sending_key,
@@ -330,11 +328,10 @@ impl PeerHandshake {
 
 		hash.update(&tagged_ciphertext);
 
-		let mut act_vec = [0u8].to_vec();
-		act_vec.extend_from_slice(&local_public_key.serialize());
-		act_vec.extend_from_slice(tagged_ciphertext.as_slice());
 		let mut act = [0u8; 50];
-		act.copy_from_slice(act_vec.as_slice());
+		act[1..34].copy_from_slice(&local_public_key.serialize());
+		act[34..].copy_from_slice(tagged_ciphertext.as_slice());
+
 		(act, chaining_key, temporary_key)
 	}
 
