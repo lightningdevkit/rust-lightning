@@ -72,11 +72,16 @@ pub trait BroadcasterInterface: Sync + Send {
 /// A trait indicating a desire to listen for events from the chain
 pub trait ChainListener: Sync + Send {
 	/// Notifies a listener that a block was connected.
-	/// Note that if a new transaction/outpoint is watched during a block_connected call, the block
-	/// *must* be re-scanned with the new transaction/outpoints and block_connected should be
-	/// called again with the same header and (at least) the new transactions.
 	///
-	/// Note that if non-new transaction/outpoints may be registered during a call, a second call
+	/// The txn_matched array should be set to references to transactions which matched the
+	/// relevant installed watch outpoints/txn, or the full set of transactions in the block.
+	///
+	/// Note that if txn_matched includes only matched transactions, and a new
+	/// transaction/outpoint is watched during a block_connected call, the block *must* be
+	/// re-scanned with the new transaction/outpoints and block_connected should be called
+	/// again with the same header and (at least) the new transactions.
+	///
+	/// Note that if non-new transaction/outpoints are be registered during a call, a second call
 	/// *must not* happen.
 	///
 	/// This also means those counting confirmations using block_connected callbacks should watch
@@ -281,7 +286,6 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 		return last_seen != self.chain_monitor.reentered();
 	}
 
-
 	/// Notify listeners that a block was disconnected.
 	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let listeners = self.listeners.lock().unwrap();
@@ -289,7 +293,6 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 			listener.block_disconnected(&header, disconnected_height);
 		}
 	}
-
 }
 
 /// Utility to capture some common parts of ChainWatchInterface implementors.
@@ -362,7 +365,6 @@ impl ChainWatchInterfaceUtil {
 			logger: logger,
 		}
 	}
-
 
 	/// Checks if a given transaction matches the current filter.
 	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
