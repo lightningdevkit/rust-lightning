@@ -1837,12 +1837,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		Vec::new()
 	}
 
-	/// Called by SimpleManyChannelMonitor::block_connected, which implements
-	/// ChainListener::block_connected.
-	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
-	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
-	/// on-chain.
-	fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F)-> Vec<(Txid, Vec<TxOut>)>
+	/// Called when a new block has been connected to the best chain by <SimpleManyChannelMonitor
+	/// as ChainListener>::block_connected, and should thus generally not be called during normal
+	/// operation. It is exposed both for users who wish to use ChannelMonitors directly and to
+	/// simplify rescans that occur at load-time.
+	///
+	/// This is very similar to ChainListener::block_connected itself, but requires an &mut self,
+	/// and an explicit reference to a transaction broadcaster and fee estimator.
+	///
+	/// Returns a list of new (txid, outputs) pairs which spends of must be watched for. Note that
+	/// after this call these are also available via get_outputs_to_watch().
+	pub fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F)-> Vec<(Txid, Vec<TxOut>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
@@ -1940,7 +1945,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		watch_outputs
 	}
 
-	fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F)
+	/// Called when a block has been disconnected from the best chain by <SimpleManyChannelMonitor
+	/// as ChainListener>::block_disconnected, and should thus generally not be called during
+	/// normal operation. It is exposed both for users who wish to use ChannelMonitors directly and
+	/// to simplify rescans that occur at load-time.
+	///
+	/// This is very similar to ChainListener::block_disconnected itself, but requires an &mut self,
+	/// and an explicit reference to a transaction broadcaster and fee estimator.
+	pub fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
