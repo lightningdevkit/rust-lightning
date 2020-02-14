@@ -15,8 +15,8 @@ you'll learn.
 Communications Channels
 -----------------------
 
-Communication about Rust-Lightning happens primarily on #ldk-dev on the [LDK slack](http://www.lightningdevkit.org/)
-or #rust-bitcoin on IRC Freenode.
+Communication about Rust-Lightning happens primarily on #ldk-dev on the [LDK slack](http://www.lightningdevkit.org/),
+but also #rust-bitcoin on IRC Freenode.
 
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
@@ -45,11 +45,11 @@ must be given to the long term technical debt. Every new features should
 be covered by functional tests.
 
 When refactoring, structure your PR to make it easy to review and don't
-hestitate to split in multiple small, focused PRs.
+hestitate to split it into multiple small, focused PRs.
 
 The Minimal Supported Rust Version is 1.22.0 (enforced by our Travis).
 
-Commit should cover both issues fixed and solutions rationale.
+Commits should cover both issues fixed and solutions' rationale.
 These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
 
 Peer review
@@ -72,22 +72,22 @@ Security
 
 Security is the primary focus of Rust-Lightning; disclosure of security vulnerabilites
 helps prevent user loss of funds. If you believe a vulnerability may affect other Lightning
-implementations please inform them.
+implementations, please inform them.
 
 Note that Rust-Lightning is currently considered "pre-production" during this time, there
-is no special handling of security issues. Please simpy open an issue on Github.
+is no special handling of security issues. Please simply open an issue on Github.
 
 Testing
 -------
 
 Related to the security aspect, Rust-Lightning developers take testing
-very seriously. Due to the modular nature of the project writing new functional
+very seriously. Due to the modular nature of the project, writing new functional
 tests is easy and good test coverage of the codebase is an important goal. Refactoring
 the project to enable fine-grained unit testing is also an ongoing effort.
 
-Fuzzing is heavily encouraged: you will find all related fuzzing stuff under `fuzz/`
+Fuzzing is heavily encouraged: you will find all related material under `fuzz/`
 
-Mutation testing is work-in-progess; any contribution there would be warmly welcomed.
+Mutation testing is work-in-progress; any contribution there would be warmly welcomed.
 
 Going further
 -------------
