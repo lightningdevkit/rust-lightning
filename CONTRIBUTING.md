@@ -6,7 +6,7 @@ welcome to contribute towards development in the form of peer review, documentat
 testing and patches.
 
 Anyone is invited to contribute without regard to technical experience, "expertise", OSS
-experience, age, or other concern. However, developing cryptocurrencies demand a
+experience, age, or other concern. However, the development of cryptocurrencies demands a
 high-level of rigor, adversial thinking, thorough testing and risk-minimization.
 Any bug may cost users real money. That said we deeply welcome people contributing
 for the first time to an open source project or pick up Rust while contributing. Don't be shy,
