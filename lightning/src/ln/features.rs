@@ -187,8 +187,14 @@ impl<T: sealed::Context> Features<T> {
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
-				0 => (byte & 0b00010100),
+				// Unknown bits are even bits which we don't understand, we list ones which we do
+				// here:
+				// unknown, upfront_shutdown_script, unknown (actually initial_routing_sync, but it
+				// is only valid as an optional feature), and data_loss_protect:
+				0 => (byte & 0b01000100),
+				// unknown, unknown, unknown, var_onion_optin:
 				1 => (byte & 0b01010100),
+				// fallback, all even bits set:
 				_ => (byte & 0b01010101),
 			}) != 0
 		})
@@ -197,7 +203,10 @@ impl<T: sealed::Context> Features<T> {
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
+				// unknown, upfront_shutdown_script, initial_routing_sync (is only valid as an
+				// optional feature), and data_loss_protect:
 				0 => (byte & 0b11000100),
+				// unknown, unknown, unknown, var_onion_optin:
 				1 => (byte & 0b11111100),
 				_ => byte,
 			}) != 0
@@ -282,5 +291,43 @@ impl<R: ::std::io::Read, T: sealed::Context> Readable<R> for Features<T> {
 			flags,
 			mark: PhantomData,
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ChannelFeatures, InitFeatures, NodeFeatures};
+
+	#[test]
+	fn sanity_test_our_features() {
+		assert!(!ChannelFeatures::supported().requires_unknown_bits());
+		assert!(!ChannelFeatures::supported().supports_unknown_bits());
+		assert!(!InitFeatures::supported().requires_unknown_bits());
+		assert!(!InitFeatures::supported().supports_unknown_bits());
+		assert!(!NodeFeatures::supported().requires_unknown_bits());
+		assert!(!NodeFeatures::supported().supports_unknown_bits());
+
+		assert!(InitFeatures::supported().supports_upfront_shutdown_script());
+		assert!(NodeFeatures::supported().supports_upfront_shutdown_script());
+
+		assert!(InitFeatures::supported().supports_data_loss_protect());
+		assert!(NodeFeatures::supported().supports_data_loss_protect());
+
+		assert!(InitFeatures::supported().supports_variable_length_onion());
+		assert!(NodeFeatures::supported().supports_variable_length_onion());
+
+		let mut init_features = InitFeatures::supported();
+		init_features.set_initial_routing_sync();
+		assert!(!init_features.requires_unknown_bits());
+		assert!(!init_features.supports_unknown_bits());
+	}
+
+	#[test]
+	fn sanity_test_unkown_bits_testing() {
+		let mut features = ChannelFeatures::supported();
+		features.set_require_unknown_bits();
+		assert!(features.requires_unknown_bits());
+		features.clear_require_unknown_bits();
+		assert!(!features.requires_unknown_bits());
 	}
 }
