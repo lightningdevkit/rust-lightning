@@ -33,3 +33,5 @@ pub(crate) mod functional_test_utils;
 mod functional_tests;
 #[cfg(test)]
 mod chanmon_update_fail_tests;
+#[cfg(test)]
+mod reorg_tests;
