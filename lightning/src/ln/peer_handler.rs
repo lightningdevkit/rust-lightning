@@ -1075,31 +1075,34 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			let peers = &mut peers.peers;
 
 			peers.retain(|descriptor, peer| {
-				if peer.awaiting_pong == true {
+				if peer.awaiting_pong {
 					peers_needing_send.remove(descriptor);
 					match peer.their_node_id {
 						Some(node_id) => {
 							node_id_to_descriptor.remove(&node_id);
 							self.message_handler.chan_handler.peer_disconnected(&node_id, true);
-						},
+						}
 						None => {}
 					}
+					return false;
+				}
+
+				if !peer.channel_encryptor.is_ready_for_encryption() {
+					// The peer needs to complete its handshake before we can exchange messages
+					return true;
 				}
 
 				let ping = msgs::Ping {
 					ponglen: 0,
 					byteslen: 64,
 				};
-				peer.pending_outbound_buffer.push_back(encode_msg!(&ping));
+				peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(&ping)));
+
 				let mut descriptor_clone = descriptor.clone();
 				self.do_attempt_write_data(&mut descriptor_clone, peer);
 
-				if peer.awaiting_pong {
-					false // Drop the peer
-				} else {
-					peer.awaiting_pong = true;
-					true
-				}
+				peer.awaiting_pong = true;
+				true
 			});
 		}
 	}
@@ -1118,15 +1121,29 @@ mod tests {
 
 	use rand::{thread_rng, Rng};
 
-	use std::sync::{Arc};
+	use std;
+	use std::sync::{Arc, Mutex};
 
-	#[derive(PartialEq, Eq, Clone, Hash)]
+	#[derive(Clone)]
 	struct FileDescriptor {
 		fd: u16,
+		outbound_data: Arc<Mutex<Vec<u8>>>,
+	}
+	impl PartialEq for FileDescriptor {
+		fn eq(&self, other: &Self) -> bool {
+			self.fd == other.fd
+		}
+	}
+	impl Eq for FileDescriptor { }
+	impl std::hash::Hash for FileDescriptor {
+		fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+			self.fd.hash(hasher)
+		}
 	}
 
 	impl SocketDescriptor for FileDescriptor {
 		fn send_data(&mut self, data: &[u8], _resume_read: bool) -> usize {
+			self.outbound_data.lock().unwrap().extend_from_slice(data);
 			data.len()
 		}
 
@@ -1167,10 +1184,15 @@ mod tests {
 
 	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler>) {
 		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peer_b.our_node_secret);
-		let fd = FileDescriptor { fd: 1};
-		peer_a.new_inbound_connection(fd.clone()).unwrap();
-		peer_a.peers.lock().unwrap().node_id_to_descriptor.insert(their_id, fd.clone());
+		let a_id = PublicKey::from_secret_key(&secp_ctx, &peer_a.our_node_secret);
+		//let b_id = PublicKey::from_secret_key(&secp_ctx, &peer_b.our_node_secret);
+		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone()).unwrap();
+		peer_a.new_inbound_connection(fd_a.clone()).unwrap();
+		assert_eq!(peer_a.read_event(&mut fd_a, initial_data).unwrap(), false);
+		assert_eq!(peer_b.read_event(&mut fd_b, fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		assert_eq!(peer_a.read_event(&mut fd_a, fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 	}
 
 	#[test]
