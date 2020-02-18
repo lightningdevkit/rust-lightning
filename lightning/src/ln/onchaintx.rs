@@ -392,16 +392,16 @@ impl OnchainTxHandler {
 
 		let new_timer = Self::get_height_timer(height, cached_claim_datas.soonest_timelock);
 		let mut inputs_witnesses_weight = 0;
-		let mut amt = 0;
+		let mut total_amount = 0;
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
-				&InputMaterial::Revoked { ref script, ref is_htlc, ref amount, .. } => {
+				&InputMaterial::Revoked { ref script, ref is_htlc, ref revoked_amount, .. } => {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { &[] });
-					amt += *amount;
+					total_amount += *revoked_amount;
 				},
-				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
+				&InputMaterial::RemoteHTLC { ref preimage, ref remote_amount, .. } => {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
-					amt += *amount;
+					total_amount += *remote_amount;
 				},
 				&InputMaterial::LocalHTLC { .. } => { return None; }
 			}
@@ -411,27 +411,27 @@ impl OnchainTxHandler {
 		let mut new_feerate;
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if cached_claim_datas.feerate_previous != 0 {
-			if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight as u64) {
+			if let Some((new_fee, feerate)) = RBF_bump!(total_amount, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight as u64) {
 				// If new computed fee is superior at the whole claimable amount burn all in fees
-				if new_fee > amt {
+				if new_fee > total_amount {
 					bumped_tx.output[0].value = 0;
 				} else {
-					bumped_tx.output[0].value = amt - new_fee;
+					bumped_tx.output[0].value = total_amount - new_fee;
 				}
 				new_feerate = feerate;
 			} else { return None; }
 		} else {
-			if subtract_high_prio_fee!(self, fee_estimator, amt, predicted_weight, new_feerate) {
-				bumped_tx.output[0].value = amt;
+			if subtract_high_prio_fee!(self, fee_estimator, total_amount, predicted_weight, new_feerate) {
+				bumped_tx.output[0].value = total_amount;
 			} else { return None; }
 		}
 		assert!(new_feerate != 0);
 
 		for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 			match per_outp_material {
-				&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref amount } => {
+				&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref revoked_amount } => {
 					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *amount)[..]);
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *revoked_amount)[..]);
 					let sig = self.secp_ctx.sign(&sighash, &key);
 					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
@@ -443,10 +443,10 @@ impl OnchainTxHandler {
 					bumped_tx.input[i].witness.push(script.clone().into_bytes());
 					log_trace!(self, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 				},
-				&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
+				&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref remote_amount, ref locktime } => {
 					if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
 					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *amount)[..]);
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *remote_amount)[..]);
 					let sig = self.secp_ctx.sign(&sighash, &key);
 					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
