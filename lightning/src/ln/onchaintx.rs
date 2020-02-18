@@ -316,6 +316,11 @@ impl OnchainTxHandler {
 		tx_weight
 	}
 
+	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
+	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block
+	/// height than once reached we should generate a new bumped "version" of the claim tx to be sure than we safely claim outputs before
+	/// than our counterparty can do it too. If timelock expires soon, height timer is going to be scale down in consequence to increase
+	/// frequency of the bump and so increase our bets of success.
 	fn get_height_timer(current_height: u32, timelock_expiration: u32) -> u32 {
 		if timelock_expiration <= current_height + 3 {
 			return current_height + 1
@@ -390,6 +395,8 @@ impl OnchainTxHandler {
 			}
 		}
 
+		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
+		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Self::get_height_timer(height, cached_claim_datas.soonest_timelock);
 		let mut inputs_witnesses_weight = 0;
 		let mut amt = 0;
