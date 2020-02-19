@@ -21,6 +21,8 @@ but also #rust-bitcoin on IRC Freenode.
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
 
+Major projects are tracked [here](https://github.com/rust-bitcoin/rust-lightning/projects). Major milestones are tracked [here](https://github.com/rust-bitcoin/rust-lightning/milestones?direction=asc&sort=title&state=open).
+
 Contribution Workflow
 ---------------------
 
@@ -51,6 +53,8 @@ The Minimal Supported Rust Version is 1.22.0 (enforced by our Travis).
 
 Commits should cover both issues fixed and solutions' rationale.
 These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
+
+To facilitate communication with other contributors, if you are working on a GitHub Issue please assign it to yourself using GitHub's "assignee" field.
 
 Peer review
 -----------
