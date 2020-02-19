@@ -1,16 +1,20 @@
+pub const ACT_ONE_LENGTH: usize = 50;
+pub const ACT_TWO_LENGTH: usize = 50;
+pub const ACT_THREE_LENGTH: usize = 66;
+
 /// Wrapper for the first act message
 pub struct ActOne(
-	pub(super) [u8; 50]
+	pub(super) [u8; ACT_ONE_LENGTH]
 );
 
 /// Wrapper for the second act message
 pub struct ActTwo(
-	pub(super) [u8; 50]
+	pub(super) [u8; ACT_TWO_LENGTH]
 );
 
 /// Wrapper for the third act message
 pub struct ActThree(
-	pub(super) [u8; 66]
+	pub(super) [u8; ACT_THREE_LENGTH]
 );
 
 /// Wrapper for any act message

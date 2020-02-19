@@ -2,7 +2,7 @@ use ln::peers::handshake::hash::HandshakeHash;
 use secp256k1::{SecretKey, PublicKey};
 
 pub enum HandshakeState {
-	Blank,
+	Uninitiated,
 	AwaitingActOne(ActOneExpectation),
 	AwaitingActTwo(ActTwoExpectation),
 	AwaitingActThree(ActThreeExpectation),

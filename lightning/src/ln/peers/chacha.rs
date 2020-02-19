@@ -1,6 +1,8 @@
 use util::byte_utils;
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 
+pub const TAG_SIZE: usize = 16;
+
 pub fn encrypt(key: &[u8], nonce: u64, associated_data: &[u8], plaintext: &[u8]) -> Vec<u8> {
 	let mut nonce_bytes = [0; 12];
 	nonce_bytes[4..].copy_from_slice(&byte_utils::le64_to_array(nonce));
@@ -14,7 +16,6 @@ pub fn encrypt(key: &[u8], nonce: u64, associated_data: &[u8], plaintext: &[u8])
 	tagged_ciphertext.extend_from_slice(&authentication_tag);
 	tagged_ciphertext
 }
-
 
 pub fn decrypt(key: &[u8], nonce: u64, associated_data: &[u8], tagged_ciphertext: &[u8]) -> Result<Vec<u8>, String> {
 	let mut nonce_bytes = [0; 12];

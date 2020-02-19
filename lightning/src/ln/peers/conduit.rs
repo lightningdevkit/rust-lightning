@@ -3,16 +3,23 @@
 use ln::peers::{chacha, hkdf};
 use util::byte_utils;
 
+pub(super) type SymmetricKey = [u8; 32];
+
+const MESSAGE_LENGTH_HEADER_SIZE: usize = 2;
+const TAGGED_MESSAGE_LENGTH_HEADER_SIZE: usize = MESSAGE_LENGTH_HEADER_SIZE + chacha::TAG_SIZE;
+
+const KEY_ROTATION_INDEX: u32 = 1000;
+
 /// Returned after a successful handshake to encrypt and decrypt communication with peer nodes.
 /// It should not normally be manually instantiated.
 /// Automatically handles key rotation.
 /// For decryption, it is recommended to call `decrypt_message_stream` for automatic buffering.
 pub struct Conduit {
-	pub(crate) sending_key: [u8; 32],
-	pub(crate) receiving_key: [u8; 32],
+	pub(crate) sending_key: SymmetricKey,
+	pub(crate) receiving_key: SymmetricKey,
 
-	pub(crate) sending_chaining_key: [u8; 32],
-	pub(crate) receiving_chaining_key: [u8; 32],
+	pub(crate) sending_chaining_key: SymmetricKey,
+	pub(crate) receiving_chaining_key: SymmetricKey,
 
 	pub(crate) receiving_nonce: u32,
 	pub(crate) sending_nonce: u32,
@@ -26,24 +33,27 @@ impl Conduit {
 		let length = buffer.len() as u16;
 		let length_bytes = byte_utils::be16_to_array(length);
 
-		let mut ciphertext = vec![0u8; 18 + length as usize + 16];
+		let mut ciphertext = vec![0u8; TAGGED_MESSAGE_LENGTH_HEADER_SIZE + length as usize + chacha::TAG_SIZE];
 
-		ciphertext[0..18].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes));
+		ciphertext[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes));
 		self.increment_sending_nonce();
 
-		ciphertext[18..].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer));
+		ciphertext[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer));
 		self.increment_sending_nonce();
 
 		ciphertext
 	}
 
 	pub(super) fn read(&mut self, data: &[u8]) {
-		let mut read_buffer = self.read_buffer.get_or_insert(Vec::new());
+		let read_buffer = self.read_buffer.get_or_insert(Vec::new());
 		read_buffer.extend_from_slice(data);
 	}
 
-	/// Add newly received data from the peer node to the buffer and decrypt all possible messages
-	pub fn decrypt_message_stream(&mut self, new_data: Option<&[u8]>) -> Vec<Vec<u8>> {
+	/// Decrypt a single message. If data containing more than one message has been received,
+	/// only the first message will be returned, and the rest stored in the internal buffer.
+	/// If a message pending in the buffer still hasn't been decrypted, that message will be
+	/// returned in lieu of anything new, even if new data is provided.
+	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Option<Vec<u8>> {
 		let mut read_buffer = if let Some(buffer) = self.read_buffer.take() {
 			buffer
 		} else {
@@ -54,45 +64,34 @@ impl Conduit {
 			read_buffer.extend_from_slice(data);
 		}
 
-		let mut messages = Vec::new();
+		let (current_message, offset) = self.decrypt(&read_buffer[..]);
+		read_buffer.drain(0..offset); // drain the read buffer
+		self.read_buffer = Some(read_buffer); // assign the new value to the built-in buffer
 
-		loop {
-			// todo: find way that won't require cloning the entire buffer
-			let (current_message, offset) = self.decrypt(&read_buffer[..]);
-			if offset == 0 {
-				break;
-			}
-
-			read_buffer.drain(0..offset);
-
-			if let Some(message) = current_message {
-				messages.push(message);
-			} else {
-				break;
-			}
+		if offset == 0 {
+			return None;
 		}
 
-		messages
+		current_message
 	}
 
-	/// Decrypt a single message. Buffer is an undelimited amount of bytes
 	pub(crate) fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) { // the response slice should have the same lifetime as the argument. It's the slice data is read from
-		if buffer.len() < 18 {
+		if buffer.len() < TAGGED_MESSAGE_LENGTH_HEADER_SIZE {
 			return (None, 0);
 		}
 
-		let encrypted_length = &buffer[0..18]; // todo: abort if too short
+		let encrypted_length = &buffer[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE]; // todo: abort if too short
 		let length_vec = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap();
-		let mut length_bytes = [0u8; 2];
+		let mut length_bytes = [0u8; MESSAGE_LENGTH_HEADER_SIZE];
 		length_bytes.copy_from_slice(length_vec.as_slice());
 		let message_length = byte_utils::slice_to_be16(&length_bytes) as usize;
 
-		let message_end_index = message_length + 18 + 16; // todo: abort if too short
+		let message_end_index = TAGGED_MESSAGE_LENGTH_HEADER_SIZE + message_length + chacha::TAG_SIZE; // todo: abort if too short
 		if buffer.len() < message_end_index {
 			return (None, 0);
 		}
 
-		let encrypted_message = &buffer[18..message_end_index];
+		let encrypted_message = &buffer[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..message_end_index];
 
 		self.increment_receiving_nonce();
 
@@ -111,15 +110,15 @@ impl Conduit {
 		Self::increment_nonce(&mut self.receiving_nonce, &mut self.receiving_chaining_key, &mut self.receiving_key);
 	}
 
-	fn increment_nonce(nonce: &mut u32, chaining_key: &mut [u8; 32], key: &mut [u8; 32]) {
+	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
 		*nonce += 1;
-		if *nonce == 1000 {
+		if *nonce == KEY_ROTATION_INDEX {
 			Self::rotate_key(chaining_key, key);
 			*nonce = 0;
 		}
 	}
 
-	fn rotate_key(chaining_key: &mut [u8; 32], key: &mut [u8; 32]) {
+	fn rotate_key(chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
 		let (new_chaining_key, new_key) = hkdf::derive(chaining_key, key);
 		chaining_key.copy_from_slice(&new_chaining_key);
 		key.copy_from_slice(&new_key);
@@ -132,6 +131,7 @@ mod tests {
 	use ln::peers::conduit::Conduit;
 
 	#[test]
+	/// Based on RFC test vectors: https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#message-encryption-tests
 	fn test_chaining() {
 		let chaining_key_vec = hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap();
 		let mut chaining_key = [0u8; 32];
@@ -180,11 +180,18 @@ mod tests {
 		assert_eq!(encrypted_messages[1000], hex::decode("4a2f3cc3b5e78ddb83dcb426d9863d9d9a723b0337c89dd0b005d89f8d3c05c52b76b29b740f09").unwrap());
 		assert_eq!(encrypted_messages[1001], hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
 
-		for _ in 0..1002 {
-			let encrypted_message = encrypted_messages.remove(0);
-			let mut decrypted_messages = remote_peer.decrypt_message_stream(Some(&encrypted_message));
-			assert_eq!(decrypted_messages.len(), 1);
-			let decrypted_message = decrypted_messages.remove(0);
+		for _ in 0..501 {
+			// read two messages at once, filling buffer
+			let mut current_encrypted_message = encrypted_messages.remove(0);
+			let mut next_encrypted_message = encrypted_messages.remove(0);
+			current_encrypted_message.extend_from_slice(&next_encrypted_message);
+			let decrypted_message = remote_peer.decrypt_single_message(Some(&current_encrypted_message)).unwrap();
+			assert_eq!(decrypted_message, hex::decode("68656c6c6f").unwrap());
+		}
+
+		for _ in 0..501 {
+			// decrypt messages directly from buffer without adding to it
+			let decrypted_message = remote_peer.decrypt_single_message(None).unwrap();
 			assert_eq!(decrypted_message, hex::decode("68656c6c6f").unwrap());
 		}
 	}
