@@ -92,8 +92,7 @@ impl PeerHandshake {
 				response = act_one.0.to_vec();
 			}
 			&Some(HandshakeState::AwaitingActOne(_)) => {
-				let act_length = 50;
-				if read_buffer_length < act_length {
+				if read_buffer_length < ACT_ONE_LENGTH {
 					return Err("need at least 50 bytes".to_string());
 				}
 
@@ -152,7 +151,7 @@ impl PeerHandshake {
 	/// Initiate the handshake with a peer and return the first act
 	pub fn initiate(&mut self, remote_public_key: &PublicKey) -> Result<ActOne, String> {
 		if let &Some(HandshakeState::Uninitiated) = &self.state {} else {
-			return Err("incorrect state".to_string());
+			return Err("Handshakes can only be initiated from the uninitiated state".to_string());
 		}
 
 		let (mut hash, chaining_key) = Self::initialize_state(&remote_public_key);

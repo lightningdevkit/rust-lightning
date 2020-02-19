@@ -75,15 +75,15 @@ impl Conduit {
 		current_message
 	}
 
-	pub(crate) fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) { // the response slice should have the same lifetime as the argument. It's the slice data is read from
+	/// Decrypt a message from the beginning of the provided buffer. Returns the consumed number of bytes.
+	fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) {
 		if buffer.len() < TAGGED_MESSAGE_LENGTH_HEADER_SIZE {
 			return (None, 0);
 		}
 
 		let encrypted_length = &buffer[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE]; // todo: abort if too short
-		let length_vec = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap();
 		let mut length_bytes = [0u8; MESSAGE_LENGTH_HEADER_SIZE];
-		length_bytes.copy_from_slice(length_vec.as_slice());
+		length_bytes.copy_from_slice(&chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap());
 		let message_length = byte_utils::slice_to_be16(&length_bytes) as usize;
 
 		let message_end_index = TAGGED_MESSAGE_LENGTH_HEADER_SIZE + message_length + chacha::TAG_SIZE; // todo: abort if too short

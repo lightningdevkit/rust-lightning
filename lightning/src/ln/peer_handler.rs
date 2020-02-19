@@ -277,8 +277,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// disconnect_event.
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
 		let mut handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
-		let act_one = handshake.initiate(&their_node_id).unwrap();
-		let res = Act::One(act_one).serialize();
+		let (res, ..) = handshake.process_act(&[], Some(&their_node_id)).unwrap();
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
