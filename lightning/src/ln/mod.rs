@@ -27,7 +27,8 @@ mod onion_utils;
 mod wire;
 
 #[cfg(test)]
-#[macro_use] mod functional_test_utils;
+#[macro_use]
+pub(crate) mod functional_test_utils;
 #[cfg(test)]
 mod functional_tests;
 #[cfg(test)]
