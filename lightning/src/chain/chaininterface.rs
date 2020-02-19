@@ -126,6 +126,7 @@ pub trait FeeEstimator: Sync + Send {
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 
 /// Utility for tracking registered txn/outpoints and checking for matches
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ChainWatchedUtil {
 	watch_all: bool,
 
@@ -303,6 +304,17 @@ pub struct ChainWatchInterfaceUtil {
 	watched: Mutex<ChainWatchedUtil>,
 	reentered: AtomicUsize,
 	logger: Arc<Logger>,
+}
+
+// We only expose PartialEq in test since its somewhat unclear exactly what it should do and we're
+// only comparing a subset of fields (essentially just checking that the set of things we're
+// watching is the same).
+#[cfg(test)]
+impl PartialEq for ChainWatchInterfaceUtil {
+	fn eq(&self, o: &Self) -> bool {
+		self.network == o.network &&
+		*self.watched.lock().unwrap() == *o.watched.lock().unwrap()
+	}
 }
 
 /// Register listener

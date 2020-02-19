@@ -5,6 +5,7 @@ use chain::chaininterface;
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, PaymentHash};
+use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use ln::router::{Route, Router};
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -16,6 +17,7 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::logger::Logger;
 use util::config::UserConfig;
+use util::ser::ReadableArgs;
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
@@ -89,6 +91,27 @@ impl<'a, 'b> Drop for Node<'a, 'b> {
 			assert!(self.node.get_and_clear_pending_msg_events().is_empty());
 			assert!(self.node.get_and_clear_pending_events().is_empty());
 			assert!(self.chan_monitor.added_monitors.lock().unwrap().is_empty());
+
+			// Check that if we serialize and then deserialize all our channel monitors we get the
+			// same set of outputs to watch for on chain as we have now. Note that if we write
+			// tests that fully close channels and remove the monitors at some point this may break.
+			let chain_watch = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&self.logger) as Arc<Logger>));
+			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
+			let channel_monitor = test_utils::TestChannelMonitor::new(chain_watch.clone(), self.tx_broadcaster.clone(), self.logger.clone(), feeest);
+			let old_monitors = self.chan_monitor.simple_monitor.monitors.lock().unwrap();
+			for (_, old_monitor) in old_monitors.iter() {
+				let mut w = test_utils::TestVecWriter(Vec::new());
+				old_monitor.write_for_disk(&mut w).unwrap();
+				let (_, deserialized_monitor) = <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(
+					&mut ::std::io::Cursor::new(&w.0), Arc::clone(&self.logger) as Arc<Logger>).unwrap();
+				if let Err(_) = channel_monitor.add_update_monitor(deserialized_monitor.get_funding_txo().unwrap(), deserialized_monitor) {
+					panic!();
+				}
+			}
+
+			if *chain_watch != *self.chain_monitor {
+				panic!();
+			}
 		}
 	}
 }
