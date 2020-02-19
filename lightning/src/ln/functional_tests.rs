@@ -413,6 +413,104 @@ fn test_1_conf_open() {
 	}
 }
 
+fn do_test_sanity_on_in_flight_opens(steps: u8) {
+	// Previously, we had issues deserializing channels when we hadn't connected the first block
+	// after creation. To catch that and similar issues, we lean on the Node::drop impl to test
+	// serialization round-trips and simply do steps towards opening a channel and then drop the
+	// Node objects.
+
+	let node_cfgs = create_node_cfgs(2);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	if steps & 0b1000_0000 != 0{
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		nodes[0].block_notifier.block_connected_checked(&header, 1, &Vec::new(), &[0; 0]);
+		nodes[1].block_notifier.block_connected_checked(&header, 1, &Vec::new(), &[0; 0]);
+	}
+
+	if steps & 0x0f == 0 { return; }
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	if steps & 0x0f == 1 { return; }
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+
+	if steps & 0x0f == 2 { return; }
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::supported(), &accept_channel);
+
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
+
+	if steps & 0x0f == 3 { return; }
+	{
+		nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+		let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		assert_eq!(added_monitors[0].0, funding_output);
+		added_monitors.clear();
+	}
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+
+	if steps & 0x0f == 4 { return; }
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
+	{
+		let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		assert_eq!(added_monitors[0].0, funding_output);
+		added_monitors.clear();
+	}
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+
+	if steps & 0x0f == 5 { return; }
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+	{
+		let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		assert_eq!(added_monitors[0].0, funding_output);
+		added_monitors.clear();
+	}
+
+	let events_4 = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_4.len(), 1);
+	match events_4[0] {
+		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
+			assert_eq!(user_channel_id, 42);
+			assert_eq!(*funding_txo, funding_output);
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	if steps & 0x0f == 6 { return; }
+	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx);
+
+	if steps & 0x0f == 7 { return; }
+	confirm_transaction(&nodes[0].block_notifier, &nodes[0].chain_monitor, &tx, tx.version);
+	create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
+}
+
+#[test]
+fn test_sanity_on_in_flight_opens() {
+	do_test_sanity_on_in_flight_opens(0);
+	do_test_sanity_on_in_flight_opens(0 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(1);
+	do_test_sanity_on_in_flight_opens(1 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(2);
+	do_test_sanity_on_in_flight_opens(2 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(3);
+	do_test_sanity_on_in_flight_opens(3 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(4);
+	do_test_sanity_on_in_flight_opens(4 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(5);
+	do_test_sanity_on_in_flight_opens(5 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(6);
+	do_test_sanity_on_in_flight_opens(6 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(7);
+	do_test_sanity_on_in_flight_opens(7 | 0b1000_0000);
+	do_test_sanity_on_in_flight_opens(8);
+	do_test_sanity_on_in_flight_opens(8 | 0b1000_0000);
+}
+
 #[test]
 fn test_update_fee_vanilla() {
 	let node_cfgs = create_node_cfgs(2);

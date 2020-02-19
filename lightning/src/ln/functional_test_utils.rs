@@ -4,7 +4,7 @@
 use chain::chaininterface;
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
-use ln::channelmanager::{ChannelManager,RAACommitmentOrder, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use ln::router::{Route, Router};
 use ln::features::InitFeatures;
@@ -17,7 +17,7 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::logger::Logger;
 use util::config::UserConfig;
-use util::ser::ReadableArgs;
+use util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
@@ -37,7 +37,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::mem;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
 pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
@@ -95,20 +95,45 @@ impl<'a, 'b> Drop for Node<'a, 'b> {
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
 			// tests that fully close channels and remove the monitors at some point this may break.
-			let chain_watch = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&self.logger) as Arc<Logger>));
 			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
-			let channel_monitor = test_utils::TestChannelMonitor::new(chain_watch.clone(), self.tx_broadcaster.clone(), self.logger.clone(), feeest);
 			let old_monitors = self.chan_monitor.simple_monitor.monitors.lock().unwrap();
+			let mut deserialized_monitors = Vec::new();
 			for (_, old_monitor) in old_monitors.iter() {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				old_monitor.write_for_disk(&mut w).unwrap();
 				let (_, deserialized_monitor) = <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(
 					&mut ::std::io::Cursor::new(&w.0), Arc::clone(&self.logger) as Arc<Logger>).unwrap();
+				deserialized_monitors.push(deserialized_monitor);
+			}
+
+			// Before using all the new monitors to check the watch outpoints, use the full set of
+			// them to ensure we can write and reload our ChannelManager.
+			{
+				let mut channel_monitors = HashMap::new();
+				for monitor in deserialized_monitors.iter_mut() {
+					channel_monitors.insert(monitor.get_funding_txo().unwrap(), monitor);
+				}
+
+				let mut w = test_utils::TestVecWriter(Vec::new());
+				self.node.write(&mut w).unwrap();
+				<(Sha256d, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+					default_config: UserConfig::default(),
+					keys_manager: self.keys_manager.clone(),
+					fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+					monitor: self.chan_monitor,
+					tx_broadcaster: self.tx_broadcaster.clone(),
+					logger: Arc::new(test_utils::TestLogger::new()),
+					channel_monitors: &mut channel_monitors,
+				}).unwrap();
+			}
+
+			let chain_watch = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&self.logger) as Arc<Logger>));
+			let channel_monitor = test_utils::TestChannelMonitor::new(chain_watch.clone(), self.tx_broadcaster.clone(), self.logger.clone(), feeest);
+			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = channel_monitor.add_update_monitor(deserialized_monitor.get_funding_txo().unwrap(), deserialized_monitor) {
 					panic!();
 				}
 			}
-
 			if *chain_watch != *self.chain_monitor {
 				panic!();
 			}
