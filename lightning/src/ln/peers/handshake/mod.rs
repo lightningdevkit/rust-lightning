@@ -337,7 +337,8 @@ impl PeerHandshake {
 		(act, chaining_key, temporary_key)
 	}
 
-	fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: [u8; 32], hash: &mut HandshakeHash) -> Result<(PublicKey, SymmetricKey, SymmetricKey), String> {
+	// Due to the very high similarity of acts 1 and 2, this method is used to process both
+	fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: SymmetricKey, hash: &mut HandshakeHash) -> Result<(PublicKey, SymmetricKey, SymmetricKey), String> {
 		let version = act_bytes[0];
 		if version != 0 {
 			return Err("unexpected version".to_string());
