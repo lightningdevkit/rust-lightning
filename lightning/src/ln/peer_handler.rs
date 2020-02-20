@@ -1115,21 +1115,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					return false;
 				}
 
-				if !peer.channel_encryptor.is_ready_for_encryption() {
-					// The peer needs to complete its handshake before we can exchange messages
-					return true;
+				if let PeerState::Connected(ref mut conduit) = peer.encryptor {
+					let ping = msgs::Ping {
+						ponglen: 0,
+						byteslen: 64,
+					};
+					peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!(&ping)));
+
+					let mut descriptor_clone = descriptor.clone();
+					self.do_attempt_write_data(&mut descriptor_clone, peer);
+
+					peer.awaiting_pong = true;
 				}
 
-				let ping = msgs::Ping {
-					ponglen: 0,
-					byteslen: 64,
-				};
-				peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(&ping)));
-
-				let mut descriptor_clone = descriptor.clone();
-				self.do_attempt_write_data(&mut descriptor_clone, peer);
-
-				peer.awaiting_pong = true;
 				true
 			});
 		}
