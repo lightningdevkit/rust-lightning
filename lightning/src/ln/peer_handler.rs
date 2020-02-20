@@ -49,12 +49,12 @@ pub struct MessageHandler<CM: Deref> where CM::Target: msgs::ChannelMessageHandl
 /// You probably want to just extend an int and put a file descriptor in a struct and implement
 /// send_data. Note that if you are using a higher-level net library that may close() itself, be
 /// careful to ensure you don't have races whereby you might register a new connection with an fd
-/// the same as a yet-to-be-disconnect_event()-ed.
+/// the same as a yet-to-be-socket_disconnected()-ed.
 pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// Attempts to send some data from the given slice to the peer.
 	///
 	/// Returns the amount of data which was sent, possibly 0 if the socket has since disconnected.
-	/// Note that in the disconnected case, a disconnect_event must still fire and further write
+	/// Note that in the disconnected case, a socket_disconnected must still fire and further write
 	/// attempts may occur until that time.
 	///
 	/// If the returned size is smaller than data.len(), a write_available event must
@@ -67,17 +67,18 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// *not* imply that further read events should be paused.
 	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize;
 	/// Disconnect the socket pointed to by this SocketDescriptor. Once this function returns, no
-	/// more calls to write_event, read_event or disconnect_event may be made with this descriptor.
-	/// No disconnect_event should be generated as a result of this call, though obviously races
-	/// may occur whereby disconnect_socket is called after a call to disconnect_event but prior to
-	/// that event completing.
+	/// more calls to write_buffer_space_avail, read_event or socket_disconnected may be made with
+	/// this descriptor. No socket_disconnected call should be generated as a result of this call,
+	/// though obviously races may occur whereby disconnect_socket is called after a call to
+	/// socket_disconnected but prior to that event completing.
 	fn disconnect_socket(&mut self);
 }
 
 /// Error for PeerManager errors. If you get one of these, you must disconnect the socket and
-/// generate no further read/write_events for the descriptor, only triggering a single
-/// disconnect_event (unless it was provided in response to a new_*_connection event, in which case
-/// no such disconnect_event must be generated and the socket be silently disconencted).
+/// generate no further read_event/write_buffer_space_avail calls for the descriptor, only
+/// triggering a single socket_disconnected call (unless it was provided in response to a
+/// new_*_connection event, in which case no such socket_disconnected() must be generated and the
+/// socket be silently disconencted).
 pub struct PeerHandleError {
 	/// Used to indicate that we probably can't make any future connections to this peer, implying
 	/// we should go ahead and force-close any channels we have with it.
@@ -201,7 +202,7 @@ macro_rules! encode_msg {
 }
 
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
-/// PeerIds may repeat, but only after disconnect_event() has been called.
+/// PeerIds may repeat, but only after socket_disconnected() has been called.
 impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where CM::Target: msgs::ChannelMessageHandler {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
@@ -254,13 +255,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	}
 
 	/// Indicates a new outbound connection has been established to a node with the given node_id.
-	/// Note that if an Err is returned here you MUST NOT call disconnect_event for the new
+	/// Note that if an Err is returned here you MUST NOT call socket_disconnected for the new
 	/// descriptor but must disconnect the connection immediately.
 	///
 	/// Returns a small number of bytes to send to the remote node (currently always 50).
 	///
-	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
-	/// disconnect_event.
+	/// Panics if descriptor is duplicative with some other descriptor which has not yet had a
+	/// socket_disconnected().
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
 		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
 		let res = peer_encryptor.get_act_one().to_vec();
@@ -294,11 +295,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	///
 	/// May refuse the connection by returning an Err, but will never write bytes to the remote end
 	/// (outbound connector always speaks first). Note that if an Err is returned here you MUST NOT
-	/// call disconnect_event for the new descriptor but must disconnect the connection
+	/// call socket_disconnected for the new descriptor but must disconnect the connection
 	/// immediately.
 	///
-	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
-	/// disconnect_event.
+	/// Panics if descriptor is duplicative with some other descriptor which has not yet had
+	/// socket_disconnected called.
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
 		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
@@ -406,10 +407,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	///
 	/// Will most likely call send_data on the descriptor passed in (or the descriptor handed into
 	/// new_*\_connection) before returning. Thus, be very careful with reentrancy issues! The
-	/// invariants around calling write_event in case a write did not fully complete must still
-	/// hold - be ready to call write_event again if a write call generated here isn't sufficient!
-	/// Panics if the descriptor was not previously registered in a new_\*_connection event.
-	pub fn write_event(&self, descriptor: &mut Descriptor) -> Result<(), PeerHandleError> {
+	/// invariants around calling write_buffer_space_avail in case a write did not fully complete
+	/// must still hold - be ready to call write_buffer_space_avail again if a write call generated
+	/// here isn't sufficient! Panics if the descriptor was not previously registered in a
+	/// new_\*_connection event.
+	pub fn write_buffer_space_avail(&self, descriptor: &mut Descriptor) -> Result<(), PeerHandleError> {
 		let mut peers = self.peers.lock().unwrap();
 		match peers.peers.get_mut(descriptor) {
 			None => panic!("Descriptor for write_event is not already known to PeerManager"),
@@ -429,8 +431,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Thus, however, you almost certainly want to call process_events() after any read_event to
 	/// generate send_data calls to handle responses.
 	///
-	/// If Ok(true) is returned, further read_events should not be triggered until a write_event on
-	/// this file descriptor has resume_read set (preventing DoS issues in the send buffer).
+	/// If Ok(true) is returned, further read_events should not be triggered until a send_data call
+	/// on this file descriptor has resume_read set (preventing DoS issues in the send buffer).
 	///
 	/// Panics if the descriptor was not previously registered in a new_*_connection event.
 	pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: Vec<u8>) -> Result<bool, PeerHandleError> {
@@ -1036,11 +1038,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 	/// Indicates that the given socket descriptor's connection is now closed.
 	///
-	/// This must be called even if a PeerHandleError was given for a read_event or write_event,
-	/// but must NOT be called if a PeerHandleError was provided out of a new_\*\_connection event!
+	/// This must only be called if the socket has been disconnected by the peer or your own
+	/// decision to disconnect it and must NOT be called in any case where other parts of this
+	/// library (eg PeerHandleError, explicit disconnect_socket calls) instruct you to disconnect
+	/// the peer.
 	///
 	/// Panics if the descriptor was not previously registered in a successful new_*_connection event.
-	pub fn disconnect_event(&self, descriptor: &Descriptor) {
+	pub fn socket_disconnected(&self, descriptor: &Descriptor) {
 		self.disconnect_event_internal(descriptor, false);
 	}
 
@@ -1073,10 +1077,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			let peers_needing_send = &mut peers.peers_needing_send;
 			let node_id_to_descriptor = &mut peers.node_id_to_descriptor;
 			let peers = &mut peers.peers;
+			let mut descriptors_needing_disconnect = Vec::new();
 
 			peers.retain(|descriptor, peer| {
 				if peer.awaiting_pong {
 					peers_needing_send.remove(descriptor);
+					descriptors_needing_disconnect.push(descriptor.clone());
 					match peer.their_node_id {
 						Some(node_id) => {
 							node_id_to_descriptor.remove(&node_id);
@@ -1104,6 +1110,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 				peer.awaiting_pong = true;
 				true
 			});
+
+			for mut descriptor in descriptors_needing_disconnect.drain(..) {
+				descriptor.disconnect_socket();
+			}
 		}
 	}
 }

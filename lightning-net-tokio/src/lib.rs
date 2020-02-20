@@ -59,7 +59,7 @@ impl Connection {
 					return future::Either::A(blocker.then(|_| { Ok(()) }));
 				}
 			}
-			//TODO: There's a race where we don't meet the requirements of disconnect_socket if its
+			//TODO: There's a race where we don't meet the requirements of socket_disconnected if its
 			//called right here, after we release the us_ref lock in the scope above, but before we
 			//call read_event!
 			match peer_manager.read_event(&mut SocketDescriptor::new(us_ref.clone(), peer_manager.clone()), pending_read) {
@@ -84,7 +84,7 @@ impl Connection {
 			future::Either::B(future::result(Ok(())))
 		}).then(move |_| {
 			if us_close_ref.lock().unwrap().need_disconnect {
-				peer_manager_ref.disconnect_event(&SocketDescriptor::new(us_close_ref, peer_manager_ref.clone()));
+				peer_manager_ref.socket_disconnected(&SocketDescriptor::new(us_close_ref, peer_manager_ref.clone()));
 				println!("Peer disconnected!");
 			} else {
 				println!("We disconnected peer!");

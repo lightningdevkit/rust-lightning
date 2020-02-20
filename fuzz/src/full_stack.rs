@@ -217,7 +217,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 			// Disconnect all peers
 			for (idx, peer) in self.peers.borrow().iter().enumerate() {
 				if *peer {
-					self.handler.disconnect_event(&Peer{id: idx as u8, peers_connected: &self.peers});
+					self.handler.socket_disconnected(&Peer{id: idx as u8, peers_connected: &self.peers});
 				}
 			}
 
@@ -378,7 +378,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			2 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				loss_detector.handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
+				loss_detector.handler.socket_disconnected(&Peer{id: peer_id, peers_connected: &peers});
 				peers.borrow_mut()[peer_id as usize] = false;
 			},
 			3 => {
