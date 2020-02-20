@@ -75,7 +75,7 @@ impl Writer for VecWriter {
 
 static mut IN_RESTORE: bool = false;
 pub struct TestChannelMonitor {
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>,
+	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<chaininterface::BroadcasterInterface>>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	pub latest_good_update: Mutex<HashMap<OutPoint, Vec<u8>>>,
 	pub latest_update_good: Mutex<HashMap<OutPoint, bool>>,
@@ -230,7 +230,7 @@ pub fn do_test(data: &[u8]) {
 				channel_monitors: &mut monitor_refs,
 			};
 
-			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
+			let res = (<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor);
 			for (_, was_good) in $old_monitors.latest_updates_good_at_last_ser.lock().unwrap().iter() {
 				if !was_good {
 					// If the last time we updated a monitor we didn't successfully update (and we

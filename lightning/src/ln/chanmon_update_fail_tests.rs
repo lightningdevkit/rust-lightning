@@ -19,7 +19,8 @@ use ln::functional_test_utils::*;
 #[test]
 fn test_simple_monitor_permanent_update_fail() {
 	// Test that we handle a simple permanent monitor update failure
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -51,7 +52,8 @@ fn test_simple_monitor_permanent_update_fail() {
 fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// Test that we can recover from a simple temporary monitor update failure optionally with
 	// a disconnect in between
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -152,7 +154,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	// * We then walk through more message exchanges to get the original update_add_htlc
 	//   through, swapping message ordering based on disconnect_count & 8 and optionally
 	//   disconnect/reconnecting based on disconnect_count.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -480,7 +483,8 @@ fn test_monitor_temporary_update_fail_c() {
 #[test]
 fn test_monitor_update_fail_cs() {
 	// Tests handling of a monitor update failure when processing an incoming commitment_signed
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -561,7 +565,8 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	// Tests handling of a monitor update failure when no message rebroadcasting on
 	// test_restore_channel_monitor() is required. Backported from
 	// chanmon_fail_consistency fuzz tests.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -605,7 +610,8 @@ fn test_monitor_update_fail_no_rebroadcast() {
 fn test_monitor_update_raa_while_paused() {
 	// Tests handling of an RAA while monitor updating has already been marked failed.
 	// Backported from chanmon_fail_consistency fuzz tests as this used to be broken.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -674,7 +680,8 @@ fn test_monitor_update_raa_while_paused() {
 
 fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Tests handling of a monitor update failure when processing an incoming RAA
-	let node_cfgs = create_node_cfgs(3);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -929,7 +936,8 @@ fn test_monitor_update_fail_reestablish() {
 	// Simple test for message retransmission after monitor update failure on
 	// channel_reestablish generating a monitor update (which comes from freeing holding cell
 	// HTLCs).
-	let node_cfgs = create_node_cfgs(3);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1009,7 +1017,8 @@ fn raa_no_response_awaiting_raa_state() {
 	// due to a previous monitor update failure, we still set AwaitingRemoteRevoke on the channel
 	// in question (assuming it intends to respond with a CS after monitor updating is restored).
 	// Backported from chanmon_fail_consistency fuzz tests as this used to be broken.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1124,7 +1133,8 @@ fn claim_while_disconnected_monitor_update_fail() {
 	// Backported from chanmon_fail_consistency fuzz tests as an unmerged version of the handling
 	// code introduced a regression in this test (specifically, this caught a removal of the
 	// channel_reestablish handling ensuring the order was sensical given the messages used).
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1241,7 +1251,8 @@ fn monitor_failed_no_reestablish_response() {
 	// response to a commitment_signed.
 	// Backported from chanmon_fail_consistency fuzz tests as it caught a long-standing
 	// debug_assert!() failure in channel_reestablish handling.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1309,7 +1320,8 @@ fn first_message_on_recv_ordering() {
 	// have no pending response but will want to send a RAA/CS (with the updates for the second
 	// payment applied).
 	// Backported from chanmon_fail_consistency fuzz tests as it caught a bug here.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1396,7 +1408,8 @@ fn test_monitor_update_fail_claim() {
 	// update to claim the payment. We then send a payment C->B->A, making the forward of this
 	// payment from B to A fail due to the paused channel. Finally, we restore the channel monitor
 	// updating and claim the payment on B.
-	let node_cfgs = create_node_cfgs(3);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1471,7 +1484,8 @@ fn test_monitor_update_on_pending_forwards() {
 	// We do this with a simple 3-node network, sending a payment from A to C and one from C to A.
 	// The payment from A to C will be failed by C and pending a back-fail to A, while the payment
 	// from C to A will be pending a forward to A.
-	let node_cfgs = create_node_cfgs(3);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1538,7 +1552,8 @@ fn monitor_update_claim_fail_no_response() {
 	// to channel being AwaitingRAA).
 	// Backported from chanmon_fail_consistency fuzz tests as an unmerged version of the handling
 	// code was broken.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
@@ -1599,7 +1614,8 @@ fn monitor_update_claim_fail_no_response() {
 fn do_during_funding_monitor_fail(fail_on_generate: bool, restore_between_fails: bool, fail_on_signed: bool, confirm_a_first: bool, restore_b_before_conf: bool) {
 	// Test that if the monitor update generated by funding_transaction_generated fails we continue
 	// the channel setup happily after the update is restored.
-	let node_cfgs = create_node_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

@@ -28,7 +28,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	//
 	// We then either allow these transactions to confirm (if !claim) or we wait until one block
 	// before they otherwise would and reorg them out, confirming an HTLC-Success tx instead.
-	let node_cfgs = create_node_cfgs(3);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
