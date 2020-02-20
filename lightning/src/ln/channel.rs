@@ -3670,12 +3670,15 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		}
 		(self.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.pending_inbound_htlcs.iter() {
+			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
+				continue; // Drop
+			}
 			htlc.htlc_id.write(writer)?;
 			htlc.amount_msat.write(writer)?;
 			htlc.cltv_expiry.write(writer)?;
 			htlc.payment_hash.write(writer)?;
 			match &htlc.state {
-				&InboundHTLCState::RemoteAnnounced(_) => {}, // Drop
+				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
 				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
 					1u8.write(writer)?;
 					htlc_state.write(writer)?;

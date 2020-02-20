@@ -20,6 +20,8 @@ pub mod features;
 
 #[cfg(feature = "fuzztarget")]
 pub mod peer_channel_encryptor;
+#[cfg(not(feature = "fuzztarget"))]
+pub(crate) mod peer_channel_encryptor;
 
 mod channel;
 mod onion_utils;
@@ -27,7 +29,7 @@ mod wire;
 
 #[cfg(test)]
 #[macro_use]
-mod functional_test_utils;
+pub(crate) mod functional_test_utils;
 #[cfg(test)]
 mod functional_tests;
 #[cfg(test)]

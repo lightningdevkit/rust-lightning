@@ -3310,7 +3310,7 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref> R
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
 			let mut channel: Channel<ChanSigner> = ReadableArgs::read(reader, args.logger.clone())?;
-			if channel.last_block_connected != last_block_hash {
+			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
 				return Err(DecodeError::InvalidValue);
 			}
 

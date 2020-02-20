@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::marker::PhantomData;
+use std::ptr;
 
 /// Used to give chain error details upstream
 pub enum ChainError {
@@ -72,11 +73,16 @@ pub trait BroadcasterInterface: Sync + Send {
 /// A trait indicating a desire to listen for events from the chain
 pub trait ChainListener: Sync + Send {
 	/// Notifies a listener that a block was connected.
-	/// Note that if a new transaction/outpoint is watched during a block_connected call, the block
-	/// *must* be re-scanned with the new transaction/outpoints and block_connected should be
-	/// called again with the same header and (at least) the new transactions.
 	///
-	/// Note that if non-new transaction/outpoints may be registered during a call, a second call
+	/// The txn_matched array should be set to references to transactions which matched the
+	/// relevant installed watch outpoints/txn, or the full set of transactions in the block.
+	///
+	/// Note that if txn_matched includes only matched transactions, and a new
+	/// transaction/outpoint is watched during a block_connected call, the block *must* be
+	/// re-scanned with the new transaction/outpoints and block_connected should be called
+	/// again with the same header and (at least) the new transactions.
+	///
+	/// Note that if non-new transaction/outpoints are be registered during a call, a second call
 	/// *must not* happen.
 	///
 	/// This also means those counting confirmations using block_connected callbacks should watch
@@ -121,6 +127,7 @@ pub trait FeeEstimator: Sync + Send {
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 
 /// Utility for tracking registered txn/outpoints and checking for matches
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ChainWatchedUtil {
 	watch_all: bool,
 
@@ -247,10 +254,21 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 	}
 
 	/// Register the given listener to receive events.
-	// TODO: unregister
 	pub fn register_listener(&self, listener: CL) {
 		let mut vec = self.listeners.lock().unwrap();
 		vec.push(listener);
+	}
+	/// Unregister the given listener to no longer
+	/// receive events.
+	///
+	/// If the same listener is registered multiple times, unregistering
+	/// will remove ALL occurrences of that listener. Comparison is done using
+	/// the pointer returned by the Deref trait implementation.
+	pub fn unregister_listener(&self, listener: CL) {
+		let mut vec = self.listeners.lock().unwrap();
+		// item is a ref to an abstract thing that dereferences to a ChainListener,
+		// so dereference it twice to get the ChainListener itself
+		vec.retain(|item | !ptr::eq(&(**item), &(*listener)));
 	}
 
 	/// Notify listeners that a block was connected given a full, unfiltered block.
@@ -281,7 +299,6 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 		return last_seen != self.chain_monitor.reentered();
 	}
 
-
 	/// Notify listeners that a block was disconnected.
 	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let listeners = self.listeners.lock().unwrap();
@@ -289,7 +306,6 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 			listener.block_disconnected(&header, disconnected_height);
 		}
 	}
-
 }
 
 /// Utility to capture some common parts of ChainWatchInterface implementors.
@@ -300,6 +316,17 @@ pub struct ChainWatchInterfaceUtil {
 	watched: Mutex<ChainWatchedUtil>,
 	reentered: AtomicUsize,
 	logger: Arc<Logger>,
+}
+
+// We only expose PartialEq in test since its somewhat unclear exactly what it should do and we're
+// only comparing a subset of fields (essentially just checking that the set of things we're
+// watching is the same).
+#[cfg(test)]
+impl PartialEq for ChainWatchInterfaceUtil {
+	fn eq(&self, o: &Self) -> bool {
+		self.network == o.network &&
+		*self.watched.lock().unwrap() == *o.watched.lock().unwrap()
+	}
 }
 
 /// Register listener
@@ -363,7 +390,6 @@ impl ChainWatchInterfaceUtil {
 		}
 	}
 
-
 	/// Checks if a given transaction matches the current filter.
 	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
 		let watched = self.watched.lock().unwrap();
@@ -372,5 +398,78 @@ impl ChainWatchInterfaceUtil {
 
 	fn does_match_tx_unguarded(&self, tx: &Transaction, watched: &MutexGuard<ChainWatchedUtil>) -> bool {
 		watched.does_match_tx(tx)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use ln::functional_test_utils::{create_node_cfgs};
+	use super::{BlockNotifier, ChainListener};
+	use std::ptr;
+
+	#[test]
+	fn register_listener_test() {
+		let node_cfgs = create_node_cfgs(1);
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		assert_eq!(block_notifier.listeners.lock().unwrap().len(), 0);
+		let listener = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
+		block_notifier.register_listener(listener);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 1);
+		let item = vec.first().clone().unwrap();
+		assert!(ptr::eq(&(**item), &(*listener)));
+	}
+
+	#[test]
+	fn unregister_single_listener_test() {
+		let node_cfgs = create_node_cfgs(2);
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
+		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
+		block_notifier.register_listener(listener1);
+		block_notifier.register_listener(listener2);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 2);
+		drop(vec);
+		block_notifier.unregister_listener(listener1);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 1);
+		let item = vec.first().clone().unwrap();
+		assert!(ptr::eq(&(**item), &(*listener2)));
+	}
+
+	#[test]
+	fn unregister_single_listener_ref_test() {
+		let node_cfgs = create_node_cfgs(2);
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		block_notifier.register_listener(&node_cfgs[0].chan_monitor.simple_monitor as &ChainListener);
+		block_notifier.register_listener(&node_cfgs[1].chan_monitor.simple_monitor as &ChainListener);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 2);
+		drop(vec);
+		block_notifier.unregister_listener(&node_cfgs[0].chan_monitor.simple_monitor);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 1);
+		let item = vec.first().clone().unwrap();
+		assert!(ptr::eq(&(**item), &(*&node_cfgs[1].chan_monitor.simple_monitor)));
+	}
+
+	#[test]
+	fn unregister_multiple_of_the_same_listeners_test() {
+		let node_cfgs = create_node_cfgs(2);
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
+		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
+		block_notifier.register_listener(listener1);
+		block_notifier.register_listener(listener1);
+		block_notifier.register_listener(listener2);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 3);
+		drop(vec);
+		block_notifier.unregister_listener(listener1);
+		let vec = block_notifier.listeners.lock().unwrap();
+		assert_eq!(vec.len(), 1);
+		let item = vec.first().clone().unwrap();
+		assert!(ptr::eq(&(**item), &(*listener2)));
 	}
 }
