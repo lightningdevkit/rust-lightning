@@ -13,6 +13,7 @@ rm *_target.rs
 popd
 
 cargo install --force honggfuzz
+sed -i 's/lto = true//' Cargo.toml
 HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz" cargo hfuzz build
 for TARGET in src/bin/*.rs; do
 	FILENAME=$(basename $TARGET)
