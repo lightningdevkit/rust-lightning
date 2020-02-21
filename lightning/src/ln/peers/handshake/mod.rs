@@ -10,7 +10,7 @@ use secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
-use ln::peers::handshake::acts::{ActOne, ActThree, ActTwo, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH};
+use ln::peers::handshake::acts::{ActOne, ActThree, ActTwo, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, Act};
 use ln::peers::handshake::hash::HandshakeHash;
 use ln::peers::handshake::states::{ActOneExpectation, ActThreeExpectation, ActTwoExpectation, HandshakeState};
 
@@ -24,6 +24,7 @@ mod tests;
 pub struct PeerHandshake {
 	state: Option<HandshakeState>,
 	private_key: SecretKey,
+	remote_public_key: Option<PublicKey>,
 	ephemeral_private_key: SecretKey,
 
 	read_buffer: Vec<u8>,
@@ -31,23 +32,38 @@ pub struct PeerHandshake {
 
 impl PeerHandshake {
 	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
-	pub fn new(private_key: &SecretKey, ephemeral_private_key: &SecretKey) -> Self {
+	pub fn new_outbound(private_key: &SecretKey, remote_public_key: &PublicKey, ephemeral_private_key: &SecretKey) -> Self {
 		Self {
 			state: Some(HandshakeState::Uninitiated),
 			private_key: (*private_key).clone(),
+			remote_public_key: Some(remote_public_key.clone()),
 			ephemeral_private_key: (*ephemeral_private_key).clone(),
 			read_buffer: Vec::new(),
 		}
 	}
 
-	/// Make the handshake object inbound in anticipation of a peer's first handshake act
-	pub fn make_inbound(&mut self) {
-		let public_key = Self::private_key_to_public_key(&self.private_key);
+	/// Instantiate a new handshake in anticipation of a peer's first handshake act
+	pub fn new_inbound(private_key: &SecretKey, ephemeral_private_key: &SecretKey) -> Self {
+		let mut handshake = Self {
+			state: Some(HandshakeState::Uninitiated),
+			private_key: (*private_key).clone(),
+			remote_public_key: None,
+			ephemeral_private_key: (*ephemeral_private_key).clone(),
+			read_buffer: Vec::new(),
+		};
+		let public_key = Self::private_key_to_public_key(&private_key);
 		let (hash, chaining_key) = Self::initialize_state(&public_key);
-		self.state = Some(HandshakeState::AwaitingActOne(ActOneExpectation {
+		handshake.state = Some(HandshakeState::AwaitingActOne(ActOneExpectation {
 			hash,
 			chaining_key,
-		}))
+		}));
+		handshake
+	}
+
+	/// Getter accessor for the remote public key. It is useful for inbound connections to obtain
+	/// the remote peer's public key once it is extracted from the third act message.
+	pub fn get_remote_pubkey(&self) -> Option<PublicKey> {
+		self.remote_public_key
 	}
 
 	fn initialize_state(public_key: &PublicKey) -> (HandshakeHash, [u8; 32]) {
@@ -77,19 +93,18 @@ impl PeerHandshake {
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Conduit option if the handshake was just processed to completion and messages can now be encrypted and decrypted
 	/// `.2`: Public key option if the handshake was inbound and the peer's static identity pubkey was just learned
-	pub fn process_act(&mut self, input: &[u8], remote_public_key: Option<&PublicKey>) -> Result<(Vec<u8>, Option<Conduit>, Option<PublicKey>), String> {
-		let mut response: Vec<u8> = Vec::new();
+	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Act>, Option<Conduit>), String> {
+		let mut response = None;
 		let mut connected_peer = None;
-		let mut remote_pubkey = None;
 
 		self.read_buffer.extend_from_slice(input);
 		let read_buffer_length = self.read_buffer.len();
 
 		match &self.state {
 			&Some(HandshakeState::Uninitiated) => {
-				let remote_public_key = remote_public_key.ok_or("remote_public_key must be Some for outbound connections")?;
+				let remote_public_key = &self.remote_public_key.ok_or("outbound connections must be initialized with new_outbound")?;
 				let act_one = self.initiate(&remote_public_key)?;
-				response = act_one.0.to_vec();
+				response = Some(Act::One(act_one));
 			}
 			&Some(HandshakeState::AwaitingActOne(_)) => {
 				if read_buffer_length < ACT_ONE_LENGTH {
@@ -101,7 +116,7 @@ impl PeerHandshake {
 				self.read_buffer.drain(..ACT_ONE_LENGTH);
 
 				let act_two = self.process_act_one(ActOne(act_one_buffer))?;
-				response = act_two.0.to_vec();
+				response = Some(Act::Two(act_two));
 			}
 			&Some(HandshakeState::AwaitingActTwo(_)) => {
 				if read_buffer_length < ACT_TWO_LENGTH {
@@ -119,7 +134,7 @@ impl PeerHandshake {
 					self.read_buffer.drain(..);
 				}
 
-				response = act_three.0.to_vec();
+				response = Some(Act::Three(act_three));
 				connected_peer = Some(conduit);
 			}
 			&Some(HandshakeState::AwaitingActThree(_)) => {
@@ -139,13 +154,13 @@ impl PeerHandshake {
 				}
 
 				connected_peer = Some(conduit);
-				remote_pubkey = Some(public_key);
+				self.remote_public_key = Some(public_key);
 			}
 			_ => {
 				return Err("no acts left to process".to_string());
 			}
 		};
-		Ok((response, connected_peer, remote_pubkey))
+		Ok((response, connected_peer))
 	}
 
 	/// Initiate the handshake with a peer and return the first act

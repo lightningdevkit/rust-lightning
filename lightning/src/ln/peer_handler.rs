@@ -276,8 +276,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
-		let mut handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
-		let (res, ..) = handshake.process_act(&[], Some(&their_node_id)).unwrap();
+		let mut handshake = PeerHandshake::new_outbound(&self.our_node_secret, &their_node_id, &self.get_ephemeral_key());
+		let (act, ..) = handshake.process_act(&[]).unwrap();
+		let res = act.unwrap().serialize();
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
@@ -311,8 +312,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet has a
 	/// disconnect_event.
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
-		let mut handshake = PeerHandshake::new(&self.our_node_secret, &self.get_ephemeral_key());
-		handshake.make_inbound();
+		let handshake = PeerHandshake::new_inbound(&self.our_node_secret, &self.get_ephemeral_key());
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
@@ -468,14 +468,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let mut remote_pubkey_option = None;
 
 						if let &mut PeerState::Authenticating(ref mut handshake) = &mut peer.encryptor {
-							let (response, conduit, remote_pubkey) = handshake.process_act(&peer.pending_read_buffer, None).unwrap();
+							let (next_act, conduit) = handshake.process_act(&peer.pending_read_buffer).unwrap();
 							peer.pending_read_buffer = Vec::new(); // empty the pending read buffer
 
-							if let Some(key) = remote_pubkey {
+							if let Some(key) = handshake.get_remote_pubkey() {
 								remote_pubkey_option = Some(key);
 							}
 
-							peer.pending_outbound_buffer.push_back(response);
+							if let Some(act) = next_act {
+								peer.pending_outbound_buffer.push_back(act.serialize());
+							}
+
 							if let Some(conduit) = conduit {
 								conduit_option = Some(conduit);
 							}

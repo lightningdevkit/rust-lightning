@@ -17,10 +17,10 @@ fn test_exchange() {
 	let local_ephemeral_private_key = SecretKey::from_slice(&[0x_12_u8; 32]).unwrap();
 	let remote_ephemeral_private_key = SecretKey::from_slice(&[0x_22_u8; 32]).unwrap();
 
-	let mut local_handshake = PeerHandshake::new(&local_private_key, &local_ephemeral_private_key);
-	let mut remote_handshake = PeerHandshake::new(&remote_private_key, &remote_ephemeral_private_key);
-
 	let remote_public_key = PublicKey::from_secret_key(&curve, &remote_private_key);
+
+	let mut local_handshake = PeerHandshake::new_outbound(&local_private_key, &remote_public_key, &local_ephemeral_private_key);
+	let mut remote_handshake = PeerHandshake::new_inbound(&remote_private_key, &remote_ephemeral_private_key);
 
 	let act_1 = local_handshake.initiate(&remote_public_key).unwrap();
 	let act_1_hex = hex::encode(&act_1.0.to_vec());
