@@ -1115,19 +1115,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					return false;
 				}
 
+				let mut needs_to_write_data = false;
 				if let PeerState::Connected(ref mut conduit) = peer.encryptor {
 					let ping = msgs::Ping {
 						ponglen: 0,
 						byteslen: 64,
 					};
 					peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!(&ping)));
-
-					let mut descriptor_clone = descriptor.clone();
-					self.do_attempt_write_data(&mut descriptor_clone, peer);
-
-					peer.awaiting_pong = true;
+					needs_to_write_data = true;
 				}
 
+				if needs_to_write_data {
+					let mut descriptor_clone = descriptor.clone();
+					self.do_attempt_write_data(&mut descriptor_clone, peer);
+				}
+
+				peer.awaiting_pong = true;
 				true
 			});
 		}
