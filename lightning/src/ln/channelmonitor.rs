@@ -1325,7 +1325,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
 		// events for now-revoked/fulfilled HTLCs.
-		// TODO: We should probably consider whether we're really getting the next secret here.
 		if let Storage::Local { ref mut prev_remote_commitment_txid, .. } = self.key_storage {
 			if let Some(txid) = prev_remote_commitment_txid.take() {
 				for &mut (_, ref mut source) in self.remote_claimable_outpoints.get_mut(&txid).unwrap() {
