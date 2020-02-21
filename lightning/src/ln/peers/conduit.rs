@@ -65,13 +65,8 @@ impl Conduit {
 		}
 
 		let (current_message, offset) = self.decrypt(&read_buffer[..]);
-		read_buffer.drain(0..offset); // drain the read buffer
+		read_buffer.drain(..offset); // drain the read buffer
 		self.read_buffer = Some(read_buffer); // assign the new value to the built-in buffer
-
-		if offset == 0 {
-			return None;
-		}
-
 		current_message
 	}
 
@@ -132,9 +127,7 @@ mod tests {
 	use hex;
 	use ln::peers::conduit::Conduit;
 
-	#[test]
-	/// Based on RFC test vectors: https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#message-encryption-tests
-	fn test_chaining() {
+	fn setup_peers() -> (Conduit, Conduit) {
 		let chaining_key_vec = hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap();
 		let mut chaining_key = [0u8; 32];
 		chaining_key.copy_from_slice(&chaining_key_vec);
@@ -147,7 +140,7 @@ mod tests {
 		let mut receiving_key = [0u8; 32];
 		receiving_key.copy_from_slice(&receiving_key_vec);
 
-		let mut connected_peer = Conduit {
+		let connected_peer = Conduit {
 			sending_key,
 			receiving_key,
 			sending_chaining_key: chaining_key,
@@ -157,7 +150,7 @@ mod tests {
 			read_buffer: None,
 		};
 
-		let mut remote_peer = Conduit {
+		let remote_peer = Conduit {
 			sending_key: receiving_key,
 			receiving_key: sending_key,
 			sending_chaining_key: chaining_key,
@@ -167,6 +160,39 @@ mod tests {
 			read_buffer: None,
 		};
 
+		(connected_peer, remote_peer)
+	}
+
+	#[test]
+	fn test_empty_message() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+
+		let message: Vec<u8> = vec![];
+		let encrypted_message = connected_peer.encrypt(&message);
+		assert_eq!(encrypted_message.len(), 2 + 16 + 16);
+
+		let decrypted_message = remote_peer.decrypt_single_message(Some(&encrypted_message)).unwrap();
+		assert_eq!(decrypted_message, vec![]);
+	}
+
+	#[test]
+	fn test_nonce_chaining() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let message = hex::decode("68656c6c6f").unwrap();
+
+		let encrypted_message = connected_peer.encrypt(&message);
+		assert_eq!(encrypted_message, hex::decode("cf2b30ddf0cf3f80e7c35a6e6730b59fe802473180f396d88a8fb0db8cbcf25d2f214cf9ea1d95").unwrap());
+
+		// the second time the same message is encrypted, the ciphertext should be different
+		let encrypted_message = connected_peer.encrypt(&message);
+		assert_eq!(encrypted_message, hex::decode("72887022101f0b6753e0c7de21657d35a4cb2a1f5cde2650528bbc8f837d0f0d7ad833b1a256a1").unwrap());
+	}
+
+	#[test]
+	/// Based on RFC test vectors: https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#message-encryption-tests
+	fn test_key_rotation() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+
 		let message = hex::decode("68656c6c6f").unwrap();
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
 
@@ -175,12 +201,23 @@ mod tests {
 			encrypted_messages.push(encrypted_message);
 		}
 
-		assert_eq!(encrypted_messages[0], hex::decode("cf2b30ddf0cf3f80e7c35a6e6730b59fe802473180f396d88a8fb0db8cbcf25d2f214cf9ea1d95").unwrap());
-		assert_eq!(encrypted_messages[1], hex::decode("72887022101f0b6753e0c7de21657d35a4cb2a1f5cde2650528bbc8f837d0f0d7ad833b1a256a1").unwrap());
 		assert_eq!(encrypted_messages[500], hex::decode("178cb9d7387190fa34db9c2d50027d21793c9bc2d40b1e14dcf30ebeeeb220f48364f7a4c68bf8").unwrap());
 		assert_eq!(encrypted_messages[501], hex::decode("1b186c57d44eb6de4c057c49940d79bb838a145cb528d6e8fd26dbe50a60ca2c104b56b60e45bd").unwrap());
 		assert_eq!(encrypted_messages[1000], hex::decode("4a2f3cc3b5e78ddb83dcb426d9863d9d9a723b0337c89dd0b005d89f8d3c05c52b76b29b740f09").unwrap());
 		assert_eq!(encrypted_messages[1001], hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
+	}
+
+	#[test]
+	fn test_decryption_buffering() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+
+		let message = hex::decode("68656c6c6f").unwrap();
+		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
+
+		for _ in 0..1002 {
+			let encrypted_message = connected_peer.encrypt(&message);
+			encrypted_messages.push(encrypted_message);
+		}
 
 		for _ in 0..501 {
 			// read two messages at once, filling buffer
@@ -188,13 +225,13 @@ mod tests {
 			let mut next_encrypted_message = encrypted_messages.remove(0);
 			current_encrypted_message.extend_from_slice(&next_encrypted_message);
 			let decrypted_message = remote_peer.decrypt_single_message(Some(&current_encrypted_message)).unwrap();
-			assert_eq!(decrypted_message, hex::decode("68656c6c6f").unwrap());
+			assert_eq!(decrypted_message, message);
 		}
 
 		for _ in 0..501 {
 			// decrypt messages directly from buffer without adding to it
 			let decrypted_message = remote_peer.decrypt_single_message(None).unwrap();
-			assert_eq!(decrypted_message, hex::decode("68656c6c6f").unwrap());
+			assert_eq!(decrypted_message, message);
 		}
 	}
 }
