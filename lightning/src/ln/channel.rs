@@ -1656,6 +1656,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.amount_msat > self.channel_value_satoshis * 1000 {
 			return Err(ChannelError::Close("Remote side tried to send more than the total value of the channel"));
 		}
+		if msg.amount_msat == 0 {
+			return Err(ChannelError::Close("Remote side tried to send a 0-msat HTLC"));
+		}
 		if msg.amount_msat < self.our_htlc_minimum_msat {
 			return Err(ChannelError::Close("Remote side tried to send less than our minimum HTLC value"));
 		}
@@ -3493,6 +3496,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if amount_msat > self.channel_value_satoshis * 1000 {
 			return Err(ChannelError::Ignore("Cannot send more than the total value of the channel"));
 		}
+
+		if amount_msat == 0 {
+			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC"));
+		}
+
 		if amount_msat < self.their_htlc_minimum_msat {
 			return Err(ChannelError::Ignore("Cannot send less than their minimum HTLC value"));
 		}
