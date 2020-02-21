@@ -4,13 +4,15 @@
 use lightning::ln::msgs;
 
 use msg_targets::utils::VecWriter;
+use utils::test_logger;
 
 #[inline]
-pub fn do_test(data: &[u8]) {
+pub fn msg_shutdown_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	test_msg!(msgs::Shutdown, data);
 }
 
 #[no_mangle]
 pub extern "C" fn msg_shutdown_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
+	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
+	test_msg!(msgs::Shutdown, data);
 }

@@ -561,15 +561,19 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	}
 }
 
+pub fn full_stack_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
+	do_test(data, &logger);
+}
+
 #[no_mangle]
 pub extern "C" fn full_stack_run(data: *const u8, datalen: usize) {
-	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
+	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {}));
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);
 }
 
 #[cfg(test)]
 mod tests {
-	use utils::test_logger;
 	use lightning::util::logger::{Logger, Record};
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};

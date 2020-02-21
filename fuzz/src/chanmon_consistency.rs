@@ -180,13 +180,13 @@ impl KeysInterface for KeyProvider {
 }
 
 #[inline]
-pub fn do_test(data: &[u8]) {
+pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let fee_est = Arc::new(FuzzEstimator{});
 	let broadcast = Arc::new(TestBroadcaster{});
 
 	macro_rules! make_node {
 		($node_id: expr) => { {
-			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string()));
+			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
@@ -202,7 +202,7 @@ pub fn do_test(data: &[u8]) {
 
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
-			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string()));
+			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
@@ -794,7 +794,11 @@ pub fn do_test(data: &[u8]) {
 	}
 }
 
+pub fn chanmon_consistency_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+	do_test(data, out);
+}
+
 #[no_mangle]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{});
 }

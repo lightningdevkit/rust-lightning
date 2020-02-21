@@ -45,15 +45,48 @@ fn main() {
 
 #[test]
 fn run_test_cases() {
-	let mut data: Vec<u8> = vec![0];
-	msg_revoke_and_ack_run(data.as_ptr(), data.len());
+	use lightning_fuzz::utils::test_logger::StringBuffer;
+
+	use std::sync::{atomic, Arc};
+	{
+		let data: Vec<u8> = vec![0];
+		msg_revoke_and_ack_run(data.as_ptr(), data.len());
+	}
+	let mut threads = Vec::new();
+	let threads_running = Arc::new(atomic::AtomicUsize::new(0));
 	if let Ok(tests) = fs::read_dir("test_cases/msg_revoke_and_ack") {
 		for test in tests {
-			data.clear();
+			let mut data: Vec<u8> = Vec::new();
 			let path = test.unwrap().path();
-			println!("Running test {}...", path.file_name().unwrap().to_str().unwrap());
-			fs::File::open(path).unwrap().read_to_end(&mut data).unwrap();
-			msg_revoke_and_ack_run(data.as_ptr(), data.len());
+			fs::File::open(&path).unwrap().read_to_end(&mut data).unwrap();
+			threads_running.fetch_add(1, atomic::Ordering::AcqRel);
+
+			let thread_count_ref = Arc::clone(&threads_running);
+			let main_thread_ref = std::thread::current();
+			threads.push((path.file_name().unwrap().to_str().unwrap().to_string(),
+				std::thread::spawn(move || {
+					let string_logger = StringBuffer::new();
+
+					let panic_logger = string_logger.clone();
+					let res = if ::std::panic::catch_unwind(move || {
+						msg_revoke_and_ack_test(&data, panic_logger);
+					}).is_err() {
+						Some(string_logger.into_string())
+					} else { None };
+					thread_count_ref.fetch_sub(1, atomic::Ordering::AcqRel);
+					main_thread_ref.unpark();
+					res
+				})
+			));
+			while threads_running.load(atomic::Ordering::Acquire) > 32 {
+				std::thread::park();
+			}
+		}
+	}
+	for (test, thread) in threads.drain(..) {
+		if let Some(output) = thread.join().unwrap() {
+			println!("Output of {}:\n{}", test, output);
+			panic!();
 		}
 	}
 }

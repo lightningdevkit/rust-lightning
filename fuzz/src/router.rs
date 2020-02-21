@@ -93,7 +93,7 @@ impl ChainWatchInterface for DummyChainWatcher {
 }
 
 #[inline]
-pub fn do_test(data: &[u8]) {
+pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
@@ -150,7 +150,7 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
-	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned()));
+	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 	let chain_monitor = Arc::new(DummyChainWatcher {
 		input: Arc::clone(&input),
 	});
@@ -232,7 +232,11 @@ pub fn do_test(data: &[u8]) {
 	}
 }
 
+pub fn router_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+	do_test(data, out);
+}
+
 #[no_mangle]
 pub extern "C" fn router_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }
