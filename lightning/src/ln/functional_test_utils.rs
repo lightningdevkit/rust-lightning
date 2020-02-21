@@ -662,6 +662,20 @@ macro_rules! expect_payment_sent {
 	}
 }
 
+macro_rules! expect_payment_failed {
+	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, .. } => {
+				assert_eq!(*payment_hash, $expected_payment_hash);
+				assert_eq!(rejected_by_dest, $rejected_by_dest);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
 pub fn send_along_route_with_hash<'a, 'b>(origin_node: &Node<'a, 'b>, route: Route, expected_route: &[&Node<'a, 'b>], recv_value: u64, our_payment_hash: PaymentHash) {
 	let mut payment_event = {
 		origin_node.node.send_payment(route, our_payment_hash).unwrap();
