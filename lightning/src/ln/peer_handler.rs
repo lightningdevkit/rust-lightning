@@ -354,7 +354,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					InitSyncTracker::NoSyncRequested => {},
 					InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
 						let steps = ((MSG_BUFF_SIZE - peer.pending_outbound_buffer.len() + 2) / 3) as u8;
-						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(0, steps);
+						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
 						for &(ref announce, ref update_a, ref update_b) in all_messages.iter() {
 							encode_and_send_msg!(announce);
 							encode_and_send_msg!(update_a);
