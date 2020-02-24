@@ -559,6 +559,7 @@ impl RoutingMessageHandler for Router {
 		add_channel_to_node!(msg.contents.node_id_1);
 		add_channel_to_node!(msg.contents.node_id_2);
 
+		log_trace!(self, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !should_relay { " with excess uninterpreted data!" } else { "" });
 		Ok(should_relay)
 	}
 
@@ -663,19 +664,16 @@ impl RoutingMessageHandler for Router {
 		Ok(msg.contents.excess_data.is_empty())
 	}
 
-
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, msgs::ChannelUpdate,msgs::ChannelUpdate)> {
+	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let network = self.network_map.read().unwrap();
 		let mut iter = network.channels.range(starting_point..);
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref chan)) = iter.next() {
-				if chan.announcement_message.is_some() &&
-						chan.one_to_two.last_update_message.is_some() &&
-						chan.two_to_one.last_update_message.is_some() {
+				if chan.announcement_message.is_some() {
 					result.push((chan.announcement_message.clone().unwrap(),
-						chan.one_to_two.last_update_message.clone().unwrap(),
-						chan.two_to_one.last_update_message.clone().unwrap()));
+						chan.one_to_two.last_update_message.clone(),
+						chan.two_to_one.last_update_message.clone()));
 				} else {
 					// TODO: We may end up sending un-announced channel_updates if we are sending
 					// initial sync data while receiving announce/updates for this channel.

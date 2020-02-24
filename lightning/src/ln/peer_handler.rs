@@ -355,10 +355,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
 						let steps = ((MSG_BUFF_SIZE - peer.pending_outbound_buffer.len() + 2) / 3) as u8;
 						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
-						for &(ref announce, ref update_a, ref update_b) in all_messages.iter() {
+						for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
 							encode_and_send_msg!(announce);
-							encode_and_send_msg!(update_a);
-							encode_and_send_msg!(update_b);
+							if let &Some(ref update_a) = update_a_option {
+								encode_and_send_msg!(update_a);
+							}
+							if let &Some(ref update_b) = update_b_option {
+								encode_and_send_msg!(update_b);
+							}
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
 						}
 						if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -1313,7 +1317,7 @@ mod tests {
 			Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 		}
 		fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
-		fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, msgs::ChannelUpdate,msgs::ChannelUpdate)> {
+		fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 			let mut chan_anns = Vec::new();
 			const TOTAL_UPDS: u64 = 100;
 			let end: u64 =  min(starting_point + batch_amount as u64, TOTAL_UPDS - self.chan_anns_sent.load(Ordering::Acquire) as u64);
@@ -1322,7 +1326,7 @@ mod tests {
 				let chan_upd_2 = get_dummy_channel_update(i);
 				let chan_ann = get_dummy_channel_announcement(i);
 
-				chan_anns.push((chan_ann, chan_upd_1, chan_upd_2));
+				chan_anns.push((chan_ann, Some(chan_upd_1), Some(chan_upd_2)));
 			}
 
 			self.chan_anns_sent.fetch_add(chan_anns.len(), Ordering::AcqRel);
