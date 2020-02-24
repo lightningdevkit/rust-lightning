@@ -71,8 +71,8 @@ impl Writeable for Route {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for Route {
-	fn read(reader: &mut R) -> Result<Route, DecodeError> {
+impl Readable for Route {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
 		let hops_count: u8 = Readable::read(reader)?;
 		let mut hops = Vec::with_capacity(hops_count as usize);
 		for _ in 0..hops_count {
@@ -195,8 +195,8 @@ impl Writeable for NodeInfo {
 
 const MAX_ALLOC_SIZE: u64 = 64*1024;
 
-impl<R: ::std::io::Read> Readable<R> for NodeInfo {
-	fn read(reader: &mut R) -> Result<NodeInfo, DecodeError> {
+impl Readable for NodeInfo {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
 		for _ in 0..channels_count {
@@ -261,8 +261,8 @@ impl Writeable for NetworkMap {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for NetworkMap {
-	fn read(reader: &mut R) -> Result<NetworkMap, DecodeError> {
+impl Readable for NetworkMap {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NetworkMap, DecodeError> {
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = BTreeMap::new();
 		for _ in 0..channels_count {
@@ -381,8 +381,8 @@ pub struct RouterReadArgs {
 	pub logger: Arc<Logger>,
 }
 
-impl<R: ::std::io::Read> ReadableArgs<R, RouterReadArgs> for Router {
-	fn read(reader: &mut R, args: RouterReadArgs) -> Result<Router, DecodeError> {
+impl ReadableArgs<RouterReadArgs> for Router {
+	fn read<R: ::std::io::Read>(reader: &mut R, args: RouterReadArgs) -> Result<Router, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {

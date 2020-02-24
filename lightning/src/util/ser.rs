@@ -173,31 +173,28 @@ pub trait Writeable {
 }
 
 /// A trait that various rust-lightning types implement allowing them to be read in from a Read
-pub trait Readable<R>
-	where Self: Sized,
-	      R: Read
+pub trait Readable
+	where Self: Sized
 {
 	/// Reads a Self in from the given Read
-	fn read(reader: &mut R) -> Result<Self, DecodeError>;
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
 /// A trait that various higher-level rust-lightning types implement allowing them to be read in
 /// from a Read given some additional set of arguments which is required to deserialize.
-pub trait ReadableArgs<R, P>
-	where Self: Sized,
-	      R: Read
+pub trait ReadableArgs<P>
+	where Self: Sized
 {
 	/// Reads a Self in from the given Read
-	fn read(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
 /// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
-pub trait MaybeReadable<R>
-	where Self: Sized,
-	      R: Read
+pub trait MaybeReadable
+	where Self: Sized
 {
 	/// Reads a Self in from the given Read
-	fn read(reader: &mut R) -> Result<Option<Self>, DecodeError>;
+	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError>;
 }
 
 pub(crate) struct U48(pub u64);
@@ -207,9 +204,9 @@ impl Writeable for U48 {
 		writer.write_all(&be48_to_array(self.0))
 	}
 }
-impl<R: Read> Readable<R> for U48 {
+impl Readable for U48 {
 	#[inline]
-	fn read(reader: &mut R) -> Result<U48, DecodeError> {
+	fn read<R: Read>(reader: &mut R) -> Result<U48, DecodeError> {
 		let mut buf = [0; 6];
 		reader.read_exact(&mut buf)?;
 		Ok(U48(slice_to_be48(&buf)))
@@ -246,9 +243,9 @@ impl Writeable for BigSize {
 		}
 	}
 }
-impl<R: Read> Readable<R> for BigSize {
+impl Readable for BigSize {
 	#[inline]
-	fn read(reader: &mut R) -> Result<BigSize, DecodeError> {
+	fn read<R: Read>(reader: &mut R) -> Result<BigSize, DecodeError> {
 		let n: u8 = Readable::read(reader)?;
 		match n {
 			0xFF => {
@@ -301,17 +298,17 @@ macro_rules! impl_writeable_primitive {
 				writer.write_all(&$meth_write(self.0)[(self.0.leading_zeros()/8) as usize..$len])
 			}
 		}
-		impl<R: Read> Readable<R> for $val_type {
+		impl Readable for $val_type {
 			#[inline]
-			fn read(reader: &mut R) -> Result<$val_type, DecodeError> {
+			fn read<R: Read>(reader: &mut R) -> Result<$val_type, DecodeError> {
 				let mut buf = [0; $len];
 				reader.read_exact(&mut buf)?;
 				Ok($meth_read(&buf))
 			}
 		}
-		impl<R: Read> Readable<R> for HighZeroBytesDroppedVarInt<$val_type> {
+		impl Readable for HighZeroBytesDroppedVarInt<$val_type> {
 			#[inline]
-			fn read(reader: &mut R) -> Result<HighZeroBytesDroppedVarInt<$val_type>, DecodeError> {
+			fn read<R: Read>(reader: &mut R) -> Result<HighZeroBytesDroppedVarInt<$val_type>, DecodeError> {
 				// We need to accept short reads (read_len == 0) as "EOF" and handle them as simply
 				// the high bytes being dropped. To do so, we start reading into the middle of buf
 				// and then convert the appropriate number of bytes with extra high bytes out of
@@ -346,9 +343,9 @@ impl Writeable for u8 {
 		writer.write_all(&[*self])
 	}
 }
-impl<R: Read> Readable<R> for u8 {
+impl Readable for u8 {
 	#[inline]
-	fn read(reader: &mut R) -> Result<u8, DecodeError> {
+	fn read<R: Read>(reader: &mut R) -> Result<u8, DecodeError> {
 		let mut buf = [0; 1];
 		reader.read_exact(&mut buf)?;
 		Ok(buf[0])
@@ -361,9 +358,9 @@ impl Writeable for bool {
 		writer.write_all(&[if *self {1} else {0}])
 	}
 }
-impl<R: Read> Readable<R> for bool {
+impl Readable for bool {
 	#[inline]
-	fn read(reader: &mut R) -> Result<bool, DecodeError> {
+	fn read<R: Read>(reader: &mut R) -> Result<bool, DecodeError> {
 		let mut buf = [0; 1];
 		reader.read_exact(&mut buf)?;
 		if buf[0] != 0 && buf[0] != 1 {
@@ -384,10 +381,10 @@ macro_rules! impl_array {
 			}
 		}
 
-		impl<R: Read> Readable<R> for [u8; $size]
+		impl Readable for [u8; $size]
 		{
 			#[inline]
-			fn read(r: &mut R) -> Result<Self, DecodeError> {
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 				let mut buf = [0u8; $size];
 				r.read_exact(&mut buf)?;
 				Ok(buf)
@@ -422,13 +419,12 @@ impl<K, V> Writeable for HashMap<K, V>
 	}
 }
 
-impl<R, K, V> Readable<R> for HashMap<K, V>
-	where R: Read,
-	      K: Readable<R> + Eq + Hash,
-	      V: Readable<R>
+impl<K, V> Readable for HashMap<K, V>
+	where K: Readable + Eq + Hash,
+	      V: Readable
 {
 	#[inline]
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let mut ret = HashMap::with_capacity(len as usize);
 		for _ in 0..len {
@@ -447,9 +443,9 @@ impl Writeable for Vec<u8> {
 	}
 }
 
-impl<R: Read> Readable<R> for Vec<u8> {
+impl Readable for Vec<u8> {
 	#[inline]
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let mut ret = Vec::with_capacity(len as usize);
 		ret.resize(len as usize, 0);
@@ -468,9 +464,9 @@ impl Writeable for Vec<Signature> {
 	}
 }
 
-impl<R: Read> Readable<R> for Vec<Signature> {
+impl Readable for Vec<Signature> {
 	#[inline]
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let byte_size = (len as usize)
 		                .checked_mul(33)
@@ -491,9 +487,9 @@ impl Writeable for Script {
 	}
 }
 
-impl<R: Read> Readable<R> for Script {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		let len = <u16 as Readable<R>>::read(r)? as usize;
+impl Readable for Script {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len = <u16 as Readable>::read(r)? as usize;
 		let mut buf = vec![0; len];
 		r.read_exact(&mut buf)?;
 		Ok(Script::from(buf))
@@ -506,8 +502,8 @@ impl Writeable for PublicKey {
 	}
 }
 
-impl<R: Read> Readable<R> for PublicKey {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for PublicKey {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 33] = Readable::read(r)?;
 		match PublicKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
@@ -524,8 +520,8 @@ impl Writeable for SecretKey {
 	}
 }
 
-impl<R: Read> Readable<R> for SecretKey {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for SecretKey {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		match SecretKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
@@ -540,8 +536,8 @@ impl Writeable for Sha256dHash {
 	}
 }
 
-impl<R: Read> Readable<R> for Sha256dHash {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Sha256dHash {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		use bitcoin_hashes::Hash;
 
 		let buf: [u8; 32] = Readable::read(r)?;
@@ -555,8 +551,8 @@ impl Writeable for Signature {
 	}
 }
 
-impl<R: Read> Readable<R> for Signature {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Signature {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 64] = Readable::read(r)?;
 		match Signature::from_compact(&buf) {
 			Ok(sig) => Ok(sig),
@@ -571,8 +567,8 @@ impl Writeable for PaymentPreimage {
 	}
 }
 
-impl<R: Read> Readable<R> for PaymentPreimage {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for PaymentPreimage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentPreimage(buf))
 	}
@@ -584,8 +580,8 @@ impl Writeable for PaymentHash {
 	}
 }
 
-impl<R: Read> Readable<R> for PaymentHash {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for PaymentHash {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentHash(buf))
 	}
@@ -604,12 +600,10 @@ impl<T: Writeable> Writeable for Option<T> {
 	}
 }
 
-impl<R, T> Readable<R> for Option<T>
-	where R: Read,
-	      T: Readable<R>
+impl<T: Readable> Readable for Option<T>
 {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		match <u8 as Readable<R>>::read(r)? {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		match <u8 as Readable>::read(r)? {
 			0 => Ok(None),
 			1 => Ok(Some(Readable::read(r)?)),
 			_ => return Err(DecodeError::InvalidValue),
@@ -625,8 +619,8 @@ impl Writeable for OutPoint {
 	}
 }
 
-impl<R: Read> Readable<R> for OutPoint {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for OutPoint {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let txid = Readable::read(r)?;
 		let vout = Readable::read(r)?;
 		Ok(OutPoint {
@@ -648,8 +642,8 @@ macro_rules! impl_consensus_ser {
 			}
 		}
 
-		impl<R: Read> Readable<R> for $bitcoin_type {
-			fn read(r: &mut R) -> Result<Self, DecodeError> {
+		impl Readable for $bitcoin_type {
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 				match consensus::encode::Decodable::consensus_decode(r) {
 					Ok(t) => Ok(t),
 					Err(consensus::encode::Error::Io(ref e)) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => Err(DecodeError::ShortRead),
@@ -663,8 +657,8 @@ macro_rules! impl_consensus_ser {
 impl_consensus_ser!(Transaction);
 impl_consensus_ser!(TxOut);
 
-impl<R: Read, T: Readable<R>> Readable<R> for Mutex<T> {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl<T: Readable> Readable for Mutex<T> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let t: T = Readable::read(r)?;
 		Ok(Mutex::new(t))
 	}
@@ -675,8 +669,8 @@ impl<T: Writeable> Writeable for Mutex<T> {
 	}
 }
 
-impl<R: Read, A: Readable<R>, B: Readable<R>> Readable<R> for (A, B) {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl<A: Readable, B: Readable> Readable for (A, B) {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let a: A = Readable::read(r)?;
 		let b: B = Readable::read(r)?;
 		Ok((a, b))

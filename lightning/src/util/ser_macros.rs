@@ -116,8 +116,8 @@ macro_rules! impl_writeable {
 			}
 		}
 
-		impl<R: ::std::io::Read> ::util::ser::Readable<R> for $st {
-			fn read(r: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+		impl ::util::ser::Readable for $st {
+			fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
 				Ok(Self {
 					$($field: ::util::ser::Readable::read(r)?),*
 				})
@@ -137,8 +137,8 @@ macro_rules! impl_writeable_len_match {
 			}
 		}
 
-		impl<R: ::std::io::Read> Readable<R> for $st {
-			fn read(r: &mut R) -> Result<Self, DecodeError> {
+		impl ::util::ser::Readable for $st {
+			fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 				Ok(Self {
 					$($field: Readable::read(r)?),*
 				})
@@ -219,9 +219,9 @@ mod tests {
 			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
 	}
 
-	impl<R: Read> Readable<R> for (PublicKey, u64, u64) {
+	impl Readable for (PublicKey, u64, u64) {
 		#[inline]
-		fn read(reader: &mut R) -> Result<(PublicKey, u64, u64), DecodeError> {
+		fn read<R: Read>(reader: &mut R) -> Result<(PublicKey, u64, u64), DecodeError> {
 			Ok((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?))
 		}
 	}

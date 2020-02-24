@@ -72,8 +72,8 @@ impl Writeable for ChannelMonitorUpdate {
 		Ok(())
 	}
 }
-impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdate {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ChannelMonitorUpdate {
+	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let update_id: u64 = Readable::read(r)?;
 		let len: u64 = Readable::read(r)?;
 		let mut updates = Vec::with_capacity(cmp::min(len as usize, MAX_ALLOC_SIZE / ::std::mem::size_of::<ChannelMonitorUpdateStep>()));
@@ -517,14 +517,14 @@ impl Writeable for InputMaterial  {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for InputMaterial {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
-		let input_material = match <u8 as Readable<R>>::read(reader)? {
+impl Readable for InputMaterial {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let input_material = match <u8 as Readable>::read(reader)? {
 			0 => {
 				let script = Readable::read(reader)?;
 				let pubkey = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
-				let is_htlc = match <u8 as Readable<R>>::read(reader)? {
+				let is_htlc = match <u8 as Readable>::read(reader)? {
 					0 => true,
 					1 => false,
 					_ => return Err(DecodeError::InvalidValue),
@@ -624,8 +624,8 @@ impl Writeable for ClaimTxBumpMaterial  {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for ClaimTxBumpMaterial {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ClaimTxBumpMaterial {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let height_timer = Readable::read(reader)?;
 		let feerate_previous = Readable::read(reader)?;
 		let soonest_timelock = Readable::read(reader)?;
@@ -724,8 +724,8 @@ impl Writeable for ChannelMonitorUpdateStep {
 		Ok(())
 	}
 }
-impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ChannelMonitorUpdateStep {
+	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		match Readable::read(r)? {
 			0u8 => {
 				Ok(ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
@@ -751,7 +751,7 @@ impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
 						let len: u64 = Readable::read(r)?;
 						let mut res = Vec::new();
 						for _ in 0..len {
-							res.push((Readable::read(r)?, <Option<HTLCSource> as Readable<R>>::read(r)?.map(|o| Box::new(o))));
+							res.push((Readable::read(r)?, <Option<HTLCSource> as Readable>::read(r)?.map(|o| Box::new(o))));
 						}
 						res
 					},
@@ -3191,8 +3191,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, Arc<Logger>> for (Sha256dHash, ChannelMonitor<ChanSigner>) {
-	fn read(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dHash, ChannelMonitor<ChanSigner>) {
+	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let secp_ctx = Secp256k1::new();
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -3210,9 +3210,9 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 		}
 
 		let latest_update_id: u64 = Readable::read(reader)?;
-		let commitment_transaction_number_obscure_factor = <U48 as Readable<R>>::read(reader)?.0;
+		let commitment_transaction_number_obscure_factor = <U48 as Readable>::read(reader)?.0;
 
-		let key_storage = match <u8 as Readable<R>>::read(reader)? {
+		let key_storage = match <u8 as Readable>::read(reader)? {
 			0 => {
 				let keys = Readable::read(reader)?;
 				let funding_key = Readable::read(reader)?;
@@ -3252,7 +3252,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 		let channel_value_satoshis = Some(Readable::read(reader)?);
 
 		let their_cur_revocation_points = {
-			let first_idx = <U48 as Readable<R>>::read(reader)?.0;
+			let first_idx = <U48 as Readable>::read(reader)?.0;
 			if first_idx == 0 {
 				None
 			} else {
@@ -3294,7 +3294,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 			let htlcs_count: u64 = Readable::read(reader)?;
 			let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
 			for _ in 0..htlcs_count {
-				htlcs.push((read_htlc_in_commitment!(), <Option<HTLCSource> as Readable<R>>::read(reader)?.map(|o: HTLCSource| Box::new(o))));
+				htlcs.push((read_htlc_in_commitment!(), <Option<HTLCSource> as Readable>::read(reader)?.map(|o: HTLCSource| Box::new(o))));
 			}
 			if let Some(_) = remote_claimable_outpoints.insert(txid, htlcs) {
 				return Err(DecodeError::InvalidValue);
@@ -3305,8 +3305,8 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 		let mut remote_commitment_txn_on_chain = HashMap::with_capacity(cmp::min(remote_commitment_txn_on_chain_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..remote_commitment_txn_on_chain_len {
 			let txid: Sha256dHash = Readable::read(reader)?;
-			let commitment_number = <U48 as Readable<R>>::read(reader)?.0;
-			let outputs_count = <u64 as Readable<R>>::read(reader)?;
+			let commitment_number = <U48 as Readable>::read(reader)?.0;
+			let outputs_count = <u64 as Readable>::read(reader)?;
 			let mut outputs = Vec::with_capacity(cmp::min(outputs_count as usize, MAX_ALLOC_SIZE / 8));
 			for _ in 0..outputs_count {
 				outputs.push(Readable::read(reader)?);
@@ -3320,7 +3320,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 		let mut remote_hash_commitment_number = HashMap::with_capacity(cmp::min(remote_hash_commitment_number_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..remote_hash_commitment_number_len {
 			let payment_hash: PaymentHash = Readable::read(reader)?;
-			let commitment_number = <U48 as Readable<R>>::read(reader)?.0;
+			let commitment_number = <U48 as Readable>::read(reader)?.0;
 			if let Some(_) = remote_hash_commitment_number.insert(payment_hash, commitment_number) {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -3329,7 +3329,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 		macro_rules! read_local_tx {
 			() => {
 				{
-					let tx = <LocalCommitmentTransaction as Readable<R>>::read(reader)?;
+					let tx = <LocalCommitmentTransaction as Readable>::read(reader)?;
 					let revocation_key = Readable::read(reader)?;
 					let a_htlc_key = Readable::read(reader)?;
 					let b_htlc_key = Readable::read(reader)?;
@@ -3341,7 +3341,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 					let mut htlcs = Vec::with_capacity(cmp::min(htlcs_len as usize, MAX_ALLOC_SIZE / 128));
 					for _ in 0..htlcs_len {
 						let htlc = read_htlc_in_commitment!();
-						let sigs = match <u8 as Readable<R>>::read(reader)? {
+						let sigs = match <u8 as Readable>::read(reader)? {
 							0 => None,
 							1 => Some(Readable::read(reader)?),
 							_ => return Err(DecodeError::InvalidValue),
@@ -3358,7 +3358,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 			}
 		}
 
-		let prev_local_signed_commitment_tx = match <u8 as Readable<R>>::read(reader)? {
+		let prev_local_signed_commitment_tx = match <u8 as Readable>::read(reader)? {
 			0 => None,
 			1 => {
 				Some(read_local_tx!())
@@ -3366,7 +3366,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let current_local_signed_commitment_tx = match <u8 as Readable<R>>::read(reader)? {
+		let current_local_signed_commitment_tx = match <u8 as Readable>::read(reader)? {
 			0 => None,
 			1 => {
 				Some(read_local_tx!())
@@ -3374,7 +3374,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let current_remote_commitment_number = <U48 as Readable<R>>::read(reader)?.0;
+		let current_remote_commitment_number = <U48 as Readable>::read(reader)?.0;
 
 		let payment_preimages_len: u64 = Readable::read(reader)?;
 		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
@@ -3402,7 +3402,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 
 		let last_block_hash: Sha256dHash = Readable::read(reader)?;
 		let destination_script = Readable::read(reader)?;
-		let to_remote_rescue = match <u8 as Readable<R>>::read(reader)? {
+		let to_remote_rescue = match <u8 as Readable>::read(reader)? {
 			0 => None,
 			1 => {
 				let to_remote_script = Readable::read(reader)?;
@@ -3434,7 +3434,7 @@ impl<R: ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, 
 			let events_len: u64 = Readable::read(reader)?;
 			let mut events = Vec::with_capacity(cmp::min(events_len as usize, MAX_ALLOC_SIZE / 128));
 			for _ in 0..events_len {
-				let ev = match <u8 as Readable<R>>::read(reader)? {
+				let ev = match <u8 as Readable>::read(reader)? {
 					0 => {
 						let claim_request = Readable::read(reader)?;
 						OnchainEvent::Claim {

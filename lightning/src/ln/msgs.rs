@@ -336,9 +336,9 @@ impl Writeable for NetAddress {
 	}
 }
 
-impl<R: ::std::io::Read>  Readable<R> for Result<NetAddress, u8> {
-	fn read(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
-		let byte = <u8 as Readable<R>>::read(reader)?;
+impl Readable for Result<NetAddress, u8> {
+	fn read<R: Read>(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
+		let byte = <u8 as Readable>::read(reader)?;
 		match byte {
 			1 => {
 				Ok(Ok(NetAddress::IPv4 {
@@ -718,9 +718,9 @@ impl Writeable for OptionalField<Script> {
 	}
 }
 
-impl<R: Read> Readable<R> for OptionalField<Script> {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		match <u16 as Readable<R>>::read(r) {
+impl Readable for OptionalField<Script> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		match <u16 as Readable>::read(r) {
 			Ok(len) => {
 				let mut buf = vec![0; len as usize];
 				r.read_exact(&mut buf)?;
@@ -777,14 +777,14 @@ impl Writeable for ChannelReestablish {
 	}
 }
 
-impl<R: Read> Readable<R> for ChannelReestablish{
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ChannelReestablish{
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			next_local_commitment_number: Readable::read(r)?,
 			next_remote_commitment_number: Readable::read(r)?,
 			data_loss_protect: {
-				match <[u8; 32] as Readable<R>>::read(r) {
+				match <[u8; 32] as Readable>::read(r) {
 					Ok(your_last_per_commitment_secret) =>
 						OptionalField::Present(DataLossProtect {
 							your_last_per_commitment_secret,
@@ -846,8 +846,8 @@ impl Writeable for Init {
 	}
 }
 
-impl<R: Read> Readable<R> for Init {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Init {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
 		Ok(Init {
@@ -940,8 +940,8 @@ impl Writeable for OnionPacket {
 	}
 }
 
-impl<R: Read> Readable<R> for OnionPacket {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for OnionPacket {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(OnionPacket {
 			version: Readable::read(r)?,
 			public_key: {
@@ -993,8 +993,8 @@ impl Writeable for OnionHopData {
 	}
 }
 
-impl<R: Read> Readable<R> for OnionHopData {
-	fn read(mut r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for OnionHopData {
+	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
 		let v: VarInt = Decodable::consensus_decode(&mut r)
 			.map_err(|e| match e {
@@ -1049,8 +1049,8 @@ impl Writeable for Ping {
 	}
 }
 
-impl<R: Read> Readable<R> for Ping {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Ping {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Ping {
 			ponglen: Readable::read(r)?,
 			byteslen: {
@@ -1070,8 +1070,8 @@ impl Writeable for Pong {
 	}
 }
 
-impl<R: Read> Readable<R> for Pong {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Pong {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Pong {
 			byteslen: {
 				let byteslen = Readable::read(r)?;
@@ -1097,8 +1097,8 @@ impl Writeable for UnsignedChannelAnnouncement {
 	}
 }
 
-impl<R: Read> Readable<R> for UnsignedChannelAnnouncement {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for UnsignedChannelAnnouncement {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			features: Readable::read(r)?,
 			chain_hash: Readable::read(r)?,
@@ -1143,8 +1143,8 @@ impl Writeable for UnsignedChannelUpdate {
 	}
 }
 
-impl<R: Read> Readable<R> for UnsignedChannelUpdate {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for UnsignedChannelUpdate {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
@@ -1181,12 +1181,12 @@ impl Writeable for ErrorMessage {
 	}
 }
 
-impl<R: Read> Readable<R> for ErrorMessage {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ErrorMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
-				let mut sz: usize = <u16 as Readable<R>>::read(r)? as usize;
+				let mut sz: usize = <u16 as Readable>::read(r)? as usize;
 				let mut data = vec![];
 				let data_len = r.read_to_end(&mut data)?;
 				sz = cmp::min(data_len, sz);
@@ -1225,8 +1225,8 @@ impl Writeable for UnsignedNodeAnnouncement {
 	}
 }
 
-impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for UnsignedNodeAnnouncement {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let features: NodeFeatures = Readable::read(r)?;
 		let timestamp: u32 = Readable::read(r)?;
 		let node_id: PublicKey = Readable::read(r)?;
