@@ -489,11 +489,7 @@ impl Writeable for InputMaterial  {
 				script.write(writer)?;
 				pubkey.write(writer)?;
 				writer.write_all(&key[..])?;
-				if *is_htlc {
-					writer.write_all(&[0; 1])?;
-				} else {
-					writer.write_all(&[1; 1])?;
-				}
+				is_htlc.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
 			&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
@@ -524,11 +520,7 @@ impl Readable for InputMaterial {
 				let script = Readable::read(reader)?;
 				let pubkey = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
-				let is_htlc = match <u8 as Readable>::read(reader)? {
-					0 => true,
-					1 => false,
-					_ => return Err(DecodeError::InvalidValue),
-				};
+				let is_htlc = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
 				InputMaterial::Revoked {
 					script,
@@ -698,13 +690,7 @@ impl Writeable for ChannelMonitorUpdateStep {
 				(htlc_outputs.len() as u64).write(w)?;
 				for &(ref output, ref source) in htlc_outputs.iter() {
 					output.write(w)?;
-					match source {
-						&None => 0u8.write(w)?,
-						&Some(ref s) => {
-							1u8.write(w)?;
-							s.write(w)?;
-						},
-					}
+					source.as_ref().map(|b| b.as_ref()).write(w)?;
 				}
 			},
 			&ChannelMonitorUpdateStep::PaymentPreimage { ref payment_preimage } => {
@@ -973,18 +959,6 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		// Set in initial Channel-object creation, so should always be set by now:
 		U48(self.commitment_transaction_number_obscure_factor).write(writer)?;
 
-		macro_rules! write_option {
-			($thing: expr) => {
-				match $thing {
-					&Some(ref t) => {
-						1u8.write(writer)?;
-						t.write(writer)?;
-					},
-					&None => 0u8.write(writer)?,
-				}
-			}
-		}
-
 		match self.key_storage {
 			Storage::Local { ref keys, ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
 				writer.write_all(&[0; 1])?;
@@ -1055,7 +1029,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&byte_utils::be64_to_array(htlc_infos.len() as u64))?;
 			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
 				serialize_htlc_in_commitment!(htlc_output);
-				write_option!(htlc_source);
+				htlc_source.as_ref().map(|b| b.as_ref()).write(writer)?;
 			}
 		}
 
@@ -1098,7 +1072,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 					} else {
 						0u8.write(writer)?;
 					}
-					write_option!(htlc_source);
+					htlc_source.write(writer)?;
 				}
 			}
 		}

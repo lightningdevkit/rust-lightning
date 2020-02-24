@@ -172,6 +172,10 @@ pub trait Writeable {
 	}
 }
 
+impl<'a, T: Writeable> Writeable for &'a T {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> { (*self).write(writer) }
+}
+
 /// A trait that various rust-lightning types implement allowing them to be read in from a Read
 pub trait Readable
 	where Self: Sized
@@ -592,7 +596,9 @@ impl<T: Writeable> Writeable for Option<T> {
 		match *self {
 			None => 0u8.write(w)?,
 			Some(ref data) => {
-				1u8.write(w)?;
+				let mut len_calc = LengthCalculatingWriter(0);
+				data.write(&mut len_calc).expect("No in-memory data may fail to serialize");
+				BigSize(len_calc.0 as u64 + 1).write(w)?;
 				data.write(w)?;
 			}
 		}
@@ -603,10 +609,12 @@ impl<T: Writeable> Writeable for Option<T> {
 impl<T: Readable> Readable for Option<T>
 {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		match <u8 as Readable>::read(r)? {
+		match BigSize::read(r)?.0 {
 			0 => Ok(None),
-			1 => Ok(Some(Readable::read(r)?)),
-			_ => return Err(DecodeError::InvalidValue),
+			len => {
+				let mut reader = FixedLengthReader::new(r, len - 1);
+				Ok(Some(Readable::read(&mut reader)?))
+			}
 		}
 	}
 }

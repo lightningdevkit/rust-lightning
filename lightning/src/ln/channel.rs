@@ -3883,18 +3883,6 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			}
 		}
 
-		macro_rules! write_option {
-			($thing: expr) => {
-				match &$thing {
-					&None => 0u8.write(writer)?,
-					&Some(ref v) => {
-						1u8.write(writer)?;
-						v.write(writer)?;
-					},
-				}
-			}
-		}
-
 		(self.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for htlc in self.pending_outbound_htlcs.iter() {
 			htlc.htlc_id.write(writer)?;
@@ -3912,15 +3900,15 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 				},
 				&OutboundHTLCState::RemoteRemoved(ref fail_reason) => {
 					2u8.write(writer)?;
-					write_option!(*fail_reason);
+					fail_reason.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref fail_reason) => {
 					3u8.write(writer)?;
-					write_option!(*fail_reason);
+					fail_reason.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref fail_reason) => {
 					4u8.write(writer)?;
-					write_option!(*fail_reason);
+					fail_reason.write(writer)?;
 				},
 			}
 		}
@@ -3971,8 +3959,8 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			fail_reason.write(writer)?;
 		}
 
-		write_option!(self.pending_update_fee);
-		write_option!(self.holding_cell_update_fee);
+		self.pending_update_fee.write(writer)?;
+		self.holding_cell_update_fee.write(writer)?;
 
 		self.next_local_htlc_id.write(writer)?;
 		(self.next_remote_htlc_id - dropped_inbound_htlcs).write(writer)?;
@@ -3989,9 +3977,9 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			None => 0u8.write(writer)?,
 		}
 
-		write_option!(self.funding_txo);
-		write_option!(self.funding_tx_confirmed_in);
-		write_option!(self.short_channel_id);
+		self.funding_txo.write(writer)?;
+		self.funding_tx_confirmed_in.write(writer)?;
+		self.short_channel_id.write(writer)?;
 
 		self.last_block_connected.write(writer)?;
 		self.funding_tx_confirmations.write(writer)?;
@@ -4007,13 +3995,13 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.their_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
-		write_option!(self.their_pubkeys);
-		write_option!(self.their_cur_commitment_point);
+		self.their_pubkeys.write(writer)?;
+		self.their_cur_commitment_point.write(writer)?;
 
-		write_option!(self.their_prev_commitment_point);
+		self.their_prev_commitment_point.write(writer)?;
 		self.their_node_id.write(writer)?;
 
-		write_option!(self.their_shutdown_scriptpubkey);
+		self.their_shutdown_scriptpubkey.write(writer)?;
 
 		self.commitment_secrets.write(writer)?;
 
