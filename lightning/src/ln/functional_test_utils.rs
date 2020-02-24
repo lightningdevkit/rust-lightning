@@ -6,7 +6,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
-use ln::router::{Route, Router};
+use ln::router::{Route, Router, RouterReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -96,6 +96,36 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			assert!(self.node.get_and_clear_pending_msg_events().is_empty());
 			assert!(self.node.get_and_clear_pending_events().is_empty());
 			assert!(self.chan_monitor.added_monitors.lock().unwrap().is_empty());
+
+			// Check that if we serialize the Router, we can deserialize it again.
+			{
+				let mut w = test_utils::TestVecWriter(Vec::new());
+				self.router.write(&mut w).unwrap();
+				let deserialized_router = Router::read(&mut ::std::io::Cursor::new(&w.0), RouterReadArgs {
+					chain_monitor: Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
+					logger: Arc::clone(&self.logger) as Arc<Logger>
+				}).unwrap();
+				let mut chan_progress = 0;
+				loop {
+					let orig_announcements = self.router.get_next_channel_announcements(chan_progress, 255);
+					let deserialized_announcements = deserialized_router.get_next_channel_announcements(chan_progress, 255);
+					assert!(orig_announcements == deserialized_announcements);
+					chan_progress = match orig_announcements.last() {
+						Some(announcement) => announcement.0.contents.short_channel_id + 1,
+						None => break,
+					};
+				}
+				let mut node_progress = None;
+				loop {
+					let orig_announcements = self.router.get_next_node_announcements(node_progress.as_ref(), 255);
+					let deserialized_announcements = deserialized_router.get_next_node_announcements(node_progress.as_ref(), 255);
+					assert!(orig_announcements == deserialized_announcements);
+					node_progress = match orig_announcements.last() {
+						Some(announcement) => Some(announcement.contents.node_id),
+						None => break,
+					};
+				}
+			}
 
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
