@@ -755,10 +755,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 											// Unknown messages:
 											wire::Message::Unknown(msg_type) if msg_type.is_even() => {
+												log_debug!(self, "Received unknown even message of type {}, disconnecting peer!", msg_type);
 												// Fail the channel if message is an even, unknown type as per BOLT #1.
 												return Err(PeerHandleError{ no_connection_possible: true });
 											},
-											wire::Message::Unknown(_) => {},
+											wire::Message::Unknown(msg_type) => {
+												log_trace!(self, "Received unknown odd message of type {}, ignoring", msg_type);
+											},
 										}
 									}
 								}
