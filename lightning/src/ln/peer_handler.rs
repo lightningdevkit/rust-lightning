@@ -1089,10 +1089,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					descriptors_needing_disconnect.push(descriptor.clone());
 					match peer.their_node_id {
 						Some(node_id) => {
+							log_trace!(self, "Disconnecting peer with id {} due to ping timeout", node_id);
 							node_id_to_descriptor.remove(&node_id);
-							self.message_handler.chan_handler.peer_disconnected(&node_id, true);
+							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 						}
-						None => {}
+						None => {
+							// This can't actually happen as we should have hit
+							// is_ready_for_encryption() previously on this same peer.
+							unreachable!();
+						},
 					}
 					return false;
 				}
