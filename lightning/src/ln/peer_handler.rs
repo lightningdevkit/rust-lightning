@@ -47,14 +47,15 @@ pub struct MessageHandler<CM: Deref> where CM::Target: msgs::ChannelMessageHandl
 /// For efficiency, Clone should be relatively cheap for this type.
 ///
 /// You probably want to just extend an int and put a file descriptor in a struct and implement
-/// send_data. Note that if you are using a higher-level net library that may close() itself, be
-/// careful to ensure you don't have races whereby you might register a new connection with an fd
-/// the same as a yet-to-be-socket_disconnected()-ed.
+/// send_data. Note that if you are using a higher-level net library that may call close() itself,
+/// be careful to ensure you don't have races whereby you might register a new connection with an
+/// fd which is the same as a previous one which has yet to be removed via
+/// PeerManager::socket_disconnected().
 pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// Attempts to send some data from the given slice to the peer.
 	///
 	/// Returns the amount of data which was sent, possibly 0 if the socket has since disconnected.
-	/// Note that in the disconnected case, a socket_disconnected must still fire and further write
+	/// Note that in the disconnected case, socket_disconnected must still fire and further write
 	/// attempts may occur until that time.
 	///
 	/// If the returned size is smaller than data.len(), a write_available event must
@@ -69,16 +70,16 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// Disconnect the socket pointed to by this SocketDescriptor. Once this function returns, no
 	/// more calls to write_buffer_space_avail, read_event or socket_disconnected may be made with
 	/// this descriptor. No socket_disconnected call should be generated as a result of this call,
-	/// though obviously races may occur whereby disconnect_socket is called after a call to
-	/// socket_disconnected but prior to that event completing.
+	/// though races may occur whereby disconnect_socket is called after a call to
+	/// socket_disconnected but prior to socket_disconnected returning.
 	fn disconnect_socket(&mut self);
 }
 
 /// Error for PeerManager errors. If you get one of these, you must disconnect the socket and
 /// generate no further read_event/write_buffer_space_avail calls for the descriptor, only
 /// triggering a single socket_disconnected call (unless it was provided in response to a
-/// new_*_connection event, in which case no such socket_disconnected() must be generated and the
-/// socket be silently disconencted).
+/// new_*_connection event, in which case no such socket_disconnected() must be called and the
+/// socket silently disconencted).
 pub struct PeerHandleError {
 	/// Used to indicate that we probably can't make any future connections to this peer, implying
 	/// we should go ahead and force-close any channels we have with it.
