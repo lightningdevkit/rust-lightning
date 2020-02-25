@@ -240,7 +240,7 @@ pub fn do_test(data: &[u8]) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.create_channel($dest.get_our_node_id(), 10000000, 42, 0).unwrap();
+			$source.create_channel($dest.get_our_node_id(), 10000000, 42, 0, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);

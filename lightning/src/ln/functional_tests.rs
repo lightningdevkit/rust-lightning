@@ -65,7 +65,7 @@ fn test_insane_channel_opens() {
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_sat, push_msat, 42, None).unwrap();
 
 	// Extract the channel open message from node0 to node1
 	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -436,7 +436,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	}
 
 	if steps & 0x0f == 0 { return; }
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	if steps & 0x0f == 1 { return; }
@@ -5442,12 +5442,12 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	// BOLT #2 spec: Sending node must ensure temporary_channel_id is unique from any other channel ID with the same peer.
 	let channel_value_satoshis=10000;
 	let push_msat=10001;
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).unwrap();
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &node0_to_1_send_open_channel);
 
 	//Create a second channel with a channel_id collision
-	assert!(nodes[0].node.create_channel(nodes[0].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());
+	assert!(nodes[0].node.create_channel(nodes[0].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).is_err());
 }
 
 #[test]
@@ -5460,18 +5460,18 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	// BOLT #2 spec: Sending node must set funding_satoshis to less than 2^24 satoshis
 	let channel_value_satoshis=2^24;
 	let push_msat=10001;
-	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());
+	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).is_err());
 
 	// BOLT #2 spec: Sending node must set push_msat to equal or less than 1000 * funding_satoshis
 	let channel_value_satoshis=10000;
 	// Test when push_msat is equal to 1000 * funding_satoshis.
 	let push_msat=1000*channel_value_satoshis+1;
-	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_err());
+	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).is_err());
 
 	// BOLT #2 spec: Sending node must set set channel_reserve_satoshis greater than or equal to dust_limit_satoshis
 	let channel_value_satoshis=10000;
 	let push_msat=10001;
-	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42).is_ok()); //Create a valid channel
+	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).is_ok()); //Create a valid channel
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis>=node0_to_1_send_open_channel.dust_limit_satoshis);
 
@@ -6501,7 +6501,7 @@ fn test_user_configurable_csv_delay() {
 	} else { assert!(false) }
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_from_req()
-	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
+	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
 	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
@@ -6512,7 +6512,7 @@ fn test_user_configurable_csv_delay() {
 	} else { assert!(false); }
 
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Chanel::accept_channel()
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	accept_channel.to_self_delay = 200;
@@ -6527,7 +6527,7 @@ fn test_user_configurable_csv_delay() {
 	} else { assert!(false); }
 
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Channel::new_from_req()
-	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
+	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
 	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &high_their_to_self_config) {
@@ -7309,4 +7309,23 @@ fn test_bump_txn_sanitize_tracking_maps() {
 			assert!(monitor.claimable_outpoints.is_empty());
 		}
 	}
+}
+
+#[test]
+fn test_override_channel_config() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Node0 initiates a channel to node1 using the override config.
+	let mut override_config = UserConfig::default();
+	override_config.own_channel_config.our_to_self_delay = 200;
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 16_000_000, 12_000_000, 42, Some(override_config)).unwrap();
+
+	// Assert the channel created by node0 is using the override config.
+	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert_eq!(res.channel_flags, 0);
+	assert_eq!(res.to_self_delay, 200);
 }
