@@ -5533,6 +5533,27 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 }
 
 #[test]
+fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
+	//BOLT2 Requirement: MUST offer amount_msat greater than 0.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+
+	nodes[0].node.send_payment(route, our_payment_hash);
+	check_added_monitors!(nodes[0], 1);
+	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	updates.update_add_htlcs[0].amount_msat = 0;
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Remote side tried to send a 0-msat HTLC".to_string(), 1);
+	check_closed_broadcast!(nodes[1], true).unwrap();
+}
+
+#[test]
 fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	//BOLT 2 Requirement: MUST set cltv_expiry less than 500000000.
 	//It is enforced when constructing a route.
