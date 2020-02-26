@@ -482,6 +482,7 @@ impl OnchainTxHandler {
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
+		log_trace!(self, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
@@ -638,6 +639,7 @@ impl OnchainTxHandler {
 		}
 
 		// Build, bump and rebroadcast tx accordingly
+		log_trace!(self, "Bumping {} candidates", bump_candidates.len());
 		for first_claim_txid in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate)) = {
 				if let Some(claim_material) = self.pending_claim_requests.get(first_claim_txid) {
