@@ -289,7 +289,7 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefChannelManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
-pub type SimpleArcChannelManager<M> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>>>;
+pub type SimpleArcChannelManager<M, T> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>, Arc<T>>>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
@@ -297,7 +297,7 @@ pub type SimpleArcChannelManager<M> = Arc<ChannelManager<InMemoryChannelKeys, Ar
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
-pub type SimpleRefChannelManager<'a, M> = ChannelManager<InMemoryChannelKeys, &'a M>;
+pub type SimpleRefChannelManager<'a, 'b, M, T> = ChannelManager<InMemoryChannelKeys, &'a M, &'b T>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -335,12 +335,15 @@ pub type SimpleRefChannelManager<'a, M> = ChannelManager<InMemoryChannelKeys, &'
 /// essentially you should default to using a SimpleRefChannelManager, and use a
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
-pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref> where M::Target: ManyChannelMonitor<ChanSigner> {
+pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
 	fee_estimator: Arc<FeeEstimator>,
 	monitor: M,
-	tx_broadcaster: Arc<BroadcasterInterface>,
+	tx_broadcaster: T,
 
 	#[cfg(test)]
 	pub(super) latest_block_height: AtomicUsize,
@@ -607,7 +610,10 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, T>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
@@ -626,7 +632,7 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: M, tx_broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>,keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M>, secp256k1::Error> {
+	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: M, tx_broadcaster: T, logger: Arc<Logger>,keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M, T>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = ChannelManager {
@@ -2542,7 +2548,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> ChannelManager<ChanSigner, M> where M::T
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2567,7 +2576,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> events::MessageSendEventsProvider for Ch
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref> events::EventsProvider for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
 		// user to serialize a ChannelManager with pending events in it and lose those events on
@@ -2592,7 +2604,10 @@ impl<ChanSigner: ChannelKeys, M: Deref> events::EventsProvider for ChannelManage
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChainListener for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send> ChainListener for ChannelManager<ChanSigner, M, T>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
@@ -2709,7 +2724,10 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChainListener for ChannelM
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send> ChannelMessageHandler for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send> ChannelMessageHandler for ChannelManager<ChanSigner, M, T>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let res = self.internal_open_channel(their_node_id, their_features, msg);
@@ -3179,7 +3197,10 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable, M: Deref> Writeable for ChannelManager<ChanSigner, M> where M::Target: ManyChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref> Writeable for ChannelManager<ChanSigner, M, T>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
 
@@ -3250,7 +3271,11 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref> Writeable for ChannelManager
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
-pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref> where M::Target: ManyChannelMonitor<ChanSigner> {
+pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref>
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
+
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
 	pub keys_manager: Arc<KeysInterface<ChanKeySigner = ChanSigner>>,
@@ -3269,7 +3294,7 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref> wh
 	/// The BroadcasterInterface which will be used in the ChannelManager in the future and may be
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
-	pub tx_broadcaster: Arc<BroadcasterInterface>,
+	pub tx_broadcaster: T,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: Arc<Logger>,
@@ -3290,8 +3315,11 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref> wh
 	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
 }
 
-impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref> ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner, M>> for (Sha256dHash, ChannelManager<ChanSigner, M>) where M::Target: ManyChannelMonitor<ChanSigner> {
-	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M>) -> Result<Self, DecodeError> {
+impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref, T: Deref> ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner, M, T>> for (Sha256dHash, ChannelManager<ChanSigner, M, T>)
+	where M::Target: ManyChannelMonitor<ChanSigner>,
+        T::Target: BroadcasterInterface,
+{
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {

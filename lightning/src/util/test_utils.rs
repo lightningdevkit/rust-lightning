@@ -45,13 +45,13 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
-pub struct TestChannelMonitor {
+pub struct TestChannelMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
-impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
+impl<'a> TestChannelMonitor<'a> {
+	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
@@ -59,7 +59,7 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
+impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor<'a> {
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...

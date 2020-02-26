@@ -43,6 +43,7 @@ use util::{byte_utils, events};
 use std::collections::{HashMap, hash_map, HashSet};
 use std::sync::{Arc,Mutex};
 use std::{hash,cmp, mem};
+use std::ops::Deref;
 
 /// An error enum representing a failure to persist a channel monitor update.
 #[derive(Clone)]
@@ -151,19 +152,21 @@ pub trait ManyChannelMonitor<ChanSigner: ChannelKeys>: Send + Sync {
 ///
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
-pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys> {
+pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref> where T::Target: BroadcasterInterface {
 	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	#[cfg(not(test))]
 	monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	chain_monitor: Arc<ChainWatchInterface>,
-	broadcaster: Arc<BroadcasterInterface>,
+	broadcaster: T,
 	pending_events: Mutex<Vec<events::Event>>,
 	logger: Arc<Logger>,
 	fee_estimator: Arc<FeeEstimator>
 }
 
-impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys> ChainListener for SimpleManyChannelMonitor<Key, ChanSigner> {
+impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send> ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T>
+	where T::Target: BroadcasterInterface
+{
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
 		let mut new_events: Vec<events::Event> = Vec::with_capacity(0);
@@ -197,10 +200,12 @@ impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys> ChainListen
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys> SimpleManyChannelMonitor<Key, ChanSigner> {
+impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T>
+	where T::Target: BroadcasterInterface
+{
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: Arc<BroadcasterInterface>, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> SimpleManyChannelMonitor<Key, ChanSigner> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: T, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> SimpleManyChannelMonitor<Key, ChanSigner, T> {
 		let res = SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
@@ -250,7 +255,9 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys> Simpl
 	}
 }
 
-impl<ChanSigner: ChannelKeys> ManyChannelMonitor<ChanSigner> for SimpleManyChannelMonitor<OutPoint, ChanSigner> {
+impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send> ManyChannelMonitor<ChanSigner> for SimpleManyChannelMonitor<OutPoint, ChanSigner, T>
+	where T::Target: BroadcasterInterface
+{
 	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.add_update_monitor_by_key(funding_txo, monitor) {
 			Ok(_) => Ok(()),
@@ -267,7 +274,9 @@ impl<ChanSigner: ChannelKeys> ManyChannelMonitor<ChanSigner> for SimpleManyChann
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner> {
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T>
+	where T::Target: BroadcasterInterface
+{
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
@@ -2387,7 +2396,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
 	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
 	/// on-chain.
-	fn block_connected(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>) {
+	fn block_connected<B: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>)
+		where B::Target: BroadcasterInterface
+	{
 		for tx in txn_matched {
 			let mut output_val = 0;
 			for out in tx.output.iter() {
@@ -2620,7 +2631,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(watch_outputs, spendable_outputs)
 	}
 
-	fn block_disconnected(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: &BroadcasterInterface, fee_estimator: &FeeEstimator) {
+	fn block_disconnected<B: Deref>(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: &FeeEstimator)
+		where B::Target: BroadcasterInterface
+	{
 		log_trace!(self, "Block {} at height {} disconnected", block_hash, height);
 		let mut bump_candidates = HashMap::new();
 		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
