@@ -2127,8 +2127,10 @@ fn test_justice_tx() {
 		test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
 
 		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		// Verify broadcast of revoked HTLC-timeout
 		let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		// Broadcast revoked HTLC-timeout on node 1
 		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
 		test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone(), revoked_local_txn[0].clone());
 	}
@@ -4238,7 +4240,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
-	assert_eq!(spend_txn.len(), 4);
+	assert_eq!(spend_txn.len(), 5); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
 	assert_eq!(spend_txn[0], spend_txn[2]);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
 	check_spends!(spend_txn[1], node_txn[0]); // spending justice tx output from revoked local tx htlc received output
@@ -6998,7 +7000,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 		assert_eq!(node_txn[0].input.len(), 2);
 		check_spends!(node_txn[0], revoked_htlc_txn[0], revoked_htlc_txn[1]);
-		//// Verify bumped tx is different and 25% bump heuristic
+		// Verify bumped tx is different and 25% bump heuristic
 		assert_ne!(first, node_txn[0].txid());
 		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[0].output[0].value;
 		let feerate_2 = fee_2 * 1000 / node_txn[0].get_weight() as u64;
@@ -7013,7 +7015,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	connect_blocks(&nodes[0].block_notifier, 20, 145, true, header_145.bitcoin_hash());
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 1); //TODO: fix check_spend_remote_htlc lack of watch output
+		// We verify than no new transaction has been broadcast because previously
+		// we were buggy on this exact behavior by not tracking for monitoring remote HTLC outputs (see #411)
+		// which means we wouldn't see a spend of them by a justice tx and bumped justice tx
+		// were generated forever instead of safe cleaning after confirmation and ANTI_REORG_SAFE_DELAY blocks.
+		// Enforce spending of revoked htlc output by claiming transaction remove request as expected and dry
+		// up bumped justice generation.
+		assert_eq!(node_txn.len(), 0);
 		node_txn.clear();
 	}
 	check_closed_broadcast!(nodes[0], false);

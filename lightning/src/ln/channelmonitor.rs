@@ -1668,22 +1668,22 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_remote_htlc(&mut self, tx: &Transaction, commitment_number: u64, height: u32) -> Vec<ClaimRequest> {
-		//TODO: send back new outputs to guarantee pending_claim_request consistency
+	fn check_spend_remote_htlc(&mut self, tx: &Transaction, commitment_number: u64, height: u32) -> (Vec<ClaimRequest>, Option<(Sha256dHash, Vec<TxOut>)>) {
+		let htlc_txid = tx.txid();
 		if tx.input.len() != 1 || tx.output.len() != 1 || tx.input[0].witness.len() != 5 {
-			return Vec::new()
+			return (Vec::new(), None)
 		}
 
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
 				match $thing {
 					Ok(a) => a,
-					Err(_) => return Vec::new()
+					Err(_) => return (Vec::new(), None)
 				}
 			};
 		}
 
-		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return Vec::new(); };
+		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return (Vec::new(), None); };
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 		let (revocation_pubkey, revocation_key) = match self.key_storage {
@@ -1694,16 +1694,15 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			Storage::Watchtower { .. } => { unimplemented!() }
 		};
 		let delayed_key = match self.their_delayed_payment_base_key {
-			None => return Vec::new(),
+			None => return (Vec::new(), None),
 			Some(their_delayed_payment_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &their_delayed_payment_base_key)),
 		};
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
-		let htlc_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 
 		log_trace!(self, "Remote HTLC broadcast {}:{}", htlc_txid, 0);
 		let witness_data = InputMaterial::Revoked { witness_script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, amount: tx.output[0].value };
 		let claimable_outpoints = vec!(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: htlc_txid, vout: 0}, witness_data });
-		claimable_outpoints
+		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
 	}
 
 	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx, delayed_payment_base_key: &SecretKey) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, Vec<TxOut>) {
@@ -2019,8 +2018,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
-						let mut new_outpoints = self.check_spend_remote_htlc(&tx, commitment_number, height);
+						let (mut new_outpoints, new_outputs_option) = self.check_spend_remote_htlc(&tx, commitment_number, height);
 						claimable_outpoints.append(&mut new_outpoints);
+						if let Some(new_outputs) = new_outputs_option {
+							watch_outputs.push(new_outputs);
+						}
 					}
 				}
 			}
