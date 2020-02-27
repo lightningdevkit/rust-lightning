@@ -60,8 +60,8 @@ impl PeerHandshake {
 		handshake
 	}
 
-	/// Getter accessor for the remote public key. It is useful for inbound connections to obtain
-	/// the remote peer's public key once it is extracted from the third act message.
+	/// Return the remote public key once it has been extracted from the third act.
+	/// Potentially useful for inbound connections
 	pub fn get_remote_pubkey(&self) -> Option<PublicKey> {
 		self.remote_public_key
 	}
@@ -86,13 +86,11 @@ impl PeerHandshake {
 	/// Process act dynamically
 	/// # Arguments
 	/// `input`: Byte slice received from peer as part of the handshake protocol
-	/// `remote_public_key`: If outbound, the peer's static identity public key needs is required for the handshake initiation
 	///
 	/// # Return values
 	/// Returns a tuple with the following components:
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Conduit option if the handshake was just processed to completion and messages can now be encrypted and decrypted
-	/// `.2`: Public key option if the handshake was inbound and the peer's static identity pubkey was just learned
 	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Act>, Option<Conduit>), String> {
 		let mut response = None;
 		let mut connected_peer = None;
@@ -157,7 +155,7 @@ impl PeerHandshake {
 				self.remote_public_key = Some(public_key);
 			}
 			_ => {
-				return Err("no acts left to process".to_string());
+				panic!("no acts left to process");
 			}
 		};
 		Ok((response, connected_peer))
@@ -195,7 +193,6 @@ impl PeerHandshake {
 		let act_one_expectation = match state {
 			Some(HandshakeState::AwaitingActOne(act_state)) => act_state,
 			Some(HandshakeState::Uninitiated) => {
-				// this can also be initiated from a blank state
 				let public_key = Self::private_key_to_public_key(&self.private_key);
 				let (hash, chaining_key) = Self::initialize_state(&public_key);
 				ActOneExpectation {
@@ -205,7 +202,7 @@ impl PeerHandshake {
 			}
 			_ => {
 				self.state = state;
-				return Err("unexpected state".to_string());
+				panic!("unexpected state");
 			}
 		};
 
@@ -244,7 +241,7 @@ impl PeerHandshake {
 			Some(HandshakeState::AwaitingActTwo(act_state)) => act_state,
 			_ => {
 				self.state = state;
-				return Err("unexpected state".to_string());
+				panic!("unexpected state".to_string());
 			}
 		};
 
@@ -269,7 +266,7 @@ impl PeerHandshake {
 		let authentication_tag = chacha::encrypt(&temporary_key, 0, &hash.value, &[0; 0]);
 		let (sending_key, receiving_key) = hkdf::derive(&chaining_key, &[0; 0]);
 
-		let mut act_three = [0u8; 66];
+		let mut act_three = [0u8; ACT_THREE_LENGTH];
 		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
 		act_three[50..].copy_from_slice(authentication_tag.as_slice());
 
@@ -292,12 +289,13 @@ impl PeerHandshake {
 			Some(HandshakeState::AwaitingActThree(act_state)) => act_state,
 			_ => {
 				self.state = state;
-				return Err("unexpected state".to_string());
+				panic!("unexpected state".to_string());
 			}
 		};
 
 		let version = act.0[0];
 		if version != 0 {
+			// this should not crash the process, hence no panic
 			return Err("unexpected version".to_string());
 		}
 
@@ -356,6 +354,7 @@ impl PeerHandshake {
 	fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: SymmetricKey, hash: &mut HandshakeHash) -> Result<(PublicKey, SymmetricKey, SymmetricKey), String> {
 		let version = act_bytes[0];
 		if version != 0 {
+			// this should not crash the process, hence no panic
 			return Err("unexpected version".to_string());
 		}
 

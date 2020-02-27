@@ -341,8 +341,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			($msg: expr) => {
 				{
 					log_trace!(self, "Encoding and sending sync update message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
-					if let PeerState::Connected(ref mut conduit) = peer.encryptor {
-						peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!($msg)[..]));
+					match peer.encryptor {
+						PeerState::Connected(ref mut conduit) => peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!($msg)[..])),
+						_ => panic!("peer must be connected!")
 					}
 				}
 			}
@@ -597,22 +598,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 											wire::Message::Init(msg) => {
 												if msg.features.requires_unknown_bits() {
 													log_info!(self, "Peer global features required unknown version bits");
-													return Err(PeerHandleError { no_connection_possible: true });
+													return Err(PeerHandleError{ no_connection_possible: true });
 												}
 												if msg.features.requires_unknown_bits() {
 													log_info!(self, "Peer local features required unknown version bits");
-													return Err(PeerHandleError { no_connection_possible: true });
+													return Err(PeerHandleError{ no_connection_possible: true });
 												}
 												if peer.their_features.is_some() {
-													return Err(PeerHandleError { no_connection_possible: false });
+													return Err(PeerHandleError{ no_connection_possible: false });
 												}
 
 												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, unkown local flags: {}, unknown global flags: {}",
-												if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
-												if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
-												if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
-												if msg.features.supports_unknown_bits() { "present" } else { "none" },
-												if msg.features.supports_unknown_bits() { "present" } else { "none" });
+													if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
+													if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
+													if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+													if msg.features.supports_unknown_bits() { "present" } else { "none" },
+													if msg.features.supports_unknown_bits() { "present" } else { "none" });
 
 												if msg.features.initial_routing_sync() {
 													peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
@@ -631,7 +632,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 												self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 												peer.their_features = Some(msg.features);
-											}
+											},
 											wire::Message::Error(msg) => {
 												let mut data_is_printable = true;
 												for b in msg.data.bytes() {
@@ -648,104 +649,104 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 												}
 												self.message_handler.chan_handler.handle_error(&peer.their_node_id.unwrap(), &msg);
 												if msg.channel_id == [0; 32] {
-													return Err(PeerHandleError { no_connection_possible: true });
+													return Err(PeerHandleError{ no_connection_possible: true });
 												}
-											}
+											},
 
 											wire::Message::Ping(msg) => {
 												if msg.ponglen < 65532 {
 													let resp = msgs::Pong { byteslen: msg.ponglen };
 													encode_and_send_msg!(resp);
 												}
-											}
+											},
 											wire::Message::Pong(_msg) => {
 												peer.awaiting_pong = false;
-											}
+											},
 
 											// Channel messages:
 											wire::Message::OpenChannel(msg) => {
 												self.message_handler.chan_handler.handle_open_channel(&peer.their_node_id.unwrap(), peer.their_features.clone().unwrap(), &msg);
-											}
+											},
 											wire::Message::AcceptChannel(msg) => {
 												self.message_handler.chan_handler.handle_accept_channel(&peer.their_node_id.unwrap(), peer.their_features.clone().unwrap(), &msg);
-											}
+											},
 
 											wire::Message::FundingCreated(msg) => {
 												self.message_handler.chan_handler.handle_funding_created(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::FundingSigned(msg) => {
 												self.message_handler.chan_handler.handle_funding_signed(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::FundingLocked(msg) => {
 												self.message_handler.chan_handler.handle_funding_locked(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 
 											wire::Message::Shutdown(msg) => {
 												self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::ClosingSigned(msg) => {
 												self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 
 											// Commitment messages:
 											wire::Message::UpdateAddHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_add_htlc(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::UpdateFulfillHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_fulfill_htlc(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::UpdateFailHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_fail_htlc(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::UpdateFailMalformedHTLC(msg) => {
 												self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 
 											wire::Message::CommitmentSigned(msg) => {
 												self.message_handler.chan_handler.handle_commitment_signed(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::RevokeAndACK(msg) => {
 												self.message_handler.chan_handler.handle_revoke_and_ack(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::UpdateFee(msg) => {
 												self.message_handler.chan_handler.handle_update_fee(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::ChannelReestablish(msg) => {
 												self.message_handler.chan_handler.handle_channel_reestablish(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 
 											// Routing messages:
 											wire::Message::AnnouncementSignatures(msg) => {
 												self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg);
-											}
+											},
 											wire::Message::ChannelAnnouncement(msg) => {
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_announcement(&msg));
 
 												if should_forward {
 													// TODO: forward msg along to all our other peers!
 												}
-											}
+											},
 											wire::Message::NodeAnnouncement(msg) => {
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_node_announcement(&msg));
 
 												if should_forward {
 													// TODO: forward msg along to all our other peers!
 												}
-											}
+											},
 											wire::Message::ChannelUpdate(msg) => {
 												let should_forward = try_potential_handleerror!(self.message_handler.route_handler.handle_channel_update(&msg));
 
 												if should_forward {
 													// TODO: forward msg along to all our other peers!
 												}
-											}
+											},
 
 											// Unknown messages:
 											wire::Message::Unknown(msg_type) if msg_type.is_even() => {
 												// Fail the channel if message is an even, unknown type as per BOLT #1.
-												return Err(PeerHandleError { no_connection_possible: true });
-											}
-											wire::Message::Unknown(_) => {}
+												return Err(PeerHandleError{ no_connection_possible: true });
+											},
+											wire::Message::Unknown(_) => {},
 										}
 									}
 								}
