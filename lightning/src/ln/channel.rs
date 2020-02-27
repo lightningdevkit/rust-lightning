@@ -35,6 +35,7 @@ use std;
 use std::default::Default;
 use std::{cmp,mem,fmt};
 use std::sync::{Arc};
+use std::ops::Deref;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -437,7 +438,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	// Constructors:
-	pub fn new_outbound(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError> {
+	pub fn new_outbound<K: Deref>(fee_estimator: &FeeEstimator, keys_provider: &K, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError>
+		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>
+	{
 		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -550,7 +553,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req(fee_estimator: &FeeEstimator, keys_provider: &Arc<KeysInterface<ChanKeySigner = ChanSigner>>, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError> {
+	pub fn new_from_req<K: Deref>(fee_estimator: &FeeEstimator, keys_provider: &K, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError>
+		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>
+	{
 		let mut chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
 		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,

@@ -170,7 +170,7 @@ pub type SimpleArcPeerManager<SD, M, T> = Arc<PeerManager<SD, SimpleArcChannelMa
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
-pub type SimpleRefPeerManager<'a, 'b, SD, M, T> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, M, T>>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, SD, M, T> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, M, T>>;
 
 /// A PeerManager manages a set of peers, described by their SocketDescriptor and marshalls socket
 /// events into messages which it passes on to its MessageHandlers.

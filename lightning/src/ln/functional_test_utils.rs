@@ -69,7 +69,7 @@ pub struct NodeCfg<'a> {
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
 	pub fee_estimator: Arc<test_utils::TestFeeEstimator>,
 	pub chan_monitor: test_utils::TestChannelMonitor<'a>,
-	pub keys_manager: Arc<test_utils::TestKeysInterface>,
+	pub keys_manager: test_utils::TestKeysInterface,
 	pub logger: Arc<test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 }
@@ -79,8 +79,8 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
 	pub chan_monitor: &'b test_utils::TestChannelMonitor<'c>,
-	pub keys_manager: Arc<test_utils::TestKeysInterface>,
-	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster>,
+	pub keys_manager: &'b test_utils::TestKeysInterface,
+	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface>,
 	pub router: Router,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
@@ -120,9 +120,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(Sha256d, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(Sha256d, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: UserConfig::default(),
-					keys_manager: self.keys_manager.clone(),
+					keys_manager: self.keys_manager,
 					fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
 					monitor: self.chan_monitor,
 					tx_broadcaster: self.tx_broadcaster.clone(),
@@ -918,7 +918,7 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: 
 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
-	for i in 0..node_count {
+	for _ in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), broadcasted_txn: Mutex::new(HashSet::new())};
 		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster });
 	}
@@ -936,7 +936,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, logger.clone() as Arc<Logger>));
 		let mut seed = [0; 32];
 		rng.fill_bytes(&mut seed);
-		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet, logger.clone() as Arc<Logger>));
+		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet, logger.clone() as Arc<Logger>);
 		let chan_monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), &chanmon_cfgs[i].tx_broadcaster, logger.clone(), fee_estimator.clone());
 		nodes.push(NodeCfg { chain_monitor, logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator, chan_monitor, keys_manager, node_seed: seed });
 	}
@@ -944,20 +944,20 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	nodes
 }
 
-pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingChannelKeys, &'a TestChannelMonitor<'b>, &'b test_utils::TestBroadcaster>> {
+pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingChannelKeys, &'a TestChannelMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let mut default_config = UserConfig::default();
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
-		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator.clone(), &cfgs[i].chan_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger.clone(), cfgs[i].keys_manager.clone(), if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
+		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator.clone(), &cfgs[i].chan_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger.clone(), &cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
 		chanmgrs.push(node);
 	}
 
 	chanmgrs
 }
 
-pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster>>) -> Vec<Node<'a, 'b, 'c>> {
+pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface>>) -> Vec<Node<'a, 'b, 'c>> {
 	let secp_ctx = Secp256k1::new();
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
@@ -970,7 +970,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &cfgs[i].keys_manager.get_node_secret()), cfgs[i].chain_monitor.clone(), cfgs[i].logger.clone() as Arc<Logger>);
 		nodes.push(Node{ chain_monitor: cfgs[i].chain_monitor.clone(), block_notifier,
 										 tx_broadcaster: cfgs[i].tx_broadcaster, chan_monitor: &cfgs[i].chan_monitor,
-										 keys_manager: cfgs[i].keys_manager.clone(), node: &chan_mgrs[i], router,
+										 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], router,
 										 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 										 network_payment_count: payment_count.clone(), logger: cfgs[i].logger.clone(),
 		})
