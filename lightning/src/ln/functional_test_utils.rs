@@ -62,12 +62,13 @@ pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>
 
 pub struct TestChanMonCfg {
 	pub tx_broadcaster: test_utils::TestBroadcaster,
+	pub fee_estimator: test_utils::TestFeeEstimator,
 }
 
 pub struct NodeCfg<'a> {
 	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
-	pub fee_estimator: Arc<test_utils::TestFeeEstimator>,
+	pub fee_estimator: &'a test_utils::TestFeeEstimator,
 	pub chan_monitor: test_utils::TestChannelMonitor<'a>,
 	pub keys_manager: test_utils::TestKeysInterface,
 	pub logger: Arc<test_utils::TestLogger>,
@@ -80,7 +81,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
 	pub chan_monitor: &'b test_utils::TestChannelMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
-	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface>,
+	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>,
 	pub router: Router,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
@@ -99,7 +100,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
 			// tests that fully close channels and remove the monitors at some point this may break.
-			let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
+			let feeest = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 			let old_monitors = self.chan_monitor.simple_monitor.monitors.lock().unwrap();
 			let mut deserialized_monitors = Vec::new();
 			for (_, old_monitor) in old_monitors.iter() {
@@ -120,10 +121,10 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(Sha256d, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(Sha256d, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: UserConfig::default(),
 					keys_manager: self.keys_manager,
-					fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
 					monitor: self.chan_monitor,
 					tx_broadcaster: self.tx_broadcaster.clone(),
 					logger: Arc::new(test_utils::TestLogger::new()),
@@ -132,7 +133,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			}
 
 			let chain_watch = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&self.logger) as Arc<Logger>));
-			let channel_monitor = test_utils::TestChannelMonitor::new(chain_watch.clone(), self.tx_broadcaster.clone(), self.logger.clone(), feeest);
+			let channel_monitor = test_utils::TestChannelMonitor::new(chain_watch.clone(), self.tx_broadcaster.clone(), self.logger.clone(), &feeest);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo().unwrap(), deserialized_monitor) {
 					panic!();
@@ -920,7 +921,8 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for _ in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), broadcasted_txn: Mutex::new(HashSet::new())};
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster });
+		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator });
 	}
 
 	chan_mon_cfgs
@@ -932,32 +934,31 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 
 	for i in 0..node_count {
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
-		let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, logger.clone() as Arc<Logger>));
 		let mut seed = [0; 32];
 		rng.fill_bytes(&mut seed);
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet, logger.clone() as Arc<Logger>);
-		let chan_monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), &chanmon_cfgs[i].tx_broadcaster, logger.clone(), fee_estimator.clone());
-		nodes.push(NodeCfg { chain_monitor, logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator, chan_monitor, keys_manager, node_seed: seed });
+		let chan_monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), &chanmon_cfgs[i].tx_broadcaster, logger.clone(), &chanmon_cfgs[i].fee_estimator);
+		nodes.push(NodeCfg { chain_monitor, logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chan_monitor, keys_manager, node_seed: seed });
 	}
 
 	nodes
 }
 
-pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingChannelKeys, &'a TestChannelMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface>> {
+pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingChannelKeys, &'a TestChannelMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let mut default_config = UserConfig::default();
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
-		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator.clone(), &cfgs[i].chan_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger.clone(), &cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
+		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator, &cfgs[i].chan_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger.clone(), &cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
 		chanmgrs.push(node);
 	}
 
 	chanmgrs
 }
 
-pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface>>) -> Vec<Node<'a, 'b, 'c>> {
+pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>>) -> Vec<Node<'a, 'b, 'c>> {
 	let secp_ctx = Secp256k1::new();
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));

@@ -438,8 +438,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref>(fee_estimator: &FeeEstimator, keys_provider: &K, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError>
-		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>
+	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError>
+	where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+	      F::Target: FeeEstimator,
 	{
 		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
 
@@ -541,7 +542,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		})
 	}
 
-	fn check_remote_fee(fee_estimator: &FeeEstimator, feerate_per_kw: u32) -> Result<(), ChannelError> {
+	fn check_remote_fee<F: Deref>(fee_estimator: &F, feerate_per_kw: u32) -> Result<(), ChannelError>
+		where F::Target: FeeEstimator
+	{
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
 			return Err(ChannelError::Close("Peer's feerate much too low"));
 		}
@@ -553,8 +556,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref>(fee_estimator: &FeeEstimator, keys_provider: &K, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError>
-		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>
+	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError>
+		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+          F::Target: FeeEstimator
 	{
 		let mut chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
 		let their_pubkeys = ChannelPublicKeys {
@@ -1777,7 +1781,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
-	pub fn commitment_signed(&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &FeeEstimator) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), (Option<ChannelMonitorUpdate>, ChannelError)> {
+	pub fn commitment_signed<F: Deref>(&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &F) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), (Option<ChannelMonitorUpdate>, ChannelError)> where F::Target: FeeEstimator {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err((None, ChannelError::Close("Got commitment signed message when channel was not in an operational state")));
 		}
@@ -2065,7 +2069,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &FeeEstimator) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), ChannelError> {
+	pub fn revoke_and_ack<F: Deref>(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &F) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), ChannelError>
+		where F::Target: FeeEstimator
+	{
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state"));
 		}
@@ -2463,7 +2469,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		(raa, commitment_update, order, forwards, failures, needs_broadcast_safe, funding_locked)
 	}
 
-	pub fn update_fee(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::UpdateFee) -> Result<(), ChannelError> {
+	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
+		where F::Target: FeeEstimator
+	{
 		if self.channel_outbound {
 			return Err(ChannelError::Close("Non-funding remote tried to update channel fee"));
 		}
@@ -2684,7 +2692,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 	}
 
-	fn maybe_propose_first_closing_signed(&mut self, fee_estimator: &FeeEstimator) -> Option<msgs::ClosingSigned> {
+	fn maybe_propose_first_closing_signed<F: Deref>(&mut self, fee_estimator: &F) -> Option<msgs::ClosingSigned>
+		where F::Target: FeeEstimator
+	{
 		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
 				self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32) != BOTH_SIDES_SHUTDOWN_MASK ||
 				self.last_sent_closing_fee.is_some() || self.pending_update_fee.is_some() {
@@ -2712,7 +2722,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		})
 	}
 
-	pub fn shutdown(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError> {
+	pub fn shutdown<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+		where F::Target: FeeEstimator
+	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish"));
 		}
@@ -2808,7 +2820,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		tx.input[0].witness.push(self.get_funding_redeemscript().into_bytes());
 	}
 
-	pub fn closing_signed(&mut self, fee_estimator: &FeeEstimator, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError> {
+	pub fn closing_signed<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
+		where F::Target: FeeEstimator
+	{
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
 			return Err(ChannelError::Close("Remote end sent us a closing_signed before both sides provided a shutdown"));
 		}
@@ -3026,7 +3040,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
-	pub fn get_our_fee_base_msat(&self, fee_estimator: &FeeEstimator) -> u32 {
+	pub fn get_our_fee_base_msat<F: Deref>(&self, fee_estimator: &F) -> u32
+		where F::Target: FeeEstimator
+	{
 		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC
 		// output value back into a transaction with the regular channel output:
 
@@ -3230,7 +3246,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn get_open_channel(&self, chain_hash: Sha256dHash, fee_estimator: &FeeEstimator) -> msgs::OpenChannel {
+	pub fn get_open_channel<F: Deref>(&self, chain_hash: Sha256dHash, fee_estimator: &F) -> msgs::OpenChannel
+		where F::Target: FeeEstimator
+	{
 		if !self.channel_outbound {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -4338,12 +4356,12 @@ mod tests {
 
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
-		let keys_provider: Arc<KeysInterface<ChanKeySigner = InMemoryChannelKeys>> = Arc::new(Keys { chan_keys });
+		let keys_provider = Keys { chan_keys };
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&feeest, &keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&&feeest, &&keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 

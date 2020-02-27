@@ -162,7 +162,7 @@ fn _check_usize_is_32_or_64() {
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
-pub type SimpleArcPeerManager<SD, M, T> = Arc<PeerManager<SD, SimpleArcChannelManager<M, T>>>;
+pub type SimpleArcPeerManager<SD, M, T, F> = Arc<PeerManager<SD, SimpleArcChannelManager<M, T, F>>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -170,7 +170,7 @@ pub type SimpleArcPeerManager<SD, M, T> = Arc<PeerManager<SD, SimpleArcChannelMa
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
-pub type SimpleRefPeerManager<'a, 'b, 'c, SD, M, T> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, M, T>>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, SD, M, T, F> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, M, T, F>>;
 
 /// A PeerManager manages a set of peers, described by their SocketDescriptor and marshalls socket
 /// events into messages which it passes on to its MessageHandlers.

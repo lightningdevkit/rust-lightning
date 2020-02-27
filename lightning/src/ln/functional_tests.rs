@@ -3673,9 +3673,10 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let fee_estimator: test_utils::TestFeeEstimator;
 	let new_chan_monitor: test_utils::TestChannelMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::supported(), InitFeatures::supported());
@@ -3686,7 +3687,8 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }));
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), &fee_estimator);
 	nodes[0].chan_monitor = &new_chan_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
@@ -3698,10 +3700,10 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &mut chan_0_monitor);
-		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
 			keys_manager: &keys_manager,
-			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+			fee_estimator: &fee_estimator,
 			monitor: nodes[0].chan_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: Arc::new(test_utils::TestLogger::new()),
@@ -3743,9 +3745,10 @@ fn test_simple_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let fee_estimator: test_utils::TestFeeEstimator;
 	let new_chan_monitor: test_utils::TestChannelMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
@@ -3758,7 +3761,8 @@ fn test_simple_manager_serialize_deserialize() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }));
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), &fee_estimator);
 	nodes[0].chan_monitor = &new_chan_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
@@ -3769,10 +3773,10 @@ fn test_simple_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().unwrap(), &mut chan_0_monitor);
-		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: UserConfig::default(),
 			keys_manager: &keys_manager,
-			fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+			fee_estimator: &fee_estimator,
 			monitor: nodes[0].chan_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: Arc::new(test_utils::TestLogger::new()),
@@ -3798,9 +3802,10 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let fee_estimator: test_utils::TestFeeEstimator;
 	let new_chan_monitor: test_utils::TestChannelMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 	create_announced_chan_between_nodes(&nodes, 2, 0, InitFeatures::supported(), InitFeatures::supported());
@@ -3825,7 +3830,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		node_0_monitors_serialized.push(writer.0);
 	}
 
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }));
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), &fee_estimator);
 	nodes[0].chan_monitor = &new_chan_monitor;
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
@@ -3837,10 +3843,10 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new()));
-	let (_, nodes_0_deserialized_tmp) = <(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+	let (_, nodes_0_deserialized_tmp) = <(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager: &keys_manager,
-		fee_estimator: Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 }),
+		fee_estimator: &fee_estimator,
 		monitor: nodes[0].chan_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 		logger: Arc::new(test_utils::TestLogger::new()),
@@ -6487,7 +6493,7 @@ fn test_user_configurable_csv_delay() {
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
 	let keys_manager: Arc<KeysInterface<ChanKeySigner = EnforcingChannelKeys>> = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new())));
-	if let Err(error) = Channel::new_outbound(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
 		match error {
 			APIError::APIMisuseError { err } => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
 			_ => panic!("Unexpected event"),
@@ -6498,7 +6504,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
 			_ => panic!("Unexpected event"),
@@ -6524,7 +6530,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &high_their_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &high_their_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert_eq!(err, "They wanted our payments to be delayed by a needlessly long period"); },
 			_ => panic!("Unexpected event"),
@@ -6539,6 +6545,7 @@ fn test_data_loss_protect() {
 	// * we close channel in case of detecting other being fallen behind
 	// * we are able to claim our own outputs thanks to remote my_current_per_commitment_point
 	let keys_manager;
+	let fee_estimator;
 	let tx_broadcaster;
 	let monitor;
 	let node_state_0;
@@ -6565,15 +6572,15 @@ fn test_data_loss_protect() {
 	let mut chan_monitor = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0), Arc::clone(&logger)).unwrap().1;
 	let chain_monitor = Arc::new(ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), broadcasted_txn: Mutex::new(HashSet::new())};
-	let feeest = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::clone(&logger));
-	monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), &tx_broadcaster, logger.clone(), feeest.clone());
+	monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), &tx_broadcaster, logger.clone(), &fee_estimator);
 	node_state_0 = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &mut chan_monitor);
-		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
 			keys_manager: &keys_manager,
-			fee_estimator: feeest.clone(),
+			fee_estimator: &fee_estimator,
 			monitor: &monitor,
 			logger: Arc::clone(&logger),
 			tx_broadcaster: &tx_broadcaster,
