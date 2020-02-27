@@ -755,10 +755,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 											// Unknown messages:
 											wire::Message::Unknown(msg_type) if msg_type.is_even() => {
+												log_debug!(self, "Received unknown even message of type {}, disconnecting peer!", msg_type);
 												// Fail the channel if message is an even, unknown type as per BOLT #1.
 												return Err(PeerHandleError{ no_connection_possible: true });
 											},
-											wire::Message::Unknown(_) => {},
+											wire::Message::Unknown(msg_type) => {
+												log_trace!(self, "Received unknown odd message of type {}, ignoring", msg_type);
+											},
 										}
 									}
 								}
@@ -1086,10 +1089,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 					descriptors_needing_disconnect.push(descriptor.clone());
 					match peer.their_node_id {
 						Some(node_id) => {
+							log_trace!(self, "Disconnecting peer with id {} due to ping timeout", node_id);
 							node_id_to_descriptor.remove(&node_id);
-							self.message_handler.chan_handler.peer_disconnected(&node_id, true);
+							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 						}
-						None => {}
+						None => {
+							// This can't actually happen as we should have hit
+							// is_ready_for_encryption() previously on this same peer.
+							unreachable!();
+						},
 					}
 					return false;
 				}
