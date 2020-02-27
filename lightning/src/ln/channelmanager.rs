@@ -57,15 +57,19 @@ use std::ops::Deref;
 // forward the HTLC with information it will give back to us when it does so, or if it should Fail
 // the HTLC with the relevant message for the Channel to handle giving to the remote peer.
 //
-// When a Channel forwards an HTLC to its peer, it will give us back the PendingForwardHTLCInfo
-// which we will use to construct an outbound HTLC, with a relevant HTLCSource::PreviousHopData
-// filled in to indicate where it came from (which we can use to either fail-backwards or fulfill
-// the HTLC backwards along the relevant path).
+// Once said HTLC is committed in the Channel, if the PendingHTLCStatus indicated Forward, the
+// Channel will return the PendingHTLCInfo back to us, and we will create an HTLCForwardInfo
+// with it to track where it came from (in case of onwards-forward error), waiting a random delay
+// before we forward it.
+//
+// We will then use HTLCForwardInfo's PendingHTLCInfo to construct an outbound HTLC, with a
+// relevant HTLCSource::PreviousHopData filled in to indicate where it came from (which we can use
+// to either fail-backwards or fulfill the HTLC backwards along the relevant path).
 // Alternatively, we can fill an outbound HTLC with a HTLCSource::OutboundRoute indicating this is
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
-/// Stores the info we will need to send when we want to forward an HTLC onwards
+
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) struct PendingForwardHTLCInfo {
+pub(super) struct PendingHTLCInfo {
 	onion_packet: Option<msgs::OnionPacket>,
 	incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
@@ -83,8 +87,20 @@ pub(super) enum HTLCFailureMsg {
 /// Stores whether we can't forward an HTLC or relevant forwarding info
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) enum PendingHTLCStatus {
-	Forward(PendingForwardHTLCInfo),
+	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
+}
+
+pub(super) enum HTLCForwardInfo {
+	AddHTLC {
+		prev_short_channel_id: u64,
+		prev_htlc_id: u64,
+		forward_info: PendingHTLCInfo,
+	},
+	FailHTLC {
+		htlc_id: u64,
+		err_packet: msgs::OnionErrorPacket,
+	},
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -194,7 +210,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn from_chan_no_close<ChanSigner: ChannelKeys>(err: ChannelError<ChanSigner>, channel_id: [u8; 32]) -> Self {
+	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: match err {
 				ChannelError::Ignore(msg) => LightningError {
@@ -231,18 +247,6 @@ impl MsgHandleErrInternal {
 /// second to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly.
 const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 
-pub(super) enum HTLCForwardInfo {
-	AddHTLC {
-		prev_short_channel_id: u64,
-		prev_htlc_id: u64,
-		forward_info: PendingForwardHTLCInfo,
-	},
-	FailHTLC {
-		htlc_id: u64,
-		err_packet: msgs::OnionErrorPacket,
-	},
-}
-
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg Channel::channel_reestablish needs to re-send messages in the order
@@ -262,7 +266,7 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	/// short channel id -> forward infos. Key of 0 means payments received
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
-	/// ids in the PendingForwardHTLCInfo!
+	/// ids in the PendingHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
 	/// payment_hash -> Vec<(amount_received, htlc_source)> for tracking things that were to us and
 	/// can be failed/claimed by the user
@@ -312,7 +316,7 @@ pub type SimpleRefChannelManager<'a, 'b, M, T> = ChannelManager<InMemoryChannelK
 ///
 /// Note that you can be a bit lazier about writing out ChannelManager than you can be with
 /// ChannelMonitors. With ChannelMonitors you MUST write each monitor update out to disk before
-/// returning from ManyChannelMonitor::add_update_monitor, with ChannelManagers, writing updates
+/// returning from ManyChannelMonitor::add_/update_monitor, with ChannelManagers, writing updates
 /// happens out-of-band (and will prevent any other ChannelManager operations from occurring during
 /// the serialization process). If the deserialized version is out-of-date compared to the
 /// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
@@ -480,7 +484,7 @@ macro_rules! break_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(ChannelError::Ignore(msg)) => {
-				break Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore(msg), $entry.key().clone()))
+				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
@@ -500,7 +504,7 @@ macro_rules! try_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(ChannelError::Ignore(msg)) => {
-				return Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore(msg), $entry.key().clone()))
+				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
 				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
@@ -516,16 +520,14 @@ macro_rules! try_chan_entry {
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
 				}
-				if let Some(update) = update {
-					if let Err(e) = $self.monitor.add_update_monitor(update.get_funding_txo().unwrap(), update.clone()) {
-						match e {
-							// Upstream channel is dead, but we want at least to fail backward HTLCs to save
-							// downstream channels. In case of PermanentFailure, we are not going to be able
-							// to claim back to_remote output on remote commitment transaction. Doesn't
-							// make a difference here, we are concern about HTLCs circuit, not onchain funds.
-							ChannelMonitorUpdateErr::PermanentFailure => {},
-							ChannelMonitorUpdateErr::TemporaryFailure => {},
-						}
+				if let Err(e) = $self.monitor.update_monitor(chan.get_funding_txo().unwrap(), update) {
+					match e {
+						// Upstream channel is dead, but we want at least to fail backward HTLCs to save
+						// downstream channels. In case of PermanentFailure, we are not going to be able
+						// to claim back to_remote output on remote commitment transaction. Doesn't
+						// make a difference here, we are concern about HTLCs circuit, not onchain funds.
+						ChannelMonitorUpdateErr::PermanentFailure => {},
+						ChannelMonitorUpdateErr::TemporaryFailure => {},
 					}
 				}
 				let mut shutdown_res = chan.force_shutdown();
@@ -574,7 +576,7 @@ macro_rules! handle_monitor_err {
 							} else if $resend_commitment { "commitment" }
 							else if $resend_raa { "RAA" }
 							else { "nothing" },
-						(&$failed_forwards as &Vec<(PendingForwardHTLCInfo, u64)>).len(),
+						(&$failed_forwards as &Vec<(PendingHTLCInfo, u64)>).len(),
 						(&$failed_fails as &Vec<(HTLCSource, PaymentHash, HTLCFailReason)>).len());
 				if !$resend_commitment {
 					debug_assert!($action_type == RAACommitmentOrder::RevokeAndACKFirst || !$resend_raa);
@@ -583,7 +585,7 @@ macro_rules! handle_monitor_err {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
 				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				Err(MsgHandleErrInternal::from_chan_no_close::<ChanSigner>(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
+				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
 			},
 		}
 	}
@@ -969,7 +971,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				// instead we stay symmetric with the forwarding case, only responding (after a
 				// delay) once they've send us a commitment_signed!
 
-				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
+				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					onion_packet: None,
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: 0,
@@ -1021,7 +1023,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					},
 				};
 
-				PendingHTLCStatus::Forward(PendingForwardHTLCInfo {
+				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					onion_packet: Some(outgoing_packet),
 					payment_hash: msg.payment_hash.clone(),
 					short_channel_id: short_channel_id,
@@ -1032,7 +1034,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 			};
 
 		channel_state = Some(self.channel_state.lock().unwrap());
-		if let &PendingHTLCStatus::Forward(PendingForwardHTLCInfo { ref onion_packet, ref short_channel_id, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref onion_packet, ref short_channel_id, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
 			if onion_packet.is_some() { // If short_channel_id is 0 here, we'll reject them in the body here
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				let forwarding_id = match id_option {
@@ -1199,8 +1201,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						first_hop_htlc_msat: htlc_msat,
 					}, onion_packet), channel_state, chan)
 				} {
-					Some((update_add, commitment_signed, chan_monitor)) => {
-						if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					Some((update_add, commitment_signed, monitor_update)) => {
+						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							maybe_break_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true);
 							// Note that MonitorUpdateFailed here indicates (per function docs)
 							// that we will resent the commitment update once we unfree monitor
@@ -1265,8 +1267,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
-		// lock before add_update_monitor
-		if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+		// lock before add_monitor
+		if let Err(e) = self.monitor.add_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					{
@@ -1434,7 +1436,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						}
 
 						if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-							let (commitment_msg, monitor) = match chan.get_mut().send_commitment() {
+							let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment() {
 								Ok(res) => res,
 								Err(e) => {
 									// We surely failed send_commitment due to bad keys, in that case
@@ -1460,7 +1462,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 									}
 								}
 							};
-							if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+							if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 								handle_errors.push((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
 							}
@@ -1733,8 +1735,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 						match chan.get_mut().get_update_fulfill_htlc_and_commit(htlc_id, payment_preimage) {
 							Ok((msgs, monitor_option)) => {
-								if let Some(chan_monitor) = monitor_option {
-									if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+								if let Some(monitor_update) = monitor_option {
+									if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 										if was_frozen_for_monitor {
 											assert!(msgs.is_none());
 										} else {
@@ -1777,103 +1779,98 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 		PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key)
 	}
 
-	/// Used to restore channels to normal operation after a
+	/// Restores a single, given channel to normal operation after a
 	/// ChannelMonitorUpdateErr::TemporaryFailure was returned from a channel monitor update
 	/// operation.
-	pub fn test_restore_channel_monitor(&self) {
+	///
+	/// All ChannelMonitor updates up to and including highest_applied_update_id must have been
+	/// fully committed in every copy of the given channels' ChannelMonitors.
+	///
+	/// Note that there is no effect to calling with a highest_applied_update_id other than the
+	/// current latest ChannelMonitorUpdate and one call to this function after multiple
+	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
+	/// exists largely only to prevent races between this and concurrent update_monitor calls.
+	///
+	/// Thus, the anticipated use is, at a high level:
+	///  1) You register a ManyChannelMonitor with this ChannelManager,
+	///  2) it stores each update to disk, and begins updating any remote (eg watchtower) copies of
+	///     said ChannelMonitors as it can, returning ChannelMonitorUpdateErr::TemporaryFailures
+	///     any time it cannot do so instantly,
+	///  3) update(s) are applied to each remote copy of a ChannelMonitor,
+	///  4) once all remote copies are updated, you call this function with the update_id that
+	///     completed, and once it is the latest the Channel will be re-enabled.
+	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
+		let _ = self.total_consistency_lock.read().unwrap();
+
 		let mut close_results = Vec::new();
 		let mut htlc_forwards = Vec::new();
 		let mut htlc_failures = Vec::new();
 		let mut pending_events = Vec::new();
-		let _ = self.total_consistency_lock.read().unwrap();
 
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
-			channel_state.by_id.retain(|_, channel| {
-				if channel.is_awaiting_monitor_update() {
-					let chan_monitor = channel.channel_monitor().clone();
-					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
-						match e {
-							ChannelMonitorUpdateErr::PermanentFailure => {
-								// TODO: There may be some pending HTLCs that we intended to fail
-								// backwards when a monitor update failed. We should make sure
-								// knowledge of those gets moved into the appropriate in-memory
-								// ChannelMonitor and they get failed backwards once we get
-								// on-chain confirmations.
-								// Note I think #198 addresses this, so once it's merged a test
-								// should be written.
-								if let Some(short_id) = channel.get_short_channel_id() {
-									short_to_id.remove(&short_id);
-								}
-								close_results.push(channel.force_shutdown());
-								if let Ok(update) = self.get_channel_update(&channel) {
-									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
-								}
-								false
-							},
-							ChannelMonitorUpdateErr::TemporaryFailure => true,
-						}
-					} else {
-						let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored();
-						if !pending_forwards.is_empty() {
-							htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), pending_forwards));
-						}
-						htlc_failures.append(&mut pending_failures);
+			let channel = match channel_state.by_id.get_mut(&funding_txo.to_channel_id()) {
+				Some(chan) => chan,
+				None => return,
+			};
+			if !channel.is_awaiting_monitor_update() || channel.get_latest_monitor_update_id() != highest_applied_update_id {
+				return;
+			}
 
-						macro_rules! handle_cs { () => {
-							if let Some(update) = commitment_update {
-								pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-									node_id: channel.get_their_node_id(),
-									updates: update,
-								});
-							}
-						} }
-						macro_rules! handle_raa { () => {
-							if let Some(revoke_and_ack) = raa {
-								pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-									node_id: channel.get_their_node_id(),
-									msg: revoke_and_ack,
-								});
-							}
-						} }
-						match order {
-							RAACommitmentOrder::CommitmentFirst => {
-								handle_cs!();
-								handle_raa!();
-							},
-							RAACommitmentOrder::RevokeAndACKFirst => {
-								handle_raa!();
-								handle_cs!();
-							},
-						}
-						if needs_broadcast_safe {
-							pending_events.push(events::Event::FundingBroadcastSafe {
-								funding_txo: channel.get_funding_txo().unwrap(),
-								user_channel_id: channel.get_user_id(),
-							});
-						}
-						if let Some(msg) = funding_locked {
-							pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-								node_id: channel.get_their_node_id(),
-								msg,
-							});
-							if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
-								pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-									node_id: channel.get_their_node_id(),
-									msg: announcement_sigs,
-								});
-							}
-							short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
-						}
-						true
-					}
-				} else { true }
-			});
+			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored();
+			if !pending_forwards.is_empty() {
+				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), pending_forwards));
+			}
+			htlc_failures.append(&mut pending_failures);
+
+			macro_rules! handle_cs { () => {
+				if let Some(update) = commitment_update {
+					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id: channel.get_their_node_id(),
+						updates: update,
+					});
+				}
+			} }
+			macro_rules! handle_raa { () => {
+				if let Some(revoke_and_ack) = raa {
+					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+						node_id: channel.get_their_node_id(),
+						msg: revoke_and_ack,
+					});
+				}
+			} }
+			match order {
+				RAACommitmentOrder::CommitmentFirst => {
+					handle_cs!();
+					handle_raa!();
+				},
+				RAACommitmentOrder::RevokeAndACKFirst => {
+					handle_raa!();
+					handle_cs!();
+				},
+			}
+			if needs_broadcast_safe {
+				pending_events.push(events::Event::FundingBroadcastSafe {
+					funding_txo: channel.get_funding_txo().unwrap(),
+					user_channel_id: channel.get_user_id(),
+				});
+			}
+			if let Some(msg) = funding_locked {
+				pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+					node_id: channel.get_their_node_id(),
+					msg,
+				});
+				if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
+					pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						node_id: channel.get_their_node_id(),
+						msg: announcement_sigs,
+					});
+				}
+				short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
+			}
 		}
 
 		self.pending_events.lock().unwrap().append(&mut pending_events);
@@ -1950,8 +1947,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
-		// lock before add_update_monitor
-		if let Err(e) = self.monitor.add_update_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
+		// lock before add_monitor
+		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					// Note that we reply with the new channel_id in error messages if we gave up on the
@@ -1995,8 +1992,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let chan_monitor = try_chan_entry!(self, chan.get_mut().funding_signed(&msg), channel_state, chan);
-					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					let monitor_update = match chan.get_mut().funding_signed(&msg) {
+						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
+						Err((Some(monitor_update), e)) => {
+							assert!(chan.get().is_awaiting_monitor_update());
+							let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update);
+							try_chan_entry!(self, Err(e), channel_state, chan);
+							unreachable!();
+						},
+						Ok(update) => update,
+					};
+					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
 					}
 					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())
@@ -2158,7 +2164,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
-					if let PendingHTLCStatus::Forward(PendingForwardHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
+					if let PendingHTLCStatus::Forward(PendingHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
 						let chan_update = self.get_channel_update(chan.get());
 						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 							channel_id: msg.channel_id,
@@ -2235,7 +2241,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
-					let chan_err: ChannelError<ChanSigner> = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
+					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
 					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
@@ -2253,9 +2259,18 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, closing_signed, chan_monitor) =
-					try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &*self.fee_estimator), channel_state, chan);
-				if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
+						match chan.get_mut().commitment_signed(&msg, &*self.fee_estimator) {
+					Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
+					Err((Some(update), e)) => {
+						assert!(chan.get().is_awaiting_monitor_update());
+						let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), update);
+						try_chan_entry!(self, Err(e), channel_state, chan);
+						unreachable!();
+					},
+					Ok(res) => res
+				};
+				if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
@@ -2289,7 +2304,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingForwardHTLCInfo, u64)>)]) {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingHTLCInfo, u64)>)]) {
 		for &mut (prev_short_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut forward_event = None;
 			if !pending_forwards.is_empty() {
@@ -2330,9 +2345,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-					let (commitment_update, pending_forwards, pending_failures, closing_signed, chan_monitor) =
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
 						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
-					if let Err(e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
 							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA"));
@@ -2401,7 +2416,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
 				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
 						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
-					let chan_err: ChannelError<ChanSigner> = ChannelError::Close("Bad announcement_signatures node_signature");
+					let chan_err: ChannelError = ChannelError::Close("Bad announcement_signatures node_signature");
 					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 
@@ -2432,10 +2447,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				let (funding_locked, revoke_and_ack, commitment_update, channel_monitor, mut order, shutdown) =
+				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg), channel_state, chan);
-				if let Some(monitor) = channel_monitor {
-					if let Err(e) = self.monitor.add_update_monitor(monitor.get_funding_txo().unwrap(), monitor) {
+				if let Some(monitor_update) = monitor_update_opt {
+					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						// channel_reestablish doesn't guarantee the order it returns is sensical
 						// for the messages it returns, but if we're setting what messages to
 						// re-transmit on monitor update success, we need to make sure it is sane.
@@ -2518,10 +2533,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref> ChannelManager<ChanSigner, M, 
 						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
 					}
 					their_node_id = chan.get().get_their_node_id();
-					if let Some((update_fee, commitment_signed, chan_monitor)) =
+					if let Some((update_fee, commitment_signed, monitor_update)) =
 							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw), channel_state, chan)
 					{
-						if let Err(_e) = self.monitor.add_update_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+						if let Err(_e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							unimplemented!();
 						}
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -3016,7 +3031,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send> Ch
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for PendingForwardHTLCInfo {
+impl Writeable for PendingHTLCInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.onion_packet.write(writer)?;
 		self.incoming_shared_secret.write(writer)?;
@@ -3028,9 +3043,9 @@ impl Writeable for PendingForwardHTLCInfo {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for PendingForwardHTLCInfo {
-	fn read(reader: &mut R) -> Result<PendingForwardHTLCInfo, DecodeError> {
-		Ok(PendingForwardHTLCInfo {
+impl<R: ::std::io::Read> Readable<R> for PendingHTLCInfo {
+	fn read(reader: &mut R) -> Result<PendingHTLCInfo, DecodeError> {
+		Ok(PendingHTLCInfo {
 			onion_packet: Readable::read(reader)?,
 			incoming_shared_secret: Readable::read(reader)?,
 			payment_hash: Readable::read(reader)?,
@@ -3342,12 +3357,13 @@ impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref, T
 				return Err(DecodeError::InvalidValue);
 			}
 
-			let funding_txo = channel.channel_monitor().get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				if channel.get_cur_local_commitment_transaction_number() != monitor.get_cur_local_commitment_number() ||
 						channel.get_revoked_remote_commitment_transaction_number() != monitor.get_min_seen_secret() ||
-						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() {
+						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() ||
+						channel.get_latest_monitor_update_id() != monitor.get_latest_update_id() {
 					let mut force_close_res = channel.force_shutdown();
 					force_close_res.0 = monitor.get_latest_local_commitment_txn();
 					closed_channels.push(force_close_res);

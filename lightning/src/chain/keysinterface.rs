@@ -135,7 +135,8 @@ pub trait KeysInterface: Send + Sync {
 /// (TODO: We shouldn't require that, and should have an API to get them at deser time, due mostly
 /// to the possibility of reentrancy issues by calling the user's code during our deserialization
 /// routine).
-/// TODO: remove Clone once we start returning ChannelUpdate objects instead of copying ChannelMonitor
+/// TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
+/// ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
 	/// Gets the private key for the anchor tx
 	fn funding_key<'a>(&'a self) -> &'a SecretKey;
