@@ -11,7 +11,7 @@ use std::cmp;
 use secp256k1::Signature;
 use secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::transaction::{OutPoint, Transaction};
+use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -189,6 +189,15 @@ pub trait ReadableArgs<R, P>
 {
 	/// Reads a Self in from the given Read
 	fn read(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+}
+
+/// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
+pub trait MaybeReadable<R>
+	where Self: Sized,
+	      R: Read
+{
+	/// Reads a Self in from the given Read
+	fn read(reader: &mut R) -> Result<Option<Self>, DecodeError>;
 }
 
 pub(crate) struct U48(pub u64);
@@ -627,26 +636,32 @@ impl<R: Read> Readable<R> for OutPoint {
 	}
 }
 
-impl Writeable for Transaction {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self.consensus_encode(WriterWriteAdaptor(writer)) {
-			Ok(_) => Ok(()),
-			Err(consensus::encode::Error::Io(e)) => Err(e),
-			Err(_) => panic!("We shouldn't get a consensus::encode::Error unless our Write generated an std::io::Error"),
+macro_rules! impl_consensus_ser {
+	($bitcoin_type: ty) => {
+		impl Writeable for $bitcoin_type {
+			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+				match self.consensus_encode(WriterWriteAdaptor(writer)) {
+					Ok(_) => Ok(()),
+					Err(consensus::encode::Error::Io(e)) => Err(e),
+					Err(_) => panic!("We shouldn't get a consensus::encode::Error unless our Write generated an std::io::Error"),
+				}
+			}
 		}
-	}
-}
 
-impl<R: Read> Readable<R> for Transaction {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		match consensus::encode::Decodable::consensus_decode(r) {
-			Ok(t) => Ok(t),
-			Err(consensus::encode::Error::Io(ref e)) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => Err(DecodeError::ShortRead),
-			Err(consensus::encode::Error::Io(e)) => Err(DecodeError::Io(e)),
-			Err(_) => Err(DecodeError::InvalidValue),
+		impl<R: Read> Readable<R> for $bitcoin_type {
+			fn read(r: &mut R) -> Result<Self, DecodeError> {
+				match consensus::encode::Decodable::consensus_decode(r) {
+					Ok(t) => Ok(t),
+					Err(consensus::encode::Error::Io(ref e)) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => Err(DecodeError::ShortRead),
+					Err(consensus::encode::Error::Io(e)) => Err(DecodeError::Io(e)),
+					Err(_) => Err(DecodeError::InvalidValue),
+				}
+			}
 		}
 	}
 }
+impl_consensus_ser!(Transaction);
+impl_consensus_ser!(TxOut);
 
 impl<R: Read, T: Readable<R>> Readable<R> for Mutex<T> {
 	fn read(r: &mut R) -> Result<Self, DecodeError> {

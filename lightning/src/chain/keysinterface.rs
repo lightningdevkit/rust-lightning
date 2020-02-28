@@ -88,6 +88,57 @@ pub enum SpendableOutputDescriptor {
 	}
 }
 
+impl Writeable for SpendableOutputDescriptor {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
+				0u8.write(writer)?;
+				outpoint.write(writer)?;
+				output.write(writer)?;
+			},
+			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref key, ref witness_script, ref to_self_delay, ref output } => {
+				1u8.write(writer)?;
+				outpoint.write(writer)?;
+				key.write(writer)?;
+				witness_script.write(writer)?;
+				to_self_delay.write(writer)?;
+				output.write(writer)?;
+			},
+			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref key, ref output } => {
+				2u8.write(writer)?;
+				outpoint.write(writer)?;
+				key.write(writer)?;
+				output.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl<R: ::std::io::Read> Readable<R> for SpendableOutputDescriptor {
+	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+		match Readable::read(reader)? {
+			0u8 => Ok(SpendableOutputDescriptor::StaticOutput {
+				outpoint: Readable::read(reader)?,
+				output: Readable::read(reader)?,
+			}),
+			1u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WSH {
+				outpoint: Readable::read(reader)?,
+				key: Readable::read(reader)?,
+				witness_script: Readable::read(reader)?,
+				to_self_delay: Readable::read(reader)?,
+				output: Readable::read(reader)?,
+			}),
+			2u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+				outpoint: Readable::read(reader)?,
+				key: Readable::read(reader)?,
+				output: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface: Send + Sync {
 	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
