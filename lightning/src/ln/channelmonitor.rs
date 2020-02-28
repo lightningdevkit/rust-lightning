@@ -783,6 +783,11 @@ impl<R: ::std::io::Read> Readable<R> for ChannelMonitorUpdateStep {
 ///
 /// You MUST ensure that no ChannelMonitors for a given channel anywhere contain out-of-date
 /// information and are actively monitoring the chain.
+///
+/// Pending Events or updated HTLCs which have not yet been read out by
+/// get_and_clear_pending_htlcs_updated or get_and_clear_pending_events are serialized to disk and
+/// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
+/// gotten are fully handled before re-serializing the new state.
 pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
