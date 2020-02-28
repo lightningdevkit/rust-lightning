@@ -295,7 +295,7 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// issues such as overly long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
-pub type SimpleArcChannelManager<M, T> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>, Arc<T>, Arc<KeysManager>>>;
+pub type SimpleArcChannelManager<M, T, F> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>>>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
@@ -305,7 +305,7 @@ pub type SimpleArcChannelManager<M, T> = Arc<ChannelManager<InMemoryChannelKeys,
 /// helps with issues such as long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
-pub type SimpleRefChannelManager<'a, 'b, 'c, M, T> = ChannelManager<InMemoryChannelKeys, &'a M, &'b T, &'c KeysManager>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, M, T, F> = ChannelManager<InMemoryChannelKeys, &'a M, &'b T, &'c KeysManager, &'d F>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -343,14 +343,15 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, M, T> = ChannelManager<InMemoryChan
 /// essentially you should default to using a SimpleRefChannelManager, and use a
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
-pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref>
+pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	default_configuration: UserConfig,
 	genesis_hash: Sha256dHash,
-	fee_estimator: Arc<FeeEstimator>,
+	fee_estimator: F,
 	monitor: M,
 	tx_broadcaster: T,
 
@@ -617,10 +618,11 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanSigner, M, T, K>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelManager<ChanSigner, M, T, K, F>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -640,13 +642,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, feeest: Arc<FeeEstimator>, monitor: M, tx_broadcaster: T, logger: Arc<Logger>, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M, T, K>, secp256k1::Error> {
+	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: Arc<Logger>, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M, T, K, F>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = ChannelManager {
 			default_configuration: config.clone(),
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
-			fee_estimator: feeest.clone(),
+			fee_estimator: fee_est,
 			monitor,
 			tx_broadcaster,
 
@@ -693,8 +695,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 			return Err(APIError::APIMisuseError { err: "channel_value must be at least 1000 satoshis" });
 		}
 
-		let channel = Channel::new_outbound(&*self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), &self.default_configuration)?;
-		let res = channel.get_open_channel(self.genesis_hash.clone(), &*self.fee_estimator);
+		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), &self.default_configuration)?;
+		let res = channel.get_open_channel(self.genesis_hash.clone(), &self.fee_estimator);
 
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state = self.channel_state.lock().unwrap();
@@ -715,7 +717,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 		Ok(())
 	}
 
-	fn list_channels_with_filter<F: FnMut(&(&[u8; 32], &Channel<ChanSigner>)) -> bool>(&self, f: F) -> Vec<ChannelDetails> {
+	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<ChanSigner>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
 		{
 			let channel_state = self.channel_state.lock().unwrap();
@@ -1063,7 +1065,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
 						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
 					}
-					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&*self.fee_estimator) as u64) });
+					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&self.fee_estimator) as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
 					}
@@ -1119,7 +1121,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 			flags: (!were_node_one) as u16 | ((!chan.is_live() as u16) << 1),
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
 			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
-			fee_base_msat: chan.get_our_fee_base_msat(&*self.fee_estimator),
+			fee_base_msat: chan.get_our_fee_base_msat(&self.fee_estimator),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
@@ -1896,7 +1898,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&*self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_features, msg, 0, Arc::clone(&self.logger), &self.default_configuration)
+		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_features, msg, 0, Arc::clone(&self.logger), &self.default_configuration)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -2065,7 +2067,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 					if chan_entry.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (shutdown, closing_signed, dropped_htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&*self.fee_estimator, &msg), channel_state, chan_entry);
+					let (shutdown, closing_signed, dropped_htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.fee_estimator, &msg), channel_state, chan_entry);
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: their_node_id.clone(),
@@ -2111,7 +2113,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 					if chan_entry.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&*self.fee_estimator, &msg), channel_state, chan_entry);
+					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), channel_state, chan_entry);
 					if let Some(msg) = closing_signed {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 							node_id: their_node_id.clone(),
@@ -2266,7 +2268,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
-						match chan.get_mut().commitment_signed(&msg, &*self.fee_estimator) {
+						match chan.get_mut().commitment_signed(&msg, &self.fee_estimator) {
 					Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
 					Err((Some(update), e)) => {
 						assert!(chan.get().is_awaiting_monitor_update());
@@ -2352,7 +2354,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
-						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &*self.fee_estimator), channel_state, chan);
+						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator), channel_state, chan);
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
@@ -2394,7 +2396,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				try_chan_entry!(self, chan.get_mut().update_fee(&*self.fee_estimator, &msg), channel_state, chan);
+				try_chan_entry!(self, chan.get_mut().update_fee(&self.fee_estimator, &msg), channel_state, chan);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}
@@ -2569,10 +2571,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> ChannelManager<ChanS
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
@@ -2598,10 +2601,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> events::MessageSendE
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K, F>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
@@ -2627,11 +2631,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref> events::EventsProvid
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send>
-	ChainListener for ChannelManager<ChanSigner, M, T, K>
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send>
+	ChainListener for ChannelManager<ChanSigner, M, T, K, F>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
@@ -2749,11 +2754,12 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send>
-	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K>
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send>
+	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K, F>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3224,10 +3230,11 @@ impl<R: ::std::io::Read> Readable<R> for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref> Writeable for ChannelManager<ChanSigner, M, T, K>
+impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
@@ -3299,10 +3306,11 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref> Writeabl
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
-pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref>
+pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
 
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
@@ -3312,7 +3320,7 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	/// The fee_estimator for use in the ChannelManager in the future.
 	///
 	/// No calls to the FeeEstimator will be made during deserialization.
-	pub fee_estimator: Arc<FeeEstimator>,
+	pub fee_estimator: F,
 	/// The ManyChannelMonitor for use in the ChannelManager in the future.
 	///
 	/// No calls to the ManyChannelMonitor will be made during deserialization. It is assumed that
@@ -3344,13 +3352,14 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
 }
 
-impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref, T: Deref, K: Deref>
-	ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner, M, T, K>> for (Sha256dHash, ChannelManager<ChanSigner, M, T, K>)
+impl<'a, R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>, M: Deref, T: Deref, K: Deref, F: Deref>
+	ReadableArgs<R, ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (Sha256dHash, ChannelManager<ChanSigner, M, T, K, F>)
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        F::Target: FeeEstimator,
 {
-	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K>) -> Result<Self, DecodeError> {
+	fn read(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {

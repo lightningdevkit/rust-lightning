@@ -47,11 +47,11 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestChannelMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
 impl<'a> TestChannelMonitor<'a> {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
+	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: &'a TestFeeEstimator) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),

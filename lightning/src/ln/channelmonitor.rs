@@ -212,7 +212,10 @@ pub trait ManyChannelMonitor<ChanSigner: ChannelKeys>: Send + Sync {
 ///
 /// If you're using this for local monitoring of your own channels, you probably want to use
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
-pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref> where T::Target: BroadcasterInterface {
+pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: Deref>
+	where T::Target: BroadcasterInterface,
+        F::Target: FeeEstimator
+{
 	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	#[cfg(not(test))]
@@ -221,11 +224,13 @@ pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref> wher
 	broadcaster: T,
 	pending_events: Mutex<Vec<events::Event>>,
 	logger: Arc<Logger>,
-	fee_estimator: Arc<FeeEstimator>
+	fee_estimator: F
 }
 
-impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send> ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T>
-	where T::Target: BroadcasterInterface
+impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send>
+	ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T, F>
+	where T::Target: BroadcasterInterface,
+	      F::Target: FeeEstimator
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
 		let block_hash = header.bitcoin_hash();
@@ -260,12 +265,13 @@ impl<'a, Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + 
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T>
-	where T::Target: BroadcasterInterface
+impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref, F: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T, F>
+	where T::Target: BroadcasterInterface,
+	      F::Target: FeeEstimator
 {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: T, logger: Arc<Logger>, feeest: Arc<FeeEstimator>) -> SimpleManyChannelMonitor<Key, ChanSigner, T> {
+	pub fn new(chain_monitor: Arc<ChainWatchInterface>, broadcaster: T, logger: Arc<Logger>, feeest: F) -> SimpleManyChannelMonitor<Key, ChanSigner, T, F> {
 		let res = SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			chain_monitor,
@@ -324,8 +330,9 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 	}
 }
 
-impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send> ManyChannelMonitor<ChanSigner> for SimpleManyChannelMonitor<OutPoint, ChanSigner, T>
-	where T::Target: BroadcasterInterface
+impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send> ManyChannelMonitor<ChanSigner> for SimpleManyChannelMonitor<OutPoint, ChanSigner, T, F>
+	where T::Target: BroadcasterInterface,
+	      F::Target: FeeEstimator
 {
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		match self.add_monitor_by_key(funding_txo, monitor) {
@@ -350,8 +357,9 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send> ManyChannelMonitor<ChanSig
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T>
-	where T::Target: BroadcasterInterface
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F>
+	where T::Target: BroadcasterInterface,
+	      F::Target: FeeEstimator
 {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -1577,7 +1585,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked remote commitment tx
-	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32, fee_estimator: &FeeEstimator) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>) {
+	fn check_spend_remote_transaction<F: Deref>(&mut self, tx: &Transaction, height: u32, fee_estimator: F) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>), Vec<SpendableOutputDescriptor>)
+		where F::Target: FeeEstimator
+	{
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut txn_to_broadcast = Vec::new();
@@ -2152,7 +2162,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_remote_htlc(&mut self, tx: &Transaction, commitment_number: u64, height: u32, fee_estimator: &FeeEstimator) -> (Option<Transaction>, Option<SpendableOutputDescriptor>) {
+	fn check_spend_remote_htlc<F: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, fee_estimator: F) -> (Option<Transaction>, Option<SpendableOutputDescriptor>)
+		where F::Target: FeeEstimator
+	{
 		//TODO: send back new outputs to guarantee pending_claim_request consistency
 		if tx.input.len() != 1 || tx.output.len() != 1 {
 			return (None, None)
@@ -2522,8 +2534,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
 	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
 	/// on-chain.
-	fn block_connected<B: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: &FeeEstimator)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>)
-		where B::Target: BroadcasterInterface
+	fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: F)-> (Vec<(Sha256dHash, Vec<TxOut>)>, Vec<SpendableOutputDescriptor>)
+		where B::Target: BroadcasterInterface,
+		      F::Target: FeeEstimator
 	{
 		for tx in txn_matched {
 			let mut output_val = 0;
@@ -2556,7 +2569,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				};
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
 					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
-						let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(&tx, height, fee_estimator);
+						let (remote_txn, new_outputs, mut spendable_output) = self.check_spend_remote_transaction(&tx, height, &*fee_estimator);
 						txn = remote_txn;
 						spendable_outputs.append(&mut spendable_output);
 						if !new_outputs.1.is_empty() {
@@ -2578,7 +2591,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
-						let (tx, spendable_output) = self.check_spend_remote_htlc(&tx, commitment_number, height, fee_estimator);
+						let (tx, spendable_output) = self.check_spend_remote_htlc(&tx, commitment_number, height, &*fee_estimator);
 						if let Some(tx) = tx {
 							txn.push(tx);
 						}
@@ -2738,7 +2751,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		for first_claim_txid in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate)) = {
 				if let Some(claim_material) = self.pending_claim_requests.get(first_claim_txid) {
-					if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &claim_material, fee_estimator) {
+					if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &claim_material, &*fee_estimator) {
 						broadcaster.broadcast_transaction(&bump_tx);
 						Some((new_timer, new_feerate))
 					} else { None }
@@ -2757,8 +2770,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(watch_outputs, spendable_outputs)
 	}
 
-	fn block_disconnected<B: Deref>(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: &FeeEstimator)
-		where B::Target: BroadcasterInterface
+	fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: F)
+		where B::Target: BroadcasterInterface,
+		      F::Target: FeeEstimator
 	{
 		log_trace!(self, "Block {} at height {} disconnected", block_hash, height);
 		let mut bump_candidates = HashMap::new();
@@ -2784,7 +2798,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 		for (_, claim_material) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &claim_material, fee_estimator) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.bump_claim_tx(height, &claim_material, &*fee_estimator) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
 				broadcaster.broadcast_transaction(&bump_tx);
@@ -3014,7 +3028,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn bump_claim_tx(&self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: &FeeEstimator) -> Option<(u32, u64, Transaction)> {
+	fn bump_claim_tx<F: Deref>(&self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F) -> Option<(u32, u64, Transaction)>
+		where F::Target: FeeEstimator
+	{
 		if cached_claim_datas.per_input_material.len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 		let mut inputs = Vec::new();
 		for outp in cached_claim_datas.per_input_material.keys() {

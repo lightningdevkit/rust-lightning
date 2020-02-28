@@ -75,7 +75,7 @@ impl Writer for VecWriter {
 
 pub struct TestChannelMonitor {
 	pub logger: Arc<dyn Logger>,
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<chaininterface::BroadcasterInterface>>>,
+	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<BroadcasterInterface>, Arc<FeeEstimator>>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
@@ -86,7 +86,7 @@ pub struct TestChannelMonitor {
 	pub should_update_manager: atomic::AtomicBool,
 }
 impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<dyn chaininterface::ChainWatchInterface>, broadcaster: Arc<dyn chaininterface::BroadcasterInterface>, logger: Arc<dyn Logger>, feeest: Arc<dyn chaininterface::FeeEstimator>) -> Self {
+	pub fn new(chain_monitor: Arc<dyn chaininterface::ChainWatchInterface>, broadcaster: Arc<dyn chaininterface::BroadcasterInterface>, logger: Arc<dyn Logger>, feeest: Arc<FeeEstimator>) -> Self {
 		Self {
 			simple_monitor: Arc::new(channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger.clone(), feeest)),
 			logger,
@@ -233,7 +233,7 @@ pub fn do_test(data: &[u8]) {
 				channel_monitors: &mut monitor_refs,
 			};
 
-			(<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
+			(<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
 		} }
 	}
 
