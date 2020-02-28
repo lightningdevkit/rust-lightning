@@ -4,13 +4,6 @@
 //! Because we don't have a built-in runtime, it's up to the client to call events at a time in the
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
-//!
-//! Note that many events are handled for you by PeerHandler, so in the common design of having a
-//! PeerManager which marshalls messages to ChannelManager and Router you only need to call
-//! process_events on the PeerHandler and then get_and_clear_pending_events and handle the events
-//! that bubble up to the surface. If, however, you do not have a PeerHandler managing a
-//! ChannelManager you need to handle all of the events which may be generated.
-//TODO: We need better separation of event types ^
 
 use ln::msgs;
 use ln::channelmanager::{PaymentPreimage, PaymentHash};
