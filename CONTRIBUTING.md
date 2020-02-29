@@ -15,13 +15,14 @@ you'll learn.
 Communications Channels
 -----------------------
 
-Communication about Rust-Lightning happens primarily on #ldk-dev on the [LDK slack](http://www.lightningdevkit.org/),
-but also #rust-bitcoin on IRC Freenode.
+Communication about Rust-Lightning happens primarily on #ldk-dev on the
+[LDK slack](http://www.lightningdevkit.org/), but also #rust-bitcoin on IRC Freenode.
 
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
 
-Major projects are tracked [here](https://github.com/rust-bitcoin/rust-lightning/projects). Major milestones are tracked [here](https://github.com/rust-bitcoin/rust-lightning/milestones?direction=asc&sort=title&state=open).
+Major projects are tracked [here](https://github.com/rust-bitcoin/rust-lightning/projects).
+Major milestones are tracked [here](https://github.com/rust-bitcoin/rust-lightning/milestones?direction=asc&sort=title&state=open).
 
 Contribution Workflow
 ---------------------
@@ -51,10 +52,14 @@ hestitate to split it into multiple small, focused PRs.
 
 The Minimal Supported Rust Version is 1.22.0 (enforced by our Travis).
 
-Commits should cover both issues fixed and solutions' rationale.
+Commits should cover both the issue fixed and the solution's rationale.
 These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
 
-To facilitate communication with other contributors, if you are working on a GitHub Issue please assign it to yourself using GitHub's "assignee" field.
+To facilitate communication with other contributors, the project is making use of
+GitHub's "assignee" field. First check that no one is assigned and then comment
+suggesting that you're working on it. If someone is already assigned, don't hesitate
+to ask if the assigned party or previous commenters are still working on it if it has
+been awhile.
 
 Peer review
 -----------
@@ -98,6 +103,7 @@ Going further
 
 You may be interested by Jon Atack guide on [How to review Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-review-bitcoin-core-prs.md)
 and [How to make Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-make-bitcoin-core-prs.md).
-While there are differences between the projects in terms of context and maturity, many of the suggestions offered apply to this project.
+While there are differences between the projects in terms of context and maturity, many
+of the suggestions offered apply to this project.
 
 Overall, have fun :)
