@@ -690,12 +690,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	///
 	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
 	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64) -> Result<(), APIError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: "channel_value must be at least 1000 satoshis" });
 		}
 
-		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), &self.default_configuration)?;
+		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
+		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), config)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &self.fee_estimator);
 
 		let _ = self.total_consistency_lock.read().unwrap();
