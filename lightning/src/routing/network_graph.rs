@@ -17,33 +17,34 @@ use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
 use std::cmp;
-use std::sync::{RwLock,Arc};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std;
+use std::ops::Deref;
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
 /// This network graph is then used for routing payments.
 /// Provides interface to help with initial routing sync by
 /// serving historical announcements.
-pub struct NetGraphMsgHandler {
+pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: ChainWatchInterface, L::Target: Logger {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	/// Representation of the payment channel network
 	pub network_graph: RwLock<NetworkGraph>,
-	chain_monitor: Arc<ChainWatchInterface>,
+	chain_monitor: C,
 	full_syncs_requested: AtomicUsize,
-	logger: Arc<Logger>,
+	logger: L,
 }
 
-impl NetGraphMsgHandler {
+impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: ChainWatchInterface, L::Target: Logger {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming a fresh network graph.
 	/// Chain monitor is used to make sure announced channels exist on-chain,
 	/// channel data is correct, and that the announcement is signed with
 	/// channel owners' keys.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Self {
+	pub fn new(chain_monitor: C, logger: L) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
 			network_graph: RwLock::new(NetworkGraph {
@@ -52,19 +53,19 @@ impl NetGraphMsgHandler {
 			}),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
-			logger: logger.clone(),
+			logger,
 		}
 	}
 
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing Network Graph.
-	pub fn from_net_graph(chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>, network_graph: RwLock<NetworkGraph>) -> Self {
+	pub fn from_net_graph(chain_monitor: C, logger: L, network_graph: RwLock<NetworkGraph>) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
-			network_graph: network_graph,
+			network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
-			logger: logger.clone(),
+			logger,
 		}
 	}
 }
@@ -79,7 +80,7 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl RoutingMessageHandler for NetGraphMsgHandler {
+impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: ChainWatchInterface, L::Target: Logger {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.write().unwrap().update_node_from_announcement(msg, Some(&self.secp_ctx))
 	}
@@ -115,7 +116,7 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 			},
 		};
 		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, checked_utxo, Some(&self.secp_ctx));
-		log_trace!(self, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
+		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		result
 	}
 
@@ -712,7 +713,7 @@ impl NetworkGraph {
 				proportional_millionths
 			});
 		} else if chan_was_enabled {
-			let mut node = self.nodes.get_mut(&dest_node_id).unwrap();
+			let node = self.nodes.get_mut(&dest_node_id).unwrap();
 			let mut lowest_inbound_channel_fees = None;
 
 			for chan_id in node.channels.iter() {
@@ -786,10 +787,10 @@ mod tests {
 
 	use std::sync::Arc;
 
-	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler) {
+	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<chaininterface::ChainWatchInterfaceUtil>, Arc<test_utils::TestLogger>>) {
 		let secp_ctx = Secp256k1::new();
-		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor, Arc::clone(&logger));
 		(secp_ctx, net_graph_msg_handler)
 	}

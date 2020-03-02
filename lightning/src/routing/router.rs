@@ -5,16 +5,17 @@
 
 use bitcoin::secp256k1::key::PublicKey;
 
+use chain::chaininterface::ChainWatchInterface;
 use ln::channelmanager;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError,ErrorAction,LightningError};
 use routing::network_graph::{NetGraphMsgHandler, RoutingFees};
 use util::ser::{Writeable, Readable};
-use util::logger::{Logger, LogHolder};
+use util::logger::Logger;
 
 use std::cmp;
-use std::sync::Arc;
 use std::collections::{HashMap,BinaryHeap};
+use std::ops::Deref;
 
 /// A hop in a route
 #[derive(Clone, PartialEq)]
@@ -160,8 +161,8 @@ struct DummyDirectionalChannelInfo {
 /// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 /// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 /// *is* checked as they may change based on the receiving node.
-pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHandler, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>,
-	last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32, logger: Arc<Logger>) -> Result<Route, LightningError> {
+pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHandler<C, L>, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>,
+	last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where C::Target: ChainWatchInterface, L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *target == *our_node_id {
@@ -384,8 +385,7 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 			res.last_mut().unwrap().fee_msat = final_value_msat;
 			res.last_mut().unwrap().cltv_expiry_delta = final_cltv;
 			let route = Route { paths: vec![res] };
-			let log_holder = LogHolder { logger: &logger };
-			log_trace!(log_holder, "Got route: {}", log_route!(route));
+			log_trace!(logger, "Got route: {}", log_route!(route));
 			return Ok(route);
 		}
 
@@ -410,7 +410,6 @@ mod tests {
 	   NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate};
 	use ln::channelmanager;
 	use util::test_utils;
-	use util::logger::Logger;
 	use util::ser::Writeable;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
@@ -427,7 +426,7 @@ mod tests {
 	use std::sync::Arc;
 
 	// Using the same keys for LN and BTC ids
-	fn add_channel(net_graph_msg_handler: &NetGraphMsgHandler, secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey,
+	fn add_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<chaininterface::ChainWatchInterfaceUtil>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey,
 	   node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64) {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
@@ -457,7 +456,7 @@ mod tests {
 		};
 	}
 
-	fn update_channel(net_graph_msg_handler: &NetGraphMsgHandler, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate) {
+	fn update_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<chaininterface::ChainWatchInterfaceUtil>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate) {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_privkey),
@@ -472,7 +471,7 @@ mod tests {
 	}
 
 
-	fn add_or_update_node(net_graph_msg_handler: &NetGraphMsgHandler, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey,
+	fn add_or_update_node(net_graph_msg_handler: &NetGraphMsgHandler<Arc<chaininterface::ChainWatchInterfaceUtil>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey,
 	   features: NodeFeatures, timestamp: u32) {
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
 		let unsigned_announcement = UnsignedNodeAnnouncement {
@@ -502,8 +501,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let our_privkey = &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 		let our_id = PublicKey::from_secret_key(&secp_ctx, our_privkey);
-		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor, Arc::clone(&logger));
 		// Build network from our_id to node8:
 		//
