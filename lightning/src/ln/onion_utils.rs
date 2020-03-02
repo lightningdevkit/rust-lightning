@@ -5,7 +5,7 @@ use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable, LengthCalculatingWriter};
-use util::logger::{Logger, LogHolder};
+use util::logger::Logger;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
@@ -18,7 +18,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use std::io::Cursor;
-use std::sync::Arc;
+use std::ops::Deref;
 
 pub(super) struct OnionKeys {
 	#[cfg(test)]
@@ -318,7 +318,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 /// OutboundRoute).
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
 #[inline]
-pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, logger: &Arc<Logger>, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>, Option<Vec<u8>>) {
+pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
 	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;
@@ -440,12 +440,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<
 
 						let (description, title) = errors::get_onion_error_description(error_code);
 						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
-							let log_holder = LogHolder { logger };
-							log_warn!(log_holder, "Onion Error[{}({:#x}) {}({})] {}", title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
+							log_warn!(logger, "Onion Error[{}({:#x}) {}({})] {}", title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
 						}
 						else {
-							let log_holder = LogHolder { logger };
-							log_warn!(log_holder, "Onion Error[{}({:#x})] {}", title, error_code, description);
+							log_warn!(logger, "Onion Error[{}({:#x})] {}", title, error_code, description);
 						}
 					} else {
 						// Useless packet that we can't use but it passed HMAC, so it
