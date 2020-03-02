@@ -451,21 +451,21 @@ struct LocalSignedTx {
 #[derive(Clone, PartialEq)]
 pub(crate) enum InputMaterial {
 	Revoked {
-		script: Script,
+		witness_script: Script,
 		pubkey: Option<PublicKey>,
 		key: SecretKey,
 		is_htlc: bool,
 		revoked_amount: u64,
 	},
 	RemoteHTLC {
-		script: Script,
+		witness_script: Script,
 		key: SecretKey,
 		preimage: Option<PaymentPreimage>,
 		remote_amount: u64,
 		locktime: u32,
 	},
 	LocalHTLC {
-		script: Script,
+		witness_script: Script,
 		sigs: (Signature, Signature),
 		preimage: Option<PaymentPreimage>,
 		local_amount: u64,
@@ -475,9 +475,9 @@ pub(crate) enum InputMaterial {
 impl Writeable for InputMaterial  {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
-			&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref revoked_amount} => {
+			&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref revoked_amount} => {
 				writer.write_all(&[0; 1])?;
-				script.write(writer)?;
+				witness_script.write(writer)?;
 				pubkey.write(writer)?;
 				writer.write_all(&key[..])?;
 				if *is_htlc {
@@ -487,17 +487,17 @@ impl Writeable for InputMaterial  {
 				}
 				writer.write_all(&byte_utils::be64_to_array(*revoked_amount))?;
 			},
-			&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref remote_amount, ref locktime } => {
+			&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref remote_amount, ref locktime } => {
 				writer.write_all(&[1; 1])?;
-				script.write(writer)?;
+				witness_script.write(writer)?;
 				key.write(writer)?;
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*remote_amount))?;
 				writer.write_all(&byte_utils::be32_to_array(*locktime))?;
 			},
-			&InputMaterial::LocalHTLC { ref script, ref sigs, ref preimage, ref local_amount } => {
+			&InputMaterial::LocalHTLC { ref witness_script, ref sigs, ref preimage, ref local_amount } => {
 				writer.write_all(&[2; 1])?;
-				script.write(writer)?;
+				witness_script.write(writer)?;
 				sigs.0.write(writer)?;
 				sigs.1.write(writer)?;
 				preimage.write(writer)?;
@@ -512,7 +512,7 @@ impl<R: ::std::io::Read> Readable<R> for InputMaterial {
 	fn read(reader: &mut R) -> Result<Self, DecodeError> {
 		let input_material = match <u8 as Readable<R>>::read(reader)? {
 			0 => {
-				let script = Readable::read(reader)?;
+				let witness_script = Readable::read(reader)?;
 				let pubkey = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
 				let is_htlc = match <u8 as Readable<R>>::read(reader)? {
@@ -522,7 +522,7 @@ impl<R: ::std::io::Read> Readable<R> for InputMaterial {
 				};
 				let revoked_amount = Readable::read(reader)?;
 				InputMaterial::Revoked {
-					script,
+					witness_script,
 					pubkey,
 					key,
 					is_htlc,
@@ -530,13 +530,13 @@ impl<R: ::std::io::Read> Readable<R> for InputMaterial {
 				}
 			},
 			1 => {
-				let script = Readable::read(reader)?;
+				let witness_script = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
 				let preimage = Readable::read(reader)?;
 				let remote_amount = Readable::read(reader)?;
 				let locktime = Readable::read(reader)?;
 				InputMaterial::RemoteHTLC {
-					script,
+					witness_script,
 					key,
 					preimage,
 					remote_amount,
@@ -544,13 +544,13 @@ impl<R: ::std::io::Read> Readable<R> for InputMaterial {
 				}
 			},
 			2 => {
-				let script = Readable::read(reader)?;
+				let witness_script = Readable::read(reader)?;
 				let their_sig = Readable::read(reader)?;
 				let our_sig = Readable::read(reader)?;
 				let preimage = Readable::read(reader)?;
 				let local_amount = Readable::read(reader)?;
 				InputMaterial::LocalHTLC {
-					script,
+					witness_script,
 					sigs: (their_sig, our_sig),
 					preimage,
 					local_amount
@@ -1488,7 +1488,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			// First, process non-htlc outputs (to_local & to_remote)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let witness_data = InputMaterial::Revoked { script: revokeable_redeemscript.clone(), pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, revoked_amount: outp.value };
+					let witness_data = InputMaterial::Revoked { witness_script: revokeable_redeemscript.clone(), pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, revoked_amount: outp.value };
 					outpoints.push(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 }, witness_data});
 				} else if Some(&outp.script_pubkey) == local_payment_p2wpkh.as_ref() {
 					spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WPKH {
@@ -1509,7 +1509,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								tx.output[transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
 							return (claim_requests_per_txid, (commitment_txid, watch_outputs), spendable_outputs); // Corrupted per_commitment_data, fuck this user
 						}
-						let witness_data = InputMaterial::Revoked { script: expected_script, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: true, revoked_amount: tx.output[transaction_output_index as usize].value };
+						let witness_data = InputMaterial::Revoked { witness_script: expected_script, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: true, revoked_amount: tx.output[transaction_output_index as usize].value };
 						outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 					}
 				}
@@ -1673,7 +1673,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							let aggregable = if !htlc.offered { false } else { true };
 							if preimage.is_some() || !htlc.offered {
-								let witness_data = InputMaterial::RemoteHTLC { script: expected_script, key: htlc_privkey, preimage, remote_amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
+								let witness_data = InputMaterial::RemoteHTLC { witness_script: expected_script, key: htlc_privkey, preimage, remote_amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
 								outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 							}
 						}
@@ -1729,7 +1729,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let htlc_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 
 		log_trace!(self, "Remote HTLC broadcast {}:{}", htlc_txid, 0);
-		let witness_data = InputMaterial::Revoked { script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, revoked_amount: tx.output[0].value };
+		let witness_data = InputMaterial::Revoked { witness_script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, revoked_amount: tx.output[0].value };
 		let outpoints = vec!(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: htlc_txid, vout: 0}, witness_data });
 		let mut claimable_outpoints = HashMap::with_capacity(1);
 		claimable_outpoints.insert(htlc_txid, outpoints);
@@ -1779,7 +1779,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 							add_dynamic_output!(htlc_timeout_tx, 0);
 							let mut per_input_material = HashMap::with_capacity(1);
-							per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { script: htlc_script, sigs: (*their_sig, our_sig), preimage: None, local_amount: htlc.amount_msat / 1000});
+							per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: None, local_amount: htlc.amount_msat / 1000});
 							//TODO: with option_simplified_commitment track outpoint too
 							log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_timeout_tx.input[0].previous_output.vout, htlc_timeout_tx.input[0].previous_output.txid);
 							res.push(htlc_timeout_tx);
@@ -1795,7 +1795,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 								add_dynamic_output!(htlc_success_tx, 0);
 								let mut per_input_material = HashMap::with_capacity(1);
-								per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { script: htlc_script, sigs: (*their_sig, our_sig), preimage: Some(*payment_preimage), local_amount: htlc.amount_msat / 1000});
+								per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: Some(*payment_preimage), local_amount: htlc.amount_msat / 1000});
 								//TODO: with option_simplified_commitment track outpoint too
 								log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_success_tx.input[0].previous_output.vout, htlc_success_tx.input[0].previous_output.txid);
 								res.push(htlc_success_tx);
