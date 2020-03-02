@@ -481,14 +481,25 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
 		{
-			$tx.verify(|out_point| {
+			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
 				$(
 					if out_point.txid == $spends_txn.txid() {
 						return $spends_txn.output.get(out_point.vout as usize).cloned()
 					}
 				)*
 				None
-			}).unwrap();
+			};
+			let mut total_value_in = 0;
+			for input in $tx.input.iter() {
+				total_value_in += get_output(&input.previous_output).unwrap().value;
+			}
+			let mut total_value_out = 0;
+			for output in $tx.output.iter() {
+				total_value_out += output.value;
+			}
+			let min_fee = $tx.get_weight() as u64 / 4; // One sat per vbyte
+			assert!(total_value_out + min_fee <= total_value_in); // Must not be equal as there must be a fee!
+			$tx.verify(get_output).unwrap();
 		}
 	}
 }
