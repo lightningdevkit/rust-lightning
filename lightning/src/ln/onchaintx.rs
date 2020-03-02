@@ -402,8 +402,8 @@ impl OnchainTxHandler {
 		let mut amt = 0;
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
-				&InputMaterial::Revoked { ref script, ref is_htlc, ref amount, .. } => {
-					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { unreachable!() });
+				&InputMaterial::Revoked { ref witness_script, ref is_htlc, ref amount, .. } => {
+					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { unreachable!() });
 					amt += *amount;
 				},
 				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
@@ -436,9 +436,9 @@ impl OnchainTxHandler {
 
 		for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 			match per_outp_material {
-				&InputMaterial::Revoked { ref script, ref pubkey, ref key, ref is_htlc, ref amount } => {
+				&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref amount } => {
 					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *amount)[..]);
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
 					let sig = self.secp_ctx.sign(&sighash, &key);
 					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
@@ -447,13 +447,13 @@ impl OnchainTxHandler {
 					} else {
 						bumped_tx.input[i].witness.push(vec!(1));
 					}
-					bumped_tx.input[i].witness.push(script.clone().into_bytes());
-					log_trace!(self, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
+					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+					log_trace!(self, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 				},
-				&InputMaterial::RemoteHTLC { ref script, ref key, ref preimage, ref amount, ref locktime } => {
+				&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
 					if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
 					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &script, *amount)[..]);
+					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
 					let sig = self.secp_ctx.sign(&sighash, &key);
 					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
@@ -462,7 +462,7 @@ impl OnchainTxHandler {
 					} else {
 						bumped_tx.input[i].witness.push(vec![0]);
 					}
-					bumped_tx.input[i].witness.push(script.clone().into_bytes());
+					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 					log_trace!(self, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
 				},
 				&InputMaterial::LocalHTLC { .. } => {
