@@ -4171,6 +4171,60 @@ fn test_static_spendable_outputs_preimage_tx() {
 }
 
 #[test]
+fn test_static_spendable_outputs_timeout_tx() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create some initial channels
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+
+	// Rebalance the network a bit by relaying one payment through all the channels ...
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
+
+	let (_, our_payment_hash) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000);
+
+	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
+	assert_eq!(commitment_tx[0].input.len(), 1);
+	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
+
+	// Settle A's commitment tx on B' chain
+	let header = BlockHeader { version: 0x2000_0000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 0);
+	check_added_monitors!(nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Check B's monitor was able to send back output descriptor event for timeout tx on A's commitment tx
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert_eq!(node_txn.len(), 3); // ChannelManager : 2 (local commitent tx + HTLC-timeout), ChannelMonitor: timeout tx
+	check_spends!(node_txn[0],  commitment_tx[0].clone());
+	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	check_spends!(node_txn[1], chan_1.3.clone());
+	check_spends!(node_txn[2], node_txn[1]);
+
+	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_hash, .. } => {
+			assert_eq!(payment_hash, our_payment_hash);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let spend_txn = check_spendable_outputs!(nodes[1], 1);
+	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote (*2), timeout_tx.output (*1)
+	check_spends!(spend_txn[2], node_txn[0].clone());
+}
+
+#[test]
 fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
