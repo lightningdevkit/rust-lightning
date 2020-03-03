@@ -110,9 +110,24 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
+	pub broadcasted_txn: Mutex<HashMap<Sha256dHash, u8>> // Temporary field while refactoring out tx duplication
 }
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
+		let mut already = false;
+		{
+			if let Some(counter) = self.broadcasted_txn.lock().unwrap().get_mut(&tx.txid()) {
+				match counter {
+					0 => { *counter = 1; already = true }, // We still authorize at least 2 duplicata for a given TXID to account ChannelManager/ChannelMonitor broadcast
+					1 => return,
+					_ => panic!()
+				}
+			}
+		}
+		if !already {
+			self.broadcasted_txn.lock().unwrap().insert(tx.txid(), 0);
+		}
+		print!("\nFRESH BROADCAST {}\n\n", tx.txid());
 		self.txn_broadcasted.lock().unwrap().push(tx.clone());
 	}
 }
