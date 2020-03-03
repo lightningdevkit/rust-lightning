@@ -441,6 +441,10 @@ pub(crate) enum InputMaterial {
 		sigs: (Signature, Signature),
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
+	},
+	Funding {
+		local_tx_remote_signed: LocalCommitmentTransaction,
+		channel_value: u64,
 	}
 }
 
@@ -470,6 +474,11 @@ impl Writeable for InputMaterial  {
 				sigs.1.write(writer)?;
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+			},
+			&InputMaterial::Funding { ref local_tx_remote_signed, ref channel_value } => {
+				writer.write_all(&[3; 1])?;
+				local_tx_remote_signed.write(writer)?;
+				channel_value.write(writer)?;
 			}
 		}
 		Ok(())
@@ -518,6 +527,14 @@ impl Readable for InputMaterial {
 					sigs: (their_sig, our_sig),
 					preimage,
 					amount
+				}
+			},
+			3 => {
+				let local_tx_remote_signed = Readable::read(reader)?;
+				let channel_value = Readable::read(reader)?;
+				InputMaterial::Funding {
+					local_tx_remote_signed,
+					channel_value
 				}
 			}
 			_ => return Err(DecodeError::InvalidValue),
@@ -1915,12 +1932,15 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if let Some(ref mut cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
 				cur_local_tx.tx.add_local_sig(&self.key_storage.funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
+				//TODO: move key access behind KeysInterface inside OnchainTxHandler
+				// If would_broadcast_at_height determine this local tx should be broadcast, absolute_timelock is set to current_height,
+				// because it indicates that this tx confirmation is urgent. It's not going to change anything because we can't bump
+				// local_commitment before anchor_outputs, should be rethought afterwards
+				claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.key_storage.funding_info.as_ref().unwrap().0.txid.clone(), vout: self.key_storage.funding_info.as_ref().unwrap().0.index as u32 }, witness_data: InputMaterial::Funding { local_tx_remote_signed: cur_local_tx.tx.clone(), channel_value: self.channel_value_satoshis.unwrap() }});
 			}
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
-				log_trace!(self, "Broadcast onchain {}", log_tx!(cur_local_tx.tx.with_valid_witness()));
-				broadcaster.broadcast_transaction(&cur_local_tx.tx.with_valid_witness());
 				let (txs, mut spendable_output, new_outputs) = self.broadcast_by_local_state(&cur_local_tx, &self.key_storage.delayed_payment_base_key);
 				spendable_outputs.append(&mut spendable_output);
 				if !new_outputs.is_empty() {
