@@ -629,10 +629,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 													return Err(PeerHandleError{ no_connection_possible: false });
 												}
 
-												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, unkown local flags: {}, unknown global flags: {}",
+												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unkown local flags: {}, unknown global flags: {}",
 													if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
 													if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
 													if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+													if msg.features.supports_static_remote_key() { "supported" } else { "not supported"},
 													if msg.features.supports_unknown_bits() { "present" } else { "none" },
 													if msg.features.supports_unknown_bits() { "present" } else { "none" });
 

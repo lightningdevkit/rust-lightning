@@ -236,6 +236,8 @@ mod sealed {
 		"Feature flags for `option_upfront_shutdown_script`.");
 	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext],
 		"Feature flags for `var_onion_optin`.");
+	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext],
+		"Feature flags for `option_static_remotekey`.");
 	define_feature!(15, PaymentSecret, [InitContext, NodeContext],
 		"Feature flags for `payment_secret`.");
 	define_feature!(17, BasicMPP, [InitContext, NodeContext],
@@ -470,6 +472,16 @@ impl<T: sealed::VariableLengthOnion> Features<T> {
 	}
 }
 
+impl<T: sealed::StaticRemoteKey> Features<T> {
+	pub(crate) fn supports_static_remote_key(&self) -> bool {
+		<T as sealed::StaticRemoteKey>::supports_feature(&self.flags)
+	}
+	#[cfg(test)]
+	pub(crate) fn requires_static_remote_key(&self) -> bool {
+		<T as sealed::StaticRemoteKey>::requires_feature(&self.flags)
+	}
+}
+
 impl<T: sealed::InitialRoutingSync> Features<T> {
 	pub(crate) fn initial_routing_sync(&self) -> bool {
 		<T as sealed::InitialRoutingSync>::supports_feature(&self.flags)
@@ -554,6 +566,11 @@ mod tests {
 		assert!(NodeFeatures::known().supports_variable_length_onion());
 		assert!(!InitFeatures::known().requires_variable_length_onion());
 		assert!(!NodeFeatures::known().requires_variable_length_onion());
+
+		assert!(!InitFeatures::known().supports_static_remote_key());
+		assert!(!NodeFeatures::known().supports_static_remote_key());
+		assert!(!InitFeatures::known().requires_static_remote_key());
+		assert!(!NodeFeatures::known().requires_static_remote_key());
 
 		assert!(InitFeatures::known().supports_payment_secret());
 		assert!(NodeFeatures::known().supports_payment_secret());
