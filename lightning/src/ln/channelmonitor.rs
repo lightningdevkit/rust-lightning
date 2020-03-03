@@ -443,6 +443,9 @@ pub(crate) enum InputMaterial {
 		sigs: (Signature, Signature),
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
+	},
+	Funding {
+		channel_value: u64,
 	}
 }
 
@@ -472,6 +475,10 @@ impl Writeable for InputMaterial  {
 				sigs.1.write(writer)?;
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+			},
+			&InputMaterial::Funding { ref channel_value } => {
+				writer.write_all(&[3; 1])?;
+				channel_value.write(writer)?;
 			}
 		}
 		Ok(())
@@ -520,6 +527,12 @@ impl Readable for InputMaterial {
 					sigs: (their_sig, our_sig),
 					preimage,
 					amount
+				}
+			},
+			3 => {
+				let channel_value = Readable::read(reader)?;
+				InputMaterial::Funding {
+					channel_value
 				}
 			}
 			_ => return Err(DecodeError::InvalidValue),
@@ -1894,15 +1907,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let should_broadcast = if let Some(_) = self.current_local_signed_commitment_tx {
 			self.would_broadcast_at_height(height)
 		} else { false };
-		if let Some(ref mut cur_local_tx) = self.current_local_signed_commitment_tx {
-			if should_broadcast {
-				self.onchain_detection.keys.sign_local_commitment(&mut cur_local_tx.tx, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &mut self.secp_ctx);
-			}
+		if should_broadcast {
+			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.onchain_detection.funding_info.as_ref().unwrap().0.txid.clone(), vout: self.onchain_detection.funding_info.as_ref().unwrap().0.index as u32 }, witness_data: InputMaterial::Funding { channel_value: self.channel_value_satoshis.unwrap() }});
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
-				log_trace!(self, "Broadcast onchain {}", log_tx!(cur_local_tx.tx.with_valid_witness()));
-				broadcaster.broadcast_transaction(&cur_local_tx.tx.with_valid_witness());
 				let (txs, new_outputs, _) = self.broadcast_by_local_state(&cur_local_tx);
 				if !new_outputs.is_empty() {
 					watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));

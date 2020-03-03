@@ -52,7 +52,7 @@ enum OnchainEvent {
 pub struct ClaimTxBumpMaterial {
 	// At every block tick, used to check if pending claiming tx is taking too
 	// much time for confirmation and we need to bump it.
-	height_timer: u32,
+	height_timer: Option<u32>,
 	// Tracked in case of reorg to wipe out now-superflous bump material
 	feerate_previous: u64,
 	// Soonest timelocks among set of outpoints claimed, used to compute
@@ -64,7 +64,7 @@ pub struct ClaimTxBumpMaterial {
 
 impl Writeable for ClaimTxBumpMaterial  {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		writer.write_all(&byte_utils::be32_to_array(self.height_timer))?;
+		self.height_timer.write(writer)?;
 		writer.write_all(&byte_utils::be64_to_array(self.feerate_previous))?;
 		writer.write_all(&byte_utils::be32_to_array(self.soonest_timelock))?;
 		writer.write_all(&byte_utils::be64_to_array(self.per_input_material.len() as u64))?;
@@ -357,7 +357,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn generate_claim_tx<F: Deref>(&self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F) -> Option<(u32, u64, Transaction)>
+	fn generate_claim_tx<F: Deref>(&self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F) -> Option<(Option<u32>, u64, Transaction)>
 		where F::Target: FeeEstimator
 	{
 		if cached_claim_datas.per_input_material.len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
@@ -422,9 +422,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
-		let new_timer = Self::get_height_timer(height, cached_claim_datas.soonest_timelock);
+		let new_timer = Some(Self::get_height_timer(height, cached_claim_datas.soonest_timelock));
 		let mut inputs_witnesses_weight = 0;
 		let mut amt = 0;
+		let mut dynamic_fee = true;
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
 				&InputMaterial::Revoked { ref witness_script, ref is_htlc, ref amount, .. } => {
@@ -436,71 +437,99 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					amt += *amount;
 				},
 				&InputMaterial::LocalHTLC { .. } => { return None; }
+				&InputMaterial::Funding { .. } => {
+					dynamic_fee = false;
+				}
 			}
 		}
 
-		let predicted_weight = bumped_tx.get_weight() + inputs_witnesses_weight;
-		let mut new_feerate;
-		// If old feerate is 0, first iteration of this claim, use normal fee calculation
-		if cached_claim_datas.feerate_previous != 0 {
-			if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight as u64) {
-				// If new computed fee is superior at the whole claimable amount burn all in fees
-				if new_fee > amt {
-					bumped_tx.output[0].value = 0;
-				} else {
-					bumped_tx.output[0].value = amt - new_fee;
+		if dynamic_fee {
+			let predicted_weight = bumped_tx.get_weight() + inputs_witnesses_weight;
+			let mut new_feerate;
+			// If old feerate is 0, first iteration of this claim, use normal fee calculation
+			if cached_claim_datas.feerate_previous != 0 {
+				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight as u64) {
+					// If new computed fee is superior at the whole claimable amount burn all in fees
+					if new_fee > amt {
+						bumped_tx.output[0].value = 0;
+					} else {
+						bumped_tx.output[0].value = amt - new_fee;
+					}
+					new_feerate = feerate;
+				} else { return None; }
+			} else {
+				if subtract_high_prio_fee!(self, fee_estimator, amt, predicted_weight, new_feerate) {
+					bumped_tx.output[0].value = amt;
+				} else { return None; }
+			}
+			assert!(new_feerate != 0);
+
+			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
+				match per_outp_material {
+					&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref amount } => {
+						let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
+						let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
+						let sig = self.secp_ctx.sign(&sighash, &key);
+						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+						if *is_htlc {
+							bumped_tx.input[i].witness.push(pubkey.unwrap().clone().serialize().to_vec());
+						} else {
+							bumped_tx.input[i].witness.push(vec!(1));
+						}
+						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+						log_trace!(self, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
+					},
+					&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
+						if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
+						let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
+						let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
+						let sig = self.secp_ctx.sign(&sighash, &key);
+						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+						if let &Some(preimage) = preimage {
+							bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
+						} else {
+							bumped_tx.input[i].witness.push(vec![]);
+						}
+						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+						log_trace!(self, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
+					},
+					_ => unreachable!()
 				}
-				new_feerate = feerate;
-			} else { return None; }
+			}
+			log_trace!(self, "...with timer {}", new_timer.unwrap());
+			assert!(predicted_weight >= bumped_tx.get_weight());
+			return Some((new_timer, new_feerate, bumped_tx))
 		} else {
-			if subtract_high_prio_fee!(self, fee_estimator, amt, predicted_weight, new_feerate) {
-				bumped_tx.output[0].value = amt;
-			} else { return None; }
-		}
-		assert!(new_feerate != 0);
-
-		for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
-			match per_outp_material {
-				&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref amount } => {
-					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-					let sig = self.secp_ctx.sign(&sighash, &key);
-					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-					if *is_htlc {
-						bumped_tx.input[i].witness.push(pubkey.unwrap().clone().serialize().to_vec());
-					} else {
-						bumped_tx.input[i].witness.push(vec!(1));
+			for (_, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
+				match per_outp_material {
+					&InputMaterial::LocalHTLC { .. } => {
+						//TODO : Given that Local Commitment Transaction and HTLC-Timeout/HTLC-Success are counter-signed by peer, we can't
+						// RBF them. Need a Lightning specs change and package relay modification :
+						// https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
+						return None;
+					},
+					&InputMaterial::Funding { ref channel_value } => {
+						if self.local_commitment.is_some() {
+							let mut local_commitment = self.local_commitment.clone().unwrap();
+							self.key_storage.sign_local_commitment(&mut local_commitment, &self.funding_redeemscript, *channel_value, &self.secp_ctx);
+							let signed_tx = local_commitment.with_valid_witness().clone();
+							let mut amt_outputs = 0;
+							for outp in signed_tx.output.iter() {
+								amt_outputs += outp.value;
+							}
+							let feerate = (channel_value - amt_outputs) * 1000 / signed_tx.get_weight() as u64;
+							// Timer set to $NEVER given we can't bump tx without anchor outputs
+							log_trace!(self, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
+							return Some((None, feerate, signed_tx));
+						}
 					}
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					log_trace!(self, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
-				},
-				&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
-					if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-					let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-					let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-					let sig = self.secp_ctx.sign(&sighash, &key);
-					bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-					bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-					if let &Some(preimage) = preimage {
-						bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
-					} else {
-						bumped_tx.input[i].witness.push(vec![]);
-					}
-					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					log_trace!(self, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
-				},
-				&InputMaterial::LocalHTLC { .. } => {
-					//TODO : Given that Local Commitment Transaction and HTLC-Timeout/HTLC-Success are counter-signed by peer, we can't
-					// RBF them. Need a Lightning specs change and package relay modification :
-					// https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
-					return None;
+					_ => unreachable!()
 				}
 			}
 		}
-		log_trace!(self, "...with timer {}", new_timer);
-		assert!(predicted_weight >= bumped_tx.get_weight());
-		Some((new_timer, new_feerate, bumped_tx))
+		None
 	}
 
 	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F)
@@ -535,7 +564,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for claim in new_claims {
-			let mut claim_material = ClaimTxBumpMaterial { height_timer: 0, feerate_previous: 0, soonest_timelock: claim.0, per_input_material: claim.1.clone() };
+			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock: claim.0, per_input_material: claim.1.clone() };
 			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
@@ -653,8 +682,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 		// Check if any pending claim request must be rescheduled
 		for (first_claim_txid, ref claim_data) in self.pending_claim_requests.iter() {
-			if claim_data.height_timer == height {
-				bump_candidates.insert(*first_claim_txid);
+			if let Some(h) = claim_data.height_timer {
+				if h == height {
+					bump_candidates.insert(*first_claim_txid);
+				}
 			}
 		}
 
