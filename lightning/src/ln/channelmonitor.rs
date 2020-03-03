@@ -2132,6 +2132,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			self.outputs_to_watch.insert(txid.clone(), output_scripts.iter().map(|o| o.script_pubkey.clone()).collect());
 		}
 
+		for spend in spendable_outputs.iter() {
+			log_trace!(self, "Announcing spendable output to user: {}", log_spendable!(spend));
+		}
+
 		if spendable_outputs.len() > 0 {
 			self.pending_events.push(events::Event::SpendableOutputs {
 				outputs: spendable_outputs,

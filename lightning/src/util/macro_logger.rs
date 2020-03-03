@@ -1,4 +1,5 @@
 use chain::transaction::OutPoint;
+use chain::keysinterface::SpendableOutputDescriptor;
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::transaction::Transaction;
@@ -125,6 +126,30 @@ impl<'a> std::fmt::Display for DebugTx<'a> {
 macro_rules! log_tx {
 	($obj: expr) => {
 		::util::macro_logger::DebugTx(&$obj)
+	}
+}
+
+pub(crate) struct DebugSpendable<'a>(pub &'a SpendableOutputDescriptor);
+impl<'a> std::fmt::Display for DebugSpendable<'a> {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		match self.0 {
+			&SpendableOutputDescriptor::StaticOutput { ref outpoint, .. } => {
+				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+			}
+			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, .. } => {
+				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+			}
+			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, .. } => {
+				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+macro_rules! log_spendable {
+	($obj: expr) => {
+		::util::macro_logger::DebugSpendable(&$obj)
 	}
 }
 
