@@ -487,8 +487,8 @@ impl OnchainTxHandler {
 		let mut aggregated_soonest = ::std::u32::MAX;
 		let mut spendable_outputs = Vec::new();
 
-		// Try to aggregate outputs if they're 1) belong to same parent tx, 2) their
-		// timelock expiration isn't imminent (<= CLTV_SHARED_CLAIM_BUFFER).
+		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
+		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
 		for req in claimable_outpoints {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
 			if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(self, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
