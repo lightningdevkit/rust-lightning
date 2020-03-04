@@ -37,7 +37,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::mem;
-use std::collections::{HashSet, HashMap};
+use std::collections::HashMap;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
 pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
@@ -950,7 +950,7 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for _ in 0..node_count {
-		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), broadcasted_txn: Mutex::new(HashSet::new())};
+		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator });
 	}
