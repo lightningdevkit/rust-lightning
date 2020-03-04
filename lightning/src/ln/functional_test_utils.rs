@@ -1033,7 +1033,7 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 	let mut res = Vec::with_capacity(2);
 	node_txn.retain(|tx| {
 		if tx.input.len() == 1 && tx.input[0].previous_output.txid == chan.3.txid() {
-			check_spends!(tx, chan.3.clone());
+			check_spends!(tx, chan.3);
 			if commitment_tx.is_none() {
 				res.push(tx.clone());
 			}
@@ -1049,7 +1049,7 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 	if has_htlc_tx != HTLCType::NONE {
 		node_txn.retain(|tx| {
 			if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].txid() {
-				check_spends!(tx, res[0].clone());
+				check_spends!(tx, res[0]);
 				if has_htlc_tx == HTLCType::TIMEOUT {
 					assert!(tx.lock_time != 0);
 				} else {
@@ -1098,7 +1098,7 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 
 	for tx in prev_txn {
 		if node_txn[0].input[0].previous_output.txid == tx.txid() {
-			check_spends!(node_txn[0], tx.clone());
+			check_spends!(node_txn[0], tx);
 			assert!(node_txn[0].input[0].witness[2].len() > 106); // must spend an htlc output
 			assert_eq!(tx.input.len(), 1); // must spend a commitment tx
 
