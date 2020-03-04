@@ -2360,16 +2360,9 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(node_txn[2].input.len(), 1);
 		assert_eq!(node_txn[3].input.len(), 1);
 		assert_eq!(node_txn[4].input.len(), 1);
-		fn get_txout(out_point: &BitcoinOutPoint, tx: &Transaction) -> Option<TxOut> {
-			if out_point.txid == tx.txid() {
-				tx.output.get(out_point.vout as usize).cloned()
-			} else {
-				None
-			}
-		}
-		node_txn[2].verify(|out|get_txout(out, &revoked_local_txn[0])).unwrap();
-		node_txn[3].verify(|out|get_txout(out, &revoked_local_txn[0])).unwrap();
-		node_txn[4].verify(|out|get_txout(out, &revoked_local_txn[0])).unwrap();
+		check_spends!(node_txn[2], revoked_local_txn[0]);
+		check_spends!(node_txn[3], revoked_local_txn[0]);
+		check_spends!(node_txn[4], revoked_local_txn[0]);
 
 		let mut witness_lens = BTreeSet::new();
 		witness_lens.insert(node_txn[2].input[0].witness.last().unwrap().len());
@@ -6924,13 +6917,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// Verify claim tx are spending revoked HTLC txn
 		assert_eq!(node_txn[4].input.len(), 2);
 		assert_eq!(node_txn[4].output.len(), 1);
-		if node_txn[4].input[0].previous_output.txid == revoked_htlc_txn[0].txid() {
-			assert_eq!(node_txn[4].input[1].previous_output.txid, revoked_htlc_txn[1].txid());
-		} else if node_txn[4].input[0].previous_output.txid == revoked_htlc_txn[1].txid() {
-			assert_eq!(node_txn[4].input[1].previous_output.txid, revoked_htlc_txn[0].txid());
-		} else {
-			panic!();
-		}
+		check_spends!(node_txn[4], revoked_htlc_txn[0], revoked_htlc_txn[1]);
 		first = node_txn[4].txid();
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[4].output[0].value;
@@ -6954,24 +6941,14 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	// Few more blocks to confirm penalty txn
 	let header_135 = connect_blocks(&nodes[0].block_notifier, 5, 130, true, header_130.bitcoin_hash());
-	{
-		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 0);
-		node_txn.clear();
-	}
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	let header_144 = connect_blocks(&nodes[0].block_notifier, 9, 135, true, header_135);
 	let node_txn = {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
 
 		assert_eq!(node_txn[0].input.len(), 2);
-		if node_txn[0].input[0].previous_output.txid == revoked_htlc_txn[0].txid() {
-			assert_eq!(node_txn[0].input[1].previous_output.txid, revoked_htlc_txn[1].txid());
-		} else if node_txn[0].input[0].previous_output.txid == revoked_htlc_txn[1].txid() {
-			assert_eq!(node_txn[0].input[1].previous_output.txid, revoked_htlc_txn[0].txid());
-		} else {
-			panic!();
-		}
+		check_spends!(node_txn[0], revoked_htlc_txn[0], revoked_htlc_txn[1]);
 		//// Verify bumped tx is different and 25% bump heuristic
 		assert_ne!(first, node_txn[0].txid());
 		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[0].output[0].value;
