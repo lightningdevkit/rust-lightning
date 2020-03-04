@@ -283,8 +283,8 @@ impl<T: sealed::Context> Writeable for Features<T> {
 	}
 }
 
-impl<R: ::std::io::Read, T: sealed::Context> Readable<R> for Features<T> {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl<T: sealed::Context> Readable for Features<T> {
+	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut flags: Vec<u8> = Readable::read(r)?;
 		flags.reverse(); // Swap to little-endian
 		Ok(Self {

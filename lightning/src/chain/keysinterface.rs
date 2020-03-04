@@ -115,8 +115,8 @@ impl Writeable for SpendableOutputDescriptor {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for SpendableOutputDescriptor {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+impl Readable for SpendableOutputDescriptor {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(SpendableOutputDescriptor::StaticOutput {
 				outpoint: Readable::read(reader)?,
@@ -381,8 +381,8 @@ impl Writeable for InMemoryChannelKeys {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for InMemoryChannelKeys {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+impl Readable for InMemoryChannelKeys {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let funding_key = Readable::read(reader)?;
 		let revocation_base_key = Readable::read(reader)?;
 		let payment_base_key = Readable::read(reader)?;

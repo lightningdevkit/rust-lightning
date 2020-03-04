@@ -154,8 +154,8 @@ impl Writeable for Event {
 		Ok(())
 	}
 }
-impl<R: ::std::io::Read> MaybeReadable<R> for Event {
-	fn read(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
+impl MaybeReadable for Event {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
 			1u8 => Ok(Some(Event::FundingBroadcastSafe {

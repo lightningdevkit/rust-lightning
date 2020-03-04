@@ -106,7 +106,7 @@ impl ::std::fmt::Display for MessageType {
 ///
 /// Returns an error if the message payload code not be decoded as the specified type.
 pub fn read<R: ::std::io::Read>(buffer: &mut R) -> Result<Message, msgs::DecodeError> {
-	let message_type = <u16 as Readable<R>>::read(buffer)?;
+	let message_type = <u16 as Readable>::read(buffer)?;
 	match message_type {
 		msgs::Init::TYPE => {
 			Ok(Message::Init(Readable::read(buffer)?))

@@ -156,8 +156,8 @@ impl Writeable for CounterpartyCommitmentSecrets {
 		Ok(())
 	}
 }
-impl<R: ::std::io::Read> Readable<R> for CounterpartyCommitmentSecrets {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+impl Readable for CounterpartyCommitmentSecrets {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut old_secrets = [([0; 32], 1 << 48); 49];
 		for &mut (ref mut secret, ref mut idx) in old_secrets.iter_mut() {
 			*secret = Readable::read(reader)?;
@@ -607,8 +607,8 @@ impl Writeable for LocalCommitmentTransaction {
 		Ok(())
 	}
 }
-impl<R: ::std::io::Read> Readable<R> for LocalCommitmentTransaction {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+impl Readable for LocalCommitmentTransaction {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let tx = match Transaction::consensus_decode(reader.by_ref()) {
 			Ok(tx) => tx,
 			Err(e) => match e {

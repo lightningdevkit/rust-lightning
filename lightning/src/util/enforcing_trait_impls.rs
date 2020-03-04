@@ -101,8 +101,8 @@ impl Writeable for EnforcingChannelKeys {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for EnforcingChannelKeys {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
+impl Readable for EnforcingChannelKeys {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inner = Readable::read(reader)?;
 		let obscure_and_last = Readable::read(reader)?;
 		Ok(EnforcingChannelKeys {

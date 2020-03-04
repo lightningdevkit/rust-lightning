@@ -28,7 +28,7 @@ macro_rules! test_msg {
 		{
 			use lightning::util::ser::{Writeable, Readable};
 			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut r) {
+			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 				let p = r.position() as usize;
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
@@ -48,11 +48,11 @@ macro_rules! test_msg_simple {
 		{
 			use lightning::util::ser::{Writeable, Readable};
 			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut r) {
+			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
 
-				let msg = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+				let msg = <$MsgType as Readable>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
 				let mut w_two = VecWriter(Vec::new());
 				msg.write(&mut w_two).unwrap();
 				assert_eq!(&w.0[..], &w_two.0[..]);
@@ -69,7 +69,7 @@ macro_rules! test_msg_exact {
 		{
 			use lightning::util::ser::{Writeable, Readable};
 			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut r) {
+			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
 				assert_eq!(&r.into_inner()[..], &w.0[..]);
@@ -86,7 +86,7 @@ macro_rules! test_msg_hole {
 		{
 			use lightning::util::ser::{Writeable, Readable};
 			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable<::std::io::Cursor<&[u8]>>>::read(&mut r) {
+			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
 				let p = w.0.len() as usize;

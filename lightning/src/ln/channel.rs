@@ -3811,9 +3811,9 @@ impl Writeable for InboundHTLCRemovalReason {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for InboundHTLCRemovalReason {
-	fn read(reader: &mut R) -> Result<Self, DecodeError> {
-		Ok(match <u8 as Readable<R>>::read(reader)? {
+impl Readable for InboundHTLCRemovalReason {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(match <u8 as Readable>::read(reader)? {
 			0 => InboundHTLCRemovalReason::FailRelay(Readable::read(reader)?),
 			1 => InboundHTLCRemovalReason::FailMalformed((Readable::read(reader)?, Readable::read(reader)?)),
 			2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
@@ -3883,18 +3883,6 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			}
 		}
 
-		macro_rules! write_option {
-			($thing: expr) => {
-				match &$thing {
-					&None => 0u8.write(writer)?,
-					&Some(ref v) => {
-						1u8.write(writer)?;
-						v.write(writer)?;
-					},
-				}
-			}
-		}
-
 		(self.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for htlc in self.pending_outbound_htlcs.iter() {
 			htlc.htlc_id.write(writer)?;
@@ -3912,15 +3900,15 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 				},
 				&OutboundHTLCState::RemoteRemoved(ref fail_reason) => {
 					2u8.write(writer)?;
-					write_option!(*fail_reason);
+					fail_reason.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref fail_reason) => {
 					3u8.write(writer)?;
-					write_option!(*fail_reason);
+					fail_reason.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref fail_reason) => {
 					4u8.write(writer)?;
-					write_option!(*fail_reason);
+					fail_reason.write(writer)?;
 				},
 			}
 		}
@@ -3971,8 +3959,8 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			fail_reason.write(writer)?;
 		}
 
-		write_option!(self.pending_update_fee);
-		write_option!(self.holding_cell_update_fee);
+		self.pending_update_fee.write(writer)?;
+		self.holding_cell_update_fee.write(writer)?;
 
 		self.next_local_htlc_id.write(writer)?;
 		(self.next_remote_htlc_id - dropped_inbound_htlcs).write(writer)?;
@@ -3989,9 +3977,9 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			None => 0u8.write(writer)?,
 		}
 
-		write_option!(self.funding_txo);
-		write_option!(self.funding_tx_confirmed_in);
-		write_option!(self.short_channel_id);
+		self.funding_txo.write(writer)?;
+		self.funding_tx_confirmed_in.write(writer)?;
+		self.short_channel_id.write(writer)?;
 
 		self.last_block_connected.write(writer)?;
 		self.funding_tx_confirmations.write(writer)?;
@@ -4007,13 +3995,13 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.their_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
-		write_option!(self.their_pubkeys);
-		write_option!(self.their_cur_commitment_point);
+		self.their_pubkeys.write(writer)?;
+		self.their_cur_commitment_point.write(writer)?;
 
-		write_option!(self.their_prev_commitment_point);
+		self.their_prev_commitment_point.write(writer)?;
 		self.their_node_id.write(writer)?;
 
-		write_option!(self.their_shutdown_scriptpubkey);
+		self.their_shutdown_scriptpubkey.write(writer)?;
 
 		self.commitment_secrets.write(writer)?;
 
@@ -4022,8 +4010,8 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 	}
 }
 
-impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R, Arc<Logger>> for Channel<ChanSigner> {
-	fn read(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<ChanSigner> {
+	fn read<R : ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -4056,7 +4044,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 				amount_msat: Readable::read(reader)?,
 				cltv_expiry: Readable::read(reader)?,
 				payment_hash: Readable::read(reader)?,
-				state: match <u8 as Readable<R>>::read(reader)? {
+				state: match <u8 as Readable>::read(reader)? {
 					1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
 					2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
 					3 => InboundHTLCState::Committed,
@@ -4075,7 +4063,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 				cltv_expiry: Readable::read(reader)?,
 				payment_hash: Readable::read(reader)?,
 				source: Readable::read(reader)?,
-				state: match <u8 as Readable<R>>::read(reader)? {
+				state: match <u8 as Readable>::read(reader)? {
 					0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
 					1 => OutboundHTLCState::Committed,
 					2 => OutboundHTLCState::RemoteRemoved(Readable::read(reader)?),
@@ -4089,7 +4077,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
 		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
 		for _ in 0..holding_cell_htlc_update_count {
-			holding_cell_htlc_updates.push(match <u8 as Readable<R>>::read(reader)? {
+			holding_cell_htlc_updates.push(match <u8 as Readable>::read(reader)? {
 				0 => HTLCUpdateAwaitingACK::AddHTLC {
 					amount_msat: Readable::read(reader)?,
 					cltv_expiry: Readable::read(reader)?,
@@ -4109,7 +4097,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 			});
 		}
 
-		let resend_order = match <u8 as Readable<R>>::read(reader)? {
+		let resend_order = match <u8 as Readable>::read(reader)? {
 			0 => RAACommitmentOrder::CommitmentFirst,
 			1 => RAACommitmentOrder::RevokeAndACKFirst,
 			_ => return Err(DecodeError::InvalidValue),
@@ -4139,7 +4127,7 @@ impl<R : ::std::io::Read, ChanSigner: ChannelKeys + Readable<R>> ReadableArgs<R,
 		let channel_update_count = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 
-		let last_sent_closing_fee = match <u8 as Readable<R>>::read(reader)? {
+		let last_sent_closing_fee = match <u8 as Readable>::read(reader)? {
 			0 => None,
 			1 => Some((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?)),
 			_ => return Err(DecodeError::InvalidValue),
