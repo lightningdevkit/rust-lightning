@@ -295,7 +295,7 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	holding_cell_update_fee: Option<u64>,
 	next_local_htlc_id: u64,
 	next_remote_htlc_id: u64,
-	channel_update_count: u32,
+	update_time_counter: u32,
 	feerate_per_kw: u64,
 
 	#[cfg(debug_assertions)]
@@ -490,7 +490,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			holding_cell_update_fee: None,
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
-			channel_update_count: 1,
+			update_time_counter: 1,
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
@@ -714,7 +714,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			holding_cell_update_fee: None,
 			next_local_htlc_id: 0,
 			next_remote_htlc_id: 0,
-			channel_update_count: 1,
+			update_time_counter: 1,
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
@@ -1586,7 +1586,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			self.channel_state |= ChannelState::TheirFundingLocked as u32;
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
-			self.channel_update_count += 1;
+			self.update_time_counter += 1;
 		} else if (self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
 				 // Note that funding_signed/funding_created will have decremented both by 1!
 				 self.cur_local_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
@@ -2480,7 +2480,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		Channel::<ChanSigner>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.pending_update_fee = Some(msg.feerate_per_kw as u64);
-		self.channel_update_count += 1;
+		self.update_time_counter += 1;
 		Ok(())
 	}
 
@@ -2763,7 +2763,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// From here on out, we may not fail!
 
 		self.channel_state |= ChannelState::RemoteShutdownSent as u32;
-		self.channel_update_count += 1;
+		self.update_time_counter += 1;
 
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
@@ -2793,7 +2793,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		};
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
-		self.channel_update_count += 1;
+		self.update_time_counter += 1;
 
 		Ok((our_shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
 	}
@@ -2860,7 +2860,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			if last_fee == msg.fee_satoshis {
 				self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
 				self.channel_state = ChannelState::ShutdownComplete as u32;
-				self.channel_update_count += 1;
+				self.update_time_counter += 1;
 				return Ok((None, Some(closing_tx)));
 			}
 		}
@@ -2910,7 +2910,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
-		self.channel_update_count += 1;
+		self.update_time_counter += 1;
 
 		Ok((Some(msgs::ClosingSigned {
 			channel_id: self.channel_id,
@@ -3022,8 +3022,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Allowed in any state (including after shutdown)
-	pub fn get_channel_update_count(&self) -> u32 {
-		self.channel_update_count
+	pub fn get_update_time_counter(&self) -> u32 {
+		self.update_time_counter
 	}
 
 	pub fn get_latest_monitor_update_id(&self) -> u64 {
@@ -3149,7 +3149,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 						}
 						self.channel_state = ChannelState::ShutdownComplete as u32;
-						self.channel_update_count += 1;
+						self.update_time_counter += 1;
 						return Err(msgs::ErrorMessage {
 							channel_id: self.channel_id(),
 							data: "funding tx had wrong script/value".to_owned()
@@ -3175,6 +3175,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		if header.bitcoin_hash() != self.last_block_connected {
 			self.last_block_connected = header.bitcoin_hash();
+			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
 			if let Some(channel_monitor) = self.channel_monitor.as_mut() {
 				channel_monitor.last_block_hash = self.last_block_connected;
 			}
@@ -3185,7 +3186,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						true
 					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
 						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
-						self.channel_update_count += 1;
+						self.update_time_counter += 1;
 						true
 					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 						// We got a reorg but not enough to trigger a force close, just update
@@ -3728,7 +3729,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		} else {
 			self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		}
-		self.channel_update_count += 1;
+		self.update_time_counter += 1;
 
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
 		// our shutdown until we've committed all of the pending changes.
@@ -3777,7 +3778,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
-		self.channel_update_count += 1;
+		self.update_time_counter += 1;
 		if self.channel_monitor.is_some() {
 			(self.channel_monitor.as_mut().unwrap().get_latest_local_commitment_txn(), dropped_outbound_htlcs)
 		} else {
@@ -3964,7 +3965,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 
 		self.next_local_htlc_id.write(writer)?;
 		(self.next_remote_htlc_id - dropped_inbound_htlcs).write(writer)?;
-		self.channel_update_count.write(writer)?;
+		self.update_time_counter.write(writer)?;
 		self.feerate_per_kw.write(writer)?;
 
 		match self.last_sent_closing_fee {
@@ -4124,7 +4125,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 
 		let next_local_htlc_id = Readable::read(reader)?;
 		let next_remote_htlc_id = Readable::read(reader)?;
-		let channel_update_count = Readable::read(reader)?;
+		let update_time_counter = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 
 		let last_sent_closing_fee = match <u8 as Readable>::read(reader)? {
@@ -4203,7 +4204,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 			holding_cell_update_fee,
 			next_local_htlc_id,
 			next_remote_htlc_id,
-			channel_update_count,
+			update_time_counter,
 			feerate_per_kw,
 
 			#[cfg(debug_assertions)]

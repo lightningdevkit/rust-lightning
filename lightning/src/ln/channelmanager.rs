@@ -1124,7 +1124,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
 			short_channel_id: short_channel_id,
-			timestamp: chan.get_channel_update_count(),
+			timestamp: chan.get_update_time_counter(),
 			flags: (!were_node_one) as u16 | ((!chan.is_live() as u16) << 1),
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
 			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
@@ -2776,6 +2776,18 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header_hash;
+		loop {
+			// Update last_node_announcement_serial to be the max of its current value and the
+			// block timestamp. This should keep us close to the current time without relying on
+			// having an explicit local time source.
+			// Just in case we end up in a race, we loop until we either successfully update
+			// last_node_announcement_serial or decide we don't need to.
+			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
+			if old_serial >= header.time as usize { break; }
+			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+				break;
+			}
+		}
 	}
 
 	/// We force-close the channel without letting our counterparty participate in the shutdown
