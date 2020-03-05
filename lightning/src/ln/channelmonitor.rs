@@ -2010,7 +2010,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								watch_outputs.push(new_outputs);
 							}
 						}
-						claimable_outpoints.push(new_outpoints);
+						claimable_outpoints.append(&mut new_outpoints);
 					}
 					if !funding_txo.is_none() && claimable_outpoints.is_empty() {
 						if let Some(spendable_output) = self.check_spend_closing_transaction(&tx) {
@@ -2020,7 +2020,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
 						let mut new_outpoints = self.check_spend_remote_htlc(&tx, commitment_number, height);
-						claimable_outpoints.push(new_outpoints);
+						claimable_outpoints.append(&mut new_outpoints);
 					}
 				}
 			}

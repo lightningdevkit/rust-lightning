@@ -478,7 +478,7 @@ impl OnchainTxHandler {
 		Some((new_timer, new_feerate, bumped_tx))
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<Vec<ClaimRequest>>, height: u32, broadcaster: B, fee_estimator: F) -> Vec<SpendableOutputDescriptor>
+	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F) -> Vec<SpendableOutputDescriptor>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
@@ -487,22 +487,20 @@ impl OnchainTxHandler {
 		let mut aggregated_soonest = ::std::u32::MAX;
 		let mut spendable_outputs = Vec::new();
 
-		// Try to aggregate outputs if they're 1) belong to same parent tx, 2) their
-		// timelock expiration isn't imminent (<= CLTV_SHARED_CLAIM_BUFFER).
-		for siblings_outpoints in claimable_outpoints {
-			for req in siblings_outpoints {
-				// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-				if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(self, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
-					log_trace!(self, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
-					if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
-						let mut single_input = HashMap::new();
-						single_input.insert(req.outpoint, req.witness_data);
-						new_claims.push((req.absolute_timelock, single_input));
-					} else {
-						aggregated_claim.insert(req.outpoint, req.witness_data);
-						if req.absolute_timelock < aggregated_soonest {
-							aggregated_soonest = req.absolute_timelock;
-						}
+		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
+		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
+		for req in claimable_outpoints {
+			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
+			if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(self, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
+				log_trace!(self, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
+				if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
+					let mut single_input = HashMap::new();
+					single_input.insert(req.outpoint, req.witness_data);
+					new_claims.push((req.absolute_timelock, single_input));
+				} else {
+					aggregated_claim.insert(req.outpoint, req.witness_data);
+					if req.absolute_timelock < aggregated_soonest {
+						aggregated_soonest = req.absolute_timelock;
 					}
 				}
 			}
