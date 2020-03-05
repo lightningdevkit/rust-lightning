@@ -124,7 +124,6 @@ pub fn do_test(data: &[u8]) {
 					msgs::DecodeError::UnknownVersion => return,
 					msgs::DecodeError::UnknownRequiredFeature => return,
 					msgs::DecodeError::InvalidValue => return,
-					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
 					msgs::DecodeError::Io(e) => panic!(format!("{}", e)),

@@ -47,8 +47,6 @@ pub enum DecodeError {
 	InvalidValue,
 	/// Buffer too short
 	ShortRead,
-	/// node_announcement included more than one address of a given type!
-	ExtraAddressesPerType,
 	/// A length descriptor in the packet didn't describe the later data correctly
 	BadLengthDescriptor,
 	/// Error from std::io
@@ -677,7 +675,6 @@ impl Error for DecodeError {
 			DecodeError::UnknownRequiredFeature => "Unknown required feature preventing decode",
 			DecodeError::InvalidValue => "Nonsense bytes didn't map to the type they were interpreted as",
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
-			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 			DecodeError::Io(ref e) => e.description(),
 		}
@@ -1209,8 +1206,7 @@ impl Writeable for UnsignedNodeAnnouncement {
 		self.alias.write(w)?;
 
 		let mut addrs_to_encode = self.addresses.clone();
-		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
-		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
+		addrs_to_encode.sort_by(|a, b| { a.get_id().cmp(&b.get_id()) });
 		let mut addr_len = 0;
 		for addr in &addrs_to_encode {
 			addr_len += 1 + addr.len();
@@ -1235,7 +1231,8 @@ impl Readable for UnsignedNodeAnnouncement {
 		let alias: [u8; 32] = Readable::read(r)?;
 
 		let addr_len: u16 = Readable::read(r)?;
-		let mut addresses: Vec<NetAddress> = Vec::with_capacity(4);
+		let mut addresses: Vec<NetAddress> = Vec::new();
+		let mut highest_addr_type = 0;
 		let mut addr_readpos = 0;
 		let mut excess = false;
 		let mut excess_byte = 0;
@@ -1243,28 +1240,11 @@ impl Readable for UnsignedNodeAnnouncement {
 			if addr_len <= addr_readpos { break; }
 			match Readable::read(r) {
 				Ok(Ok(addr)) => {
-					match addr {
-						NetAddress::IPv4 { .. } => {
-							if addresses.len() > 0 {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::IPv6 { .. } => {
-							if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::OnionV2 { .. } => {
-							if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::OnionV3 { .. } => {
-							if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
+					if addr.get_id() < highest_addr_type {
+						// Addresses must be sorted in increasing order
+						return Err(DecodeError::InvalidValue);
 					}
+					highest_addr_type = addr.get_id();
 					if addr_len < addr_readpos + 1 + addr.len() {
 						return Err(DecodeError::BadLengthDescriptor);
 					}
