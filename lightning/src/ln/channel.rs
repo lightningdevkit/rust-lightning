@@ -556,7 +556,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
 			revocation_basepoint: msg.revocation_basepoint,
-			payment_basepoint: msg.payment_basepoint,
+			payment_point: msg.payment_point,
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			htlc_basepoint: msg.htlc_basepoint
 		};
@@ -772,15 +772,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
 		let mut sha = Sha256::engine();
-		let our_payment_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key());
+		let our_payment_point = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_key());
 
-		let their_payment_basepoint = &self.their_pubkeys.as_ref().unwrap().payment_basepoint.serialize();
+		let their_payment_point = &self.their_pubkeys.as_ref().unwrap().payment_point.serialize();
 		if self.channel_outbound {
-			sha.input(&our_payment_basepoint.serialize());
-			sha.input(their_payment_basepoint);
+			sha.input(&our_payment_point.serialize());
+			sha.input(their_payment_point);
 		} else {
-			sha.input(their_payment_basepoint);
-			sha.input(&our_payment_basepoint.serialize());
+			sha.input(their_payment_point);
+			sha.input(&our_payment_point.serialize());
 		}
 		let res = Sha256::from_engine(sha).into_inner();
 
@@ -978,9 +978,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if value_to_b >= (dust_limit_satoshis as i64) {
 			log_trace!(self, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
 			let static_payment_pk = if local {
-				self.their_pubkeys.as_ref().unwrap().payment_basepoint
+				self.their_pubkeys.as_ref().unwrap().payment_point
 			} else {
-				self.local_keys.pubkeys().payment_basepoint
+				self.local_keys.pubkeys().payment_point
 			}.serialize();
 			txouts.push((TxOut {
 				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
@@ -1434,7 +1434,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
 			revocation_basepoint: msg.revocation_basepoint,
-			payment_basepoint: msg.payment_basepoint,
+			payment_point: msg.payment_point,
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			htlc_basepoint: msg.htlc_basepoint
 		};
@@ -3321,7 +3321,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()),
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
-			payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key()),
+			payment_point: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_key()),
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
@@ -3354,7 +3354,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()),
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
-			payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key()),
+			payment_point: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_key()),
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
@@ -4464,13 +4464,13 @@ mod tests {
 		let their_pubkeys = ChannelPublicKeys {
 			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
 			revocation_basepoint: PublicKey::from_slice(&hex::decode("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap(),
-			payment_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
+			payment_point: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
 			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
 			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
 		};
 		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
 
-		assert_eq!(their_pubkeys.payment_basepoint.serialize()[..],
+		assert_eq!(their_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
 
 		assert_eq!(their_pubkeys.funding_pubkey.serialize()[..],

@@ -53,7 +53,7 @@ impl EnforcingChannelKeys {
 impl ChannelKeys for EnforcingChannelKeys {
 	fn funding_key(&self) -> &SecretKey { self.inner.funding_key() }
 	fn revocation_base_key(&self) -> &SecretKey { self.inner.revocation_base_key() }
-	fn payment_base_key(&self) -> &SecretKey { self.inner.payment_base_key() }
+	fn payment_key(&self) -> &SecretKey { self.inner.payment_key() }
 	fn delayed_payment_base_key(&self) -> &SecretKey { self.inner.delayed_payment_base_key() }
 	fn htlc_base_key(&self) -> &SecretKey { self.inner.htlc_base_key() }
 	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }

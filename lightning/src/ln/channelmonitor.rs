@@ -1042,8 +1042,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
-		let payment_base_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_basepoint.serialize());
-		let remote_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_base_key_hash[..]).into_script();
+		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
+		let remote_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
 
 		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
 
@@ -2130,7 +2130,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			} else if self.remote_payment_script == outp.script_pubkey {
 				spendable_output = Some(SpendableOutputDescriptor::DynamicOutputP2WPKH {
 					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
-					key: self.keys.payment_base_key().clone(),
+					key: self.keys.payment_key().clone(),
 					output: outp.clone(),
 				});
 				break;

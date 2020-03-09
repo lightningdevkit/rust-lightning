@@ -196,9 +196,10 @@ pub trait ChannelKeys : Send+Clone {
 	fn funding_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key for blinded revocation pubkey
 	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key used in to_remote output of remote commitment tx
-	/// (and also as part of obscured commitment number)
-	fn payment_base_key<'a>(&'a self) -> &'a SecretKey;
+	/// Gets the local secret key used in the to_remote output of remote commitment tx (ie the
+	/// output to us in transactions our counterparty broadcasts).
+	/// Also as part of obscured commitment number.
+	fn payment_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key used in HTLC-Success/HTLC-Timeout txn and to_local output
 	fn delayed_payment_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local htlc secret key used in commitment tx htlc outputs
@@ -275,8 +276,8 @@ pub struct InMemoryChannelKeys {
 	funding_key: SecretKey,
 	/// Local secret key for blinded revocation pubkey
 	revocation_base_key: SecretKey,
-	/// Local secret key used in commitment tx htlc outputs
-	payment_base_key: SecretKey,
+	/// Local secret key used for our balance in remote-broadcasted commitment transactions
+	payment_key: SecretKey,
 	/// Local secret key used in HTLC tx
 	delayed_payment_base_key: SecretKey,
 	/// Local htlc secret key used in commitment tx htlc outputs
@@ -297,19 +298,19 @@ impl InMemoryChannelKeys {
 		secp_ctx: &Secp256k1<C>,
 		funding_key: SecretKey,
 		revocation_base_key: SecretKey,
-		payment_base_key: SecretKey,
+		payment_key: SecretKey,
 		delayed_payment_base_key: SecretKey,
 		htlc_base_key: SecretKey,
 		commitment_seed: [u8; 32],
 		channel_value_satoshis: u64) -> InMemoryChannelKeys {
 		let local_channel_pubkeys =
 			InMemoryChannelKeys::make_local_keys(secp_ctx, &funding_key, &revocation_base_key,
-			                                     &payment_base_key, &delayed_payment_base_key,
+			                                     &payment_key, &delayed_payment_base_key,
 			                                     &htlc_base_key);
 		InMemoryChannelKeys {
 			funding_key,
 			revocation_base_key,
-			payment_base_key,
+			payment_key,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -322,14 +323,14 @@ impl InMemoryChannelKeys {
 	fn make_local_keys<C: Signing>(secp_ctx: &Secp256k1<C>,
 	                               funding_key: &SecretKey,
 	                               revocation_base_key: &SecretKey,
-	                               payment_base_key: &SecretKey,
+	                               payment_key: &SecretKey,
 	                               delayed_payment_base_key: &SecretKey,
 	                               htlc_base_key: &SecretKey) -> ChannelPublicKeys {
 		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
 		ChannelPublicKeys {
 			funding_pubkey: from_secret(&funding_key),
 			revocation_basepoint: from_secret(&revocation_base_key),
-			payment_basepoint: from_secret(&payment_base_key),
+			payment_point: from_secret(&payment_key),
 			delayed_payment_basepoint: from_secret(&delayed_payment_base_key),
 			htlc_basepoint: from_secret(&htlc_base_key),
 		}
@@ -339,7 +340,7 @@ impl InMemoryChannelKeys {
 impl ChannelKeys for InMemoryChannelKeys {
 	fn funding_key(&self) -> &SecretKey { &self.funding_key }
 	fn revocation_base_key(&self) -> &SecretKey { &self.revocation_base_key }
-	fn payment_base_key(&self) -> &SecretKey { &self.payment_base_key }
+	fn payment_key(&self) -> &SecretKey { &self.payment_key }
 	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
@@ -424,7 +425,7 @@ impl Writeable for InMemoryChannelKeys {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.funding_key.write(writer)?;
 		self.revocation_base_key.write(writer)?;
-		self.payment_base_key.write(writer)?;
+		self.payment_key.write(writer)?;
 		self.delayed_payment_base_key.write(writer)?;
 		self.htlc_base_key.write(writer)?;
 		self.commitment_seed.write(writer)?;
@@ -439,7 +440,7 @@ impl Readable for InMemoryChannelKeys {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let funding_key = Readable::read(reader)?;
 		let revocation_base_key = Readable::read(reader)?;
-		let payment_base_key = Readable::read(reader)?;
+		let payment_key = Readable::read(reader)?;
 		let delayed_payment_base_key = Readable::read(reader)?;
 		let htlc_base_key = Readable::read(reader)?;
 		let commitment_seed = Readable::read(reader)?;
@@ -448,13 +449,13 @@ impl Readable for InMemoryChannelKeys {
 		let secp_ctx = Secp256k1::signing_only();
 		let local_channel_pubkeys =
 			InMemoryChannelKeys::make_local_keys(&secp_ctx, &funding_key, &revocation_base_key,
-			                                     &payment_base_key, &delayed_payment_base_key,
+			                                     &payment_key, &delayed_payment_base_key,
 			                                     &htlc_base_key);
 
 		Ok(InMemoryChannelKeys {
 			funding_key,
 			revocation_base_key,
-			payment_base_key,
+			payment_key,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
@@ -600,15 +601,15 @@ impl KeysInterface for KeysManager {
 		}
 		let funding_key = key_step!(b"funding key", commitment_seed);
 		let revocation_base_key = key_step!(b"revocation base key", funding_key);
-		let payment_base_key = key_step!(b"payment base key", revocation_base_key);
-		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_base_key);
+		let payment_key = key_step!(b"payment key", revocation_base_key);
+		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 
 		InMemoryChannelKeys::new(
 			&self.secp_ctx,
 			funding_key,
 			revocation_base_key,
-			payment_base_key,
+			payment_key,
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
