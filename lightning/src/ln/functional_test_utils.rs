@@ -1038,7 +1038,7 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for _ in 0..node_count {
-		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), broadcasted_txn: Mutex::new(HashMap::new())};
+		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator });
 	}
