@@ -4517,6 +4517,7 @@ mod tests {
 
 				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), their_signature.clone(), &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
 				let local_sig = chan_keys.sign_local_commitment(&localtx, &chan.secp_ctx).unwrap();
+				assert_eq!(Signature::from_der(&hex::decode($our_sig_hex).unwrap()[..]).unwrap(), local_sig);
 
 				assert_eq!(serialize(&localtx.add_local_sig(&redeemscript, local_sig))[..],
 						hex::decode($tx_hex).unwrap()[..]);
@@ -4549,6 +4550,8 @@ mod tests {
 					while (htlc_sig.1).1.is_none() { htlc_sig = htlc_sig_iter.next().unwrap(); }
 					assert_eq!((htlc_sig.0).0.transaction_output_index, Some($htlc_idx));
 
+					let our_signature = Signature::from_der(&hex::decode($our_htlc_sig_hex).unwrap()[..]).unwrap();
+					assert_eq!(Some(our_signature), *(htlc_sig.1).1);
 					assert_eq!(serialize(&localtx.get_signed_htlc_tx((htlc_sig.1).0, &(htlc_sig.1).1.unwrap(), &preimage, chan.their_to_self_delay))[..],
 							hex::decode($htlc_tx_hex).unwrap()[..]);
 				})*
