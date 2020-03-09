@@ -11,11 +11,13 @@ use bitcoin::util::bip143;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use secp256k1::Secp256k1;
+use secp256k1::key::PublicKey;
 use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest, Storage};
 use ln::chan_utils::HTLCType;
+use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
@@ -467,13 +469,14 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
 					amt += *amount;
 				},
-				&InputMaterial::LocalHTLC { .. } => { return None; }
+				&InputMaterial::LocalHTLC { .. } => {
+					dynamic_fee = false;
+				},
 				&InputMaterial::Funding { .. } => {
 					dynamic_fee = false;
 				}
 			}
 		}
-
 		if dynamic_fee {
 			let predicted_weight = bumped_tx.get_weight() + inputs_witnesses_weight;
 			let mut new_feerate;
@@ -535,11 +538,29 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		} else {
 			for (_, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::LocalHTLC { .. } => {
-						//TODO : Given that Local Commitment Transaction and HTLC-Timeout/HTLC-Success are counter-signed by peer, we can't
-						// RBF them. Need a Lightning specs change and package relay modification :
-						// https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
-						return None;
+					&InputMaterial::LocalHTLC { ref their_sig, ref preimage, ref amount, ref feerate_per_kw, ref their_to_self_delay, ref htlc, ref per_commitment_point, ref their_htlc_key, ref their_revocation_key } => {
+						macro_rules! ignore_error {
+							( $thing : expr ) => {
+								match $thing {
+									Ok(a) => a,
+									Err(_) => return None,
+								}
+							};
+						}
+
+						let delayed_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &self.key_storage.delayed_payment_base_key));
+						let delayed_payment_pubkey = PublicKey::from_secret_key(&self.secp_ctx, &delayed_payment_key);
+						let mut htlc_tx = chan_utils::build_htlc_transaction(&outp.txid, *feerate_per_kw, *their_to_self_delay, htlc, &delayed_payment_pubkey, &their_revocation_key);
+						let a_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &self.key_storage.keys.pubkeys().htlc_basepoint));
+						let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &their_htlc_key));
+						match chan_utils::sign_htlc_transaction(&mut htlc_tx, their_sig, preimage, htlc, &a_htlc_key, &b_htlc_key, &their_revocation_key, &per_commitment_point, &self.key_storage.htlc_base_key, &self.secp_ctx) {
+							Ok(res) => res,
+							Err(_) => continue,
+						};
+						let feerate = (amount - htlc_tx.output[0].value) * 1000 / htlc_tx.get_weight() as u64;
+						// Timer set to $NEVER given we can't bump tx without anchor outputs
+						log_trace!(self, "Going to broadcast Local HTLC-{} claiming HTLC output {} from {}...", if preimage.is_some() { "Success" } else { "Timeout" }, outp.vout, outp.txid);
+						return Some((None, feerate, htlc_tx));
 					},
 					&InputMaterial::Funding { ref local_tx_remote_signed, ref channel_value } => {
 						let mut local_tx = local_tx_remote_signed.clone();
