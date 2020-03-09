@@ -47,8 +47,6 @@ pub enum DecodeError {
 	InvalidValue,
 	/// Buffer too short
 	ShortRead,
-	/// node_announcement included more than one address of a given type!
-	ExtraAddressesPerType,
 	/// A length descriptor in the packet didn't describe the later data correctly
 	BadLengthDescriptor,
 	/// Error from std::io
@@ -304,6 +302,9 @@ impl NetAddress {
 			&NetAddress::OnionV3 { .. } => { 37 },
 		}
 	}
+
+	/// The maximum length of any address descriptor, not including the 1-byte type
+	pub(crate) const MAX_LEN: u16 = 37;
 }
 
 impl Writeable for NetAddress {
@@ -599,10 +600,11 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 	/// Gets a subset of the channel announcements and updates required to dump our routing table
 	/// to a remote node, starting at the short_channel_id indicated by starting_point and
-	/// including batch_amount entries.
+	/// including the batch_amount entries immediately higher in numerical value than starting_point.
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, ChannelUpdate, ChannelUpdate)>;
 	/// Gets a subset of the node announcements required to dump our routing table to a remote node,
-	/// starting at the node *after* the provided publickey and including batch_amount entries.
+	/// starting at the node *after* the provided publickey and including batch_amount entries
+	/// immediately higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
 	/// If None is provided for starting_point, we start at the first node.
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
 	/// Returns whether a full sync should be requested from a peer.
@@ -677,7 +679,6 @@ impl Error for DecodeError {
 			DecodeError::UnknownRequiredFeature => "Unknown required feature preventing decode",
 			DecodeError::InvalidValue => "Nonsense bytes didn't map to the type they were interpreted as",
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
-			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 			DecodeError::Io(ref e) => e.description(),
 		}
@@ -1209,8 +1210,7 @@ impl Writeable for UnsignedNodeAnnouncement {
 		self.alias.write(w)?;
 
 		let mut addrs_to_encode = self.addresses.clone();
-		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
-		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
+		addrs_to_encode.sort_by(|a, b| { a.get_id().cmp(&b.get_id()) });
 		let mut addr_len = 0;
 		for addr in &addrs_to_encode {
 			addr_len += 1 + addr.len();
@@ -1235,7 +1235,8 @@ impl Readable for UnsignedNodeAnnouncement {
 		let alias: [u8; 32] = Readable::read(r)?;
 
 		let addr_len: u16 = Readable::read(r)?;
-		let mut addresses: Vec<NetAddress> = Vec::with_capacity(4);
+		let mut addresses: Vec<NetAddress> = Vec::new();
+		let mut highest_addr_type = 0;
 		let mut addr_readpos = 0;
 		let mut excess = false;
 		let mut excess_byte = 0;
@@ -1243,28 +1244,11 @@ impl Readable for UnsignedNodeAnnouncement {
 			if addr_len <= addr_readpos { break; }
 			match Readable::read(r) {
 				Ok(Ok(addr)) => {
-					match addr {
-						NetAddress::IPv4 { .. } => {
-							if addresses.len() > 0 {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::IPv6 { .. } => {
-							if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::OnionV2 { .. } => {
-							if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::OnionV3 { .. } => {
-							if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
+					if addr.get_id() < highest_addr_type {
+						// Addresses must be sorted in increasing order
+						return Err(DecodeError::InvalidValue);
 					}
+					highest_addr_type = addr.get_id();
 					if addr_len < addr_readpos + 1 + addr.len() {
 						return Err(DecodeError::BadLengthDescriptor);
 					}
@@ -1311,7 +1295,7 @@ impl Readable for UnsignedNodeAnnouncement {
 
 impl_writeable_len_match!(NodeAnnouncement, {
 		{ NodeAnnouncement { contents: UnsignedNodeAnnouncement { ref features, ref addresses, ref excess_address_data, ref excess_data, ..}, .. },
-			64 + 76 + features.byte_count() + addresses.len()*38 + excess_address_data.len() + excess_data.len() }
+			64 + 76 + features.byte_count() + addresses.len()*(NetAddress::MAX_LEN as usize + 1) + excess_address_data.len() + excess_data.len() }
 	}, {
 	signature,
 	contents

@@ -133,11 +133,20 @@ impl Peer {
 	/// announcements/updates for the given channel_id then we will send it when we get to that
 	/// point and we shouldn't send it yet to avoid sending duplicate updates. If we've already
 	/// sent the old versions, we should send the update, and so return true here.
-	fn should_forward_channel(&self, channel_id: u64)->bool{
+	fn should_forward_channel_announcement(&self, channel_id: u64)->bool{
 		match self.sync_status {
 			InitSyncTracker::NoSyncRequested => true,
 			InitSyncTracker::ChannelsSyncing(i) => i < channel_id,
 			InitSyncTracker::NodesSyncing(_) => true,
+		}
+	}
+
+	/// Similar to the above, but for node announcements indexed by node_id.
+	fn should_forward_node_announcement(&self, node_id: PublicKey) -> bool {
+		match self.sync_status {
+			InitSyncTracker::NoSyncRequested => true,
+			InitSyncTracker::ChannelsSyncing(_) => false,
+			InitSyncTracker::NodesSyncing(pk) => pk < node_id,
 		}
 	}
 }
@@ -586,10 +595,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 														log_debug!(self, "Deserialization failed due to shortness of message");
 														return Err(PeerHandleError { no_connection_possible: false });
 													}
-													msgs::DecodeError::ExtraAddressesPerType => {
-														log_debug!(self, "Error decoding message, ignoring due to lnd spec incompatibility. See https://github.com/lightningnetwork/lnd/issues/1407");
-														continue;
-													}
 													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
 												}
@@ -958,7 +963,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
 								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
-										!peer.should_forward_channel(msg.contents.short_channel_id) {
+										!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 									continue
 								}
 								match peer.their_node_id {
@@ -975,6 +980,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 							}
 						}
 					},
+					MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
+						log_trace!(self, "Handling BroadcastNodeAnnouncement event in peer_handler");
+						if self.message_handler.route_handler.handle_node_announcement(msg).is_ok() {
+							let encoded_msg = encode_msg!(msg);
+
+							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
+								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+										!peer.should_forward_node_announcement(msg.contents.node_id) {
+									continue
+								}
+								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
+								self.do_attempt_write_data(&mut (*descriptor).clone(), peer);
+							}
+						}
+					},
 					MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 						log_trace!(self, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_update(msg).is_ok() {
@@ -982,7 +1002,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
 								if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
-										!peer.should_forward_channel(msg.contents.short_channel_id)  {
+										!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 									continue
 								}
 								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
