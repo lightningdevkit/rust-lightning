@@ -14,7 +14,7 @@ use bitcoin_hashes::ripemd160::Hash as Ripemd160;
 use bitcoin_hashes::hash160::Hash as Hash160;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
-use ln::channelmanager::PaymentHash;
+use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 use util::byte_utils;
@@ -22,6 +22,10 @@ use util::byte_utils;
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::{Secp256k1, Signature};
 use secp256k1;
+
+use std::{cmp, mem};
+
+const MAX_ALLOC_SIZE: usize = 64*1024;
 
 pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 pub(super) const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
@@ -480,7 +484,11 @@ pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_s
 /// to broadcast. Eventually this will require a signer which is possibly external, but for now we
 /// just pass in the SecretKeys required.
 pub struct LocalCommitmentTransaction {
-	tx: Transaction
+	tx: Transaction,
+	//TODO: modify Channel methods to integrate HTLC material at LocalCommitmentTransaction generation to drop Option here
+	local_keys: Option<TxCreationKeys>,
+	feerate_per_kw: Option<u64>,
+	per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<Transaction>)>
 }
 impl LocalCommitmentTransaction {
 	#[cfg(test)]
@@ -499,7 +507,11 @@ impl LocalCommitmentTransaction {
 			input: vec![dummy_input],
 			output: Vec::new(),
 			lock_time: 0,
-		} }
+		},
+			local_keys: None,
+			feerate_per_kw: None,
+			per_htlc: Vec::new()
+		}
 	}
 
 	/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
@@ -520,7 +532,11 @@ impl LocalCommitmentTransaction {
 			tx.input[0].witness.push(Vec::new());
 		}
 
-		Self { tx }
+		Self { tx,
+			local_keys: None,
+			feerate_per_kw: None,
+			per_htlc: Vec::new()
+		}
 	}
 
 	/// Get the txid of the local commitment transaction contained in this
@@ -577,6 +593,67 @@ impl LocalCommitmentTransaction {
 		assert!(self.has_local_sig());
 		&self.tx
 	}
+
+	/// Set HTLC cache to generate any local HTLC transaction spending one of htlc ouput
+	/// from this local commitment transaction
+	pub(crate) fn set_htlc_cache(&mut self, local_keys: TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<Transaction>)>) {
+		self.local_keys = Some(local_keys);
+		self.feerate_per_kw = Some(feerate_per_kw);
+		self.per_htlc = htlc_outputs;
+	}
+
+	/// Add local signature for a htlc transaction, do nothing if a cached signed transaction is
+	/// already present
+	pub fn add_htlc_sig<T: secp256k1::Signing>(&mut self, htlc_base_key: &SecretKey, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
+		if self.local_keys.is_none() || self.feerate_per_kw.is_none() { return; }
+		let local_keys = self.local_keys.as_ref().unwrap();
+		let txid = self.txid();
+		for this_htlc in self.per_htlc.iter_mut() {
+			if this_htlc.0.transaction_output_index.unwrap() == htlc_index {
+				if this_htlc.2.is_some() { return; } // we already have a cached htlc transaction at provided index
+				let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw.unwrap(), local_csv, &this_htlc.0, &local_keys.a_delayed_payment_key, &local_keys.revocation_key);
+				if !this_htlc.0.offered && preimage.is_none() { return; } // if we don't have preimage for HTLC-Success, don't try to generate
+				let htlc_secret = if !this_htlc.0.offered { preimage } else { None }; // if we have a preimage for HTLC-Timeout, don't use it that's likely a duplicate HTLC hash
+				if this_htlc.1.is_none() { return; } // we don't have any remote signature for this htlc
+				if htlc_tx.input.len() != 1 { return; }
+				if htlc_tx.input[0].witness.len() != 0 { return; }
+
+				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &local_keys.a_htlc_key, &local_keys.b_htlc_key, &local_keys.revocation_key);
+
+				if let Ok(our_htlc_key) = derive_private_key(secp_ctx, &local_keys.per_commitment_point, htlc_base_key) {
+					let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, this_htlc.0.amount_msat / 1000)[..]);
+					let our_sig = secp_ctx.sign(&sighash, &our_htlc_key);
+
+					htlc_tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
+
+					htlc_tx.input[0].witness.push(this_htlc.1.unwrap().serialize_der().to_vec());
+					htlc_tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+					htlc_tx.input[0].witness[1].push(SigHashType::All as u8);
+					htlc_tx.input[0].witness[2].push(SigHashType::All as u8);
+
+					if this_htlc.0.offered {
+						htlc_tx.input[0].witness.push(Vec::new());
+						assert!(htlc_secret.is_none());
+					} else {
+						htlc_tx.input[0].witness.push(htlc_secret.unwrap().0.to_vec());
+					}
+
+					htlc_tx.input[0].witness.push(htlc_redeemscript.as_bytes().to_vec());
+
+					this_htlc.2 = Some(htlc_tx);
+				} else { return; }
+			}
+		}
+	}
+	/// Expose raw htlc transaction, guarante witness is complete if non-empty
+	pub fn htlc_with_valid_witness(&self, htlc_index: u32) -> &Option<Transaction> {
+		for this_htlc in self.per_htlc.iter() {
+			if this_htlc.0.transaction_output_index.unwrap() == htlc_index {
+				return &this_htlc.2;
+			}
+		}
+		&None
+	}
 }
 impl PartialEq for LocalCommitmentTransaction {
 	// We dont care whether we are signed in equality comparison
@@ -592,6 +669,14 @@ impl Writeable for LocalCommitmentTransaction {
 				_ => panic!("local tx must have been well-formed!"),
 			}
 		}
+		self.local_keys.write(writer)?;
+		self.feerate_per_kw.write(writer)?;
+		writer.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
+		for &(ref htlc, ref sig, ref htlc_tx) in self.per_htlc.iter() {
+			htlc.write(writer)?;
+			sig.write(writer)?;
+			htlc_tx.write(writer)?;
+		}
 		Ok(())
 	}
 }
@@ -604,12 +689,27 @@ impl Readable for LocalCommitmentTransaction {
 				_ => return Err(DecodeError::InvalidValue),
 			},
 		};
+		let local_keys = Readable::read(reader)?;
+		let feerate_per_kw = Readable::read(reader)?;
+		let htlcs_count: u64 = Readable::read(reader)?;
+		let mut per_htlc = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / mem::size_of::<(HTLCOutputInCommitment, Option<Signature>, Option<Transaction>)>()));
+		for _ in 0..htlcs_count {
+			let htlc: HTLCOutputInCommitment = Readable::read(reader)?;
+			let sigs = Readable::read(reader)?;
+			let htlc_tx = Readable::read(reader)?;
+			per_htlc.push((htlc, sigs, htlc_tx));
+		}
 
 		if tx.input.len() != 1 {
 			// Ensure tx didn't hit the 0-input ambiguity case.
 			return Err(DecodeError::InvalidValue);
 		}
-		Ok(Self { tx })
+		Ok(Self {
+			tx,
+			local_keys,
+			feerate_per_kw,
+			per_htlc,
+		})
 	}
 }
 

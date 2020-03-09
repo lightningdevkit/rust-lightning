@@ -10,21 +10,20 @@ use bitcoin::util::bip143;
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
-use secp256k1::{Secp256k1, Signature};
+use secp256k1::Secp256k1;
 use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use ln::channelmanager::{HTLCSource, PaymentPreimage};
-use ln::chan_utils;
-use ln::chan_utils::{HTLCType, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment};
+use ln::channelmanager::PaymentPreimage;
+use ln::chan_utils::{HTLCType, LocalCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable};
 use util::byte_utils;
 
-use std::collections::{HashMap, hash_map, HashSet};
+use std::collections::{HashMap, hash_map};
 use std::sync::Arc;
 use std::cmp;
 use std::ops::Deref;
@@ -47,15 +46,6 @@ enum OnchainEvent {
 		outpoint: BitcoinOutPoint,
 		input_material: InputMaterial,
 	}
-}
-
-/// Cache public keys and feerate used to compute any HTLC transaction.
-/// We only keep state for latest 2 commitment transactions as we should
-/// never have to generate HTLC txn for revoked local commitment
-struct HTLCTxCache {
-	local_keys: TxCreationKeys,
-	feerate_per_kw: u64,
-	per_htlc: HashMap<u32, (HTLCOutputInCommitment, Option<Signature>)>
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -155,8 +145,6 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	funding_redeemscript: Script,
 	local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
-	current_htlc_cache: Option<HTLCTxCache>,
-	prev_htlc_cache: Option<HTLCTxCache>,
 	local_csv: u16,
 
 	key_storage: ChanSigner,
@@ -201,36 +189,6 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.local_commitment.write(writer)?;
 		self.prev_local_commitment.write(writer)?;
 
-		macro_rules! serialize_htlc_cache {
-			($cache: expr) => {
-				$cache.local_keys.write(writer)?;
-				$cache.feerate_per_kw.write(writer)?;
-				writer.write_all(&byte_utils::be64_to_array($cache.per_htlc.len() as u64))?;
-				for (_, &(ref htlc, ref sig)) in $cache.per_htlc.iter() {
-					htlc.write(writer)?;
-					if let &Some(ref their_sig) = sig {
-						1u8.write(writer)?;
-						writer.write_all(&their_sig.serialize_compact())?;
-					} else {
-						0u8.write(writer)?;
-					}
-				}
-			}
-		}
-
-		if let Some(ref current) = self.current_htlc_cache {
-			writer.write_all(&[1; 1])?;
-			serialize_htlc_cache!(current);
-		} else {
-			writer.write_all(&[0; 1])?;
-		}
-
-		if let Some(ref prev) = self.prev_htlc_cache {
-			writer.write_all(&[1; 1])?;
-			serialize_htlc_cache!(prev);
-		} else {
-			writer.write_all(&[0; 1])?;
-		}
 		self.local_csv.write(writer)?;
 
 		self.key_storage.write(writer)?;
@@ -274,49 +232,10 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
 		let funding_redeemscript = Readable::read(reader)?;
+
 		let local_commitment = Readable::read(reader)?;
 		let prev_local_commitment = Readable::read(reader)?;
 
-		macro_rules! read_htlc_cache {
-			() => {
-				{
-					let local_keys = Readable::read(reader)?;
-					let feerate_per_kw = Readable::read(reader)?;
-					let htlcs_count: u64 = Readable::read(reader)?;
-					let mut per_htlc = HashMap::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
-					for _ in 0..htlcs_count {
-						let htlc: HTLCOutputInCommitment = Readable::read(reader)?;
-						let sigs = match <u8 as Readable>::read(reader)? {
-							0 => None,
-							1 => Some(Readable::read(reader)?),
-							_ => return Err(DecodeError::InvalidValue),
-						};
-						per_htlc.insert(htlc.transaction_output_index.unwrap(), (htlc, sigs));
-					}
-					HTLCTxCache {
-						local_keys,
-						feerate_per_kw,
-						per_htlc
-					}
-				}
-			}
-		}
-
-		let current_htlc_cache = match <u8 as Readable>::read(reader)? {
-			0 => None,
-			1 => {
-				Some(read_htlc_cache!())
-			}
-			_ => return Err(DecodeError::InvalidValue),
-		};
-
-		let prev_htlc_cache = match <u8 as Readable>::read(reader)? {
-			0 => None,
-			1 => {
-				Some(read_htlc_cache!())
-			}
-			_ => return Err(DecodeError::InvalidValue),
-		};
 		let local_csv = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
@@ -369,8 +288,6 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 			funding_redeemscript,
 			local_commitment,
 			prev_local_commitment,
-			current_htlc_cache,
-			prev_htlc_cache,
 			local_csv,
 			key_storage,
 			claimable_outpoints,
@@ -392,8 +309,6 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			funding_redeemscript,
 			local_commitment: None,
 			prev_local_commitment: None,
-			current_htlc_cache: None,
-			prev_htlc_cache: None,
 			local_csv,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
@@ -451,7 +366,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn generate_claim_tx<F: Deref>(&self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F) -> Option<(Option<u32>, u64, Transaction)>
 		where F::Target: FeeEstimator
 	{
 		if cached_claim_datas.per_input_material.len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
@@ -530,13 +445,14 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
 					amt += *amount;
 				},
-				&InputMaterial::LocalHTLC { .. } => { return None; }
+				&InputMaterial::LocalHTLC { .. } => {
+					dynamic_fee = false;
+				},
 				&InputMaterial::Funding { .. } => {
 					dynamic_fee = false;
 				}
 			}
 		}
-
 		if dynamic_fee {
 			let predicted_weight = bumped_tx.get_weight() + inputs_witnesses_weight;
 			let mut new_feerate;
@@ -598,16 +514,31 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		} else {
 			for (_, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::LocalHTLC { .. } => {
-						//TODO : Given that Local Commitment Transaction and HTLC-Timeout/HTLC-Success are counter-signed by peer, we can't
-						// RBF them. Need a Lightning specs change and package relay modification :
-						// https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
+					&InputMaterial::LocalHTLC { ref preimage, ref amount } => {
+						let mut htlc_tx = None;
+						if let Some(ref mut local_commitment) = self.local_commitment {
+							if local_commitment.txid() == outp.txid {
+								self.key_storage.sign_htlc_transaction(local_commitment, outp.vout, *preimage, self.local_csv, &self.secp_ctx);
+								htlc_tx = local_commitment.htlc_with_valid_witness(outp.vout).clone();
+							}
+						}
+						if let Some(ref mut prev_local_commitment) = self.prev_local_commitment {
+							if prev_local_commitment.txid() == outp.txid {
+								self.key_storage.sign_htlc_transaction(prev_local_commitment, outp.vout, *preimage, self.local_csv, &self.secp_ctx);
+								htlc_tx = prev_local_commitment.htlc_with_valid_witness(outp.vout).clone();
+							}
+						}
+						if let Some(htlc_tx) = htlc_tx {
+							let feerate = (amount - htlc_tx.output[0].value) * 1000 / htlc_tx.get_weight() as u64;
+							// Timer set to $NEVER given we can't bump tx without anchor outputs
+							log_trace!(self, "Going to broadcast Local HTLC-{} claiming HTLC output {} from {}...", if preimage.is_some() { "Success" } else { "Timeout" }, outp.vout, outp.txid);
+							return Some((None, feerate, htlc_tx));
+						}
 						return None;
 					},
 					&InputMaterial::Funding { ref channel_value } => {
-						if self.local_commitment.is_some() {
-							let mut local_commitment = self.local_commitment.clone().unwrap();
-							self.key_storage.sign_local_commitment(&mut local_commitment, &self.funding_redeemscript, *channel_value, &self.secp_ctx);
+						if let Some(ref mut local_commitment) = self.local_commitment {
+							self.key_storage.sign_local_commitment(local_commitment, &self.funding_redeemscript, *channel_value, &self.secp_ctx);
 							let signed_tx = local_commitment.with_valid_witness().clone();
 							let mut amt_outputs = 0;
 							for outp in signed_tx.output.iter() {
@@ -673,7 +604,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			}
 		}
 
-		let mut bump_candidates = HashSet::new();
+		let mut bump_candidates = HashMap::new();
 		for tx in txn_matched {
 			// Scan all input to verify is one of the outpoint spent is of interest for us
 			let mut claimed_outputs_material = Vec::new();
@@ -730,7 +661,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
 							if at_least_one_drop {
-								bump_candidates.insert(first_claim_txid_height.0.clone());
+								bump_candidates.insert(first_claim_txid_height.0.clone(), claim_material.clone());
 							}
 						}
 						break; //No need to iterate further, either tx is our or their
@@ -778,27 +709,25 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		for (first_claim_txid, ref claim_data) in self.pending_claim_requests.iter() {
 			if let Some(h) = claim_data.height_timer {
 				if h == height {
-					bump_candidates.insert(*first_claim_txid);
+					bump_candidates.insert(*first_claim_txid, (*claim_data).clone());
 				}
 			}
 		}
 
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(self, "Bumping {} candidates", bump_candidates.len());
-		for first_claim_txid in bump_candidates.iter() {
-			if let Some((new_timer, new_feerate)) = {
-				if let Some(claim_material) = self.pending_claim_requests.get(first_claim_txid) {
-					if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
-						log_trace!(self, "Broadcast onchain {}", log_tx!(bump_tx));
-						broadcaster.broadcast_transaction(&bump_tx);
-						Some((new_timer, new_feerate))
-					} else { None }
-				} else { unreachable!(); }
-			} {
-				if let Some(claim_material) = self.pending_claim_requests.get_mut(first_claim_txid) {
-					claim_material.height_timer = new_timer;
-					claim_material.feerate_previous = new_feerate;
-				} else { unreachable!(); }
+		let mut pending_claim_updates = Vec::with_capacity(bump_candidates.len());
+		for (first_claim_txid, claim_material) in bump_candidates.iter() {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
+				log_trace!(self, "Broadcast onchain {}", log_tx!(bump_tx));
+				broadcaster.broadcast_transaction(&bump_tx);
+				pending_claim_updates.push((*first_claim_txid, new_timer, new_feerate));
+			}
+		}
+		for updates in pending_claim_updates {
+			if let Some(claim_material) = self.pending_claim_requests.get_mut(&updates.0) {
+				claim_material.height_timer = updates.1;
+				claim_material.feerate_previous = updates.2;
 			}
 		}
 	}
@@ -850,7 +779,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), ()> {
+	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) -> Result<(), ()> {
 		// To prevent any unsafe state discrepancy between offchain and onchain, once local
 		// commitment transaction has been signed due to an event (either block height for
 		// HTLC-timeout or channel force-closure), don't allow any further update of local
@@ -861,18 +790,6 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 		self.prev_local_commitment = self.local_commitment.take();
 		self.local_commitment = Some(tx);
-		self.prev_htlc_cache = self.current_htlc_cache.take();
-		let mut per_htlc = HashMap::with_capacity(htlc_outputs.len());
-		for htlc in htlc_outputs {
-			if htlc.0.transaction_output_index.is_some() { // Discard dust HTLC as we will never have to generate onchain tx for them
-				per_htlc.insert(htlc.0.transaction_output_index.unwrap(), (htlc.0, htlc.1));
-			}
-		}
-		self.current_htlc_cache = Some(HTLCTxCache {
-			local_keys,
-			feerate_per_kw,
-			per_htlc
-		});
 		Ok(())
 	}
 
@@ -896,18 +813,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	pub(super) fn get_fully_signed_htlc_tx(&mut self, txid: Sha256dHash, htlc_index: u32, preimage: Option<PaymentPreimage>) -> Option<Transaction> {
 		//TODO: store preimage in OnchainTxHandler
-		if let Some(ref local_commitment) = self.local_commitment {
+		if let Some(ref mut local_commitment) = self.local_commitment {
 			if local_commitment.txid() == txid {
-				if let Some(ref htlc_cache) = self.current_htlc_cache {
-					if let Some(htlc) = htlc_cache.per_htlc.get(&htlc_index) {
-						if !htlc.0.offered && preimage.is_none() { return None; }; // If we don't have preimage for HTLC-Success, don't try to generate
-						let htlc_secret = if !htlc.0.offered { preimage } else { None }; // If we have a preimage for a HTLC-Timeout, don't use it that's likely a duplicate HTLC hash
-						let mut htlc_tx = chan_utils::build_htlc_transaction(&txid, htlc_cache.feerate_per_kw, self.local_csv, &htlc.0, &htlc_cache.local_keys.a_delayed_payment_key, &htlc_cache.local_keys.revocation_key);
-						self.key_storage.sign_htlc_transaction(&mut htlc_tx, htlc.1.as_ref().unwrap(), &htlc_secret, &htlc.0, &htlc_cache.local_keys.a_htlc_key, &htlc_cache.local_keys.b_htlc_key, &htlc_cache.local_keys.revocation_key, &htlc_cache.local_keys.per_commitment_point, &self.secp_ctx);
-						return Some(htlc_tx);
-
-					}
-				}
+				self.key_storage.sign_htlc_transaction(local_commitment, htlc_index, preimage, self.local_csv, &self.secp_ctx);
+				return local_commitment.htlc_with_valid_witness(htlc_index).clone();
 			}
 		}
 		None

@@ -89,8 +89,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.unsafe_sign_local_commitment(local_commitment_tx, funding_redeemscript, channel_value_satoshis, secp_ctx);
 	}
 
-	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>) {
-		self.inner.sign_htlc_transaction(htlc_tx, their_sig, preimage, htlc, a_htlc_key, b_htlc_key, revocation_key, per_commitment_point, secp_ctx);
+	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
+		self.inner.sign_htlc_transaction(local_commitment_tx, htlc_index, preimage, local_csv, secp_ctx);
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

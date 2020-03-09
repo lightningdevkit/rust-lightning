@@ -4475,6 +4475,7 @@ mod tests {
 
 		let mut unsigned_tx: (Transaction, Vec<HTLCOutputInCommitment>);
 
+		let mut localtx;
 		macro_rules! test_commitment {
 			( $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr) => {
 				unsigned_tx = {
@@ -4489,7 +4490,7 @@ mod tests {
 				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &redeemscript, chan.channel_value_satoshis)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, chan.their_funding_pubkey()).unwrap();
 
-				let mut localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey());
+				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey());
 				chan_keys.sign_local_commitment(&mut localtx, &redeemscript, chan.channel_value_satoshis, &chan.secp_ctx);
 
 				assert_eq!(serialize(localtx.with_valid_witness())[..],
@@ -4498,11 +4499,11 @@ mod tests {
 		}
 
 		macro_rules! test_htlc_output {
-			( $htlc_idx: expr, $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr ) => {
+			( $htlc_idx: expr, $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr) => {
 				let remote_signature = Signature::from_der(&hex::decode($their_sig_hex).unwrap()[..]).unwrap();
 
 				let ref htlc = unsigned_tx.1[$htlc_idx];
-				let mut htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys, chan.feerate_per_kw);
+				let htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys, chan.feerate_per_kw);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
 				secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
@@ -4519,8 +4520,12 @@ mod tests {
 					assert!(preimage.is_some());
 				}
 
-				chan_keys.sign_htlc_transaction(&mut htlc_tx, &remote_signature, &preimage, &htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, &keys.per_commitment_point, &chan.secp_ctx);
-				assert_eq!(serialize(&htlc_tx)[..],
+				let mut per_htlc = Vec::new();
+				per_htlc.push((htlc.clone(), Some(remote_signature), None));
+				localtx.set_htlc_cache(keys.clone(), chan.feerate_per_kw, per_htlc);
+				chan_keys.sign_htlc_transaction(&mut localtx, $htlc_idx, preimage, chan.their_to_self_delay, &chan.secp_ctx);
+
+				assert_eq!(serialize(localtx.htlc_with_valid_witness($htlc_idx).as_ref().unwrap())[..],
 						hex::decode($tx_hex).unwrap()[..]);
 			};
 		}

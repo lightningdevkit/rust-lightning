@@ -2,7 +2,7 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{Transaction, OutPoint, TxOut, SigHashType};
+use bitcoin::blockdata::transaction::{Transaction, OutPoint, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
@@ -235,8 +235,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
 	/// HTLC-Success transaction, preimage must be set!
 	/// TODO: should be merged with sign_local_commitment as a slice of HTLC transactions to sign
-	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>);
-
+	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>);
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
@@ -373,38 +372,8 @@ impl ChannelKeys for InMemoryChannelKeys {
 		local_commitment_tx.add_local_sig(&self.funding_key, funding_redeemscript, channel_value_satoshis, secp_ctx);
 	}
 
-	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &mut Transaction, their_sig: &Signature, preimage: &Option<PaymentPreimage>, htlc: &HTLCOutputInCommitment, a_htlc_key: &PublicKey, b_htlc_key: &PublicKey, revocation_key: &PublicKey, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>) {
-		if htlc_tx.input.len() != 1 { return; }
-		if htlc_tx.input[0].witness.len() != 0 { return; }
-
-		let htlc_redeemscript = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, a_htlc_key, b_htlc_key, revocation_key);
-
-		if let Ok(our_htlc_key) = chan_utils::derive_private_key(secp_ctx, per_commitment_point, &self.htlc_base_key) {
-			let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
-			let local_tx = PublicKey::from_secret_key(&secp_ctx, &our_htlc_key) == *a_htlc_key;
-			let our_sig = secp_ctx.sign(&sighash, &our_htlc_key);
-
-			htlc_tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
-
-			if local_tx { // b, then a
-				htlc_tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-				htlc_tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-			} else {
-				htlc_tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-				htlc_tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-			}
-			htlc_tx.input[0].witness[1].push(SigHashType::All as u8);
-			htlc_tx.input[0].witness[2].push(SigHashType::All as u8);
-
-			if htlc.offered {
-				htlc_tx.input[0].witness.push(Vec::new());
-				assert!(preimage.is_none());
-			} else {
-				htlc_tx.input[0].witness.push(preimage.unwrap().0.to_vec());
-			}
-
-			htlc_tx.input[0].witness.push(htlc_redeemscript.as_bytes().to_vec());
-		} else { return; }
+	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
+		local_commitment_tx.add_htlc_sig(&self.htlc_base_key, htlc_index, preimage, local_csv, secp_ctx);
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
