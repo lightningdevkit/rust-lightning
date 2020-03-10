@@ -51,6 +51,14 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: BREAKDOWN_TIMEOUT (currently 144), we enforce it as a minimum at channel
 	/// opening so you can tweak config to ask for more security, not less.
 	pub our_to_self_delay: u16,
+	/// Set to the smallest value HTLC we will accept to process.
+	///
+	/// This value is sent to our counterparty on channel-open and we close the channel any time
+	/// our counterparty misbehaves by sending us an HTLC with a value smaller than this.
+	///
+	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
+	/// by the protocol.
+	pub our_htlc_minimum_msat: u64,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -58,6 +66,7 @@ impl Default for ChannelHandshakeConfig {
 		ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
+			our_htlc_minimum_msat: 1,
 		}
 	}
 }

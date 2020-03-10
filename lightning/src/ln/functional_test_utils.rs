@@ -1005,6 +1005,7 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 		let mut default_config = UserConfig::default();
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
+		default_config.own_channel_config.our_htlc_minimum_msat = 1000; // sanitization being done by the sender, to exerce receiver logic we need to lift of limit
 		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator, &cfgs[i].chan_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger.clone(), &cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0).unwrap();
 		chanmgrs.push(node);
 	}
