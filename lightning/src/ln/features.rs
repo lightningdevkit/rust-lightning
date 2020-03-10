@@ -152,9 +152,15 @@ impl NodeFeatures {
 	/// relevant in a node-context features and creates a node-context features from them.
 	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
 		let mut flags = Vec::new();
-		if init_ctx.flags.len() > 0 {
-			// Pull out data_loss_protect and upfront_shutdown_script (bits 0, 1, 4, and 5)
-			flags.push(init_ctx.flags.last().unwrap() & 0b00110011);
+		for (i, feature_byte)in init_ctx.flags.iter().enumerate() {
+			match i {
+				// Blank out initial_routing_sync (feature bits 2/3), gossip_queries (6/7),
+				// gossip_queries_ex (10/11), option_static_remotekey (12/13), and
+				// payment_secret (14/15)
+				0 => flags.push(feature_byte & 0b00110011),
+				1 => flags.push(feature_byte & 0b00000011),
+				_ => (),
+			}
 		}
 		Self { flags, mark: PhantomData, }
 	}
@@ -296,7 +302,7 @@ impl<T: sealed::Context> Readable for Features<T> {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, InitFeatures, NodeFeatures};
+	use super::{ChannelFeatures, InitFeatures, NodeFeatures, Features};
 
 	#[test]
 	fn sanity_test_our_features() {
@@ -329,5 +335,26 @@ mod tests {
 		assert!(features.requires_unknown_bits());
 		features.clear_require_unknown_bits();
 		assert!(!features.requires_unknown_bits());
+	}
+
+	#[test]
+	fn test_node_with_known_relevant_init_flags() {
+		// Create an InitFeatures with initial_routing_sync supported.
+		let mut init_features = InitFeatures::supported();
+		init_features.set_initial_routing_sync();
+
+		// Attempt to pull out non-node-context feature flags from these InitFeatures.
+		let res = NodeFeatures::with_known_relevant_init_flags(&init_features);
+
+		{
+			// Check that the flags are as expected.
+			assert_eq!(res.flags[0], 0b00100010);
+			assert_eq!(res.flags[1], 0b00000010);
+			assert_eq!(res.flags.len(), 2);
+		}
+
+		// Check that the initial_routing_sync feature was correctly blanked out.
+		let new_features: InitFeatures = Features::from_le_bytes(res.flags);
+		assert!(!new_features.initial_routing_sync());
 	}
 }
