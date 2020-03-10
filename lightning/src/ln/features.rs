@@ -150,6 +150,7 @@ impl NodeFeatures {
 
 	/// Takes the flags that we know how to interpret in an init-context features that are also
 	/// relevant in a node-context features and creates a node-context features from them.
+	/// Be sure to blank out features that are unknown to us.
 	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
 		let mut flags = Vec::new();
 		for (i, feature_byte)in init_ctx.flags.iter().enumerate() {
@@ -347,7 +348,8 @@ mod tests {
 		let res = NodeFeatures::with_known_relevant_init_flags(&init_features);
 
 		{
-			// Check that the flags are as expected.
+			// Check that the flags are as expected: optional_data_loss_protect,
+			// option_upfront_shutdown_script, and var_onion_optin set.
 			assert_eq!(res.flags[0], 0b00100010);
 			assert_eq!(res.flags[1], 0b00000010);
 			assert_eq!(res.flags.len(), 2);
