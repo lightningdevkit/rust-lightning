@@ -7315,3 +7315,21 @@ fn test_override_channel_config() {
 	assert_eq!(res.channel_flags, 0);
 	assert_eq!(res.to_self_delay, 200);
 }
+
+#[test]
+fn test_override_0msat_htlc_minimum() {
+	let mut zero_config = UserConfig::default();
+	zero_config.own_channel_config.our_htlc_minimum_msat = 0;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(zero_config.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 16_000_000, 12_000_000, 42, Some(zero_config)).unwrap();
+	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert_eq!(res.htlc_minimum_msat, 1);
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &res);
+	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	assert_eq!(res.htlc_minimum_msat, 1);
+}
