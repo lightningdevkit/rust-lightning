@@ -433,10 +433,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		cmp::max(at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
 	}
 
-	fn derive_our_htlc_minimum_msat(_at_open_channel_feerate_per_kw: u64) -> u64 {
-		1000 // TODO
-	}
-
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError>
 	where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
@@ -519,7 +515,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_max_htlc_value_in_flight_msat: 0,
 			their_channel_reserve_satoshis: 0,
 			their_htlc_minimum_msat: 0,
-			our_htlc_minimum_msat: Channel::<ChanSigner>::derive_our_htlc_minimum_msat(feerate),
+			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			their_to_self_delay: 0,
 			our_to_self_delay: config.own_channel_config.our_to_self_delay,
 			their_max_accepted_htlcs: 0,
@@ -744,7 +740,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			their_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			their_htlc_minimum_msat: msg.htlc_minimum_msat,
-			our_htlc_minimum_msat: Channel::<ChanSigner>::derive_our_htlc_minimum_msat(msg.feerate_per_kw as u64),
+			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			their_to_self_delay: msg.to_self_delay,
 			our_to_self_delay: config.own_channel_config.our_to_self_delay,
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
@@ -1655,6 +1651,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		if msg.amount_msat > self.channel_value_satoshis * 1000 {
 			return Err(ChannelError::Close("Remote side tried to send more than the total value of the channel"));
+		}
+		if msg.amount_msat == 0 {
+			return Err(ChannelError::Close("Remote side tried to send a 0-msat HTLC"));
 		}
 		if msg.amount_msat < self.our_htlc_minimum_msat {
 			return Err(ChannelError::Close("Remote side tried to send less than our minimum HTLC value"));
@@ -3493,6 +3492,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if amount_msat > self.channel_value_satoshis * 1000 {
 			return Err(ChannelError::Ignore("Cannot send more than the total value of the channel"));
 		}
+
+		if amount_msat == 0 {
+			return Err(ChannelError::Ignore("Cannot send 0-msat HTLC"));
+		}
+
 		if amount_msat < self.their_htlc_minimum_msat {
 			return Err(ChannelError::Ignore("Cannot send less than their minimum HTLC value"));
 		}
