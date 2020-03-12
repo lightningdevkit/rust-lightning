@@ -47,8 +47,6 @@ pub enum DecodeError {
 	InvalidValue,
 	/// Buffer too short
 	ShortRead,
-	/// node_announcement included more than one address of a given type!
-	ExtraAddressesPerType,
 	/// A length descriptor in the packet didn't describe the later data correctly
 	BadLengthDescriptor,
 	/// Error from std::io
@@ -304,6 +302,9 @@ impl NetAddress {
 			&NetAddress::OnionV3 { .. } => { 37 },
 		}
 	}
+
+	/// The maximum length of any address descriptor, not including the 1-byte type
+	pub(crate) const MAX_LEN: u16 = 37;
 }
 
 impl Writeable for NetAddress {
@@ -336,9 +337,9 @@ impl Writeable for NetAddress {
 	}
 }
 
-impl<R: ::std::io::Read>  Readable<R> for Result<NetAddress, u8> {
-	fn read(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
-		let byte = <u8 as Readable<R>>::read(reader)?;
+impl Readable for Result<NetAddress, u8> {
+	fn read<R: Read>(reader: &mut R) -> Result<Result<NetAddress, u8>, DecodeError> {
+		let byte = <u8 as Readable>::read(reader)?;
 		match byte {
 			1 => {
 				Ok(Ok(NetAddress::IPv4 {
@@ -599,10 +600,11 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 	/// Gets a subset of the channel announcements and updates required to dump our routing table
 	/// to a remote node, starting at the short_channel_id indicated by starting_point and
-	/// including batch_amount entries.
+	/// including the batch_amount entries immediately higher in numerical value than starting_point.
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, ChannelUpdate, ChannelUpdate)>;
 	/// Gets a subset of the node announcements required to dump our routing table to a remote node,
-	/// starting at the node *after* the provided publickey and including batch_amount entries.
+	/// starting at the node *after* the provided publickey and including batch_amount entries
+	/// immediately higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
 	/// If None is provided for starting_point, we start at the first node.
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
 	/// Returns whether a full sync should be requested from a peer.
@@ -677,7 +679,6 @@ impl Error for DecodeError {
 			DecodeError::UnknownRequiredFeature => "Unknown required feature preventing decode",
 			DecodeError::InvalidValue => "Nonsense bytes didn't map to the type they were interpreted as",
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
-			DecodeError::ExtraAddressesPerType => "More than one address of a single type",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
 			DecodeError::Io(ref e) => e.description(),
 		}
@@ -718,9 +719,9 @@ impl Writeable for OptionalField<Script> {
 	}
 }
 
-impl<R: Read> Readable<R> for OptionalField<Script> {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
-		match <u16 as Readable<R>>::read(r) {
+impl Readable for OptionalField<Script> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		match <u16 as Readable>::read(r) {
 			Ok(len) => {
 				let mut buf = vec![0; len as usize];
 				r.read_exact(&mut buf)?;
@@ -777,14 +778,14 @@ impl Writeable for ChannelReestablish {
 	}
 }
 
-impl<R: Read> Readable<R> for ChannelReestablish{
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ChannelReestablish{
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			next_local_commitment_number: Readable::read(r)?,
 			next_remote_commitment_number: Readable::read(r)?,
 			data_loss_protect: {
-				match <[u8; 32] as Readable<R>>::read(r) {
+				match <[u8; 32] as Readable>::read(r) {
 					Ok(your_last_per_commitment_secret) =>
 						OptionalField::Present(DataLossProtect {
 							your_last_per_commitment_secret,
@@ -846,8 +847,8 @@ impl Writeable for Init {
 	}
 }
 
-impl<R: Read> Readable<R> for Init {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Init {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
 		Ok(Init {
@@ -940,8 +941,8 @@ impl Writeable for OnionPacket {
 	}
 }
 
-impl<R: Read> Readable<R> for OnionPacket {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for OnionPacket {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(OnionPacket {
 			version: Readable::read(r)?,
 			public_key: {
@@ -993,8 +994,8 @@ impl Writeable for OnionHopData {
 	}
 }
 
-impl<R: Read> Readable<R> for OnionHopData {
-	fn read(mut r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for OnionHopData {
+	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
 		let v: VarInt = Decodable::consensus_decode(&mut r)
 			.map_err(|e| match e {
@@ -1049,8 +1050,8 @@ impl Writeable for Ping {
 	}
 }
 
-impl<R: Read> Readable<R> for Ping {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Ping {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Ping {
 			ponglen: Readable::read(r)?,
 			byteslen: {
@@ -1070,8 +1071,8 @@ impl Writeable for Pong {
 	}
 }
 
-impl<R: Read> Readable<R> for Pong {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for Pong {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Pong {
 			byteslen: {
 				let byteslen = Readable::read(r)?;
@@ -1097,8 +1098,8 @@ impl Writeable for UnsignedChannelAnnouncement {
 	}
 }
 
-impl<R: Read> Readable<R> for UnsignedChannelAnnouncement {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for UnsignedChannelAnnouncement {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			features: Readable::read(r)?,
 			chain_hash: Readable::read(r)?,
@@ -1143,8 +1144,8 @@ impl Writeable for UnsignedChannelUpdate {
 	}
 }
 
-impl<R: Read> Readable<R> for UnsignedChannelUpdate {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for UnsignedChannelUpdate {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
@@ -1181,12 +1182,12 @@ impl Writeable for ErrorMessage {
 	}
 }
 
-impl<R: Read> Readable<R> for ErrorMessage {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for ErrorMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
-				let mut sz: usize = <u16 as Readable<R>>::read(r)? as usize;
+				let mut sz: usize = <u16 as Readable>::read(r)? as usize;
 				let mut data = vec![];
 				let data_len = r.read_to_end(&mut data)?;
 				sz = cmp::min(data_len, sz);
@@ -1209,8 +1210,7 @@ impl Writeable for UnsignedNodeAnnouncement {
 		self.alias.write(w)?;
 
 		let mut addrs_to_encode = self.addresses.clone();
-		addrs_to_encode.sort_unstable_by(|a, b| { a.get_id().cmp(&b.get_id()) });
-		addrs_to_encode.dedup_by(|a, b| { a.get_id() == b.get_id() });
+		addrs_to_encode.sort_by(|a, b| { a.get_id().cmp(&b.get_id()) });
 		let mut addr_len = 0;
 		for addr in &addrs_to_encode {
 			addr_len += 1 + addr.len();
@@ -1225,8 +1225,8 @@ impl Writeable for UnsignedNodeAnnouncement {
 	}
 }
 
-impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
-	fn read(r: &mut R) -> Result<Self, DecodeError> {
+impl Readable for UnsignedNodeAnnouncement {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let features: NodeFeatures = Readable::read(r)?;
 		let timestamp: u32 = Readable::read(r)?;
 		let node_id: PublicKey = Readable::read(r)?;
@@ -1235,7 +1235,8 @@ impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
 		let alias: [u8; 32] = Readable::read(r)?;
 
 		let addr_len: u16 = Readable::read(r)?;
-		let mut addresses: Vec<NetAddress> = Vec::with_capacity(4);
+		let mut addresses: Vec<NetAddress> = Vec::new();
+		let mut highest_addr_type = 0;
 		let mut addr_readpos = 0;
 		let mut excess = false;
 		let mut excess_byte = 0;
@@ -1243,28 +1244,11 @@ impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
 			if addr_len <= addr_readpos { break; }
 			match Readable::read(r) {
 				Ok(Ok(addr)) => {
-					match addr {
-						NetAddress::IPv4 { .. } => {
-							if addresses.len() > 0 {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::IPv6 { .. } => {
-							if addresses.len() > 1 || (addresses.len() == 1 && addresses[0].get_id() != 1) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::OnionV2 { .. } => {
-							if addresses.len() > 2 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 2) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
-						NetAddress::OnionV3 { .. } => {
-							if addresses.len() > 3 || (addresses.len() > 0 && addresses.last().unwrap().get_id() > 3) {
-								return Err(DecodeError::ExtraAddressesPerType);
-							}
-						},
+					if addr.get_id() < highest_addr_type {
+						// Addresses must be sorted in increasing order
+						return Err(DecodeError::InvalidValue);
 					}
+					highest_addr_type = addr.get_id();
 					if addr_len < addr_readpos + 1 + addr.len() {
 						return Err(DecodeError::BadLengthDescriptor);
 					}
@@ -1311,7 +1295,7 @@ impl<R: Read> Readable<R> for UnsignedNodeAnnouncement {
 
 impl_writeable_len_match!(NodeAnnouncement, {
 		{ NodeAnnouncement { contents: UnsignedNodeAnnouncement { ref features, ref addresses, ref excess_address_data, ref excess_data, ..}, .. },
-			64 + 76 + features.byte_count() + addresses.len()*38 + excess_address_data.len() + excess_data.len() }
+			64 + 76 + features.byte_count() + addresses.len()*(NetAddress::MAX_LEN as usize + 1) + excess_address_data.len() + excess_data.len() }
 	}, {
 	signature,
 	contents

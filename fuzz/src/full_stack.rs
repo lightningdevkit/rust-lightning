@@ -136,9 +136,9 @@ impl<'a> Hash for Peer<'a> {
 }
 
 struct MoneyLossDetector<'a> {
-	manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>,
-	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>,
-	handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>>,
+	manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>,
+	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>,
+	handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>>,
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
@@ -150,9 +150,9 @@ struct MoneyLossDetector<'a> {
 }
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
-	           manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>,
-	           monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>>,
-	           handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>>>>) -> Self {
+	           manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>,
+	           monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>,
+	           handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -217,7 +217,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 			// Disconnect all peers
 			for (idx, peer) in self.peers.borrow().iter().enumerate() {
 				if *peer {
-					self.handler.disconnect_event(&Peer{id: idx as u8, peers_connected: &self.peers});
+					self.handler.socket_disconnected(&Peer{id: idx as u8, peers_connected: &self.peers});
 				}
 			}
 
@@ -333,7 +333,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone() as Arc<channelmonitor::ManyChannelMonitor<EnforcingChannelKeys>>, broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
+	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
 	let router = Arc::new(Router::new(PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
@@ -378,13 +378,13 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			2 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				loss_detector.handler.disconnect_event(&Peer{id: peer_id, peers_connected: &peers});
+				loss_detector.handler.socket_disconnected(&Peer{id: peer_id, peers_connected: &peers});
 				peers.borrow_mut()[peer_id as usize] = false;
 			},
 			3 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0]).to_vec()) {
+				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0])) {
 					Ok(res) => assert!(!res),
 					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
 				}
@@ -412,7 +412,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let their_key = get_pubkey!();
 				let chan_value = slice_to_be24(get_slice!(3)) as u64;
 				let push_msat_value = slice_to_be24(get_slice!(3)) as u64;
-				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0).is_err() { return; }
+				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0, None).is_err() { return; }
 			},
 			6 => {
 				let mut channels = channelmanager.list_channels();

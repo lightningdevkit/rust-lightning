@@ -17,6 +17,7 @@ pub mod peers;
 pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;
+pub(crate) mod onchaintx;
 
 #[cfg(feature = "fuzztarget")]
 pub mod peer_channel_encryptor;
@@ -34,3 +35,5 @@ pub(crate) mod functional_test_utils;
 mod functional_tests;
 #[cfg(test)]
 mod chanmon_update_fail_tests;
+#[cfg(test)]
+mod reorg_tests;

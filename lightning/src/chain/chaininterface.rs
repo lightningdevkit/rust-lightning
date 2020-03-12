@@ -403,13 +403,14 @@ impl ChainWatchInterfaceUtil {
 
 #[cfg(test)]
 mod tests {
-	use ln::functional_test_utils::{create_node_cfgs};
+	use ln::functional_test_utils::{create_chanmon_cfgs, create_node_cfgs};
 	use super::{BlockNotifier, ChainListener};
 	use std::ptr;
 
 	#[test]
 	fn register_listener_test() {
-		let node_cfgs = create_node_cfgs(1);
+		let chanmon_cfgs = create_chanmon_cfgs(1);
+		let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
 		assert_eq!(block_notifier.listeners.lock().unwrap().len(), 0);
 		let listener = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
@@ -422,7 +423,8 @@ mod tests {
 
 	#[test]
 	fn unregister_single_listener_test() {
-		let node_cfgs = create_node_cfgs(2);
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
 		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
 		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
@@ -440,7 +442,8 @@ mod tests {
 
 	#[test]
 	fn unregister_single_listener_ref_test() {
-		let node_cfgs = create_node_cfgs(2);
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
 		block_notifier.register_listener(&node_cfgs[0].chan_monitor.simple_monitor as &ChainListener);
 		block_notifier.register_listener(&node_cfgs[1].chan_monitor.simple_monitor as &ChainListener);
@@ -456,7 +459,8 @@ mod tests {
 
 	#[test]
 	fn unregister_multiple_of_the_same_listeners_test() {
-		let node_cfgs = create_node_cfgs(2);
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
 		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
 		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;

@@ -71,8 +71,8 @@ impl Writeable for Route {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for Route {
-	fn read(reader: &mut R) -> Result<Route, DecodeError> {
+impl Readable for Route {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
 		let hops_count: u8 = Readable::read(reader)?;
 		let mut hops = Vec::with_capacity(hops_count as usize);
 		for _ in 0..hops_count {
@@ -156,7 +156,10 @@ struct NodeInfo {
 	lowest_inbound_channel_fee_proportional_millionths: u32,
 
 	features: NodeFeatures,
-	last_update: u32,
+	/// Unlike for channels, we may have a NodeInfo entry before having received a node_update.
+	/// Thus, we have to be able to capture "no update has been received", which we do with an
+	/// Option here.
+	last_update: Option<u32>,
 	rgb: [u8; 3],
 	alias: [u8; 32],
 	addresses: Vec<NetAddress>,
@@ -167,7 +170,7 @@ struct NodeInfo {
 
 impl std::fmt::Display for NodeInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "features: {}, last_update: {}, lowest_inbound_channel_fee_base_msat: {}, lowest_inbound_channel_fee_proportional_millionths: {}, channels: {:?}", log_bytes!(self.features.encode()), self.last_update, self.lowest_inbound_channel_fee_base_msat, self.lowest_inbound_channel_fee_proportional_millionths, &self.channels[..])?;
+		write!(f, "features: {}, last_update: {:?}, lowest_inbound_channel_fee_base_msat: {}, lowest_inbound_channel_fee_proportional_millionths: {}, channels: {:?}", log_bytes!(self.features.encode()), self.last_update, self.lowest_inbound_channel_fee_base_msat, self.lowest_inbound_channel_fee_proportional_millionths, &self.channels[..])?;
 		Ok(())
 	}
 }
@@ -195,8 +198,8 @@ impl Writeable for NodeInfo {
 
 const MAX_ALLOC_SIZE: u64 = 64*1024;
 
-impl<R: ::std::io::Read> Readable<R> for NodeInfo {
-	fn read(reader: &mut R) -> Result<NodeInfo, DecodeError> {
+impl Readable for NodeInfo {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
 		for _ in 0..channels_count {
@@ -261,8 +264,8 @@ impl Writeable for NetworkMap {
 	}
 }
 
-impl<R: ::std::io::Read> Readable<R> for NetworkMap {
-	fn read(reader: &mut R) -> Result<NetworkMap, DecodeError> {
+impl Readable for NetworkMap {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NetworkMap, DecodeError> {
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = BTreeMap::new();
 		for _ in 0..channels_count {
@@ -381,8 +384,8 @@ pub struct RouterReadArgs {
 	pub logger: Arc<Logger>,
 }
 
-impl<R: ::std::io::Read> ReadableArgs<R, RouterReadArgs> for Router {
-	fn read(reader: &mut R, args: RouterReadArgs) -> Result<Router, DecodeError> {
+impl ReadableArgs<RouterReadArgs> for Router {
+	fn read<R: ::std::io::Read>(reader: &mut R, args: RouterReadArgs) -> Result<Router, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -418,12 +421,15 @@ impl RoutingMessageHandler for Router {
 		match network.nodes.get_mut(&msg.contents.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement", action: ErrorAction::IgnoreError}),
 			Some(node) => {
-				if node.last_update >= msg.contents.timestamp {
-					return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
+				match node.last_update {
+					Some(last_update) => if last_update >= msg.contents.timestamp {
+						return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
+					},
+					None => {},
 				}
 
 				node.features = msg.contents.features.clone();
-				node.last_update = msg.contents.timestamp;
+				node.last_update = Some(msg.contents.timestamp);
 				node.rgb = msg.contents.rgb;
 				node.alias = msg.contents.alias;
 				node.addresses = msg.contents.addresses.clone();
@@ -539,7 +545,7 @@ impl RoutingMessageHandler for Router {
 							lowest_inbound_channel_fee_base_msat: u32::max_value(),
 							lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
 							features: NodeFeatures::empty(),
-							last_update: 0,
+							last_update: None,
 							rgb: [0; 3],
 							alias: [0; 32],
 							addresses: Vec::new(),
@@ -752,7 +758,7 @@ impl Router {
 			lowest_inbound_channel_fee_base_msat: u32::max_value(),
 			lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
 			features: NodeFeatures::empty(),
-			last_update: 0,
+			last_update: None,
 			rgb: [0; 3],
 			alias: [0; 32],
 			addresses: Vec::new(),
@@ -1175,7 +1181,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 100,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(1)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
@@ -1209,7 +1215,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(2)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
@@ -1243,7 +1249,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(8)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
@@ -1283,7 +1289,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(3)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
@@ -1363,7 +1369,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(4)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
@@ -1397,7 +1403,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(5)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),
@@ -1454,7 +1460,7 @@ mod tests {
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(6)),
-				last_update: 1,
+				last_update: Some(1),
 				rgb: [0; 3],
 				alias: [0; 32],
 				addresses: Vec::new(),

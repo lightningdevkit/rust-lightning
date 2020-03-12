@@ -10,8 +10,7 @@ use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
-use util::ser::ReadableArgs;
-use util::ser::Writer;
+use util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
@@ -23,7 +22,7 @@ use secp256k1::{SecretKey, PublicKey};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
 use std::{mem};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -45,55 +44,73 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
-pub struct TestChannelMonitor {
+pub struct TestChannelMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys>,
+	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 }
-impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: Arc<chaininterface::BroadcasterInterface>, logger: Arc<Logger>, fee_estimator: Arc<chaininterface::FeeEstimator>) -> Self {
+impl<'a> TestChannelMonitor<'a> {
+	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: &'a TestFeeEstimator) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
+			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
-	fn add_update_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor<'a> {
+	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		assert!(<(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1 == monitor);
+		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
+		assert!(new_monitor == monitor);
 		w.0.clear();
 		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor.clone()));
-		assert!(self.simple_monitor.add_update_monitor(funding_txo, monitor).is_ok());
+		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
+		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
+		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn fetch_pending_htlc_updated(&self) -> Vec<HTLCUpdate> {
-		return self.simple_monitor.fetch_pending_htlc_updated();
+	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+		// Every monitor update should survive roundtrip
+		let mut w = TestVecWriter(Vec::new());
+		update.write(&mut w).unwrap();
+		assert!(channelmonitor::ChannelMonitorUpdate::read(
+				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
+
+		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
+		assert!(self.simple_monitor.update_monitor(funding_txo, update).is_ok());
+		// At every point where we get a monitor update, we should be able to send a useful monitor
+		// to a watchtower and disk...
+		let monitors = self.simple_monitor.monitors.lock().unwrap();
+		let monitor = monitors.get(&funding_txo).unwrap();
+		w.0.clear();
+		monitor.write_for_disk(&mut w).unwrap();
+		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
+		assert!(new_monitor == *monitor);
+		w.0.clear();
+		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
+		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
+		self.update_ret.lock().unwrap().clone()
+	}
+
+	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
+		return self.simple_monitor.get_and_clear_pending_htlcs_updated();
 	}
 }
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
-	pub broadcasted_txn: Mutex<HashSet<Sha256dHash>> // Temporary field while refactoring out tx duplication
 }
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
-		{
-			if let Some(_) = self.broadcasted_txn.lock().unwrap().get(&tx.txid()) {
-				// If commitment tx, HTLC-timeout or HTLC-Success, duplicate broadcast are still ok
-				if tx.input[0].sequence == 0xfffffffd {
-					return;
-				}
-			}
-		}
-		self.broadcasted_txn.lock().unwrap().insert(tx.txid());
 		self.txn_broadcasted.lock().unwrap().push(tx.clone());
 	}
 }

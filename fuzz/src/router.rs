@@ -118,13 +118,12 @@ pub fn do_test(data: &[u8]) {
 	macro_rules! decode_msg {
 		($MsgType: path, $len: expr) => {{
 			let mut reader = ::std::io::Cursor::new(get_slice!($len));
-			match <($MsgType)>::read(&mut reader) {
+			match <$MsgType>::read(&mut reader) {
 				Ok(msg) => msg,
 				Err(e) => match e {
 					msgs::DecodeError::UnknownVersion => return,
 					msgs::DecodeError::UnknownRequiredFeature => return,
 					msgs::DecodeError::InvalidValue => return,
-					msgs::DecodeError::ExtraAddressesPerType => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
 					msgs::DecodeError::Io(e) => panic!(format!("{}", e)),
