@@ -480,6 +480,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						let mut conduit_option = None;
 						let mut remote_pubkey_option = None;
 
+						let mut needs_to_send_init_message = false;
+
 						if let &mut PeerState::Authenticating(ref mut handshake) = &mut peer.encryptor {
 							let (next_act, conduit) = handshake.process_act(&peer.pending_read_buffer).unwrap();
 							peer.pending_read_buffer = Vec::new(); // empty the pending read buffer
@@ -488,11 +490,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 								remote_pubkey_option = Some(key);
 							}
 
+							let mut has_remaining_act = false;
 							if let Some(act) = next_act {
+								has_remaining_act = true;
 								peer.pending_outbound_buffer.push_back(act.serialize());
 							}
 
 							if let Some(conduit) = conduit {
+								if has_remaining_act {
+									needs_to_send_init_message = true;
+								}
 								conduit_option = Some(conduit);
 							}
 						}
@@ -555,6 +562,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 										}
 									};
 								}
+							}
+
+							if needs_to_send_init_message {
+								let mut features = InitFeatures::supported();
+								if self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
+									features.set_initial_routing_sync();
+								}
+
+								let resp = msgs::Init { features };
+								encode_and_send_msg!(resp);
 							}
 
 							let message_option = conduit.decrypt_single_message(Some(&peer.pending_read_buffer.clone()));
