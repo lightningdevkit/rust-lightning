@@ -1024,7 +1024,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			for ev in events.iter() {
 				match *ev {
 					OnchainEvent::HTLCUpdate { ref htlc_update } => {
-						writer.write_all(&[1; 1])?;
+						0u8.write(writer)?;
 						htlc_update.0.write(writer)?;
 						htlc_update.1.write(writer)?;
 					},
