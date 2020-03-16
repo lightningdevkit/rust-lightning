@@ -16,6 +16,8 @@
 
 use std::cmp;
 use std::fmt;
+use std::sync::Arc;
+use std::panic::{UnwindSafe, RefUnwindSafe};
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 
@@ -115,7 +117,7 @@ impl<'a> Record<'a> {
 }
 
 /// A trait encapsulating the operations required of a logger
-pub trait Logger: Sync + Send {
+pub trait Logger: Sync + Send + UnwindSafe + RefUnwindSafe {
 	/// Logs the `Record`
 	fn log(&self, record: &Record);
 }

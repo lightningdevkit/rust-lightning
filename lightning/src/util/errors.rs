@@ -50,6 +50,14 @@ impl fmt::Debug for APIError {
 	}
 }
 
+impl fmt::Display for APIError {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Self as fmt::Debug>::fmt(self, f)
+	}
+}
+
+impl std::error::Error for APIError {}
+
 #[inline]
 pub(crate) fn get_onion_debug_field(error_code: u16) -> (&'static str, usize) {
 	match error_code & 0xff {

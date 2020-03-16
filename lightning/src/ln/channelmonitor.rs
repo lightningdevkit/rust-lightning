@@ -493,7 +493,7 @@ impl Writeable for InputMaterial  {
 				funding_redeemscript.write(writer)?;
 			}
 		}
-		Ok(())
+	Ok(())
 	}
 }
 

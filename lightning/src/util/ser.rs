@@ -457,6 +457,29 @@ impl Readable for Vec<u8> {
 		Ok(ret)
 	}
 }
+
+impl Readable for Vec<PublicKey> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+        let len: u16 = Readable::read(r)?;
+		let mut ret = Vec::with_capacity(len as usize);
+        for i in 0..(len as usize) {
+            let pk: PublicKey = Readable::read(r)?;
+            ret[i] = pk;
+		}
+        Ok(ret)
+	}
+}
+
+impl Writeable for Vec<PublicKey> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		(self.len() as u16).write(w)?;
+		for i in self.iter() {
+            i.write(w)?;
+		}
+		Ok(())
+	}
+}
+
 impl Writeable for Vec<Signature> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {

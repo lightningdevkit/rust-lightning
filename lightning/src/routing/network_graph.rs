@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -80,7 +81,7 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: ChainWatchInterface, L::Target: Logger {
+impl<C: Deref + Sync + Send + UnwindSafe + RefUnwindSafe, L: Deref + Sync + Send + UnwindSafe + RefUnwindSafe> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: ChainWatchInterface, L::Target: Logger {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.write().unwrap().update_node_from_announcement(msg, Some(&self.secp_ctx))
 	}

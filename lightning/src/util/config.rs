@@ -7,6 +7,9 @@ use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 ///
 /// Default::default() provides sane defaults for most configurations
 /// (but currently with 0 relay fees!)
+/// its bytes representation is c-compatible style. so that FFI consumer can
+/// pass this from foreign language side.
+#[repr(C)]
 #[derive(Clone, Debug)]
 pub struct UserConfig {
 	/// Channel config that we propose to our counterparty.
@@ -31,6 +34,7 @@ impl Default for UserConfig {
 ///
 /// Default::default() provides sane defaults.
 #[derive(Clone, Debug)]
+#[repr(C)]
 pub struct ChannelHandshakeConfig {
 	/// Confirmations we will wait for before considering the channel locked in.
 	/// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
@@ -83,6 +87,7 @@ impl Default for ChannelHandshakeConfig {
 /// field documentation. Note that this may result in barely-usable channels, but since they
 /// are applied mostly only to incoming channels that's not much of a problem.
 #[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct ChannelHandshakeLimits {
 	/// Minimum allowed satoshis when a channel is funded, this is supplied by the sender and so
 	/// only applies to inbound channels.
@@ -169,6 +174,7 @@ impl Default for ChannelHandshakeLimits {
 /// Options which apply on a per-channel basis and may change at runtime or based on negotiation
 /// with our counterparty.
 #[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct ChannelConfig {
 	/// Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
 	/// This may be allowed to change at runtime in a later update, however doing so must result in

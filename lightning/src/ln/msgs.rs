@@ -65,8 +65,10 @@ pub struct Init {
 /// An error message to be sent or received from a peer
 #[derive(Clone)]
 pub struct ErrorMessage {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) data: String,
+    /// channel id which this message should be sent to, or received from.
+	pub channel_id: [u8; 32],
+	/// Actual error message.
+	pub data: String,
 }
 
 /// A ping message to be sent or received from a peer
@@ -587,7 +589,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 }
 
 /// A trait to describe an object which can receive routing messages.
-pub trait RoutingMessageHandler : Send + Sync {
+pub trait RoutingMessageHandler : Send + Sync + UnwindSafe + RefUnwindSafe {
 	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
@@ -656,6 +658,7 @@ mod fuzzy_internal_msgs {
 pub use self::fuzzy_internal_msgs::*;
 #[cfg(not(feature = "fuzztarget"))]
 pub(crate) use self::fuzzy_internal_msgs::*;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 #[derive(Clone)]
 pub(crate) struct OnionPacket {

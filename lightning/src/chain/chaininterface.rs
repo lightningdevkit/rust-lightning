@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::marker::PhantomData;
+use std::panic::{UnwindSafe, RefUnwindSafe};
 use std::ptr;
 
 /// Used to give chain error details upstream
@@ -36,7 +37,7 @@ pub enum ChainError {
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to ChainListener events, P2P events, or timer
 /// events).
-pub trait ChainWatchInterface: Sync + Send {
+pub trait ChainWatchInterface: Sync + Send + UnwindSafe + RefUnwindSafe {
 	/// Provides a txid/random-scriptPubKey-in-the-tx which much be watched for.
 	fn install_watch_tx(&self, txid: &Txid, script_pub_key: &Script);
 

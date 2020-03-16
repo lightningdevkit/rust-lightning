@@ -52,6 +52,7 @@ use std::time::Duration;
 use std::marker::{Sync, Send};
 use std::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
+use std::fmt::{Formatter};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -520,6 +521,14 @@ pub enum PaymentSendFailure {
 	/// with the latest update_id.
 	PartialFailure(Vec<Result<(), APIError>>),
 }
+
+impl std::fmt::Display for PaymentSendFailure {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for PaymentSendFailure {}
 
 macro_rules! handle_error {
 	($self: ident, $internal: expr, $their_node_id: expr) => {

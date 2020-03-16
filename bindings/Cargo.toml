@@ -1,0 +1,23 @@
+[package]
+name = "bindings"
+version = "0.1.0"
+authors = ["joe.miyamoto <joe.miyamoto@bitcoinbank.co.jp>"]
+edition = "2018"
+
+[lib]
+crate-type=["staticlib", "cdylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lightning = { path = "../lightning" }
+bitcoin = "0.23"
+bitcoin_hashes = "0.7"
+
+# We want to include this only for debug build, but following line does not work.
+# [target.'cfg(debug_assertions)'.dependencies]
+# see https://github.com/rust-lang/cargo/issues/7634
+# as a workaround, we just included it as an usual dependency
+hex = "0.3"
+rand = "0.7.3"
+
