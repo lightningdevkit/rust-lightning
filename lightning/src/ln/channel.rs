@@ -4255,22 +4255,28 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::BitcoinHash;
 	use bitcoin::util::bip143;
 	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::Transaction;
+	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
+	use bitcoin::network::constants::Network;
 	use bitcoin_hashes::hex::FromHex;
 	use hex;
 	use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
+	use ln::features::InitFeatures;
+	use ln::msgs::{OptionalField, DataLossProtect};
 	use ln::chan_utils;
 	use ln::chan_utils::{LocalCommitmentTransaction, ChannelPublicKeys};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
+	use util::enforcing_trait_impls::EnforcingChannelKeys;
 	use util::test_utils;
 	use util::logger::Logger;
 	use secp256k1::{Secp256k1, Message, Signature, All};
@@ -4280,6 +4286,7 @@ mod tests {
 	use bitcoin_hashes::hash160::Hash as Hash160;
 	use bitcoin_hashes::Hash;
 	use std::sync::Arc;
+	use rand::{thread_rng,Rng};
 
 	struct TestFeeEstimator {
 		fee_est: u64
@@ -4325,6 +4332,70 @@ mod tests {
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
+	}
+
+	#[test]
+	fn channel_reestablish_no_updates() {
+		let feeest = TestFeeEstimator{fee_est: 15000};
+		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let secp_ctx = Secp256k1::new();
+		let mut seed = [0; 32];
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut seed);
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network, logger.clone() as Arc<Logger>);
+
+		// Go through the flow of opening a channel between two nodes.
+
+		// Create Node A's channel
+		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap();
+
+		// Create Node B's channel by receiving Node A's open_channel message
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&feeest);
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
+		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::supported(), &open_channel_msg, 7, logger, &config).unwrap();
+
+		// Node B --> Node A: accept channel
+		let accept_channel_msg = node_b_chan.get_accept_channel();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::supported()).unwrap();
+
+		// Node A --> Node B: funding created
+		let output_script = node_a_chan.get_funding_redeemscript();
+		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+			value: 10000000, script_pubkey: output_script.clone(),
+		}]};
+		let funding_outpoint = OutPoint::new(tx.txid(), 0);
+		let (funding_created_msg, _) = node_a_chan.get_outbound_funding_created(funding_outpoint).unwrap();
+		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg).unwrap();
+
+		// Node B --> Node A: funding signed
+		let _ = node_a_chan.funding_signed(&funding_signed_msg);
+
+		// Now disconnect the two nodes and check that the commitment point in
+		// Node B's channel_reestablish message is sane.
+		node_b_chan.remove_uncommitted_htlcs_and_mark_paused();
+		let expected_commitment_point = PublicKey::from_secret_key(&secp_ctx, &node_b_chan.build_local_commitment_secret(node_b_chan.cur_local_commitment_transaction_number + 1));
+		let msg = node_b_chan.get_channel_reestablish();
+		match msg.data_loss_protect {
+			OptionalField::Present(DataLossProtect { my_current_per_commitment_point, .. }) => {
+				assert_eq!(expected_commitment_point, my_current_per_commitment_point);
+			},
+			_ => panic!()
+		}
+
+		// Check that the commitment point in Node A's channel_reestablish message
+		// is sane.
+		node_a_chan.remove_uncommitted_htlcs_and_mark_paused();
+		let expected_commitment_point = PublicKey::from_secret_key(&secp_ctx, &node_a_chan.build_local_commitment_secret(node_a_chan.cur_local_commitment_transaction_number + 1));
+		let msg = node_a_chan.get_channel_reestablish();
+		match msg.data_loss_protect {
+			OptionalField::Present(DataLossProtect { my_current_per_commitment_point, .. }) => {
+				assert_eq!(expected_commitment_point, my_current_per_commitment_point);
+			},
+			_ => panic!()
+		}
 	}
 
 	#[test]
