@@ -3444,10 +3444,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
 			})
 		} else {
-			log_debug!(self, "We don't seen yet any revoked secret, if this channnel has already been updated it means we are fallen-behind, you should wait for other peer closing");
+			log_info!(self, "Sending a data_loss_protect with no previous remote per_commitment_secret");
 			OptionalField::Present(DataLossProtect {
 				your_last_per_commitment_secret: [0;32],
-				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number))
+				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
 			})
 		};
 		msgs::ChannelReestablish {
