@@ -99,7 +99,7 @@ impl FeeEstimator for FuzzEstimator {
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
 			Some(slice) => cmp::max(slice_to_be16(slice) as u64, 253),
-			None => 0
+			None => 253
 		}
 	}
 }
