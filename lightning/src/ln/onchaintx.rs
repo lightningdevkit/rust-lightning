@@ -482,6 +482,7 @@ impl OnchainTxHandler {
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
+		log_trace!(self, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
@@ -573,9 +574,11 @@ impl OnchainTxHandler {
 						if set_equality {
 							clean_claim_request_after_safety_delay!();
 						} else { // If false, generate new claim request with update outpoint set
+							let mut at_least_one_drop = false;
 							for input in tx.input.iter() {
 								if let Some(input_material) = claim_material.per_input_material.remove(&input.previous_output) {
 									claimed_outputs_material.push((input.previous_output, input_material));
+									at_least_one_drop = true;
 								}
 								// If there are no outpoints left to claim in this request, drop it entirely after ANTI_REORG_DELAY.
 								if claim_material.per_input_material.is_empty() {
@@ -583,7 +586,9 @@ impl OnchainTxHandler {
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
-							bump_candidates.insert(first_claim_txid_height.0.clone());
+							if at_least_one_drop {
+								bump_candidates.insert(first_claim_txid_height.0.clone());
+							}
 						}
 						break; //No need to iterate further, either tx is our or their
 					} else {
@@ -634,6 +639,7 @@ impl OnchainTxHandler {
 		}
 
 		// Build, bump and rebroadcast tx accordingly
+		log_trace!(self, "Bumping {} candidates", bump_candidates.len());
 		for first_claim_txid in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate)) = {
 				if let Some(claim_material) = self.pending_claim_requests.get(first_claim_txid) {

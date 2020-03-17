@@ -1098,9 +1098,9 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 /// HTLC transaction.
 pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, revoked_tx: Transaction, commitment_revoked_tx: Transaction)  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-	// We should issue a 2nd transaction if one htlc is dropped from initial claiming tx
-	// but sometimes not as feerate is too-low
-	if node_txn.len() != 1 && node_txn.len() != 2 { assert!(false); }
+	// We may issue multiple claiming transaction on revoked outputs due to block rescan
+	// for revoked htlc outputs
+	if node_txn.len() != 1 && node_txn.len() != 2 && node_txn.len() != 3 { assert!(false); }
 	node_txn.retain(|tx| {
 		if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.txid() {
 			check_spends!(tx, revoked_tx);
