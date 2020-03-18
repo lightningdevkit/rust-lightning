@@ -290,22 +290,15 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given key is already present")),
 			hash_map::Entry::Vacant(e) => e,
 		};
-		match monitor.key_storage {
-			Storage::Local { ref funding_info, .. } => {
-				match funding_info {
-					&None => {
-						return Err(MonitorUpdateError("Try to update a useless monitor without funding_txo !"));
-					},
-					&Some((ref outpoint, ref script)) => {
-						log_trace!(self, "Got new Channel Monitor for channel {}", log_bytes!(outpoint.to_channel_id()[..]));
-						self.chain_monitor.install_watch_tx(&outpoint.txid, script);
-						self.chain_monitor.install_watch_outpoint((outpoint.txid, outpoint.index as u32), script);
-					},
-				}
+		match monitor.key_storage.funding_info {
+			None => {
+				return Err(MonitorUpdateError("Try to update a useless monitor without funding_txo !"));
 			},
-			Storage::Watchtower { .. } => {
-				self.chain_monitor.watch_all_txn();
-			}
+			Some((ref outpoint, ref script)) => {
+				log_trace!(self, "Got new Channel Monitor for channel {}", log_bytes!(outpoint.to_channel_id()[..]));
+				self.chain_monitor.install_watch_tx(&outpoint.txid, script);
+				self.chain_monitor.install_watch_outpoint((outpoint.txid, outpoint.index as u32), script);
+			},
 		}
 		for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
 			for (idx, script) in outputs.iter().enumerate() {
@@ -398,44 +391,22 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 /// keeping bumping another claim tx to solve the outpoint.
 pub(crate) const ANTI_REORG_DELAY: u32 = 6;
 
-enum Storage<ChanSigner: ChannelKeys> {
-	Local {
-		keys: ChanSigner,
-		funding_key: SecretKey,
-		revocation_base_key: SecretKey,
-		htlc_base_key: SecretKey,
-		delayed_payment_base_key: SecretKey,
-		payment_base_key: SecretKey,
-		funding_info: Option<(OutPoint, Script)>,
-		current_remote_commitment_txid: Option<Sha256dHash>,
-		prev_remote_commitment_txid: Option<Sha256dHash>,
-	},
-	Watchtower {
-		revocation_base_key: PublicKey,
-		htlc_base_key: PublicKey,
-	}
+struct Storage<ChanSigner: ChannelKeys> {
+	keys: ChanSigner,
+	funding_key: SecretKey,
+	revocation_base_key: SecretKey,
+	htlc_base_key: SecretKey,
+	delayed_payment_base_key: SecretKey,
+	payment_base_key: SecretKey,
+	funding_info: Option<(OutPoint, Script)>,
+	current_remote_commitment_txid: Option<Sha256dHash>,
+	prev_remote_commitment_txid: Option<Sha256dHash>,
 }
 
 #[cfg(any(test, feature = "fuzztarget"))]
 impl<ChanSigner: ChannelKeys> PartialEq for Storage<ChanSigner> {
 	fn eq(&self, other: &Self) -> bool {
-		match *self {
-			Storage::Local { ref keys, .. } => {
-				let k = keys;
-				match *other {
-					Storage::Local { ref keys, .. } => keys.pubkeys() == k.pubkeys(),
-					Storage::Watchtower { .. } => false,
-				}
-			},
-			Storage::Watchtower {ref revocation_base_key, ref htlc_base_key} => {
-				let (rbk, hbk) = (revocation_base_key, htlc_base_key);
-				match *other {
-					Storage::Local { .. } => false,
-					Storage::Watchtower {ref revocation_base_key, ref htlc_base_key} =>
-						revocation_base_key == rbk && htlc_base_key == hbk,
-				}
-			},
-		}
+		self.keys.pubkeys() == other.keys.pubkeys()
 	}
 }
 
@@ -903,30 +874,24 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		}
 		self.shutdown_script.write(writer)?;
 
-		match self.key_storage {
-			Storage::Local { ref keys, ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
-				writer.write_all(&[0; 1])?;
-				keys.write(writer)?;
-				writer.write_all(&funding_key[..])?;
-				writer.write_all(&revocation_base_key[..])?;
-				writer.write_all(&htlc_base_key[..])?;
-				writer.write_all(&delayed_payment_base_key[..])?;
-				writer.write_all(&payment_base_key[..])?;
-				match funding_info  {
-					&Some((ref outpoint, ref script)) => {
-						writer.write_all(&outpoint.txid[..])?;
-						writer.write_all(&byte_utils::be16_to_array(outpoint.index))?;
-						script.write(writer)?;
-					},
-					&None => {
-						debug_assert!(false, "Try to serialize a useless Local monitor !");
-					},
-				}
-				current_remote_commitment_txid.write(writer)?;
-				prev_remote_commitment_txid.write(writer)?;
+		self.key_storage.keys.write(writer)?;
+		writer.write_all(&self.key_storage.funding_key[..])?;
+		writer.write_all(&self.key_storage.revocation_base_key[..])?;
+		writer.write_all(&self.key_storage.htlc_base_key[..])?;
+		writer.write_all(&self.key_storage.delayed_payment_base_key[..])?;
+		writer.write_all(&self.key_storage.payment_base_key[..])?;
+		match self.key_storage.funding_info  {
+			Some((ref outpoint, ref script)) => {
+				writer.write_all(&outpoint.txid[..])?;
+				writer.write_all(&byte_utils::be16_to_array(outpoint.index))?;
+				script.write(writer)?;
 			},
-			Storage::Watchtower { .. } => unimplemented!(),
+			None => {
+				debug_assert!(false, "Try to serialize a useless Local monitor !");
+			},
 		}
+		self.key_storage.current_remote_commitment_txid.write(writer)?;
+		self.key_storage.prev_remote_commitment_txid.write(writer)?;
 
 		writer.write_all(&self.their_htlc_base_key.as_ref().unwrap().serialize())?;
 		writer.write_all(&self.their_delayed_payment_base_key.as_ref().unwrap().serialize())?;
@@ -1137,7 +1102,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			broadcasted_remote_payment_script: None,
 			shutdown_script,
 
-			key_storage: Storage::Local {
+			key_storage: Storage {
 				keys,
 				funding_key,
 				revocation_base_key,
@@ -1191,11 +1156,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		// Prune HTLCs from the previous remote commitment tx so we don't generate failure/fulfill
 		// events for now-revoked/fulfilled HTLCs.
-		if let Storage::Local { ref mut prev_remote_commitment_txid, .. } = self.key_storage {
-			if let Some(txid) = prev_remote_commitment_txid.take() {
-				for &mut (_, ref mut source) in self.remote_claimable_outpoints.get_mut(&txid).unwrap() {
-					*source = None;
-				}
+		if let Some(txid) = self.key_storage.prev_remote_commitment_txid.take() {
+			for &mut (_, ref mut source) in self.remote_claimable_outpoints.get_mut(&txid).unwrap() {
+				*source = None;
 			}
 		}
 
@@ -1250,10 +1213,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let new_txid = unsigned_commitment_tx.txid();
 		log_trace!(self, "Tracking new remote commitment transaction with txid {} at commitment number {} with {} HTLC outputs", new_txid, commitment_number, htlc_outputs.len());
 		log_trace!(self, "New potential remote commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
-		if let Storage::Local { ref mut current_remote_commitment_txid, ref mut prev_remote_commitment_txid, .. } = self.key_storage {
-			*prev_remote_commitment_txid = current_remote_commitment_txid.take();
-			*current_remote_commitment_txid = Some(new_txid);
-		}
+		self.key_storage.prev_remote_commitment_txid = self.key_storage.current_remote_commitment_txid.take();
+		self.key_storage.current_remote_commitment_txid = Some(new_txid);
 		self.remote_claimable_outpoints.insert(new_txid, htlc_outputs);
 		self.current_remote_commitment_number = commitment_number;
 		//TODO: Merge this into the other per-remote-transaction output storage stuff
@@ -1278,18 +1239,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
-		match self.key_storage {
-			Storage::Local { ref payment_base_key, ref keys, .. } => {
-				if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &keys.pubkeys().payment_basepoint) {
-					let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-						.push_slice(&Hash160::hash(&payment_key.serialize())[..])
-						.into_script();
-					if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &payment_base_key) {
-						self.broadcasted_remote_payment_script = Some((to_remote_script, to_remote_key));
-					}
-				}
-			},
-			Storage::Watchtower { .. } => {}
+		if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &self.key_storage.keys.pubkeys().payment_basepoint) {
+			let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+				.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+				.into_script();
+			if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &self.key_storage.payment_base_key) {
+				self.broadcasted_remote_payment_script = Some((to_remote_script, to_remote_key));
+			}
 		}
 	}
 
@@ -1395,17 +1351,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
 	pub fn get_funding_txo(&self) -> Option<OutPoint> {
-		match self.key_storage {
-			Storage::Local { ref funding_info, .. } => {
-				match funding_info {
-					&Some((outpoint, _)) => Some(outpoint),
-					&None => None
-				}
-			},
-			Storage::Watchtower { .. } => {
-				return None;
-			}
+		if let Some((outp, _)) = self.key_storage.funding_info {
+			return Some(outp)
 		}
+		None
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -1495,18 +1444,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if commitment_number >= self.get_min_seen_secret() {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
-			let (revocation_pubkey, revocation_key, b_htlc_key, local_payment_key) = match self.key_storage {
-				Storage::Local { ref keys, ref revocation_base_key, ref payment_base_key, .. } => {
-					let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-					(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &keys.pubkeys().revocation_basepoint)),
-					ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &revocation_base_key)),
-					ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &keys.pubkeys().htlc_basepoint)),
-					ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &payment_base_key)))
-				},
-				Storage::Watchtower { .. } => {
-					unimplemented!()
-				},
-			};
+			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
+			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.key_storage.keys.pubkeys().revocation_basepoint));
+			let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &self.key_storage.revocation_base_key));
+			let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &self.key_storage.keys.pubkeys().htlc_basepoint));
+			let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &self.key_storage.payment_base_key));
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key.unwrap()));
 			let a_htlc_key = match self.their_htlc_base_key {
 				None => return (claimable_outpoints, (commitment_txid, watch_outputs)),
@@ -1582,13 +1524,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						}
 					}
 				}
-				if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
-					if let &Some(ref txid) = current_remote_commitment_txid {
-						check_htlc_fails!(txid, "current");
-					}
-					if let &Some(ref txid) = prev_remote_commitment_txid {
-						check_htlc_fails!(txid, "remote");
-					}
+				if let Some(ref txid) = self.key_storage.current_remote_commitment_txid {
+					check_htlc_fails!(txid, "current");
+				}
+				if let Some(ref txid) = self.key_storage.prev_remote_commitment_txid {
+					check_htlc_fails!(txid, "remote");
 				}
 				// No need to check local commitment txn, symmetric HTLCSource must be present as per-htlc data on remote commitment tx
 			}
@@ -1647,13 +1587,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					}
 				}
 			}
-			if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
-				if let &Some(ref txid) = current_remote_commitment_txid {
-					check_htlc_fails!(txid, "current", 'current_loop);
-				}
-				if let &Some(ref txid) = prev_remote_commitment_txid {
-					check_htlc_fails!(txid, "previous", 'prev_loop);
-				}
+			if let Some(ref txid) = self.key_storage.current_remote_commitment_txid {
+				check_htlc_fails!(txid, "current", 'current_loop);
+			}
+			if let Some(ref txid) = self.key_storage.prev_remote_commitment_txid {
+				check_htlc_fails!(txid, "previous", 'prev_loop);
 			}
 
 			if let Some(revocation_points) = self.their_cur_revocation_points {
@@ -1663,19 +1601,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
-					let (revocation_pubkey, b_htlc_key, htlc_privkey, local_payment_key) = match self.key_storage {
-						Storage::Local { ref keys, ref htlc_base_key, ref payment_base_key, .. } => {
-							(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, revocation_point, &keys.pubkeys().revocation_basepoint)),
-							ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &keys.pubkeys().htlc_basepoint)),
-							ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &htlc_base_key)),
-							ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &payment_base_key)))
-						},
-						Storage::Watchtower { .. } => { unimplemented!() }
-					};
+					let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, revocation_point, &self.key_storage.keys.pubkeys().revocation_basepoint));
+					let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &self.key_storage.keys.pubkeys().htlc_basepoint));
+					let htlc_privkey = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.key_storage.htlc_base_key));
 					let a_htlc_key = match self.their_htlc_base_key {
 						None => return (claimable_outpoints, (commitment_txid, watch_outputs)),
 						Some(their_htlc_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &their_htlc_base_key)),
 					};
+					let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.key_storage.payment_base_key));
 
 					self.broadcasted_remote_payment_script = {
 						// Note that the Network here is ignored as we immediately drop the address for the
@@ -1726,13 +1659,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return (Vec::new(), None); };
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-		let (revocation_pubkey, revocation_key) = match self.key_storage {
-			Storage::Local { ref keys, ref revocation_base_key, .. } => {
-				(ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &keys.pubkeys().revocation_basepoint)),
-				ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, revocation_base_key)))
-			},
-			Storage::Watchtower { .. } => { unimplemented!() }
-		};
+		let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.key_storage.keys.pubkeys().revocation_basepoint));
+		let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &self.key_storage.revocation_base_key));
 		let delayed_key = match self.their_delayed_payment_base_key {
 			None => return (Vec::new(), None),
 			Some(their_delayed_payment_base_key) => ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &their_delayed_payment_base_key)),
@@ -1754,44 +1682,42 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			Some((redeemscript.to_v0_p2wsh(), local_delayedkey, redeemscript))
 		} else { None };
 
-		if let &Storage::Local { ref htlc_base_key, .. } = &self.key_storage {
-			for &(ref htlc, ref sigs, _) in local_tx.htlc_outputs.iter() {
-				if let Some(transaction_output_index) = htlc.transaction_output_index {
-					if let &Some(ref their_sig) = sigs {
-						if htlc.offered {
-							log_trace!(self, "Broadcasting HTLC-Timeout transaction against local commitment transactions");
-							let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
+		for &(ref htlc, ref sigs, _) in local_tx.htlc_outputs.iter() {
+			if let Some(transaction_output_index) = htlc.transaction_output_index {
+				if let &Some(ref their_sig) = sigs {
+					if htlc.offered {
+						log_trace!(self, "Broadcasting HTLC-Timeout transaction against local commitment transactions");
+						let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
+						let (our_sig, htlc_script) = match
+								chan_utils::sign_htlc_transaction(&mut htlc_timeout_tx, their_sig, &None, htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, &self.key_storage.htlc_base_key, &self.secp_ctx) {
+							Ok(res) => res,
+							Err(_) => continue,
+						};
+
+						let mut per_input_material = HashMap::with_capacity(1);
+						per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: None, amount: htlc.amount_msat / 1000});
+						//TODO: with option_simplified_commitment track outpoint too
+						log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_timeout_tx.input[0].previous_output.vout, htlc_timeout_tx.input[0].previous_output.txid);
+						res.push(htlc_timeout_tx);
+					} else {
+						if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+							log_trace!(self, "Broadcasting HTLC-Success transaction against local commitment transactions");
+							let mut htlc_success_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
 							let (our_sig, htlc_script) = match
-									chan_utils::sign_htlc_transaction(&mut htlc_timeout_tx, their_sig, &None, htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, htlc_base_key, &self.secp_ctx) {
+									chan_utils::sign_htlc_transaction(&mut htlc_success_tx, their_sig, &Some(*payment_preimage), htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, &self.key_storage.htlc_base_key, &self.secp_ctx) {
 								Ok(res) => res,
 								Err(_) => continue,
 							};
 
 							let mut per_input_material = HashMap::with_capacity(1);
-							per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: None, amount: htlc.amount_msat / 1000});
+							per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000});
 							//TODO: with option_simplified_commitment track outpoint too
-							log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_timeout_tx.input[0].previous_output.vout, htlc_timeout_tx.input[0].previous_output.txid);
-							res.push(htlc_timeout_tx);
-						} else {
-							if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
-								log_trace!(self, "Broadcasting HTLC-Success transaction against local commitment transactions");
-								let mut htlc_success_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
-								let (our_sig, htlc_script) = match
-										chan_utils::sign_htlc_transaction(&mut htlc_success_tx, their_sig, &Some(*payment_preimage), htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, htlc_base_key, &self.secp_ctx) {
-									Ok(res) => res,
-									Err(_) => continue,
-								};
-
-								let mut per_input_material = HashMap::with_capacity(1);
-								per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000});
-								//TODO: with option_simplified_commitment track outpoint too
-								log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_success_tx.input[0].previous_output.vout, htlc_success_tx.input[0].previous_output.txid);
-								res.push(htlc_success_tx);
-							}
+							log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_success_tx.input[0].previous_output.vout, htlc_success_tx.input[0].previous_output.txid);
+							res.push(htlc_success_tx);
 						}
-						watch_outputs.push(local_tx.tx.without_valid_witness().output[transaction_output_index as usize].clone());
-					} else { panic!("Should have sigs for non-dust local tx outputs!") }
-				}
+					}
+					watch_outputs.push(local_tx.tx.without_valid_witness().output[transaction_output_index as usize].clone());
+				} else { panic!("Should have sigs for non-dust local tx outputs!") }
 			}
 		}
 
@@ -1842,12 +1768,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		if let &mut Some(ref mut local_tx) = &mut self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
-				match self.key_storage {
-					Storage::Local { ref funding_key, .. } => {
-						local_tx.tx.add_local_sig(funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
-					},
-					_ => {},
-				}
+				local_tx.tx.add_local_sig(&self.key_storage.funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
 			}
 		}
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
@@ -1855,23 +1776,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				is_local_tx = true;
 				log_trace!(self, "Got latest local commitment tx broadcast, searching for available HTLCs to claim");
 				assert!(local_tx.tx.has_local_sig());
-				match self.key_storage {
-					Storage::Local { ref delayed_payment_base_key, .. } => {
-						let mut res = self.broadcast_by_local_state(local_tx, delayed_payment_base_key);
-						append_onchain_update!(res);
-					},
-					Storage::Watchtower { .. } => { }
-				}
+				let mut res = self.broadcast_by_local_state(local_tx, &self.key_storage.delayed_payment_base_key);
+				append_onchain_update!(res);
 			}
 		}
 		if let &mut Some(ref mut local_tx) = &mut self.prev_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
-				match self.key_storage {
-					Storage::Local { ref funding_key, .. } => {
-						local_tx.tx.add_local_sig(funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
-					},
-					_ => {},
-				}
+				local_tx.tx.add_local_sig(&self.key_storage.funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
 			}
 		}
 		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
@@ -1879,13 +1790,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				is_local_tx = true;
 				log_trace!(self, "Got previous local commitment tx broadcast, searching for available HTLCs to claim");
 				assert!(local_tx.tx.has_local_sig());
-				match self.key_storage {
-					Storage::Local { ref delayed_payment_base_key, .. } => {
-						let mut res = self.broadcast_by_local_state(local_tx, delayed_payment_base_key);
-						append_onchain_update!(res);
-					},
-					Storage::Watchtower { .. } => { }
-				}
+				let mut res = self.broadcast_by_local_state(local_tx, &self.key_storage.delayed_payment_base_key);
+				append_onchain_update!(res);
 			}
 		}
 
@@ -1928,23 +1834,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// tracking state and panic!()ing if we get an update after force-closure/local-tx signing.
 		log_trace!(self, "Getting signed latest local commitment transaction!");
 		if let &mut Some(ref mut local_tx) = &mut self.current_local_signed_commitment_tx {
-			match self.key_storage {
-				Storage::Local { ref funding_key, .. } => {
-					local_tx.tx.add_local_sig(funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
-				},
-				_ => {},
-			}
+			local_tx.tx.add_local_sig(&self.key_storage.funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
 		}
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			let mut res = vec![local_tx.tx.with_valid_witness().clone()];
-			match self.key_storage {
-				Storage::Local { ref delayed_payment_base_key, .. } => {
-					res.append(&mut self.broadcast_by_local_state(local_tx, delayed_payment_base_key).0);
-					// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
-					// The data will be re-generated and tracked in check_spend_local_transaction if we get a confirmation.
-				},
-				_ => panic!("Can only broadcast by local channelmonitor"),
-			};
+			res.append(&mut self.broadcast_by_local_state(local_tx, &self.key_storage.delayed_payment_base_key).0);
+			// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
+			// The data will be re-generated and tracked in check_spend_local_transaction if we get a confirmation.
 			res
 		} else {
 			Vec::new()
@@ -1979,14 +1875,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				// which is an easy way to filter out any potential non-matching txn for lazy
 				// filters.
 				let prevout = &tx.input[0].previous_output;
-				let funding_txo = match self.key_storage {
-					Storage::Local { ref funding_info, .. } => {
-						funding_info.clone()
-					}
-					Storage::Watchtower { .. } => {
-						unimplemented!();
-					}
-				};
+				let funding_txo = self.key_storage.funding_info.clone();
 				if funding_txo.is_none() || (prevout.txid == funding_txo.as_ref().unwrap().0.txid && prevout.vout == funding_txo.as_ref().unwrap().0.index as u32) {
 					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs) = self.check_spend_remote_transaction(&tx, height);
@@ -2027,30 +1916,20 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		} else { false };
 		if let Some(ref mut cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
-				match self.key_storage {
-					Storage::Local { ref funding_key, .. } => {
-						cur_local_tx.tx.add_local_sig(funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
-					},
-					_ => {}
-				}
+				cur_local_tx.tx.add_local_sig(&self.key_storage.funding_key, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
 			}
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
 				log_trace!(self, "Broadcast onchain {}", log_tx!(cur_local_tx.tx.with_valid_witness()));
 				broadcaster.broadcast_transaction(&cur_local_tx.tx.with_valid_witness());
-				match self.key_storage {
-					Storage::Local { ref delayed_payment_base_key, .. } => {
-						let (txs, new_outputs, _) = self.broadcast_by_local_state(&cur_local_tx, delayed_payment_base_key);
-						if !new_outputs.is_empty() {
-							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
-						}
-						for tx in txs {
-							log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
-							broadcaster.broadcast_transaction(&tx);
-						}
-					},
-					Storage::Watchtower { .. } => { },
+				let (txs, new_outputs, _) = self.broadcast_by_local_state(&cur_local_tx, &self.key_storage.delayed_payment_base_key);
+				if !new_outputs.is_empty() {
+					watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
+				}
+				for tx in txs {
+					log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
+					broadcaster.broadcast_transaction(&tx);
 				}
 			}
 		}
@@ -2151,16 +2030,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			scan_commitment!(cur_local_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), true);
 		}
 
-		if let Storage::Local { ref current_remote_commitment_txid, ref prev_remote_commitment_txid, .. } = self.key_storage {
-			if let &Some(ref txid) = current_remote_commitment_txid {
-				if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
-					scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
-				}
+		if let Some(ref txid) = self.key_storage.current_remote_commitment_txid {
+			if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
+				scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
 			}
-			if let &Some(ref txid) = prev_remote_commitment_txid {
-				if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
-					scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
-				}
+		}
+		if let Some(ref txid) = self.key_storage.prev_remote_commitment_txid {
+			if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
+				scan_commitment!(htlc_outputs.iter().map(|&(ref a, _)| a), false);
 			}
 		}
 
@@ -2201,7 +2078,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 			macro_rules! check_htlc_valid_remote {
 				($remote_txid: expr, $htlc_output: expr) => {
-					if let &Some(txid) = $remote_txid {
+					if let Some(txid) = $remote_txid {
 						for &(ref pending_htlc, ref pending_source) in self.remote_claimable_outpoints.get(&txid).unwrap() {
 							if pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
 								if let &Some(ref source) = pending_source {
@@ -2228,13 +2105,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								// resolve the source HTLC with the original sender.
 								payment_data = Some(((*source).clone(), htlc_output.payment_hash));
 							} else if !$local_tx {
-								if let Storage::Local { ref current_remote_commitment_txid, .. } = self.key_storage {
-									check_htlc_valid_remote!(current_remote_commitment_txid, htlc_output);
-								}
+									check_htlc_valid_remote!(self.key_storage.current_remote_commitment_txid, htlc_output);
 								if payment_data.is_none() {
-									if let Storage::Local { ref prev_remote_commitment_txid, .. } = self.key_storage {
-										check_htlc_valid_remote!(prev_remote_commitment_txid, htlc_output);
-									}
+									check_htlc_valid_remote!(self.key_storage.prev_remote_commitment_txid, htlc_output);
 								}
 							}
 							if payment_data.is_none() {
@@ -2405,36 +2278,33 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		};
 		let shutdown_script = Readable::read(reader)?;
 
-		let key_storage = match <u8 as Readable>::read(reader)? {
-			0 => {
-				let keys = Readable::read(reader)?;
-				let funding_key = Readable::read(reader)?;
-				let revocation_base_key = Readable::read(reader)?;
-				let htlc_base_key = Readable::read(reader)?;
-				let delayed_payment_base_key = Readable::read(reader)?;
-				let payment_base_key = Readable::read(reader)?;
-				// Technically this can fail and serialize fail a round-trip, but only for serialization of
-				// barely-init'd ChannelMonitors that we can't do anything with.
-				let outpoint = OutPoint {
-					txid: Readable::read(reader)?,
-					index: Readable::read(reader)?,
-				};
-				let funding_info = Some((outpoint, Readable::read(reader)?));
-				let current_remote_commitment_txid = Readable::read(reader)?;
-				let prev_remote_commitment_txid = Readable::read(reader)?;
-				Storage::Local {
-					keys,
-					funding_key,
-					revocation_base_key,
-					htlc_base_key,
-					delayed_payment_base_key,
-					payment_base_key,
-					funding_info,
-					current_remote_commitment_txid,
-					prev_remote_commitment_txid,
-				}
-			},
-			_ => return Err(DecodeError::InvalidValue),
+		let key_storage = {
+			let keys = Readable::read(reader)?;
+			let funding_key = Readable::read(reader)?;
+			let revocation_base_key = Readable::read(reader)?;
+			let htlc_base_key = Readable::read(reader)?;
+			let delayed_payment_base_key = Readable::read(reader)?;
+			let payment_base_key = Readable::read(reader)?;
+			// Technically this can fail and serialize fail a round-trip, but only for serialization of
+			// barely-init'd ChannelMonitors that we can't do anything with.
+			let outpoint = OutPoint {
+				txid: Readable::read(reader)?,
+				index: Readable::read(reader)?,
+			};
+			let funding_info = Some((outpoint, Readable::read(reader)?));
+			let current_remote_commitment_txid = Readable::read(reader)?;
+			let prev_remote_commitment_txid = Readable::read(reader)?;
+			Storage {
+				keys,
+				funding_key,
+				revocation_base_key,
+				htlc_base_key,
+				delayed_payment_base_key,
+				payment_base_key,
+				funding_info,
+				current_remote_commitment_txid,
+				prev_remote_commitment_txid,
+			}
 		};
 
 		let their_htlc_base_key = Some(Readable::read(reader)?);
