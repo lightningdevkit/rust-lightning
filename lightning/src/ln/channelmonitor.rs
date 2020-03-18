@@ -760,6 +760,8 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	commitment_transaction_number_obscure_factor: u64,
 
 	destination_script: Script,
+	broadcasted_local_revokable_script: Option<(Script, SecretKey, Script)>,
+
 	key_storage: Storage<ChanSigner>,
 	their_htlc_base_key: Option<PublicKey>,
 	their_delayed_payment_base_key: Option<PublicKey>,
@@ -840,6 +842,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 		if self.latest_update_id != other.latest_update_id ||
 			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
 			self.destination_script != other.destination_script ||
+			self.broadcasted_local_revokable_script != other.broadcasted_local_revokable_script ||
 			self.key_storage != other.key_storage ||
 			self.their_htlc_base_key != other.their_htlc_base_key ||
 			self.their_delayed_payment_base_key != other.their_delayed_payment_base_key ||
@@ -883,6 +886,15 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		U48(self.commitment_transaction_number_obscure_factor).write(writer)?;
 
 		self.destination_script.write(writer)?;
+		if let Some(ref broadcasted_local_revokable_script) = self.broadcasted_local_revokable_script {
+			writer.write_all(&[0; 1])?;
+			broadcasted_local_revokable_script.0.write(writer)?;
+			broadcasted_local_revokable_script.1.write(writer)?;
+			broadcasted_local_revokable_script.2.write(writer)?;
+		} else {
+			writer.write_all(&[1; 1])?;
+		}
+
 		match self.key_storage {
 			Storage::Local { ref keys, ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
 				writer.write_all(&[0; 1])?;
@@ -1115,6 +1127,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			commitment_transaction_number_obscure_factor,
 
 			destination_script: destination_script.clone(),
+			broadcasted_local_revokable_script: None,
+
 			key_storage: Storage::Local {
 				keys,
 				funding_key,
@@ -1752,33 +1766,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
 	}
 
-	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx, delayed_payment_base_key: &SecretKey) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, Vec<TxOut>) {
+	fn broadcast_by_local_state(&self, local_tx: &LocalSignedTx, delayed_payment_base_key: &SecretKey) -> (Vec<Transaction>, Vec<TxOut>, Option<(Script, SecretKey, Script)>) {
 		let mut res = Vec::with_capacity(local_tx.htlc_outputs.len());
-		let mut spendable_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
 		let mut watch_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
 
-		macro_rules! add_dynamic_output {
-			($father_tx: expr, $vout: expr) => {
-				if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, &local_tx.per_commitment_point, delayed_payment_base_key) {
-					spendable_outputs.push(SpendableOutputDescriptor::DynamicOutputP2WSH {
-						outpoint: BitcoinOutPoint { txid: $father_tx.txid(), vout: $vout },
-						key: local_delayedkey,
-						witness_script: chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.our_to_self_delay, &local_tx.delayed_payment_key),
-						to_self_delay: self.our_to_self_delay,
-						output: $father_tx.output[$vout as usize].clone(),
-					});
-				}
-			}
-		}
-
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.their_to_self_delay.unwrap(), &local_tx.delayed_payment_key);
-		let revokeable_p2wsh = redeemscript.to_v0_p2wsh();
-		for (idx, output) in local_tx.tx.without_valid_witness().output.iter().enumerate() {
-			if output.script_pubkey == revokeable_p2wsh {
-				add_dynamic_output!(local_tx.tx.without_valid_witness(), idx as u32);
-				break;
-			}
-		}
+		let broadcasted_local_revokable_script = if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, &local_tx.per_commitment_point, delayed_payment_base_key) {
+			Some((redeemscript.to_v0_p2wsh(), local_delayedkey, redeemscript))
+		} else { None };
 
 		if let &Storage::Local { ref htlc_base_key, .. } = &self.key_storage {
 			for &(ref htlc, ref sigs, _) in local_tx.htlc_outputs.iter() {
@@ -1793,7 +1788,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								Err(_) => continue,
 							};
 
-							add_dynamic_output!(htlc_timeout_tx, 0);
 							let mut per_input_material = HashMap::with_capacity(1);
 							per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: None, amount: htlc.amount_msat / 1000});
 							//TODO: with option_simplified_commitment track outpoint too
@@ -1809,7 +1803,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 									Err(_) => continue,
 								};
 
-								add_dynamic_output!(htlc_success_tx, 0);
 								let mut per_input_material = HashMap::with_capacity(1);
 								per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000});
 								//TODO: with option_simplified_commitment track outpoint too
@@ -1823,16 +1816,15 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
-		(res, spendable_outputs, watch_outputs)
+		(res, watch_outputs, broadcasted_local_revokable_script)
 	}
 
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in local_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_local_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, Vec<SpendableOutputDescriptor>, (Sha256dHash, Vec<TxOut>)) {
+	fn check_spend_local_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<Transaction>, (Sha256dHash, Vec<TxOut>)) {
 		let commitment_txid = tx.txid();
 		let mut local_txn = Vec::new();
-		let mut spendable_outputs = Vec::new();
 		let mut watch_outputs = Vec::new();
 
 		macro_rules! wait_threshold_conf {
@@ -1860,8 +1852,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		macro_rules! append_onchain_update {
 			($updates: expr) => {
 				local_txn.append(&mut $updates.0);
-				spendable_outputs.append(&mut $updates.1);
-				watch_outputs.append(&mut $updates.2);
+				watch_outputs.append(&mut $updates.1);
+				self.broadcasted_local_revokable_script = $updates.2;
 			}
 		}
 
@@ -1938,7 +1930,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
-		(local_txn, spendable_outputs, (commitment_txid, watch_outputs))
+		(local_txn, (commitment_txid, watch_outputs))
 	}
 
 	/// Generate a spendable output event when closing_transaction get registered onchain.
@@ -2049,8 +2041,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							watch_outputs.push(new_outputs);
 						}
 						if new_outpoints.is_empty() {
-							let (local_txn, mut spendable_output, new_outputs) = self.check_spend_local_transaction(&tx, height);
-							spendable_outputs.append(&mut spendable_output);
+							let (local_txn, new_outputs) = self.check_spend_local_transaction(&tx, height);
 							for tx in local_txn.iter() {
 								log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 								broadcaster.broadcast_transaction(tx);
@@ -2104,8 +2095,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				broadcaster.broadcast_transaction(&cur_local_tx.tx.with_valid_witness());
 				match self.key_storage {
 					Storage::Local { ref delayed_payment_base_key, .. } => {
-						let (txs, mut spendable_output, new_outputs) = self.broadcast_by_local_state(&cur_local_tx, delayed_payment_base_key);
-						spendable_outputs.append(&mut spendable_output);
+						let (txs, new_outputs, _) = self.broadcast_by_local_state(&cur_local_tx, delayed_payment_base_key);
 						if !new_outputs.is_empty() {
 							watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
 						}
@@ -2383,6 +2373,16 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
 					output: outp.clone(),
 				});
+			} else if let Some(ref broadcasted_local_revokable_script) = self.broadcasted_local_revokable_script {
+				if broadcasted_local_revokable_script.0 == outp.script_pubkey {
+					return Some(SpendableOutputDescriptor::DynamicOutputP2WSH {
+						outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
+						key: broadcasted_local_revokable_script.1,
+						witness_script: broadcasted_local_revokable_script.2.clone(),
+						to_self_delay: self.their_to_self_delay.unwrap(),
+						output: outp.clone(),
+					});
+				}
 			}
 		}
 		None
@@ -2412,6 +2412,16 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		let commitment_transaction_number_obscure_factor = <U48 as Readable>::read(reader)?.0;
 
 		let destination_script = Readable::read(reader)?;
+		let broadcasted_local_revokable_script = match <u8 as Readable>::read(reader)? {
+			0 => {
+				let revokable_address = Readable::read(reader)?;
+				let local_delayedkey = Readable::read(reader)?;
+				let revokable_script = Readable::read(reader)?;
+				Some((revokable_address, local_delayedkey, revokable_script))
+			},
+			1 => { None },
+			_ => return Err(DecodeError::InvalidValue),
+		};
 
 		let key_storage = match <u8 as Readable>::read(reader)? {
 			0 => {
@@ -2654,6 +2664,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			commitment_transaction_number_obscure_factor,
 
 			destination_script,
+			broadcasted_local_revokable_script,
 
 			key_storage,
 			their_htlc_base_key,

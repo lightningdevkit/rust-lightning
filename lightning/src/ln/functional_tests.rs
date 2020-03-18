@@ -4563,16 +4563,22 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexepected event"),
 	}
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn[0].input.len(), 1);
-	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(node_txn[0], local_txn[0]);
+	let node_txn = {
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[0], local_txn[0]);
+		vec![node_txn[0].clone(), node_txn[2].clone()]
+	};
+
+	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header: header_201, txdata: node_txn.clone() }, 201);
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 2);
 	check_spends!(spend_txn[0], node_txn[0]);
-	check_spends!(spend_txn[1], node_txn[2]);
+	check_spends!(spend_txn[1], node_txn[1]);
 }
 
 fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, announce_latest: bool) {
@@ -4849,22 +4855,23 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn[0].input.len(), 1);
-	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(node_txn[0], local_txn[0]);
+	let htlc_timeout = {
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[0], local_txn[0]);
+		node_txn[0].clone()
+	};
+
+	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
-	assert_eq!(spend_txn.len(), 8);
-	assert_eq!(spend_txn[0], spend_txn[2]);
-	assert_eq!(spend_txn[0], spend_txn[4]);
-	assert_eq!(spend_txn[0], spend_txn[6]);
-	assert_eq!(spend_txn[1], spend_txn[3]);
-	assert_eq!(spend_txn[1], spend_txn[5]);
-	assert_eq!(spend_txn[1], spend_txn[7]);
+	assert_eq!(spend_txn.len(), 3);
+	assert_eq!(spend_txn[0], spend_txn[1]);
 	check_spends!(spend_txn[0], local_txn[0]);
-	check_spends!(spend_txn[1], node_txn[0]);
+	check_spends!(spend_txn[2], htlc_timeout);
 }
 
 #[test]
