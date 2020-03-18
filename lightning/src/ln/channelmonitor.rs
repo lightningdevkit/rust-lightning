@@ -382,17 +382,18 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 /// keeping bumping another claim tx to solve the outpoint.
 pub(crate) const ANTI_REORG_DELAY: u32 = 6;
 
-struct Storage<ChanSigner: ChannelKeys> {
-	keys: ChanSigner,
-	funding_key: SecretKey,
-	revocation_base_key: SecretKey,
-	htlc_base_key: SecretKey,
-	delayed_payment_base_key: SecretKey,
-	payment_base_key: SecretKey,
-	shutdown_pubkey: PublicKey,
-	funding_info: Option<(OutPoint, Script)>,
-	current_remote_commitment_txid: Option<Sha256dHash>,
-	prev_remote_commitment_txid: Option<Sha256dHash>,
+#[derive(Clone)]
+pub(crate) struct Storage<ChanSigner: ChannelKeys> {
+	pub(crate) keys: ChanSigner,
+	pub(crate) funding_key: SecretKey,
+	pub(crate) revocation_base_key: SecretKey,
+	pub(crate) htlc_base_key: SecretKey,
+	pub(crate) delayed_payment_base_key: SecretKey,
+	pub(crate) payment_base_key: SecretKey,
+	pub(crate) shutdown_pubkey: PublicKey,
+	pub(crate) funding_info: Option<(OutPoint, Script)>,
+	pub(crate) current_remote_commitment_txid: Option<Sha256dHash>,
+	pub(crate) prev_remote_commitment_txid: Option<Sha256dHash>,
 }
 
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -763,9 +764,9 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	outputs_to_watch: HashMap<Sha256dHash, Vec<Script>>,
 
 	#[cfg(test)]
-	pub onchain_tx_handler: OnchainTxHandler,
+	pub onchain_tx_handler: OnchainTxHandler<ChanSigner>,
 	#[cfg(not(test))]
-	onchain_tx_handler: OnchainTxHandler,
+	onchain_tx_handler: OnchainTxHandler<ChanSigner>,
 
 	// We simply modify last_block_hash in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
@@ -1047,22 +1048,23 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let htlc_base_key = keys.htlc_base_key().clone();
 		let delayed_payment_base_key = keys.delayed_payment_base_key().clone();
 		let payment_base_key = keys.payment_base_key().clone();
+		let key_storage = Storage {
+			keys,
+			funding_key,
+			revocation_base_key,
+			htlc_base_key,
+			delayed_payment_base_key,
+			payment_base_key,
+			shutdown_pubkey: shutdown_pubkey.clone(),
+			funding_info: Some(funding_info),
+			current_remote_commitment_txid: None,
+			prev_remote_commitment_txid: None,
+		};
 		ChannelMonitor {
 			latest_update_id: 0,
 			commitment_transaction_number_obscure_factor,
 
-			key_storage: Storage {
-				keys,
-				funding_key,
-				revocation_base_key,
-				htlc_base_key,
-				delayed_payment_base_key,
-				payment_base_key,
-				shutdown_pubkey: shutdown_pubkey.clone(),
-				funding_info: Some(funding_info),
-				current_remote_commitment_txid: None,
-				prev_remote_commitment_txid: None,
-			},
+			key_storage: key_storage.clone(),
 			their_htlc_base_key: Some(their_htlc_base_key.clone()),
 			their_delayed_payment_base_key: Some(their_delayed_payment_base_key.clone()),
 			funding_redeemscript: Some(funding_redeemscript),
@@ -1090,7 +1092,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 			outputs_to_watch: HashMap::new(),
 
-			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), logger.clone()),
+			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), key_storage, logger.clone()),
 
 			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
@@ -2694,7 +2696,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + OnchainTxHandler::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -2716,7 +2718,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + OnchainTxHandler::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -2736,7 +2738,7 @@ mod tests {
 		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
 			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
 		}
-		assert_eq!(base_weight + OnchainTxHandler::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
