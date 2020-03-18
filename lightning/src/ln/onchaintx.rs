@@ -17,6 +17,7 @@ use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::chan_utils::HTLCType;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
+use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable};
 use util::byte_utils;
@@ -138,9 +139,10 @@ macro_rules! subtract_high_prio_fee {
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-#[derive(Clone)]
-pub struct OnchainTxHandler {
+pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	destination_script: Script,
+
+	key_storage: ChanSigner,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
 	// it (RBF or CPFP). If an input has been part of an aggregate tx at first claim try, we need to keep it within
@@ -175,9 +177,11 @@ pub struct OnchainTxHandler {
 	logger: Arc<Logger>
 }
 
-impl Writeable for OnchainTxHandler {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
+	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
+
+		self.key_storage.write(writer)?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.pending_claim_requests.len() as u64))?;
 		for (ref ancestor_claim_txid, claim_tx_data) in self.pending_claim_requests.iter() {
@@ -214,9 +218,11 @@ impl Writeable for OnchainTxHandler {
 	}
 }
 
-impl ReadableArgs<Arc<Logger>> for OnchainTxHandler {
+impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTxHandler<ChanSigner> {
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
+
+		let key_storage = Readable::read(reader)?;
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -263,6 +269,7 @@ impl ReadableArgs<Arc<Logger>> for OnchainTxHandler {
 
 		Ok(OnchainTxHandler {
 			destination_script,
+			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
 			onchain_events_waiting_threshold_conf,
@@ -272,10 +279,14 @@ impl ReadableArgs<Arc<Logger>> for OnchainTxHandler {
 	}
 }
 
-impl OnchainTxHandler {
-	pub(super) fn new(destination_script: Script, logger: Arc<Logger>) -> Self {
+impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, logger: Arc<Logger>) -> Self {
+
+		let key_storage = keys;
+
 		OnchainTxHandler {
 			destination_script,
+			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
 			onchain_events_waiting_threshold_conf: HashMap::new(),
