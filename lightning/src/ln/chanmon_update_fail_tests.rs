@@ -31,7 +31,7 @@ fn test_simple_monitor_permanent_update_fail() {
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
 	if let Err(APIError::ChannelUnavailable {..}) = nodes[0].node.send_payment(route, payment_hash_1) {} else { panic!(); }
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors!(nodes[0], 2);
 
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 2);
@@ -120,7 +120,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 
 	// ...and make sure we can force-close a frozen channel
 	nodes[0].node.force_close_channel(&channel_id);
-	check_added_monitors!(nodes[0], 0);
+	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], false);
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a

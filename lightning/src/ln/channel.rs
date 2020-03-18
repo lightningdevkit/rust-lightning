@@ -3774,7 +3774,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
@@ -3797,12 +3797,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		if self.channel_monitor.is_some() {
-			(self.channel_monitor.as_mut().unwrap().get_latest_local_commitment_txn(), dropped_outbound_htlcs)
-		} else {
-			// We aren't even signed funding yet, so can't broadcast anything
-			(Vec::new(), dropped_outbound_htlcs)
-		}
+		self.latest_monitor_update_id += 1;
+		(self.funding_txo.clone(), ChannelMonitorUpdate {
+			update_id: self.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+		}, dropped_outbound_htlcs)
 	}
 }
 

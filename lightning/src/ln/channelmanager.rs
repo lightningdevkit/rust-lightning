@@ -28,7 +28,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use ln::features::{InitFeatures, NodeFeatures};
 use ln::router::Route;
 use ln::msgs;
@@ -152,7 +152,7 @@ pub struct PaymentHash(pub [u8;32]);
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentPreimage(pub [u8;32]);
 
-type ShutdownResult = (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>);
+type ShutdownResult = (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
@@ -502,8 +502,7 @@ macro_rules! break_chan_entry {
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
 				}
-				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
-			},
+				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok())) },
 			Err(ChannelError::CloseDelayBroadcast { .. }) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 		}
 	}
@@ -522,7 +521,7 @@ macro_rules! try_chan_entry {
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
 				}
-				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()))
+				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()))
 			},
 			Err(ChannelError::CloseDelayBroadcast { msg, update }) => {
 				log_error!($self, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($entry.key()[..]), msg);
@@ -540,11 +539,7 @@ macro_rules! try_chan_entry {
 						ChannelMonitorUpdateErr::TemporaryFailure => {},
 					}
 				}
-				let mut shutdown_res = chan.force_shutdown();
-				if shutdown_res.0.len() >= 1 {
-					log_error!($self, "You have a toxic local commitment transaction {} avaible in channel monitor, read comment in ChannelMonitor::get_latest_local_commitment_txn to be informed of manual action to take", shutdown_res.0[0].txid());
-				}
-				shutdown_res.0.clear();
+				let shutdown_res = chan.force_shutdown(false);
 				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, $self.get_channel_update(&chan).ok()))
 			}
 		}
@@ -572,7 +567,7 @@ macro_rules! handle_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(), $self.get_channel_update(&chan).ok()));
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()));
 				res
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -820,14 +815,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
-		let (local_txn, mut failed_htlcs) = shutdown_res;
-		log_trace!(self, "Finishing force-closure of channel with {} transactions to broadcast and {} HTLCs to fail", local_txn.len(), failed_htlcs.len());
+		let (funding_txo_option, monitor_update, mut failed_htlcs) = shutdown_res;
+		log_trace!(self, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
-		for tx in local_txn {
-			log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
-			self.tx_broadcaster.broadcast_transaction(&tx);
+		if let Some(funding_txo) = funding_txo_option {
+			// There isn't anything we can do if we get an update failure - we're already
+			// force-closing. The monitor update on the required in-memory copy should broadcast
+			// the latest local state, which is the best we can do anyway. Thus, it is safe to
+			// ignore the result here.
+			let _ = self.monitor.update_monitor(funding_txo, monitor_update);
 		}
 	}
 
@@ -849,7 +847,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			}
 		};
 		log_trace!(self, "Force-closing channel {}", log_bytes!(channel_id[..]));
-		self.finish_force_close_channel(chan.force_shutdown());
+		self.finish_force_close_channel(chan.force_shutdown(true));
 		if let Ok(update) = self.get_channel_update(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -1268,7 +1266,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				Some(mut chan) => {
 					(chan.get_outbound_funding_created(funding_txo)
 						.map_err(|e| if let ChannelError::Close(msg) = e {
-							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(), None)
+							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(true), None)
 						} else { unreachable!(); })
 					, chan)
 				},
@@ -1288,7 +1286,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					{
 						let mut channel_state = self.channel_state.lock().unwrap();
-						match handle_error!(self, Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", *temporary_channel_id, chan.force_shutdown(), None)), chan.get_their_node_id(), channel_state) {
+						match handle_error!(self, Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", *temporary_channel_id, chan.force_shutdown(true), None)), chan.get_their_node_id(), channel_state) {
 							Err(_) => { return; },
 							Ok(()) => unreachable!(),
 						}
@@ -1518,7 +1516,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 											if let Some(short_id) = channel.get_short_channel_id() {
 												channel_state.short_to_id.remove(&short_id);
 											}
-											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(), self.get_channel_update(&channel).ok()))
+											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(true), self.get_channel_update(&channel).ok()))
 										},
 										ChannelError::CloseDelayBroadcast { .. } => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 									};
@@ -2021,7 +2019,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					// channel, not the temporary_channel_id. This is compatible with ourselves, but the
 					// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
 					// any messages referencing a previously-closed channel anyway.
-					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", funding_msg.channel_id, chan.force_shutdown(), None));
+					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", funding_msg.channel_id, chan.force_shutdown(true), None));
 				},
 				ChannelMonitorUpdateErr::TemporaryFailure => {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -2741,7 +2739,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 								// It looks like our counterparty went on-chain. We go ahead and
 								// broadcast our latest local state as well here, just in case its
 								// some kind of SPV attack, though we expect these to be dropped.
-								failed_channels.push(channel.force_shutdown());
+								failed_channels.push(channel.force_shutdown(true));
 								if let Ok(update) = self.get_channel_update(&channel) {
 									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 										msg: update
@@ -2756,11 +2754,10 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					if let Some(short_id) = channel.get_short_channel_id() {
 						short_to_id.remove(&short_id);
 					}
-					failed_channels.push(channel.force_shutdown());
 					// If would_broadcast_at_height() is true, the channel_monitor will broadcast
 					// the latest local tx for us, so we should skip that here (it doesn't really
 					// hurt anything, but does make tests a bit simpler).
-					failed_channels.last_mut().unwrap().0 = Vec::new();
+					failed_channels.push(channel.force_shutdown(false));
 					if let Ok(update) = self.get_channel_update(&channel) {
 						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
@@ -2804,7 +2801,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					if let Some(short_id) = v.get_short_channel_id() {
 						short_to_id.remove(&short_id);
 					}
-					failed_channels.push(v.force_shutdown());
+					failed_channels.push(v.force_shutdown(true));
 					if let Ok(update) = self.get_channel_update(&v) {
 						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
@@ -2992,7 +2989,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 						if let Some(short_id) = chan.get_short_channel_id() {
 							short_to_id.remove(&short_id);
 						}
-						failed_channels.push(chan.force_shutdown());
+						failed_channels.push(chan.force_shutdown(true));
 						if let Ok(update) = self.get_channel_update(&chan) {
 							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
@@ -3458,7 +3455,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		let latest_block_height: u32 = Readable::read(reader)?;
 		let last_block_hash: Sha256dHash = Readable::read(reader)?;
 
-		let mut closed_channels = Vec::new();
+		let mut failed_htlcs = Vec::new();
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
@@ -3477,9 +3474,9 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 						channel.get_revoked_remote_commitment_transaction_number() != monitor.get_min_seen_secret() ||
 						channel.get_cur_remote_commitment_transaction_number() != monitor.get_cur_remote_commitment_number() ||
 						channel.get_latest_monitor_update_id() != monitor.get_latest_update_id() {
-					let mut force_close_res = channel.force_shutdown();
-					force_close_res.0 = monitor.get_latest_local_commitment_txn();
-					closed_channels.push(force_close_res);
+					let (_, _, mut new_failed_htlcs) = channel.force_shutdown(true);
+					failed_htlcs.append(&mut new_failed_htlcs);
+					monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster);
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, channel.channel_id());
@@ -3493,7 +3490,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
-				closed_channels.push((monitor.get_latest_local_commitment_txn(), Vec::new()));
+				monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster);
 			}
 		}
 
@@ -3563,11 +3560,12 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			default_configuration: args.default_config,
 		};
 
-		for close_res in closed_channels.drain(..) {
-			channel_manager.finish_force_close_channel(close_res);
-			//TODO: Broadcast channel update for closed channels, but only after we've made a
-			//connection or two.
+		for htlc_source in failed_htlcs.drain(..) {
+			channel_manager.fail_htlc_backwards_internal(channel_manager.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
+
+		//TODO: Broadcast channel update for closed channels, but only after we've made a
+		//connection or two.
 
 		Ok((last_block_hash.clone(), channel_manager))
 	}

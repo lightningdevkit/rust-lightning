@@ -131,14 +131,16 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// same set of outputs to watch for on chain as we have now. Note that if we write
 			// tests that fully close channels and remove the monitors at some point this may break.
 			let feeest = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-			let old_monitors = self.chan_monitor.simple_monitor.monitors.lock().unwrap();
 			let mut deserialized_monitors = Vec::new();
-			for (_, old_monitor) in old_monitors.iter() {
-				let mut w = test_utils::TestVecWriter(Vec::new());
-				old_monitor.write_for_disk(&mut w).unwrap();
-				let (_, deserialized_monitor) = <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(
-					&mut ::std::io::Cursor::new(&w.0), Arc::clone(&self.logger) as Arc<Logger>).unwrap();
-				deserialized_monitors.push(deserialized_monitor);
+			{
+				let old_monitors = self.chan_monitor.simple_monitor.monitors.lock().unwrap();
+				for (_, old_monitor) in old_monitors.iter() {
+					let mut w = test_utils::TestVecWriter(Vec::new());
+					old_monitor.write_for_disk(&mut w).unwrap();
+					let (_, deserialized_monitor) = <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(
+						&mut ::std::io::Cursor::new(&w.0), Arc::clone(&self.logger) as Arc<Logger>).unwrap();
+					deserialized_monitors.push(deserialized_monitor);
+				}
 			}
 
 			// Before using all the new monitors to check the watch outpoints, use the full set of
