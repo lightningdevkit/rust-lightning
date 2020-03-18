@@ -4100,17 +4100,20 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
-	let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 2);
+
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 3);
-	assert_eq!(spend_txn[0], spend_txn[2]); // to_remote output on revoked remote commitment_tx
+	assert_eq!(spend_txn[0], spend_txn[1]); // to_remote output on revoked remote commitment_tx
 	check_spends!(spend_txn[0], revoked_local_txn[0]);
-	check_spends!(spend_txn[1], node_txn[0]);
+	check_spends!(spend_txn[2], node_txn[0]);
 }
 
 #[test]
@@ -4150,11 +4153,13 @@ fn test_static_spendable_outputs_preimage_tx() {
 	assert_eq!(node_txn.len(), 3);
 	check_spends!(node_txn[0], commitment_tx[0]);
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-eprintln!("{:?}", node_txn[1]);
 	check_spends!(node_txn[1], chan_1.3);
 	check_spends!(node_txn[2], node_txn[1]);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1); // , 0, 0, 1, 1);
+	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+
+	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -4185,6 +4190,9 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	assert_eq!(node_txn.len(), 2);
 	assert_eq!(node_txn[0].input.len(), 2);
 	check_spends!(node_txn[0], revoked_local_txn[0]);
+
+	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 2);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 1);
@@ -4223,7 +4231,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(revoked_htlc_txn[1], chan_1.3);
 
 	// B will generate justice tx from A's revoked commitment/HTLC tx
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -4236,6 +4244,9 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(node_txn[2], revoked_htlc_txn[0]);
 	assert_eq!(node_txn[3].input.len(), 1);
 	check_spends!(node_txn[3], revoked_local_txn[0]);
+
+	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone(), node_txn[2].clone()] }, 1);
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
@@ -4284,13 +4295,17 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	assert_eq!(node_txn[2].input.len(), 1);
 	check_spends!(node_txn[2], revoked_htlc_txn[0]);
 
+	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone(), node_txn[2].clone()] }, 1);
+
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
 	assert_eq!(spend_txn.len(), 5); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
+	assert_eq!(spend_txn[0], spend_txn[1]);
 	assert_eq!(spend_txn[0], spend_txn[2]);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
-	check_spends!(spend_txn[1], node_txn[0]); // spending justice tx output from revoked local tx htlc received output
-	check_spends!(spend_txn[3], node_txn[2]); // spending justice tx output on htlc success tx
+	check_spends!(spend_txn[3], node_txn[0]); // spending justice tx output from revoked local tx htlc received output
+	check_spends!(spend_txn[4], node_txn[2]); // spending justice tx output on htlc success tx
 }
 
 #[test]
