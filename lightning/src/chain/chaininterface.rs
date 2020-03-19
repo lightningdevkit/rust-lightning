@@ -65,6 +65,13 @@ pub trait ChainWatchInterface: Sync + Send {
 }
 
 /// An interface to send a transaction to the Bitcoin network.
+///
+/// We may pass non-final transaction (like local HTLC-timeout tx)
+/// in case of channel force-closure due to an offchain anomaly. To warn
+/// being bounce off of every network mempools, implementation MUST
+/// wait until transaction finalization before p2p announcement. To avoid
+/// unecessary transaction origin privacy leak, rebroadcast is the responsibility
+/// of BroadcasterInterface consumers.
 pub trait BroadcasterInterface: Sync + Send {
 	/// Sends a transaction out to (hopefully) be mined.
 	fn broadcast_transaction(&self, tx: &Transaction);
