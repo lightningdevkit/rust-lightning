@@ -4049,6 +4049,8 @@ fn test_claim_sizeable_push_msat() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
+
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
@@ -4077,6 +4079,8 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
+
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 2);
 	assert_eq!(spend_txn[0], spend_txn[1]);
@@ -4101,13 +4105,14 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 2);
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 3);
@@ -4158,6 +4163,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 1);
@@ -4182,7 +4188,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 
 	let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -4192,7 +4198,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	check_spends!(node_txn[0], revoked_local_txn[0]);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 2);
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
 	assert_eq!(spend_txn.len(), 1);
@@ -4247,6 +4254,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone(), node_txn[2].clone()] }, 1);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
@@ -4297,6 +4305,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone(), node_txn[2].clone()] }, 1);
+	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.bitcoin_hash());
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
@@ -4573,6 +4582,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[1].block_notifier.block_connected(&Block { header: header_201, txdata: node_txn.clone() }, 201);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 201, true, header_201.bitcoin_hash());
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1);
@@ -4844,7 +4854,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	// Create some initial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
-	route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
+	let (_, our_payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
 	let local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(local_txn[0].input.len(), 1);
 	check_spends!(local_txn[0], chan_1.3);
@@ -4865,6 +4875,15 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
+	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 201, true, header_201.bitcoin_hash());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_hash, .. } => {
+			assert_eq!(payment_hash, our_payment_hash);
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
@@ -4887,12 +4906,16 @@ fn test_static_output_closing_tx() {
 	let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
+	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![closing_tx.clone()] }, 0);
+	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 0, true, header.bitcoin_hash());
+
 	let spend_txn = check_spendable_outputs!(nodes[0], 2);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![closing_tx.clone()] }, 1);
+	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![closing_tx.clone()] }, 0);
+	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 0, true, header.bitcoin_hash());
+
 	let spend_txn = check_spendable_outputs!(nodes[1], 2);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
@@ -6744,7 +6767,8 @@ fn test_data_loss_protect() {
 	check_spends!(node_txn[0], chan.3);
 	assert_eq!(node_txn[0].output.len(), 2);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()]}, 1);
+	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()]}, 0);
+	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 0, true, header.bitcoin_hash());
 	let spend_txn = check_spendable_outputs!(nodes[0], 1);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
