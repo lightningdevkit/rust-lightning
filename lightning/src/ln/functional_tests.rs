@@ -3618,8 +3618,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
 }
 
-#[test]
-fn test_htlc_timeout() {
+fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	// If the user fails to claim/fail an HTLC within the HTLC CLTV timeout we fail it for them
 	// to avoid our counterparty failing the channel.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -3628,7 +3627,24 @@ fn test_htlc_timeout() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 100000);
+
+	let our_payment_hash = if send_partial_mpp {
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+		let (_, our_payment_hash) = get_payment_preimage_hash!(&nodes[0]);
+		let payment_secret = PaymentSecret([0xdb; 32]);
+		// Use the utility function send_payment_along_path to send the payment with MPP data which
+		// indicates there are more HTLCs coming.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, CHAN_CONFIRM_DEPTH).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		// Now do the relevant commitment_signed/RAA dances along the path, noting that the final
+		// hop should *not* yet generate any PaymentReceived event(s).
+		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false);
+		our_payment_hash
+	} else {
+		route_payment(&nodes[0], &[&nodes[1]], 100000).1
+	};
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected_checked(&header, 101, &[], &[]);
@@ -3654,6 +3670,12 @@ fn test_htlc_timeout() {
 	let mut expected_failure_data = byte_utils::be64_to_array(100_000).to_vec();
 	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(123));
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
+}
+
+#[test]
+fn test_htlc_timeout() {
+	do_test_htlc_timeout(true);
+	do_test_htlc_timeout(false);
 }
 
 #[test]
