@@ -1200,6 +1200,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							// Make sure we don't leave latest_monitor_update_id incremented here:
+							self.latest_monitor_update_id -= 1;
 							return Ok((None, None));
 						}
 					},
