@@ -47,7 +47,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let mut header = BlockHeader { version: 0x2000_0000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	let claim_txn = if local_commitment {
 		// Broadcast node 1 commitment txn to broadcast the HTLC-Timeout
-		let node_1_commitment_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+		let node_1_commitment_txn = get_local_commitment_txn!(nodes[1], chan_2.2);
 		assert_eq!(node_1_commitment_txn.len(), 2); // 1 local commitment tx, 1 Outbound HTLC-Timeout
 		assert_eq!(node_1_commitment_txn[0].output.len(), 2); // to-self and Offered HTLC (to-remote/to-node-3 is dust)
 		check_spends!(node_1_commitment_txn[0], chan_2.3);
@@ -71,7 +71,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		vec![node_1_commitment_txn[0].clone(), node_2_commitment_txn[0].clone()]
 	} else {
 		// Broadcast node 2 commitment txn
-		let node_2_commitment_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+		let node_2_commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 		assert_eq!(node_2_commitment_txn.len(), 2); // 1 local commitment tx, 1 Received HTLC-Claim
 		assert_eq!(node_2_commitment_txn[0].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
 		check_spends!(node_2_commitment_txn[0], chan_2.3);

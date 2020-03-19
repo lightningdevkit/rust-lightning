@@ -580,16 +580,15 @@ fn test_update_fee_that_funder_cannot_afford() {
 	//Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate of 260 set above.
 	//This value results in a fee that is exactly what the funder can afford (277 sat + 1000 sat channel reserve)
 	{
-		let mut chan_lock = nodes[1].node.channel_state.lock().unwrap();
-		let chan = chan_lock.by_id.get_mut(&channel_id).unwrap();
+		let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
 
 		//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs
-		let num_htlcs = chan.channel_monitor().get_latest_local_commitment_txn()[0].output.len() - 2;
+		let num_htlcs = commitment_tx.output.len() - 2;
 		let total_fee: u64 = feerate * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-		let mut actual_fee = chan.channel_monitor().get_latest_local_commitment_txn()[0].output.iter().fold(0, |acc, output| acc + output.value);
+		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value);
 		actual_fee = channel_value - actual_fee;
 		assert_eq!(total_fee, actual_fee);
-	} //drop the mutex
+	}
 
 	//Add 2 to the previous fee rate to the final fee increases by 1 (with no HTLCs the fee is essentially
 	//fee_rate*(724/1000) so the increment of 1*0.724 is rounded back down)
@@ -1475,7 +1474,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	check_added_monitors!(nodes[0], 1);
 
 	// Broadcast node 1 commitment txn
-	let remote_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let remote_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
 
 	assert_eq!(remote_txn[0].output.len(), 4); // 1 local, 1 remote, 1 htlc inbound, 1 htlc outbound
 	let mut has_both_htlcs = 0; // check htlcs match ones committed
@@ -2111,7 +2110,7 @@ fn test_justice_tx() {
 	// A pending HTLC which will be revoked:
 	let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	// Get the will-be-revoked local txn from nodes[0]
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.iter_mut().next().unwrap().1.channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_5.2);
 	assert_eq!(revoked_local_txn.len(), 2); // First commitment tx, then HTLC tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_5.3.txid());
@@ -2162,7 +2161,7 @@ fn test_justice_tx() {
 	// A pending HTLC which will be revoked:
 	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	// Get the will-be-revoked local txn from B
-	let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.iter_mut().next().unwrap().1.channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_6.2);
 	assert_eq!(revoked_local_txn.len(), 1); // Only commitment tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_6.3.txid());
@@ -2205,7 +2204,7 @@ fn revoked_output_claim() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn.len(), 1);
 	// Only output is the full channel value back to nodes[0]:
 	assert_eq!(revoked_local_txn[0].output.len(), 1);
@@ -2246,7 +2245,7 @@ fn claim_htlc_outputs_shared_tx() {
 	let (_payment_preimage_2, payment_hash_2) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000);
 
 	// Get the will-be-revoked local txn from node[0]
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn.len(), 2); // commitment tx + 1 HTLC-Timeout tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
@@ -2324,7 +2323,7 @@ fn claim_htlc_outputs_single_tx() {
 	let (_payment_preimage_2, payment_hash_2) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000);
 
 	// Get the will-be-revoked local txn from node[0]
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 
 	//Revoke the old state
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1, 3_000_000);
@@ -2435,7 +2434,7 @@ fn test_htlc_on_chain_success() {
 
 	// Broadcast legit commitment tx from C on B's chain
 	// Broadcast HTLC Success transaction by C on received output from C's commitment tx on B's chain
-	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_tx.len(), 1);
 	check_spends!(commitment_tx[0], chan_2.3);
 	nodes[2].node.claim_funds(our_payment_preimage, 3_000_000);
@@ -2542,7 +2541,7 @@ fn test_htlc_on_chain_success() {
 
 	// Broadcast legit commitment tx from A on B's chain
 	// Broadcast preimage tx by B on offered output from A commitment tx  on A's chain
-	let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	check_spends!(commitment_tx[0], chan_1.3);
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	check_closed_broadcast!(nodes[1], false);
@@ -2612,7 +2611,7 @@ fn test_htlc_on_chain_timeout() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 
 	// Broadcast legit commitment tx from C on B's chain
-	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	check_spends!(commitment_tx[0], chan_2.3);
 	nodes[2].node.fail_htlc_backwards(&payment_hash);
 	check_added_monitors!(nodes[2], 0);
@@ -2686,7 +2685,7 @@ fn test_htlc_on_chain_timeout() {
 	assert_eq!(node_txn.len(), 0);
 
 	// Broadcast legit commitment tx from B on A's chain
-	let commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[1], chan_1.2);
 	check_spends!(commitment_tx[0], chan_1.3);
 
 	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
@@ -2718,7 +2717,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 
 	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 	// Get the will-be-revoked local txn from nodes[2]
-	let revoked_local_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	// Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage, 3_000_000);
 
@@ -2789,7 +2788,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], if no_to_remote { 10_000 } else { 3_000_000 });
 	// Get the will-be-revoked local txn from nodes[2]
-	let revoked_local_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(revoked_local_txn[0].output.len(), if no_to_remote { 1 } else { 2 });
 	// Revoke the old state
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage, if no_to_remote { 10_000 } else { 3_000_000});
@@ -4096,7 +4095,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 59000000, InitFeatures::supported(), InitFeatures::supported());
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
 
@@ -4126,7 +4125,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 
-	let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(commitment_tx[0].input.len(), 1);
 	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
 
@@ -4171,7 +4170,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.iter_mut().next().unwrap().1.channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
 
@@ -4203,7 +4202,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let revoked_local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
 
@@ -4256,7 +4255,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
 
@@ -4319,7 +4318,7 @@ fn test_onchain_to_onchain_claim() {
 
 	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	let commitment_tx = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	check_spends!(commitment_tx[0], chan_2.3);
 	nodes[2].node.claim_funds(payment_preimage, 3_000_000);
 	check_added_monitors!(nodes[2], 1);
@@ -4380,7 +4379,7 @@ fn test_onchain_to_onchain_claim() {
 		_ => panic!("Unexpected event"),
 	};
 	// Broadcast A's commitment tx on B's chain to see if we are able to claim inbound HTLC with our HTLC-Success tx
-	let commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	// ChannelMonitor: HTLC-Success tx, ChannelManager: local commitment tx + HTLC-Success tx
@@ -4412,7 +4411,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	*nodes[0].network_payment_count.borrow_mut() -= 1;
 	assert_eq!(route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000).1, duplicate_payment_hash);
 
-	let commitment_txn = nodes[2].node.channel_state.lock().unwrap().by_id.get_mut(&chan_2.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_txn[0].input.len(), 1);
 	check_spends!(commitment_txn[0], chan_2.3);
 
@@ -4530,7 +4529,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
-	let local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
 	assert_eq!(local_txn[0].input.len(), 1);
 	check_spends!(local_txn[0], chan_1.3);
 
@@ -4588,7 +4587,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// Rebalance and check output sanity...
 	send_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 500000, 500_000);
 	send_payment(&nodes[1], &[&nodes[2], &nodes[3], &nodes[5]], 500000, 500_000);
-	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn()[0].output.len(), 2);
+	assert_eq!(get_local_commitment_txn!(nodes[3], chan.2)[0].output.len(), 2);
 
 	let ds_dust_limit = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
 	// 0th HTLC:
@@ -4625,8 +4624,8 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// Double-check that six of the new HTLC were added
 	// We now have six HTLCs pending over the dust limit and six HTLCs under the dust limit (ie,
 	// with to_local and to_remote outputs, 8 outputs and 6 HTLCs not included).
-	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn().len(), 1);
-	assert_eq!(nodes[3].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn()[0].output.len(), 8);
+	assert_eq!(get_local_commitment_txn!(nodes[3], chan.2).len(), 1);
+	assert_eq!(get_local_commitment_txn!(nodes[3], chan.2)[0].output.len(), 8);
 
 	// Now fail back three of the over-dust-limit and three of the under-dust-limit payments in one go.
 	// Fail 0th below-dust, 4th above-dust, 8th above-dust, 10th below-dust HTLCs
@@ -4657,7 +4656,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	nodes[3].node.handle_update_fail_htlc(&nodes[5].node.get_our_node_id(), &two_removes.update_fail_htlcs[1]);
 	commitment_signed_dance!(nodes[3], nodes[5], two_removes.commitment_signed, false);
 
-	let ds_prev_commitment_tx = nodes[3].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let ds_prev_commitment_tx = get_local_commitment_txn!(nodes[3], chan.2);
 
 	expect_pending_htlcs_forwardable!(nodes[3]);
 	check_added_monitors!(nodes[3], 1);
@@ -4685,7 +4684,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	//
 	// Alternatively, we may broadcast the previous commitment transaction, which should only
 	// result in failures for the below-dust HTLCs, ie the 0th, 1st, 2nd, 3rd, 9th, and 10th HTLCs.
-	let ds_last_commitment_tx = nodes[3].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let ds_last_commitment_tx = get_local_commitment_txn!(nodes[3], chan.2);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	if announce_latest {
@@ -4825,7 +4824,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
 
 	route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
-	let local_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(local_txn[0].input.len(), 1);
 	check_spends!(local_txn[0], chan_1.3);
 
@@ -6222,7 +6221,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Cache one local commitment tx as previous
-	let as_prev_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let as_prev_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
 
 	// Fail one HTLC to prune it in the will-be-latest-local commitment tx
 	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash_2));
@@ -6236,7 +6235,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	check_added_monitors!(nodes[0], 1);
 
 	// Cache one local commitment tx as lastest
-	let as_last_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let as_last_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	match events[0] {
@@ -6365,8 +6364,8 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let (_payment_preimage_1, dust_hash) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
 	let (_payment_preimage_2, non_dust_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
-	let as_commitment_tx = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
-	let bs_commitment_tx = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
+	let bs_commitment_tx = get_local_commitment_txn!(nodes[1], chan.2);
 
 	// We revoked bs_commitment_tx
 	if revoked {
@@ -6856,7 +6855,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 3000000, 30).unwrap();
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
 
-	let revoked_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	// Revoked commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
 	assert_eq!(revoked_txn[0].output.len(), 4);
 	assert_eq!(revoked_txn[0].input.len(), 1);
@@ -6959,7 +6958,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3_000_000).0;
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
 
-	let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
 
@@ -7080,7 +7079,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
 
 	// Remote commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
-	let remote_txn = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let remote_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	assert_eq!(remote_txn[0].output.len(), 4);
 	assert_eq!(remote_txn[0].input.len(), 1);
 	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.txid());
@@ -7188,7 +7187,7 @@ fn test_set_outpoints_partial_claiming() {
 	let payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
 
 	// Remote commitment txn with 4 outputs: to_local, to_remote, 2 outgoing HTLC
-	let remote_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let remote_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(remote_txn.len(), 3);
 	assert_eq!(remote_txn[0].output.len(), 4);
 	assert_eq!(remote_txn[0].input.len(), 1);
@@ -7313,7 +7312,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 9_000_000).0;
 
-	let revoked_local_txn = nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2).unwrap().channel_monitor().get_latest_local_commitment_txn();
+	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
 

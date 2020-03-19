@@ -257,6 +257,12 @@ macro_rules! get_feerate {
 	}
 }
 
+macro_rules! get_local_commitment_txn {
+	($node: expr, $channel_id: expr) => {
+		$node.node.channel_state.lock().unwrap().by_id.get_mut(&$channel_id).unwrap().channel_monitor().get_latest_local_commitment_txn()
+	}
+}
+
 pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
 	let chan_id = *node.network_chan_count.borrow();
 
