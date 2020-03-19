@@ -259,7 +259,17 @@ macro_rules! get_feerate {
 
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
-		$node.node.channel_state.lock().unwrap().by_id.get_mut(&$channel_id).unwrap().channel_monitor().get_latest_local_commitment_txn()
+		{
+			let mut monitors = $node.chan_monitor.simple_monitor.monitors.lock().unwrap();
+			let mut commitment_txn = None;
+			for (funding_txo, monitor) in monitors.iter_mut() {
+				if funding_txo.to_channel_id() == $channel_id {
+					commitment_txn = Some(monitor.get_latest_local_commitment_txn());
+					break;
+				}
+			}
+			commitment_txn.unwrap()
+		}
 	}
 }
 
