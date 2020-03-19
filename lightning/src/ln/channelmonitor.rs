@@ -406,7 +406,6 @@ enum Storage<ChanSigner: ChannelKeys> {
 		htlc_base_key: SecretKey,
 		delayed_payment_base_key: SecretKey,
 		payment_base_key: SecretKey,
-		shutdown_pubkey: PublicKey,
 		funding_info: Option<(OutPoint, Script)>,
 		current_remote_commitment_txid: Option<Sha256dHash>,
 		prev_remote_commitment_txid: Option<Sha256dHash>,
@@ -762,6 +761,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	destination_script: Script,
 	broadcasted_local_revokable_script: Option<(Script, SecretKey, Script)>,
 	broadcasted_remote_payment_script: Option<(Script, SecretKey)>,
+	shutdown_script: Script,
 
 	key_storage: Storage<ChanSigner>,
 	their_htlc_base_key: Option<PublicKey>,
@@ -898,9 +898,10 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		} else {
 			writer.write_all(&[1; 1])?;
 		}
+		self.shutdown_script.write(writer)?;
 
 		match self.key_storage {
-			Storage::Local { ref keys, ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref shutdown_pubkey, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
+			Storage::Local { ref keys, ref funding_key, ref revocation_base_key, ref htlc_base_key, ref delayed_payment_base_key, ref payment_base_key, ref funding_info, ref current_remote_commitment_txid, ref prev_remote_commitment_txid } => {
 				writer.write_all(&[0; 1])?;
 				keys.write(writer)?;
 				writer.write_all(&funding_key[..])?;
@@ -908,7 +909,6 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 				writer.write_all(&htlc_base_key[..])?;
 				writer.write_all(&delayed_payment_base_key[..])?;
 				writer.write_all(&payment_base_key[..])?;
-				writer.write_all(&shutdown_pubkey.serialize())?;
 				match funding_info  {
 					&Some((ref outpoint, ref script)) => {
 						writer.write_all(&outpoint.txid[..])?;
@@ -1119,6 +1119,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let htlc_base_key = keys.htlc_base_key().clone();
 		let delayed_payment_base_key = keys.delayed_payment_base_key().clone();
 		let payment_base_key = keys.payment_base_key().clone();
+		let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
+		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
 		ChannelMonitor {
 			latest_update_id: 0,
 			commitment_transaction_number_obscure_factor,
@@ -1126,6 +1128,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			destination_script: destination_script.clone(),
 			broadcasted_local_revokable_script: None,
 			broadcasted_remote_payment_script: None,
+			shutdown_script,
 
 			key_storage: Storage::Local {
 				keys,
@@ -1134,7 +1137,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				htlc_base_key,
 				delayed_payment_base_key,
 				payment_base_key,
-				shutdown_pubkey: shutdown_pubkey.clone(),
 				funding_info: Some(funding_info),
 				current_remote_commitment_txid: None,
 				prev_remote_commitment_txid: None,
@@ -1901,31 +1903,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(local_txn, (commitment_txid, watch_outputs))
 	}
 
-	/// Generate a spendable output event when closing_transaction get registered onchain.
-	fn check_spend_closing_transaction(&self, tx: &Transaction) -> Option<SpendableOutputDescriptor> {
-		if tx.input[0].sequence == 0xFFFFFFFF && !tx.input[0].witness.is_empty() && tx.input[0].witness.last().unwrap().len() == 71 {
-			match self.key_storage {
-				Storage::Local { ref shutdown_pubkey, .. } =>  {
-					let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
-					let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
-					for (idx, output) in tx.output.iter().enumerate() {
-						if shutdown_script == output.script_pubkey {
-							return Some(SpendableOutputDescriptor::StaticOutput {
-								outpoint: BitcoinOutPoint { txid: tx.txid(), vout: idx as u32 },
-								output: output.clone(),
-							});
-						}
-					}
-				}
-				Storage::Watchtower { .. } => {
-					//TODO: we need to ensure an offline client will generate the event when it
-					// comes back online after only the watchtower saw the transaction
-				}
-			}
-		}
-		None
-	}
-
 	/// Used by ChannelManager deserialization to broadcast the latest local state if its copy of
 	/// the Channel was out-of-date. You may use it to get a broadcastable local toxic tx in case of
 	/// fallen-behind, i.e when receiving a channel_reestablish with a proof that our remote side knows
@@ -2018,11 +1995,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							}
 						}
 						claimable_outpoints.append(&mut new_outpoints);
-					}
-					if !funding_txo.is_none() && claimable_outpoints.is_empty() {
-						if let Some(spendable_output) = self.check_spend_closing_transaction(&tx) {
-							spendable_outputs.push(spendable_output);
-						}
 					}
 				} else {
 					if let Some(&(commitment_number, _)) = self.remote_commitment_txn_on_chain.get(&prevout.txid) {
@@ -2358,6 +2330,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						output: outp.clone(),
 					});
 				}
+			} else if outp.script_pubkey == self.shutdown_script {
+				return Some(SpendableOutputDescriptor::StaticOutput {
+						outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
+						output: outp.clone(),
+				});
 			}
 		}
 		None
@@ -2406,6 +2383,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),
 		};
+		let shutdown_script = Readable::read(reader)?;
 
 		let key_storage = match <u8 as Readable>::read(reader)? {
 			0 => {
@@ -2415,7 +2393,6 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 				let htlc_base_key = Readable::read(reader)?;
 				let delayed_payment_base_key = Readable::read(reader)?;
 				let payment_base_key = Readable::read(reader)?;
-				let shutdown_pubkey = Readable::read(reader)?;
 				// Technically this can fail and serialize fail a round-trip, but only for serialization of
 				// barely-init'd ChannelMonitors that we can't do anything with.
 				let outpoint = OutPoint {
@@ -2432,7 +2409,6 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 					htlc_base_key,
 					delayed_payment_base_key,
 					payment_base_key,
-					shutdown_pubkey,
 					funding_info,
 					current_remote_commitment_txid,
 					prev_remote_commitment_txid,
@@ -2641,6 +2617,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			destination_script,
 			broadcasted_local_revokable_script,
 			broadcasted_remote_payment_script,
+			shutdown_script,
 
 			key_storage,
 			their_htlc_base_key,
