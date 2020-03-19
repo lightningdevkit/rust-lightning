@@ -2278,19 +2278,23 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			if let Some((source, payment_hash)) = payment_data {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				if accepted_preimage_claim {
-					payment_preimage.0.copy_from_slice(&input.witness[3]);
-					self.pending_htlcs_updated.push(HTLCUpdate {
-						source,
-						payment_preimage: Some(payment_preimage),
-						payment_hash
-					});
+					if !self.pending_htlcs_updated.iter().any(|update| update.source == source) {
+						payment_preimage.0.copy_from_slice(&input.witness[3]);
+						self.pending_htlcs_updated.push(HTLCUpdate {
+							source,
+							payment_preimage: Some(payment_preimage),
+							payment_hash
+						});
+					}
 				} else if offered_preimage_claim {
-					payment_preimage.0.copy_from_slice(&input.witness[1]);
-					self.pending_htlcs_updated.push(HTLCUpdate {
-						source,
-						payment_preimage: Some(payment_preimage),
-						payment_hash
-					});
+					if !self.pending_htlcs_updated.iter().any(|update| update.source == source) {
+						payment_preimage.0.copy_from_slice(&input.witness[1]);
+						self.pending_htlcs_updated.push(HTLCUpdate {
+							source,
+							payment_preimage: Some(payment_preimage),
+							payment_hash
+						});
+					}
 				} else {
 					log_info!(self, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), height + ANTI_REORG_DELAY - 1);
 					match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
