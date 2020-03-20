@@ -116,7 +116,7 @@ impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMon
 		};
 		let mut deserialized_monitor = <(Sha256d, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
 			read(&mut Cursor::new(&map_entry.get().1), Arc::clone(&self.logger)).unwrap().1;
-		deserialized_monitor.update_monitor(update.clone()).unwrap();
+		deserialized_monitor.update_monitor(update.clone(), &&TestBroadcaster {}).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write_for_disk(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));

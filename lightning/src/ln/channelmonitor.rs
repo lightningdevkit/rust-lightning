@@ -124,9 +124,11 @@ pub enum ChannelMonitorUpdateErr {
 	TemporaryFailure,
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed
-	/// of this channel). This will force-close the channel in question.
+	/// of this channel). This will force-close the channel in question (which will generate one
+	/// final ChannelMonitorUpdate which must be delivered to at least one ChannelMonitor copy).
 	///
-	/// Should also be used to indicate a failure to update the local copy of the channel monitor.
+	/// Should also be used to indicate a failure to update the local persisted copy of the channel
+	/// monitor.
 	PermanentFailure,
 }
 
@@ -152,6 +154,13 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 /// them. Generally should be implemented by keeping a local SimpleManyChannelMonitor and passing
 /// events to it, while also taking any add/update_monitor events and passing them to some remote
 /// server(s).
+///
+/// In general, you must always have at least one local copy in memory, which must never fail to
+/// update (as it is responsible for broadcasting the latest state in case the channel is closed),
+/// and then persist it to various on-disk locations. If, for some reason, the in-memory copy fails
+/// to update (eg out-of-memory or some other condition), you must immediately shut down without
+/// taking any further action such as writing the current state to disk. This should likely be
+/// accomplished via panic!() or abort().
 ///
 /// Note that any updates to a channel's monitor *must* be applied to each instance of the
 /// channel's monitor everywhere (including remote watchtowers) *before* this function returns. If
@@ -313,7 +322,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 		match monitors.get_mut(&key) {
 			Some(orig_monitor) => {
 				log_trace!(self, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor.key_storage));
-				orig_monitor.update_monitor(update)
+				orig_monitor.update_monitor(update, &self.broadcaster)
 			},
 			None => Err(MonitorUpdateError("No such monitor registered"))
 		}
@@ -621,6 +630,13 @@ pub(super) enum ChannelMonitorUpdateStep {
 	RescueRemoteCommitmentTXInfo {
 		their_current_per_commitment_point: PublicKey,
 	},
+	/// Used to indicate that the no future updates will occur, and likely that the latest local
+	/// commitment transaction(s) should be broadcast, as the channel has been force-closed.
+	ChannelForceClosed {
+		/// If set to false, we shouldn't broadcast the latest local commitment transaction as we
+		/// think we've fallen behind!
+		should_broadcast: bool,
+	},
 }
 
 impl Writeable for ChannelMonitorUpdateStep {
@@ -661,6 +677,10 @@ impl Writeable for ChannelMonitorUpdateStep {
 			&ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { ref their_current_per_commitment_point } => {
 				4u8.write(w)?;
 				their_current_per_commitment_point.write(w)?;
+			},
+			&ChannelMonitorUpdateStep::ChannelForceClosed { ref should_broadcast } => {
+				5u8.write(w)?;
+				should_broadcast.write(w)?;
 			},
 		}
 		Ok(())
@@ -713,6 +733,11 @@ impl Readable for ChannelMonitorUpdateStep {
 			4u8 => {
 				Ok(ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo {
 					their_current_per_commitment_point: Readable::read(r)?,
+				})
+			},
+			5u8 => {
+				Ok(ChannelMonitorUpdateStep::ChannelForceClosed {
+					should_broadcast: Readable::read(r)?
 				})
 			},
 			_ => Err(DecodeError::InvalidValue),
@@ -1275,6 +1300,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 	}
 
+	pub(super) fn broadcast_latest_local_commitment_txn<B: Deref>(&mut self, broadcaster: &B)
+		where B::Target: BroadcasterInterface,
+	{
+		for tx in self.get_latest_local_commitment_txn().iter() {
+			broadcaster.broadcast_transaction(tx);
+		}
+	}
+
 	/// Used in Channel to cheat wrt the update_ids since it plays games, will be removed soon!
 	pub(super) fn update_monitor_ooo(&mut self, mut updates: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
 		for update in updates.updates.drain(..) {
@@ -1289,6 +1322,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.provide_secret(idx, secret)?,
 				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
 					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
+				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 			}
 		}
 		self.latest_update_id = updates.update_id;
@@ -1299,7 +1333,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor(&mut self, mut updates: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
+	pub fn update_monitor<B: Deref>(&mut self, mut updates: ChannelMonitorUpdate, broadcaster: &B) -> Result<(), MonitorUpdateError>
+		where B::Target: BroadcasterInterface,
+	{
 		if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
@@ -1315,6 +1351,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.provide_secret(idx, secret)?,
 				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
 					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
+				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
+					if should_broadcast {
+						self.broadcast_latest_local_commitment_txn(broadcaster);
+					} else {
+						log_error!(self, "You have a toxic local commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_local_commitment_txn to be informed of manual action to take");
+					}
+				}
 			}
 		}
 		self.latest_update_id = updates.update_id;
@@ -1929,6 +1972,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// out-of-band the other node operator to coordinate with him if option is available to you.
 	/// In any-case, choice is up to the user.
 	pub fn get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
+		// TODO: We should likely move all of the logic in here into OnChainTxHandler and unify it
+		// to ensure add_local_sig is only ever called once no matter what. This likely includes
+		// tracking state and panic!()ing if we get an update after force-closure/local-tx signing.
 		log_trace!(self, "Getting signed latest local commitment transaction!");
 		if let &mut Some(ref mut local_tx) = &mut self.current_local_signed_commitment_tx {
 			match self.key_storage {
@@ -2278,19 +2324,23 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			if let Some((source, payment_hash)) = payment_data {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				if accepted_preimage_claim {
-					payment_preimage.0.copy_from_slice(&input.witness[3]);
-					self.pending_htlcs_updated.push(HTLCUpdate {
-						source,
-						payment_preimage: Some(payment_preimage),
-						payment_hash
-					});
+					if !self.pending_htlcs_updated.iter().any(|update| update.source == source) {
+						payment_preimage.0.copy_from_slice(&input.witness[3]);
+						self.pending_htlcs_updated.push(HTLCUpdate {
+							source,
+							payment_preimage: Some(payment_preimage),
+							payment_hash
+						});
+					}
 				} else if offered_preimage_claim {
-					payment_preimage.0.copy_from_slice(&input.witness[1]);
-					self.pending_htlcs_updated.push(HTLCUpdate {
-						source,
-						payment_preimage: Some(payment_preimage),
-						payment_hash
-					});
+					if !self.pending_htlcs_updated.iter().any(|update| update.source == source) {
+						payment_preimage.0.copy_from_slice(&input.witness[1]);
+						self.pending_htlcs_updated.push(HTLCUpdate {
+							source,
+							payment_preimage: Some(payment_preimage),
+							payment_hash
+						});
+					}
 				} else {
 					log_info!(self, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), height + ANTI_REORG_DELAY - 1);
 					match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {

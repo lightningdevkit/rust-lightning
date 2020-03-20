@@ -1138,8 +1138,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
-	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
-	/// Ok(_) if debug assertions are turned on and preconditions are met.
+	/// In such cases we debug_assert!(false) and return a ChannelError::Ignore. Thus, will always
+	/// return Ok(_) if debug assertions are turned on or preconditions are met.
+	///
+	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
+	/// but then have a reorg which settles on an HTLC-failure on chain.
 	fn get_update_fulfill_htlc(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitorUpdate>), ChannelError> {
 		// Either ChannelFunded got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -1167,6 +1170,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						} else {
 							log_warn!(self, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", log_bytes!(htlc.payment_hash.0), log_bytes!(self.channel_id()));
 						}
+						debug_assert!(false, "Tried to fulfill an HTLC that was already fail/fulfilled");
 						return Ok((None, None));
 					},
 					_ => {
@@ -1200,6 +1204,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							// Make sure we don't leave latest_monitor_update_id incremented here:
+							self.latest_monitor_update_id -= 1;
+							debug_assert!(false, "Tried to fulfill an HTLC that was already fulfilled");
 							return Ok((None, None));
 						}
 					},
@@ -1208,6 +1215,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							log_warn!(self, "Have preimage and want to fulfill HTLC with pending failure against channel {}", log_bytes!(self.channel_id()));
 							// TODO: We may actually be able to switch to a fulfill here, though its
 							// rare enough it may not be worth the complexity burden.
+							debug_assert!(false, "Tried to fulfill an HTLC that was already failed");
 							return Ok((None, Some(monitor_update)));
 						}
 					},
@@ -1259,8 +1267,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
-	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
-	/// Ok(_) if debug assertions are turned on and preconditions are met.
+	/// In such cases we debug_assert!(false) and return a ChannelError::Ignore. Thus, will always
+	/// return Ok(_) if debug assertions are turned on or preconditions are met.
+	///
+	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
+	/// but then have a reorg which settles on an HTLC-failure on chain.
 	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
@@ -1277,6 +1288,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match htlc.state {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(_) => {
+						debug_assert!(false, "Tried to fail an HTLC that was already fail/fulfilled");
 						return Ok(None);
 					},
 					_ => {
@@ -1297,11 +1309,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							debug_assert!(false, "Tried to fail an HTLC that was already fulfilled");
 							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							debug_assert!(false, "Tried to fail an HTLC that was already failed");
 							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 						}
 					},
@@ -3760,7 +3774,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
@@ -3783,12 +3797,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		if self.channel_monitor.is_some() {
-			(self.channel_monitor.as_mut().unwrap().get_latest_local_commitment_txn(), dropped_outbound_htlcs)
-		} else {
-			// We aren't even signed funding yet, so can't broadcast anything
-			(Vec::new(), dropped_outbound_htlcs)
-		}
+		self.latest_monitor_update_id += 1;
+		(self.funding_txo.clone(), ChannelMonitorUpdate {
+			update_id: self.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+		}, dropped_outbound_htlcs)
 	}
 }
 
