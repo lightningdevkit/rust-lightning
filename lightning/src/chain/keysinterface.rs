@@ -37,6 +37,7 @@ use ln::msgs::DecodeError;
 /// spend on-chain. The information needed to do this is provided in this enum, including the
 /// outpoint describing which txid and output index is available, the full output which exists at
 /// that txid/index, and any keys or other information required to sign.
+#[derive(Clone, PartialEq)]
 pub enum SpendableOutputDescriptor {
 	/// An output to a script which was provided via KeysInterface, thus you should already know
 	/// how to spend it. No keys are provided as rust-lightning was never given any keys - only the

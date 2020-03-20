@@ -17,7 +17,6 @@ use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::chan_utils::HTLCType;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
-use chain::keysinterface::SpendableOutputDescriptor;
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable};
 use util::byte_utils;
@@ -478,7 +477,7 @@ impl OnchainTxHandler {
 		Some((new_timer, new_feerate, bumped_tx))
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F) -> Vec<SpendableOutputDescriptor>
+	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
@@ -486,7 +485,6 @@ impl OnchainTxHandler {
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
-		let mut spendable_outputs = Vec::new();
 
 		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
@@ -522,10 +520,6 @@ impl OnchainTxHandler {
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
 				log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
-				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: 0 },
-					output: tx.output[0].clone(),
-				});
 				broadcaster.broadcast_transaction(&tx);
 			}
 		}
@@ -656,8 +650,6 @@ impl OnchainTxHandler {
 				} else { unreachable!(); }
 			}
 		}
-
-		spendable_outputs
 	}
 
 	pub(super) fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F)
