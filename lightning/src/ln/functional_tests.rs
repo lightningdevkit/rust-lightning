@@ -3839,6 +3839,13 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	create_announced_chan_between_nodes(&nodes, 2, 0, InitFeatures::supported(), InitFeatures::supported());
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3, InitFeatures::supported(), InitFeatures::supported());
 
+	let mut node_0_stale_monitors_serialized = Vec::new();
+	for monitor in nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter() {
+		let mut writer = test_utils::TestVecWriter(Vec::new());
+		monitor.1.write_for_disk(&mut writer).unwrap();
+		node_0_stale_monitors_serialized.push(writer.0);
+	}
+
 	let (our_payment_preimage, _) = route_payment(&nodes[2], &[&nodes[0], &nodes[1]], 1000000);
 
 	// Serialize the ChannelManager here, but the monitor we keep up-to-date
@@ -3861,6 +3868,15 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), &fee_estimator);
 	nodes[0].chan_monitor = &new_chan_monitor;
+
+	let mut node_0_stale_monitors = Vec::new();
+	for serialized in node_0_stale_monitors_serialized.iter() {
+		let mut read = &serialized[..];
+		let (_, monitor) = <(Sha256dHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, Arc::new(test_utils::TestLogger::new())).unwrap();
+		assert!(read.is_empty());
+		node_0_stale_monitors.push(monitor);
+	}
+
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
@@ -3869,9 +3885,25 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		node_0_monitors.push(monitor);
 	}
 
-	let mut nodes_0_read = &nodes_0_serialized[..];
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new()));
-	let (_, nodes_0_deserialized_tmp) = <(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+
+	let mut nodes_0_read = &nodes_0_serialized[..];
+	if let Err(msgs::DecodeError::InvalidValue) =
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		default_config: UserConfig::default(),
+		keys_manager: &keys_manager,
+		fee_estimator: &fee_estimator,
+		monitor: nodes[0].chan_monitor,
+		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+		logger: Arc::new(test_utils::TestLogger::new()),
+		channel_monitors: &mut node_0_stale_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().unwrap(), monitor) }).collect(),
+	}) { } else {
+		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
+	};
+
+	let mut nodes_0_read = &nodes_0_serialized[..];
+	let (_, nodes_0_deserialized_tmp) =
+		<(Sha256dHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager: &keys_manager,
 		fee_estimator: &fee_estimator,
