@@ -1749,23 +1749,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// HTLCs set may differ between last and previous local commitment txn, in case of one them hitting chain, ensure we cancel all HTLCs backward
 		let mut is_local_tx = false;
 
-		if let &mut Some(ref mut local_tx) = &mut self.current_local_signed_commitment_tx {
-			if local_tx.txid == commitment_txid {
-				local_tx.tx.add_local_sig(&self.onchain_detection.keys.funding_key(), self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
-			}
-		}
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
 				is_local_tx = true;
 				log_trace!(self, "Got latest local commitment tx broadcast, searching for available HTLCs to claim");
-				assert!(local_tx.tx.has_local_sig());
 				let mut res = self.broadcast_by_local_state(local_tx);
 				append_onchain_update!(res);
-			}
-		}
-		if let &mut Some(ref mut local_tx) = &mut self.prev_local_signed_commitment_tx {
-			if local_tx.txid == commitment_txid {
-				local_tx.tx.add_local_sig(&self.onchain_detection.keys.funding_key(), self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
 			}
 		}
 		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
