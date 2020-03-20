@@ -4433,7 +4433,7 @@ mod tests {
 
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
-		let keys_provider = Keys { chan_keys };
+		let keys_provider = Keys { chan_keys: chan_keys.clone() };
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
@@ -4490,7 +4490,7 @@ mod tests {
 				secp_ctx.verify(&sighash, &their_signature, chan.their_funding_pubkey()).unwrap();
 
 				let mut localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey());
-				localtx.add_local_sig(chan.local_keys.funding_key(), &redeemscript, chan.channel_value_satoshis, &chan.secp_ctx);
+				chan_keys.sign_local_commitment(&mut localtx, &redeemscript, chan.channel_value_satoshis, &chan.secp_ctx);
 
 				assert_eq!(serialize(localtx.with_valid_witness())[..],
 						hex::decode($tx_hex).unwrap()[..]);

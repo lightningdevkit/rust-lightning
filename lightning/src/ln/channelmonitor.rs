@@ -1806,7 +1806,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// tracking state and panic!()ing if we get an update after force-closure/local-tx signing.
 		log_trace!(self, "Getting signed latest local commitment transaction!");
 		if let &mut Some(ref mut local_tx) = &mut self.current_local_signed_commitment_tx {
-			local_tx.tx.add_local_sig(&self.onchain_detection.keys.funding_key(), self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
+			self.onchain_detection.keys.sign_local_commitment(&mut local_tx.tx, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
 		}
 		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
 			let mut res = vec![local_tx.tx.with_valid_witness().clone()];
@@ -1888,7 +1888,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		} else { false };
 		if let Some(ref mut cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
-				cur_local_tx.tx.add_local_sig(&self.onchain_detection.keys.funding_key(), self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &self.secp_ctx);
+				self.onchain_detection.keys.sign_local_commitment(&mut cur_local_tx.tx, self.funding_redeemscript.as_ref().unwrap(), self.channel_value_satoshis.unwrap(), &mut self.secp_ctx);
 			}
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
