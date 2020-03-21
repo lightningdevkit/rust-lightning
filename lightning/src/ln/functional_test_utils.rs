@@ -264,7 +264,7 @@ macro_rules! get_local_commitment_txn {
 			let mut commitment_txn = None;
 			for (funding_txo, monitor) in monitors.iter_mut() {
 				if funding_txo.to_channel_id() == $channel_id {
-					commitment_txn = Some(monitor.get_latest_local_commitment_txn());
+					commitment_txn = Some(monitor.unsafe_get_latest_local_commitment_txn());
 					break;
 				}
 			}

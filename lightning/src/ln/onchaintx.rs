@@ -769,4 +769,22 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		self.local_commitment = Some(tx);
 		Ok(())
 	}
+
+	pub(super) fn get_fully_signed_local_tx(&mut self, channel_value_satoshis: u64) -> Option<Transaction> {
+		if let Some(ref mut local_commitment) = self.local_commitment {
+			self.key_storage.sign_local_commitment(local_commitment, &self.funding_redeemscript, channel_value_satoshis, &self.secp_ctx);
+			return Some(local_commitment.with_valid_witness().clone());
+		}
+		None
+	}
+
+	#[cfg(test)]
+	pub(super) fn get_fully_signed_copy_local_tx(&mut self, channel_value_satoshis: u64) -> Option<Transaction> {
+		if let Some(ref mut local_commitment) = self.local_commitment {
+			let mut local_commitment = local_commitment.clone();
+			self.key_storage.unsafe_sign_local_commitment(&mut local_commitment, &self.funding_redeemscript, channel_value_satoshis, &self.secp_ctx);
+			return Some(local_commitment.with_valid_witness().clone());
+		}
+		None
+	}
 }
