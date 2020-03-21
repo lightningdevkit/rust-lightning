@@ -141,6 +141,7 @@ macro_rules! subtract_high_prio_fee {
 /// do RBF bumping if possible.
 pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	destination_script: Script,
+	funding_redeemscript: Script,
 
 	key_storage: ChanSigner,
 
@@ -180,6 +181,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
+		self.funding_redeemscript.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -221,6 +223,7 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTxHandler<ChanSigner> {
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
+		let funding_redeemscript = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -269,6 +272,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 
 		Ok(OnchainTxHandler {
 			destination_script,
+			funding_redeemscript,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -280,12 +284,13 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, logger: Arc<Logger>) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, funding_redeemscript: Script, logger: Arc<Logger>) -> Self {
 
 		let key_storage = keys;
 
 		OnchainTxHandler {
 			destination_script,
+			funding_redeemscript,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),

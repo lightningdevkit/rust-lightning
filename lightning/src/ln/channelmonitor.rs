@@ -1098,7 +1098,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			onchain_detection: onchain_detection,
 			their_htlc_base_key: Some(their_htlc_base_key.clone()),
 			their_delayed_payment_base_key: Some(their_delayed_payment_base_key.clone()),
-			funding_redeemscript: Some(funding_redeemscript),
+			funding_redeemscript: Some(funding_redeemscript.clone()),
 			channel_value_satoshis: Some(channel_value_satoshis),
 			their_cur_revocation_points: None,
 
@@ -1121,7 +1121,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 			outputs_to_watch: HashMap::new(),
 
-			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, logger.clone()),
+			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, funding_redeemscript, logger.clone()),
 
 			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
