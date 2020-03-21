@@ -1708,9 +1708,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							Err(_) => continue,
 						};
 
-						let mut per_input_material = HashMap::with_capacity(1);
-						per_input_material.insert(htlc_timeout_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: None, amount: htlc.amount_msat / 1000});
-						//TODO: with option_simplified_commitment track outpoint too
 						log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_timeout_tx.input[0].previous_output.vout, htlc_timeout_tx.input[0].previous_output.txid);
 						res.push(htlc_timeout_tx);
 					} else {
@@ -1723,9 +1720,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								Err(_) => continue,
 							};
 
-							let mut per_input_material = HashMap::with_capacity(1);
-							per_input_material.insert(htlc_success_tx.input[0].previous_output, InputMaterial::LocalHTLC { witness_script: htlc_script, sigs: (*their_sig, our_sig), preimage: Some(*payment_preimage), amount: htlc.amount_msat / 1000});
-							//TODO: with option_simplified_commitment track outpoint too
 							log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_success_tx.input[0].previous_output.vout, htlc_success_tx.input[0].previous_output.txid);
 							res.push(htlc_success_tx);
 						}
