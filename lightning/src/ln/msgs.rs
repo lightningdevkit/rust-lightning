@@ -622,6 +622,8 @@ mod fuzzy_internal_msgs {
 	#[derive(Clone)]
 	pub(crate) struct FinalOnionHopData {
 		pub(crate) payment_secret: PaymentSecret,
+		/// The total value, in msat, of the payment as received by the ultimate recipient.
+		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) total_msat: u64,
 	}
 
@@ -639,6 +641,8 @@ mod fuzzy_internal_msgs {
 
 	pub struct OnionHopData {
 		pub(crate) format: OnionHopDataFormat,
+		/// The value, in msat, of the payment after this hop's fee is deducted.
+		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
 		// 12 bytes of 0-padding for Legacy format
@@ -996,6 +1000,10 @@ impl Readable for FinalOnionHopData {
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(33);
+		// Note that this should never be reachable if Rust-Lightning generated the message, as we
+		// check values are sane long before we get here, though its possible in the future
+		// user-generated messages may hit this.
+		if self.amt_to_forward > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
 		match self.format {
 			OnionHopDataFormat::Legacy { short_channel_id } => {
 				0u8.write(w)?;
@@ -1012,6 +1020,7 @@ impl Writeable for OnionHopData {
 				});
 			},
 			OnionHopDataFormat::FinalNode { payment_data: Some(ref final_data) } => {
+				if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value)),
