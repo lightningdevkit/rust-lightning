@@ -1702,11 +1702,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					if htlc.offered {
 						log_trace!(self, "Broadcasting HTLC-Timeout transaction against local commitment transactions");
 						let mut htlc_timeout_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
-						let (our_sig, htlc_script) = match
-								chan_utils::sign_htlc_transaction(&mut htlc_timeout_tx, their_sig, &None, htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, &self.onchain_detection.keys.htlc_base_key(), &self.secp_ctx) {
-							Ok(res) => res,
-							Err(_) => continue,
-						};
+						self.onchain_detection.keys.sign_htlc_transaction(&mut htlc_timeout_tx, their_sig, &None, htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, &self.secp_ctx);
 
 						log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_timeout_tx.input[0].previous_output.vout, htlc_timeout_tx.input[0].previous_output.txid);
 						res.push(htlc_timeout_tx);
@@ -1714,11 +1710,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 							log_trace!(self, "Broadcasting HTLC-Success transaction against local commitment transactions");
 							let mut htlc_success_tx = chan_utils::build_htlc_transaction(&local_tx.txid, local_tx.feerate_per_kw, self.their_to_self_delay.unwrap(), htlc, &local_tx.delayed_payment_key, &local_tx.revocation_key);
-							let (our_sig, htlc_script) = match
-									chan_utils::sign_htlc_transaction(&mut htlc_success_tx, their_sig, &Some(*payment_preimage), htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, &self.onchain_detection.keys.htlc_base_key(), &self.secp_ctx) {
-								Ok(res) => res,
-								Err(_) => continue,
-							};
+							self.onchain_detection.keys.sign_htlc_transaction(&mut htlc_success_tx, their_sig, &Some(*payment_preimage), htlc, &local_tx.a_htlc_key, &local_tx.b_htlc_key, &local_tx.revocation_key, &local_tx.per_commitment_point, &self.secp_ctx);
 
 							log_trace!(self, "Outpoint {}:{} is being being claimed", htlc_success_tx.input[0].previous_output.vout, htlc_success_tx.input[0].previous_output.txid);
 							res.push(htlc_success_tx);

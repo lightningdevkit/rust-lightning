@@ -4519,7 +4519,7 @@ mod tests {
 					assert!(preimage.is_some());
 				}
 
-				chan_utils::sign_htlc_transaction(&mut htlc_tx, &remote_signature, &preimage, &htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, &keys.per_commitment_point, chan.local_keys.htlc_base_key(), &chan.secp_ctx).unwrap();
+				chan_keys.sign_htlc_transaction(&mut htlc_tx, &remote_signature, &preimage, &htlc, &keys.a_htlc_key, &keys.b_htlc_key, &keys.revocation_key, &keys.per_commitment_point, &chan.secp_ctx);
 				assert_eq!(serialize(&htlc_tx)[..],
 						hex::decode($tx_hex).unwrap()[..]);
 			};
