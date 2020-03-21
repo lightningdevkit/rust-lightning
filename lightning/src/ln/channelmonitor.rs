@@ -1270,7 +1270,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// reject update as we do, you MAY have the latest local valid commitment tx onchain
 		// for which you want to spend outputs. We're NOT robust again this scenario right
 		// now but we should consider it later.
-		if let Err(_) = self.onchain_tx_handler.provide_latest_local_tx(commitment_tx.clone(), local_keys.clone(), feerate_per_kw) {
+		if let Err(_) = self.onchain_tx_handler.provide_latest_local_tx(commitment_tx.clone(), local_keys.clone(), feerate_per_kw, htlc_outputs.clone()) {
 			return Err(MonitorUpdateError("Local commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed"));
 		}
 		self.current_local_commitment_number = 0xffff_ffff_ffff - ((((commitment_tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (commitment_tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
@@ -1284,7 +1284,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			delayed_payment_key: local_keys.a_delayed_payment_key,
 			per_commitment_point: local_keys.per_commitment_point,
 			feerate_per_kw,
-			htlc_outputs,
+			htlc_outputs: htlc_outputs,
 		});
 		Ok(())
 	}

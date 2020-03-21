@@ -10,13 +10,14 @@ use bitcoin::util::bip143;
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
-use secp256k1::Secp256k1;
+use secp256k1::{Secp256k1, Signature};
 use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
+use ln::channelmanager::HTLCSource;
 use ln::chan_utils;
-use ln::chan_utils::{HTLCType, LocalCommitmentTransaction, TxCreationKeys};
+use ln::chan_utils::{HTLCType, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -54,6 +55,7 @@ enum OnchainEvent {
 struct HTLCTxCache {
 	local_keys: TxCreationKeys,
 	feerate_per_kw: u64,
+	per_htlc: HashMap<u32, (HTLCOutputInCommitment, Option<Signature>)>
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -202,6 +204,16 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 			($cache: expr) => {
 				$cache.local_keys.write(writer)?;
 				$cache.feerate_per_kw.write(writer)?;
+				writer.write_all(&byte_utils::be64_to_array($cache.per_htlc.len() as u64))?;
+				for (_, &(ref htlc, ref sig)) in $cache.per_htlc.iter() {
+					htlc.write(writer)?;
+					if let &Some(ref their_sig) = sig {
+						1u8.write(writer)?;
+						writer.write_all(&their_sig.serialize_compact())?;
+					} else {
+						0u8.write(writer)?;
+					}
+				}
 			}
 		}
 
@@ -268,9 +280,21 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 				{
 					let local_keys = Readable::read(reader)?;
 					let feerate_per_kw = Readable::read(reader)?;
+					let htlcs_count: u64 = Readable::read(reader)?;
+					let mut per_htlc = HashMap::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
+					for _ in 0..htlcs_count {
+						let htlc: HTLCOutputInCommitment = Readable::read(reader)?;
+						let sigs = match <u8 as Readable>::read(reader)? {
+							0 => None,
+							1 => Some(Readable::read(reader)?),
+							_ => return Err(DecodeError::InvalidValue),
+						};
+						per_htlc.insert(htlc.transaction_output_index.unwrap(), (htlc, sigs));
+					}
 					HTLCTxCache {
 						local_keys,
 						feerate_per_kw,
+						per_htlc
 					}
 				}
 			}
@@ -821,7 +845,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64) -> Result<(), ()> {
+	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), ()> {
 		// To prevent any unsafe state discrepancy between offchain and onchain, once local
 		// commitment transaction has been signed due to an event (either block height for
 		// HTLC-timeout or channel force-closure), don't allow any further update of local
@@ -833,9 +857,16 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		self.prev_local_commitment = self.local_commitment.take();
 		self.local_commitment = Some(tx);
 		self.prev_htlc_cache = self.current_htlc_cache.take();
+		let mut per_htlc = HashMap::with_capacity(htlc_outputs.len());
+		for htlc in htlc_outputs {
+			if htlc.0.transaction_output_index.is_some() { // Discard dust HTLC as we will never have to generate onchain tx for them
+				per_htlc.insert(htlc.0.transaction_output_index.unwrap(), (htlc.0, htlc.1));
+			}
+		}
 		self.current_htlc_cache = Some(HTLCTxCache {
 			local_keys,
 			feerate_per_kw,
+			per_htlc
 		});
 		Ok(())
 	}
