@@ -1244,7 +1244,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
 			txid: commitment_tx.txid(),
-			tx: commitment_tx,
+			tx: commitment_tx.clone(),
 			revocation_key: local_keys.revocation_key,
 			a_htlc_key: local_keys.a_htlc_key,
 			b_htlc_key: local_keys.b_htlc_key,
@@ -1253,6 +1253,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			feerate_per_kw,
 			htlc_outputs,
 		});
+		self.onchain_tx_handler.provide_latest_local_tx(commitment_tx);
 		Ok(())
 	}
 

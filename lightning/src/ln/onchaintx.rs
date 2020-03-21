@@ -15,7 +15,7 @@ use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use ln::chan_utils::HTLCType;
+use ln::chan_utils::{HTLCType, LocalCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -142,6 +142,8 @@ macro_rules! subtract_high_prio_fee {
 pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	destination_script: Script,
 	funding_redeemscript: Script,
+	local_commitment: Option<LocalCommitmentTransaction>,
+	prev_local_commitment: Option<LocalCommitmentTransaction>,
 
 	key_storage: ChanSigner,
 
@@ -182,6 +184,8 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
 		self.funding_redeemscript.write(writer)?;
+		self.local_commitment.write(writer)?;
+		self.prev_local_commitment.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -224,6 +228,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
 		let funding_redeemscript = Readable::read(reader)?;
+		let local_commitment = Readable::read(reader)?;
+		let prev_local_commitment = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -273,6 +279,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 		Ok(OnchainTxHandler {
 			destination_script,
 			funding_redeemscript,
+			local_commitment,
+			prev_local_commitment,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -291,6 +299,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		OnchainTxHandler {
 			destination_script,
 			funding_redeemscript,
+			local_commitment: None,
+			prev_local_commitment: None,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
@@ -713,5 +723,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		for req in remove_request {
 			self.pending_claim_requests.remove(&req);
 		}
+	}
+
+	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) {
+		self.prev_local_commitment = self.local_commitment.take();
+		self.local_commitment = Some(tx);
 	}
 }
