@@ -66,14 +66,7 @@ impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
 }
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
-		match $key_storage {
-			Storage::Local { ref funding_info, .. } => {
-				::util::macro_logger::DebugFundingInfo(&funding_info)
-			},
-			Storage::Watchtower { .. } => {
-				::util::macro_logger::DebugFundingInfo(&None)
-			}
-		}
+		::util::macro_logger::DebugFundingInfo(&$key_storage.funding_info)
 	}
 }
 
