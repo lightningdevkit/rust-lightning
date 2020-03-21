@@ -1098,7 +1098,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		let onchain_detection = OnchainDetection {
 			keys: keys.clone(),
-			funding_info: Some(funding_info.clone()),
+			funding_info: Some(funding_info),
 			current_remote_commitment_txid: None,
 			prev_remote_commitment_txid: None,
 		};
