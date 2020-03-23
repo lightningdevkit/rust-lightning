@@ -1819,10 +1819,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub fn get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
 		log_trace!(self, "Getting signed latest local commitment transaction!");
 		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx(self.channel_value_satoshis.unwrap()) {
+			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-				let mut htlc_txn = self.broadcast_by_local_state(res.get(0).unwrap(), local_tx).0;
-				res.append(&mut htlc_txn);
+				for htlc in local_tx.htlc_outputs.iter() {
+					if let Some(htlc_index) = htlc.0.transaction_output_index {
+						let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
+						if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
+							res.push(htlc_tx);
+						}
+					}
+				}
 				// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
 				// The data will be re-generated and tracked in check_spend_local_transaction if we get a confirmation.
 			}
@@ -1838,10 +1845,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub fn unsafe_get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
 		log_trace!(self, "Getting signed copy of latest local commitment transaction!");
 		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx(self.channel_value_satoshis.unwrap()) {
+			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-				let mut htlc_txn = self.broadcast_by_local_state(res.get(0).unwrap(), local_tx).0;
-				res.append(&mut htlc_txn);
+				for htlc in local_tx.htlc_outputs.iter() {
+					if let Some(htlc_index) = htlc.0.transaction_output_index {
+						let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
+						if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
+							res.push(htlc_tx);
+						}
+					}
+				}
 			}
 			return res
 		}

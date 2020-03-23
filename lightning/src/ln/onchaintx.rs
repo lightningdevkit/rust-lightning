@@ -15,7 +15,7 @@ use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use ln::channelmanager::HTLCSource;
+use ln::channelmanager::{HTLCSource, PaymentPreimage};
 use ln::chan_utils;
 use ln::chan_utils::{HTLCType, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
@@ -890,6 +890,25 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			let mut local_commitment = local_commitment.clone();
 			self.key_storage.unsafe_sign_local_commitment(&mut local_commitment, &self.funding_redeemscript, channel_value_satoshis, &self.secp_ctx);
 			return Some(local_commitment.with_valid_witness().clone());
+		}
+		None
+	}
+
+	pub(super) fn get_fully_signed_htlc_tx(&mut self, txid: Sha256dHash, htlc_index: u32, preimage: Option<PaymentPreimage>) -> Option<Transaction> {
+		//TODO: store preimage in OnchainTxHandler
+		if let Some(ref local_commitment) = self.local_commitment {
+			if local_commitment.txid() == txid {
+				if let Some(ref htlc_cache) = self.current_htlc_cache {
+					if let Some(htlc) = htlc_cache.per_htlc.get(&htlc_index) {
+						if !htlc.0.offered && preimage.is_none() { return None; }; // If we don't have preimage for HTLC-Success, don't try to generate
+						let htlc_secret = if !htlc.0.offered { preimage } else { None }; // If we have a preimage for a HTLC-Timeout, don't use it that's likely a duplicate HTLC hash
+						let mut htlc_tx = chan_utils::build_htlc_transaction(&txid, htlc_cache.feerate_per_kw, self.local_csv, &htlc.0, &htlc_cache.local_keys.a_delayed_payment_key, &htlc_cache.local_keys.revocation_key);
+						self.key_storage.sign_htlc_transaction(&mut htlc_tx, htlc.1.as_ref().unwrap(), &htlc_secret, &htlc.0, &htlc_cache.local_keys.a_htlc_key, &htlc_cache.local_keys.b_htlc_key, &htlc_cache.local_keys.revocation_key, &htlc_cache.local_keys.per_commitment_point, &self.secp_ctx);
+						return Some(htlc_tx);
+
+					}
+				}
+			}
 		}
 		None
 	}
