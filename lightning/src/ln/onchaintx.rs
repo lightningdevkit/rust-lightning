@@ -157,6 +157,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
 	current_htlc_cache: Option<HTLCTxCache>,
 	prev_htlc_cache: Option<HTLCTxCache>,
+	local_csv: u16,
 
 	key_storage: ChanSigner,
 
@@ -230,6 +231,7 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		} else {
 			writer.write_all(&[0; 1])?;
 		}
+		self.local_csv.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -315,6 +317,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 			}
 			_ => return Err(DecodeError::InvalidValue),
 		};
+		let local_csv = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -368,6 +371,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 			prev_local_commitment,
 			current_htlc_cache,
 			prev_htlc_cache,
+			local_csv,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -379,7 +383,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, funding_redeemscript: Script, logger: Arc<Logger>) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, funding_redeemscript: Script, local_csv: u16, logger: Arc<Logger>) -> Self {
 
 		let key_storage = keys;
 
@@ -390,6 +394,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			prev_local_commitment: None,
 			current_htlc_cache: None,
 			prev_htlc_cache: None,
+			local_csv,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),

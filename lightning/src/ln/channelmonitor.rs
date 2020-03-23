@@ -1145,7 +1145,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 			outputs_to_watch: HashMap::new(),
 
-			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, funding_redeemscript, logger.clone()),
+			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, funding_redeemscript, their_to_self_delay, logger.clone()),
 
 			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
