@@ -1,5 +1,6 @@
 use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction};
 use ln::{chan_utils, msgs};
+use ln::channelmanager::PaymentPreimage;
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
 use std::cmp;
@@ -106,6 +107,10 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		Ok(self.inner.sign_justice_transaction(justice_tx, input, witness_script, amount, per_commitment_key, revocation_pubkey, is_htlc, secp_ctx).unwrap())
+	}
+
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_remote_htlc_transaction(htlc_tx, input, witness_script, amount, per_commitment_point, preimage, secp_ctx).unwrap())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

@@ -25,6 +25,7 @@ use util::ser::{Writeable, Writer, Readable};
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction};
 use ln::msgs;
+use ln::channelmanager::PaymentPreimage;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
@@ -267,6 +268,25 @@ pub trait ChannelKeys : Send+Clone {
 	//TODO: dry-up witness_script and pass pubkeys
 	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
+	/// Create a signature for a claiming transaction for a HTLC output on a remote commitment
+	/// transaction, either offered or received.
+	///
+	/// HTLC transaction may claim multiples offered outputs at same time if we know preimage
+	/// for each at detection. It may be called multtiples time for same output(s) if a fee-bump
+	/// is needed with regards to an upcoming timelock expiration.
+	///
+	/// Witness_script is either a offered or received script as defined in BOLT3 for HTLC
+	/// outputs.
+	///
+	/// Input index is a pointer towards outpoint spent, commited by sigs (BIP 143).
+	///
+	/// Amount is value of the output spent by this input, committed by sigs (BIP 143).
+	///
+	/// Preimage is solution for an offered HTLC haslock. A preimage sets to None hints this
+	/// htlc_tx as timing-out funds back to us on a received output.
+	//TODO: dry-up witness_script and pass pubkeys
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
@@ -420,6 +440,15 @@ impl ChannelKeys for InMemoryChannelKeys {
 			let sighash_parts = bip143::SighashComponents::new(&justice_tx);
 			let sighash = hash_to_message!(&sighash_parts.sighash_all(&justice_tx.input[input], &witness_script, amount)[..]);
 			return Ok(secp_ctx.sign(&sighash, &revocation_key))
+		}
+		Err(())
+	}
+
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		if let Ok(htlc_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key) {
+			let sighash_parts = bip143::SighashComponents::new(&htlc_tx);
+			let sighash = hash_to_message!(&sighash_parts.sighash_all(&htlc_tx.input[input], &witness_script, amount)[..]);
+			return Ok(secp_ctx.sign(&sighash, &htlc_key))
 		}
 		Err(())
 	}

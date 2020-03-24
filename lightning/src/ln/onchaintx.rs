@@ -6,7 +6,6 @@
 use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
-use bitcoin::util::bip143;
 
 use bitcoin::hash_types::Txid;
 
@@ -670,7 +669,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 						}
 					},
-					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref key, ref preimage, ref amount, ref locktime } => {
+					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref preimage, ref amount, ref locktime } => {
 						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &self.remote_tx_cache.remote_delayed_payment_base_key, &self.remote_tx_cache.remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
 							let mut this_htlc = None;
 							if let Some(htlcs) = self.remote_tx_cache.per_htlc.get(&outp.txid) {
@@ -684,18 +683,17 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&this_htlc.unwrap(), &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-							let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-							let sig = self.secp_ctx.sign(&sighash, &key);
-							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-							if let &Some(preimage) = preimage {
-								bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
-							} else {
-								// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-								bumped_tx.input[i].witness.push(vec![]);
+							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &witness_script, *amount, &per_commitment_point, preimage, &self.secp_ctx) {
+								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+								if let &Some(preimage) = preimage {
+									bumped_tx.input[i].witness.push(preimage.0.to_vec());
+								} else {
+									// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
+									bumped_tx.input[i].witness.push(vec![]);
+								}
+								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 							}
-							bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 							log_trace!(logger, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
 						}
 					},
