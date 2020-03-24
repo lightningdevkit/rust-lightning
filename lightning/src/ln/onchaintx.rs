@@ -12,6 +12,7 @@ use bitcoin::hash_types::Txid;
 
 use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::key::PublicKey;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
@@ -45,6 +46,13 @@ enum OnchainEvent {
 		outpoint: BitcoinOutPoint,
 		input_material: InputMaterial,
 	}
+}
+
+/// Cache remote basepoint to compute any transaction on
+/// remote outputs, either justice or preimage/timeout transactions.
+struct RemoteTxCache {
+	remote_delayed_payment_base_key: PublicKey,
+	remote_htlc_base_key: PublicKey
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -194,6 +202,8 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	local_csv: u16,
+	remote_tx_cache: RemoteTxCache,
+	remote_csv: u16,
 
 	key_storage: ChanSigner,
 
@@ -238,6 +248,10 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.prev_local_htlc_sigs.write(writer)?;
 
 		self.local_csv.write(writer)?;
+
+		self.remote_tx_cache.remote_delayed_payment_base_key.write(writer)?;
+		self.remote_tx_cache.remote_htlc_base_key.write(writer)?;
+		self.remote_csv.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -286,6 +300,16 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 		let prev_local_htlc_sigs = Readable::read(reader)?;
 
 		let local_csv = Readable::read(reader)?;
+
+		let remote_tx_cache = {
+			let remote_delayed_payment_base_key = Readable::read(reader)?;
+			let remote_htlc_base_key = Readable::read(reader)?;
+			RemoteTxCache {
+				remote_delayed_payment_base_key,
+				remote_htlc_base_key,
+			}
+		};
+		let remote_csv = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -339,6 +363,8 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 			prev_local_commitment,
 			prev_local_htlc_sigs,
 			local_csv,
+			remote_tx_cache,
+			remote_csv,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -349,9 +375,14 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16, remote_delayed_payment_base_key: PublicKey, remote_htlc_base_key: PublicKey, remote_csv: u16) -> Self {
 
 		let key_storage = keys;
+
+		let remote_tx_cache = RemoteTxCache {
+			remote_delayed_payment_base_key,
+			remote_htlc_base_key,
+		};
 
 		OnchainTxHandler {
 			destination_script,
@@ -360,6 +391,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			prev_local_commitment: None,
 			prev_local_htlc_sigs: None,
 			local_csv,
+			remote_tx_cache,
+			remote_csv,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
