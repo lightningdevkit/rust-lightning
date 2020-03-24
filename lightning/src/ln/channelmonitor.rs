@@ -432,7 +432,6 @@ pub(crate) enum InputMaterial {
 	},
 	RemoteHTLC {
 		per_commitment_point: PublicKey,
-		key: SecretKey,
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
 		locktime: u32,
@@ -456,10 +455,9 @@ impl Writeable for InputMaterial  {
 				input_descriptor.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
-			&InputMaterial::RemoteHTLC { ref per_commitment_point, ref key, ref preimage, ref amount, ref locktime } => {
+			&InputMaterial::RemoteHTLC { ref per_commitment_point, ref preimage, ref amount, ref locktime } => {
 				writer.write_all(&[1; 1])?;
 				per_commitment_point.write(writer)?;
-				key.write(writer)?;
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 				writer.write_all(&byte_utils::be32_to_array(*locktime))?;
@@ -495,13 +493,11 @@ impl Readable for InputMaterial {
 			},
 			1 => {
 				let per_commitment_point = Readable::read(reader)?;
-				let key = Readable::read(reader)?;
 				let preimage = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
 				let locktime = Readable::read(reader)?;
 				InputMaterial::RemoteHTLC {
 					per_commitment_point,
-					key,
 					preimage,
 					amount,
 					locktime
@@ -1598,7 +1594,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
-					let htlc_privkey = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.keys.htlc_base_key()));
 					let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.keys.payment_base_key()));
 
 					self.broadcasted_remote_payment_script = {
@@ -1618,7 +1613,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							let aggregable = if !htlc.offered { false } else { true };
 							if preimage.is_some() || !htlc.offered {
-								let witness_data = InputMaterial::RemoteHTLC { per_commitment_point: *revocation_point, key: htlc_privkey, preimage, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
+								let witness_data = InputMaterial::RemoteHTLC { per_commitment_point: *revocation_point, preimage, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
 								claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 							}
 						}
