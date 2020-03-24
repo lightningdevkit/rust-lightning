@@ -1822,6 +1822,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		Vec::new()
 	}
 
+	/// Get a reference to Channel signer to spend SpendableOutputDescriptor in
+	/// test framework
+	#[cfg(test)]
+	pub fn get_chan_signer(&self) -> &ChanSigner {
+		&self.keys
+	}
+
 	/// Called by SimpleManyChannelMonitor::block_connected, which implements
 	/// ChainListener::block_connected.
 	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires

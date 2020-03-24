@@ -305,6 +305,22 @@ macro_rules! check_added_monitors {
 	}
 }
 
+macro_rules! get_chan_signer {
+	($node: expr, $channel_id: expr) => {
+		{
+			let mut monitors = $node.chan_monitor.simple_monitor.monitors.lock().unwrap();
+			let mut chan_signer = None;
+			for (funding_txo, monitor) in monitors.iter_mut() {
+				if funding_txo.to_channel_id() == $channel_id {
+					chan_signer = Some(monitor.get_chan_signer().clone());
+					break;
+				}
+			}
+			chan_signer.unwrap()
+		}
+	}
+}
+
 pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
 	let chan_id = *node.network_chan_count.borrow();
 
