@@ -115,6 +115,10 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.sign_remote_htlc_transaction(bumped_tx, input, witness_script, amount, per_commitment_point, preimage, secp_ctx);
 	}
 
+	fn sign_delayed_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>) {
+		self.inner.sign_delayed_transaction(spend_tx, input, witness_script, amount, per_commitment_point, secp_ctx);
+	}
+
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}

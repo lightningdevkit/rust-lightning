@@ -65,8 +65,8 @@ pub enum SpendableOutputDescriptor {
 	DynamicOutputP2WSH {
 		/// The outpoint which is spendable
 		outpoint: OutPoint,
-		/// The secret key which must be used to sign the spending transaction
-		key: SecretKey,
+		/// Per commitment point to derive delayed_payment_key by key holder
+		per_commitment_point: PublicKey,
 		/// The witness redeemScript which is hashed to create the script_pubkey in the given output
 		witness_script: Script,
 		/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
@@ -98,10 +98,10 @@ impl Writeable for SpendableOutputDescriptor {
 				outpoint.write(writer)?;
 				output.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref key, ref witness_script, ref to_self_delay, ref output } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref witness_script, ref to_self_delay, ref output } => {
 				1u8.write(writer)?;
 				outpoint.write(writer)?;
-				key.write(writer)?;
+				per_commitment_point.write(writer)?;
 				witness_script.write(writer)?;
 				to_self_delay.write(writer)?;
 				output.write(writer)?;
@@ -126,7 +126,7 @@ impl Readable for SpendableOutputDescriptor {
 			}),
 			1u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WSH {
 				outpoint: Readable::read(reader)?,
-				key: Readable::read(reader)?,
+				per_commitment_point: Readable::read(reader)?,
 				witness_script: Readable::read(reader)?,
 				to_self_delay: Readable::read(reader)?,
 				output: Readable::read(reader)?,
@@ -257,6 +257,9 @@ pub trait ChannelKeys : Send+Clone {
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+
+	/// Create a signature for a delayed transaction.
+	fn sign_delayed_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>);
 
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
@@ -444,6 +447,18 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let sighash = hash_to_message!(&bip143::SighashComponents::new(closing_tx)
 			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
 		Ok(secp_ctx.sign(&sighash, &self.funding_key))
+	}
+
+	fn sign_delayed_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>) {
+		if let Ok(htlc_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.delayed_payment_base_key) {
+			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
+			let sighash = hash_to_message!(&sighash_parts.sighash_all(&spend_tx.input[input], witness_script, amount)[..]);
+			let local_delaysig = secp_ctx.sign(&sighash, &htlc_key);
+			spend_tx.input[0].witness.push(local_delaysig.serialize_der().to_vec());
+			spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+			spend_tx.input[0].witness.push(vec!(0));
+			spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
+		}
 	}
 
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
