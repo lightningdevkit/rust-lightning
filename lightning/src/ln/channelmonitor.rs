@@ -434,8 +434,7 @@ struct LocalSignedTx {
 #[derive(Clone, PartialEq)]
 pub(crate) enum InputMaterial {
 	Revoked {
-		witness_script: Script,
-		pubkey: Option<PublicKey>,
+		per_commitment_point: PublicKey,
 		key: SecretKey,
 		input_descriptor: InputDescriptors,
 		amount: u64,
@@ -459,10 +458,9 @@ pub(crate) enum InputMaterial {
 impl Writeable for InputMaterial  {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
-			&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref input_descriptor, ref amount} => {
+			&InputMaterial::Revoked { ref per_commitment_point, ref key, ref input_descriptor, ref amount} => {
 				writer.write_all(&[0; 1])?;
-				witness_script.write(writer)?;
-				pubkey.write(writer)?;
+				per_commitment_point.write(writer)?;
 				writer.write_all(&key[..])?;
 				input_descriptor.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
@@ -493,14 +491,12 @@ impl Readable for InputMaterial {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let input_material = match <u8 as Readable>::read(reader)? {
 			0 => {
-				let witness_script = Readable::read(reader)?;
-				let pubkey = Readable::read(reader)?;
+				let per_commitment_point = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
 				let input_descriptor = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
 				InputMaterial::Revoked {
-					witness_script,
-					pubkey,
+					per_commitment_point,
 					key,
 					input_descriptor,
 					amount
@@ -1431,9 +1427,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().revocation_basepoint));
 			let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &self.keys.revocation_base_key()));
-			let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().htlc_basepoint));
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key));
-			let a_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_htlc_base_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
@@ -1441,7 +1435,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			// First, process non-htlc outputs (to_local & to_remote)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let witness_data = InputMaterial::Revoked { witness_script: revokeable_redeemscript.clone(), pubkey: Some(revocation_pubkey), key: revocation_key, input_descriptor: InputDescriptors::RevokedOutput, amount: outp.value };
+					let witness_data = InputMaterial::Revoked { per_commitment_point, key: revocation_key, input_descriptor: InputDescriptors::RevokedOutput, amount: outp.value };
 					claimable_outpoints.push(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 }, witness_data});
 				}
 			}
@@ -1450,13 +1444,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			if let Some(ref per_commitment_data) = per_commitment_option {
 				for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
 					if let Some(transaction_output_index) = htlc.transaction_output_index {
-						let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 						if transaction_output_index as usize >= tx.output.len() ||
-								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
-								tx.output[transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
+								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
-						let witness_data = InputMaterial::Revoked { witness_script: expected_script, pubkey: Some(revocation_pubkey), key: revocation_key, input_descriptor: if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }, amount: tx.output[transaction_output_index as usize].value };
+						let witness_data = InputMaterial::Revoked { per_commitment_point, key: revocation_key, input_descriptor: if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }, amount: tx.output[transaction_output_index as usize].value };
 						claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 					}
 				}
@@ -1621,13 +1613,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return (Vec::new(), None); };
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-		let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().revocation_basepoint));
 		let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &self.keys.revocation_base_key()));
-		let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &self.their_delayed_payment_base_key));
-		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 
 		log_trace!(logger, "Remote HTLC broadcast {}:{}", htlc_txid, 0);
-		let witness_data = InputMaterial::Revoked { witness_script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, input_descriptor: InputDescriptors::RevokedOutput, amount: tx.output[0].value };
+		let witness_data = InputMaterial::Revoked { per_commitment_point, key: revocation_key, input_descriptor: InputDescriptors::RevokedOutput, amount: tx.output[0].value };
 		let claimable_outpoints = vec!(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: htlc_txid, vout: 0}, witness_data });
 		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
 	}

@@ -17,7 +17,8 @@ use bitcoin::secp256k1::key::PublicKey;
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::channelmanager::PaymentPreimage;
-use ln::chan_utils::{LocalCommitmentTransaction, HTLCOutputInCommitment};
+use ln::chan_utils;
+use ln::chan_utils::{TxCreationKeys, LocalCommitmentTransaction, HTLCOutputInCommitment};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -631,19 +632,41 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref input_descriptor, ref amount } => {
-						let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-						let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-						let sig = self.secp_ctx.sign(&sighash, &key);
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-						if *input_descriptor !=  InputDescriptors::RevokedOutput {
-							bumped_tx.input[i].witness.push(pubkey.unwrap().clone().serialize().to_vec());
-						} else {
-							bumped_tx.input[i].witness.push(vec!(1));
+					&InputMaterial::Revoked { ref per_commitment_point, ref key, ref input_descriptor, ref amount } => {
+						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &self.remote_tx_cache.remote_delayed_payment_base_key, &self.remote_tx_cache.remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+
+							let mut this_htlc = None;
+							if *input_descriptor != InputDescriptors::RevokedOutput {
+								if let Some(htlcs) = self.remote_tx_cache.per_htlc.get(&outp.txid) {
+									for htlc in htlcs {
+										if htlc.transaction_output_index.unwrap() == outp.vout {
+											this_htlc = Some(htlc);
+										}
+									}
+								}
+							}
+
+							let witness_script = if *input_descriptor != InputDescriptors::RevokedOutput && this_htlc.is_some() {
+								chan_utils::get_htlc_redeemscript_with_explicit_keys(&this_htlc.unwrap(), &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key)
+							} else if *input_descriptor != InputDescriptors::RevokedOutput {
+								return None;
+							} else {
+								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, self.remote_csv, &chan_keys.a_delayed_payment_key)
+							};
+
+							let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
+							let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
+							let sig = self.secp_ctx.sign(&sighash, &key);
+							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+							if *input_descriptor != InputDescriptors::RevokedOutput {
+								bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+							} else {
+								bumped_tx.input[i].witness.push(vec!(1));
+							}
+							bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 						}
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-						log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 					},
 					&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
 						if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
