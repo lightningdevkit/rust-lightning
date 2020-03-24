@@ -440,7 +440,7 @@ pub(crate) enum InputMaterial {
 		amount: u64,
 	},
 	RemoteHTLC {
-		witness_script: Script,
+		per_commitment_point: PublicKey,
 		key: SecretKey,
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
@@ -465,9 +465,9 @@ impl Writeable for InputMaterial  {
 				input_descriptor.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
-			&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
+			&InputMaterial::RemoteHTLC { ref per_commitment_point, ref key, ref preimage, ref amount, ref locktime } => {
 				writer.write_all(&[1; 1])?;
-				witness_script.write(writer)?;
+				per_commitment_point.write(writer)?;
 				key.write(writer)?;
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
@@ -503,13 +503,13 @@ impl Readable for InputMaterial {
 				}
 			},
 			1 => {
-				let witness_script = Readable::read(reader)?;
+				let per_commitment_point = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
 				let preimage = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
 				let locktime = Readable::read(reader)?;
 				InputMaterial::RemoteHTLC {
-					witness_script,
+					per_commitment_point,
 					key,
 					preimage,
 					amount,
@@ -1565,24 +1565,26 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
-					let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, revocation_point, &self.keys.pubkeys().revocation_basepoint));
-					let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &self.keys.pubkeys().htlc_basepoint));
 					let htlc_privkey = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.keys.htlc_base_key()));
-					let a_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &self.their_htlc_base_key));
+
+					self.remote_payment_script = {
+						// Note that the Network here is ignored as we immediately drop the address for the
+						// script_pubkey version
+						let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &self.keys.payment_key()).serialize());
+						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script()
+					};
 
 					// Then, try to find htlc outputs
 					for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
 						if let Some(transaction_output_index) = htlc.transaction_output_index {
-							let expected_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &a_htlc_key, &b_htlc_key, &revocation_pubkey);
 							if transaction_output_index as usize >= tx.output.len() ||
-									tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 ||
-									tx.output[transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
+									tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
 								return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 							}
 							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							let aggregable = if !htlc.offered { false } else { true };
 							if preimage.is_some() || !htlc.offered {
-								let witness_data = InputMaterial::RemoteHTLC { witness_script: expected_script, key: htlc_privkey, preimage, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
+								let witness_data = InputMaterial::RemoteHTLC { per_commitment_point: *revocation_point, key: htlc_privkey, preimage, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
 								claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 							}
 						}
