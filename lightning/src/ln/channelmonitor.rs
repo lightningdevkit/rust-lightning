@@ -714,7 +714,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 
 	destination_script: Script,
 	broadcasted_local_revokable_script: Option<(Script, PublicKey, Script)>,
-	broadcasted_remote_payment_script: Option<(Script, SecretKey)>,
+	broadcasted_remote_payment_script: Option<(Script, PublicKey)>,
 	shutdown_script: Script,
 
 	keys: ChanSigner,
@@ -1232,9 +1232,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
 				.push_slice(&Hash160::hash(&payment_key.serialize())[..])
 				.into_script();
-			if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &self.keys.payment_base_key()) {
-				self.broadcasted_remote_payment_script = Some((to_remote_script, to_remote_key));
-			}
+			self.broadcasted_remote_payment_script = Some((to_remote_script, their_revocation_point));
 		}
 	}
 
@@ -1447,18 +1445,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().revocation_basepoint));
-			let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &self.keys.payment_base_key()));
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
 
-			self.broadcasted_remote_payment_script = {
-				// Note that the Network here is ignored as we immediately drop the address for the
-				// script_pubkey version
-				let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
-				Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
-			};
+			self.broadcasted_remote_payment_script = if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().payment_basepoint) {
+				let payment_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+					.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+					.into_script();
+				Some((payment_script, per_commitment_point))
+			} else { None };
 
 			// First, process non-htlc outputs (to_local & to_remote)
 			for (idx, outp) in tx.output.iter().enumerate() {
@@ -1594,14 +1591,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
-					let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.keys.payment_base_key()));
 
-					self.broadcasted_remote_payment_script = {
-						// Note that the Network here is ignored as we immediately drop the address for the
-						// script_pubkey version
-						let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
-						Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
-					};
+					self.broadcasted_remote_payment_script = if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &revocation_point, &self.keys.pubkeys().payment_basepoint) {
+						let payment_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+							.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+							.into_script();
+						Some((payment_script, *revocation_point))
+					} else { None };
 
 					// Then, try to find htlc outputs
 					for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
@@ -2170,7 +2166,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				if broadcasted_remote_payment_script.0 == outp.script_pubkey {
 					spendable_output = Some(SpendableOutputDescriptor::DynamicOutputP2WPKH {
 						outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
-						key: broadcasted_remote_payment_script.1,
+						per_commitment_point: broadcasted_remote_payment_script.1,
 						output: outp.clone(),
 					});
 					break;
@@ -2233,8 +2229,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		let broadcasted_remote_payment_script = match <u8 as Readable>::read(reader)? {
 			0 => {
 				let payment_address = Readable::read(reader)?;
-				let payment_key = Readable::read(reader)?;
-				Some((payment_address, payment_key))
+				let per_commitment_point = Readable::read(reader)?;
+				Some((payment_address, per_commitment_point))
 			},
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),

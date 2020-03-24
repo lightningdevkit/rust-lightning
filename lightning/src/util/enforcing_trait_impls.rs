@@ -9,6 +9,8 @@ use std::sync::{Mutex, Arc};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::bip143;
+use bitcoin::network::constants::Network;
+
 
 use secp256k1;
 use secp256k1::key::{SecretKey, PublicKey};
@@ -117,6 +119,10 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 	fn sign_delayed_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>) {
 		self.inner.sign_delayed_transaction(spend_tx, input, witness_script, amount, per_commitment_point, secp_ctx);
+	}
+
+	fn sign_payment_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, network: Network, secp_ctx: &Secp256k1<T>) {
+		self.inner.sign_payment_transaction(spend_tx, input, amount, per_commitment_point, network, secp_ctx);
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

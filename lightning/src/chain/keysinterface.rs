@@ -7,6 +7,7 @@ use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::util::address::Address;
 use bitcoin::util::bip143;
 
 use bitcoin_hashes::{Hash, HashEngine};
@@ -84,7 +85,7 @@ pub enum SpendableOutputDescriptor {
 		/// The outpoint which is spendable
 		outpoint: OutPoint,
 		/// The secret key which must be used to sign the spending transaction
-		key: SecretKey,
+		per_commitment_point: PublicKey,
 		/// The output which is reference by the given outpoint
 		output: TxOut,
 	}
@@ -106,10 +107,10 @@ impl Writeable for SpendableOutputDescriptor {
 				to_self_delay.write(writer)?;
 				output.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref key, ref output } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref per_commitment_point, ref output } => {
 				2u8.write(writer)?;
 				outpoint.write(writer)?;
-				key.write(writer)?;
+				per_commitment_point.write(writer)?;
 				output.write(writer)?;
 			},
 		}
@@ -133,7 +134,7 @@ impl Readable for SpendableOutputDescriptor {
 			}),
 			2u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WPKH {
 				outpoint: Readable::read(reader)?,
-				key: Readable::read(reader)?,
+				per_commitment_point: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 			}),
 			_ => Err(DecodeError::InvalidValue),
@@ -260,6 +261,9 @@ pub trait ChannelKeys : Send+Clone {
 
 	/// Create a signature for a delayed transaction.
 	fn sign_delayed_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, secp_ctx: &Secp256k1<T>);
+
+	/// Create a signture for a payment transaction spending a to_remote output on a remote commitment tx.
+	fn sign_payment_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, network: Network, secp_ctx: &Secp256k1<T>);
 
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
@@ -458,6 +462,19 @@ impl ChannelKeys for InMemoryChannelKeys {
 			spend_tx.input[0].witness[0].push(SigHashType::All as u8);
 			spend_tx.input[0].witness.push(vec!(0));
 			spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
+		}
+	}
+
+	fn sign_payment_transaction<T: secp256k1::Signing>(&self, spend_tx: &mut Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, network: Network, secp_ctx: &Secp256k1<T>) {
+		if let Ok(payment_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.payment_base_key) {
+			let remotepubkey = PublicKey::from_secret_key(&secp_ctx, &payment_key);
+			let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, network).script_pubkey();
+			let sighash_parts = bip143::SighashComponents::new(&spend_tx);
+			let sighash = hash_to_message!(&sighash_parts.sighash_all(&spend_tx.input[input], &witness_script, amount)[..]);
+			let remotesig = secp_ctx.sign(&sighash, &payment_key);
+			spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
+			spend_tx.input[0].witness[0].push(SigHashType::All as u8);
+			spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
 		}
 	}
 
