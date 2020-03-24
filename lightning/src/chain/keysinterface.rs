@@ -246,6 +246,27 @@ pub trait ChannelKeys : Send+Clone {
 	/// return value must contain a signature.
 	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()>;
 
+	/// Create a signature for a transaction spending an HTLC or commitment transaction output
+	/// when our counterparty broadcast an old state.
+	///
+	/// Justice transaction may claim multiples outputs at same time if timelock are similar.
+	/// It may be called multiples time for same output(s) if a fee-bump is needed with regards
+	/// to an upcoming timelock expiration.
+	///
+	/// Witness_script is a revokable witness script as defined in BOLT3 for `to_local`/HTLC
+	/// outputs.
+	///
+	/// Input index is a pointer towards outpoint spent, commited by sigs (BIP 143).
+	///
+	/// Amount is value of the output spent by this input, committed by sigs (BIP 143).
+	///
+	/// Per_commitment key is revocation secret such as provided by remote party while
+	/// revocating detected onchain transaction. It's not a _local_ secret key, therefore
+	/// it may cross interfaces, a node compromise won't allow to spend revoked output without
+	/// also compromissing revocation key.
+	//TODO: dry-up witness_script and pass pubkeys
+	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
@@ -392,6 +413,15 @@ impl ChannelKeys for InMemoryChannelKeys {
 
 	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		local_commitment_tx.get_htlc_sigs(&self.htlc_base_key, local_csv, secp_ctx)
+	}
+
+	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		if let Ok(revocation_key) = chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
+			let sighash_parts = bip143::SighashComponents::new(&justice_tx);
+			let sighash = hash_to_message!(&sighash_parts.sighash_all(&justice_tx.input[input], &witness_script, amount)[..]);
+			return Ok(secp_ctx.sign(&sighash, &revocation_key))
+		}
+		Err(())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

@@ -632,7 +632,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::Revoked { ref per_commitment_point, ref key, ref input_descriptor, ref amount } => {
+					&InputMaterial::Revoked { ref per_commitment_point, ref per_commitment_key, ref input_descriptor, ref amount } => {
 						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &self.remote_tx_cache.remote_delayed_payment_base_key, &self.remote_tx_cache.remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
 
 							let mut this_htlc = None;
@@ -654,17 +654,19 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, self.remote_csv, &chan_keys.a_delayed_payment_key)
 							};
 
-							let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-							let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-							let sig = self.secp_ctx.sign(&sighash, &key);
-							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-							if *input_descriptor != InputDescriptors::RevokedOutput {
-								bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
-							} else {
-								bumped_tx.input[i].witness.push(vec!(1));
-							}
-							bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+							let is_htlc = *input_descriptor != InputDescriptors::RevokedOutput;
+							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, &witness_script, *amount, &per_commitment_key, &chan_keys.revocation_key, is_htlc,  &self.secp_ctx) {
+								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+								if is_htlc {
+									bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+								} else {
+									bumped_tx.input[i].witness.push(vec!(1));
+								}
+								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+							} else { return None; }
+							//TODO: panic ?
+
 							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 						}
 					},

@@ -6,6 +6,7 @@ use std::cmp;
 use std::sync::{Mutex, Arc};
 
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::script::Script;
 use bitcoin::util::bip143;
 
 use bitcoin::secp256k1;
@@ -101,6 +102,10 @@ impl ChannelKeys for EnforcingChannelKeys {
 		}
 
 		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, local_csv, secp_ctx).unwrap())
+	}
+
+	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_justice_transaction(justice_tx, input, witness_script, amount, per_commitment_key, revocation_pubkey, is_htlc, secp_ctx).unwrap())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
