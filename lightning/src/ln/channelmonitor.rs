@@ -780,6 +780,9 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// Used just for ChannelManager to make sure it has the latest channel data during
 	// deserialization
 	current_remote_commitment_number: u64,
+	// Used just for ChannelManager to make sure it has the latest channel data during
+	// deserialization
+	current_local_commitment_number: u64,
 
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
@@ -836,6 +839,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.remote_hash_commitment_number != other.remote_hash_commitment_number ||
 			self.prev_local_signed_commitment_tx != other.prev_local_signed_commitment_tx ||
 			self.current_remote_commitment_number != other.current_remote_commitment_number ||
+			self.current_local_commitment_number != other.current_local_commitment_number ||
 			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
 			self.payment_preimages != other.payment_preimages ||
 			self.pending_htlcs_updated != other.pending_htlcs_updated ||
@@ -1008,6 +1012,12 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&byte_utils::be48_to_array(0))?;
 		}
 
+		if for_local_storage {
+			writer.write_all(&byte_utils::be48_to_array(self.current_local_commitment_number))?;
+		} else {
+			writer.write_all(&byte_utils::be48_to_array(0))?;
+		}
+
 		writer.write_all(&byte_utils::be64_to_array(self.payment_preimages.len() as u64))?;
 		for payment_preimage in self.payment_preimages.values() {
 			writer.write_all(&payment_preimage.0[..])?;
@@ -1126,6 +1136,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			prev_local_signed_commitment_tx: None,
 			current_local_signed_commitment_tx: None,
 			current_remote_commitment_number: 1 << 48,
+			current_local_commitment_number: 0xffff_ffff_ffff,
 
 			payment_preimages: HashMap::new(),
 			pending_htlcs_updated: Vec::new(),
@@ -1262,6 +1273,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if let Err(_) = self.onchain_tx_handler.provide_latest_local_tx(commitment_tx.clone()) {
 			return Err(MonitorUpdateError("Local commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed"));
 		}
+		self.current_local_commitment_number = 0xffff_ffff_ffff - ((((commitment_tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (commitment_tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
 			txid: commitment_tx.txid(),
@@ -1415,9 +1427,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	pub(super) fn get_cur_local_commitment_number(&self) -> u64 {
-		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-			0xffff_ffff_ffff - ((((local_tx.tx.without_valid_witness().input[0].sequence as u64 & 0xffffff) << 3*8) | (local_tx.tx.without_valid_witness().lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor)
-		} else { 0xffff_ffff_ffff }
+		self.current_local_commitment_number
 	}
 
 	/// Attempts to claim a remote commitment transaction's outputs using the revocation key and
@@ -2415,6 +2425,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		};
 
 		let current_remote_commitment_number = <U48 as Readable>::read(reader)?.0;
+		let current_local_commitment_number = <U48 as Readable>::read(reader)?.0;
 
 		let payment_preimages_len: u64 = Readable::read(reader)?;
 		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
@@ -2512,6 +2523,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			prev_local_signed_commitment_tx,
 			current_local_signed_commitment_tx,
 			current_remote_commitment_number,
+			current_local_commitment_number,
 
 			payment_preimages,
 			pending_htlcs_updated,
