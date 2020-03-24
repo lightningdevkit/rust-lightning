@@ -11,6 +11,7 @@ use bitcoin::util::bip143;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use secp256k1::{Secp256k1, Signature};
+use secp256k1::key::PublicKey;
 use secp256k1;
 
 use ln::msgs::DecodeError;
@@ -46,6 +47,13 @@ enum OnchainEvent {
 		outpoint: BitcoinOutPoint,
 		input_material: InputMaterial,
 	}
+}
+
+/// Cache remote basepoint to compute any transaction on
+/// remote outputs, either justice or preimage/timeout transactions.
+struct RemoteTxCache {
+	remote_delayed_payment_base_key: PublicKey,
+	remote_htlc_base_key: PublicKey
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -195,6 +203,8 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	local_csv: u16,
+	remote_tx_cache: RemoteTxCache,
+	remote_csv: u16,
 
 	key_storage: ChanSigner,
 
@@ -240,6 +250,10 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.prev_local_htlc_sigs.write(writer)?;
 
 		self.local_csv.write(writer)?;
+
+		self.remote_tx_cache.remote_delayed_payment_base_key.write(writer)?;
+		self.remote_tx_cache.remote_htlc_base_key.write(writer)?;
+		self.remote_csv.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -288,6 +302,16 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 		let prev_local_htlc_sigs = Readable::read(reader)?;
 
 		let local_csv = Readable::read(reader)?;
+
+		let remote_tx_cache = {
+			let remote_delayed_payment_base_key = Readable::read(reader)?;
+			let remote_htlc_base_key = Readable::read(reader)?;
+			RemoteTxCache {
+				remote_delayed_payment_base_key,
+				remote_htlc_base_key,
+			}
+		};
+		let remote_csv = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -341,6 +365,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 			prev_local_commitment,
 			prev_local_htlc_sigs,
 			local_csv,
+			remote_tx_cache,
+			remote_csv,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -352,9 +378,14 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16, logger: Arc<Logger>) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16, remote_delayed_payment_base_key: PublicKey, remote_htlc_base_key: PublicKey, remote_csv: u16, logger: Arc<Logger>) -> Self {
 
 		let key_storage = keys;
+
+		let remote_tx_cache = RemoteTxCache {
+			remote_delayed_payment_base_key,
+			remote_htlc_base_key,
+		};
 
 		OnchainTxHandler {
 			destination_script,
@@ -363,6 +394,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			prev_local_commitment: None,
 			prev_local_htlc_sigs: None,
 			local_csv,
+			remote_tx_cache,
+			remote_csv,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),

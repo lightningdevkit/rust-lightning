@@ -1064,7 +1064,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
 
-		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
+		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, their_delayed_payment_base_key.clone(), their_htlc_base_key.clone(), our_to_self_delay, logger.clone());
 
 		let local_tx_sequence = initial_local_commitment_tx.unsigned_tx.input[0].sequence as u64;
 		let local_tx_locktime = initial_local_commitment_tx.unsigned_tx.lock_time as u64;
@@ -1099,8 +1099,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			current_remote_commitment_txid: None,
 			prev_remote_commitment_txid: None,
 
-			their_htlc_base_key: their_htlc_base_key.clone(),
-			their_delayed_payment_base_key: their_delayed_payment_base_key.clone(),
+			their_htlc_base_key: *their_htlc_base_key,
+			their_delayed_payment_base_key: *their_delayed_payment_base_key,
 			funding_redeemscript,
 			channel_value_satoshis: channel_value_satoshis,
 			their_cur_revocation_points: None,
