@@ -2130,8 +2130,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			} else if self.remote_payment_script == outp.script_pubkey {
 				spendable_output = Some(SpendableOutputDescriptor::DynamicOutputP2WPKH {
 					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
-					key: self.keys.payment_key().clone(),
 					output: outp.clone(),
+					key_derivation_params: self.keys.key_derivation_params(),
 				});
 				break;
 			} else if outp.script_pubkey == self.shutdown_script {

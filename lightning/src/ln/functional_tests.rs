@@ -4274,7 +4274,7 @@ macro_rules! check_spendable_outputs {
 					Event::SpendableOutputs { ref outputs } => {
 						for outp in outputs {
 							match *outp {
-								SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref key, ref output } => {
+								SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref output, ref key_derivation_params } => {
 									let input = TxIn {
 										previous_output: outpoint.clone(),
 										script_sig: Script::new(),
@@ -4292,10 +4292,11 @@ macro_rules! check_spendable_outputs {
 										output: vec![outp],
 									};
 									let secp_ctx = Secp256k1::new();
-									let remotepubkey = PublicKey::from_secret_key(&secp_ctx, &key);
+									let keys = $keysinterface.derive_channel_keys($chan_value, key_derivation_params.0, key_derivation_params.1);
+									let remotepubkey = PublicKey::from_secret_key(&secp_ctx, &keys.payment_key());
 									let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
 									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
-									let remotesig = secp_ctx.sign(&sighash, key);
+									let remotesig = secp_ctx.sign(&sighash, &keys.payment_key());
 									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
 									spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());

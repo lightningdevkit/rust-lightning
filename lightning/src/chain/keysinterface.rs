@@ -7,6 +7,7 @@ use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::util::address::Address;
 use bitcoin::util::bip143;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -88,16 +89,23 @@ pub enum SpendableOutputDescriptor {
 	// this in favor of StaticOutput:
 	/// An output to a P2WPKH, spendable exclusively by the given private key.
 	/// The witness in the spending input, is, thus, simply:
-	/// <BIP 143 signature generated with the given key> <public key derived from the given key>
+	/// <BIP 143 signature> <payment key>
+	///
 	/// These are generally the result of our counterparty having broadcast the current state,
 	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
+	///
+	/// To derive the payment key corresponding to the channel state, you must pass the
+	/// channel's payment_base_key and the provided per_commitment_point to
+	/// chan_utils::derive_private_key. The resulting key should be used to sign the spending
+	/// transaction.
 	DynamicOutputP2WPKH {
 		/// The outpoint which is spendable
 		outpoint: OutPoint,
-		/// The secret key which must be used to sign the spending transaction
-		key: SecretKey,
 		/// The output which is reference by the given outpoint
 		output: TxOut,
+		/// The channel keys state used to proceed to derivation of signing key. Must
+		/// be pass to KeysInterface::derive_channel_keys.
+		key_derivation_params: (u64, u64),
 	}
 }
 
@@ -119,11 +127,12 @@ impl Writeable for SpendableOutputDescriptor {
 				key_derivation_params.1.write(writer)?;
 				remote_revocation_pubkey.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref key, ref output } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref output, ref key_derivation_params } => {
 				2u8.write(writer)?;
 				outpoint.write(writer)?;
-				key.write(writer)?;
 				output.write(writer)?;
+				key_derivation_params.0.write(writer)?;
+				key_derivation_params.1.write(writer)?;
 			},
 		}
 		Ok(())
@@ -147,8 +156,8 @@ impl Readable for SpendableOutputDescriptor {
 			}),
 			2u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WPKH {
 				outpoint: Readable::read(reader)?,
-				key: Readable::read(reader)?,
 				output: Readable::read(reader)?,
+				key_derivation_params: (Readable::read(reader)?, Readable::read(reader)?),
 			}),
 			_ => Err(DecodeError::InvalidValue),
 		}
@@ -396,6 +405,8 @@ impl InMemoryChannelKeys {
 			htlc_basepoint: from_secret(&htlc_base_key),
 		}
 	}
+
+	fn remote_pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { self.remote_channel_pubkeys.as_ref().unwrap() }
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
