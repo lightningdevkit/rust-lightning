@@ -1205,7 +1205,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		log_trace!(self, "New potential remote commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
 		self.prev_remote_commitment_txid = self.current_remote_commitment_txid.take();
 		self.current_remote_commitment_txid = Some(new_txid);
-		self.remote_claimable_outpoints.insert(new_txid, htlc_outputs);
+		self.remote_claimable_outpoints.insert(new_txid, htlc_outputs.clone());
 		self.current_remote_commitment_number = commitment_number;
 		//TODO: Merge this into the other per-remote-transaction output storage stuff
 		match self.their_cur_revocation_points {
@@ -1226,6 +1226,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
 			}
 		}
+		let mut htlcs = Vec::with_capacity(htlc_outputs.len());
+		for htlc in htlc_outputs {
+			if htlc.0.transaction_output_index.is_some() {
+				htlcs.push(htlc.0);
+			}
+		}
+		self.onchain_tx_handler.provide_latest_remote_tx(new_txid, htlcs);
 	}
 
 	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
