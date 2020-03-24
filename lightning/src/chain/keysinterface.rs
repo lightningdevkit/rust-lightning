@@ -26,6 +26,7 @@ use util::ser::{Writeable, Writer, Readable};
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction};
 use ln::msgs;
+use ln::channelmanager::PaymentPreimage;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -248,6 +249,9 @@ pub trait ChannelKeys : Send+Clone {
 	/// Signs a justice transaction.
 	fn sign_justice_transaction<T: secp256k1::Signing>(&self, bumped_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>);
 
+	/// Signs a remote htlc transaction.
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, bumped_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>);
+
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
@@ -407,6 +411,22 @@ impl ChannelKeys for InMemoryChannelKeys {
 				bumped_tx.input[input].witness.push(revocation_pubkey.clone().serialize().to_vec());
 			} else {
 				bumped_tx.input[input].witness.push(vec!(1));
+			}
+			bumped_tx.input[input].witness.push(witness_script.clone().into_bytes());
+		}
+	}
+
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, bumped_tx: &mut Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) {
+		if let Ok(htlc_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key) {
+			let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
+			let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[input], &witness_script, amount)[..]);
+			let sig = secp_ctx.sign(&sighash, &htlc_key);
+			bumped_tx.input[input].witness.push(sig.serialize_der().to_vec());
+			bumped_tx.input[input].witness[0].push(SigHashType::All as u8);
+			if let &Some(preimage) = preimage {
+				bumped_tx.input[input].witness.push(preimage.0.to_vec());
+			} else {
+				bumped_tx.input[input].witness.push(vec![0]);
 			}
 			bumped_tx.input[input].witness.push(witness_script.clone().into_bytes());
 		}
