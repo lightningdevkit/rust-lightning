@@ -708,7 +708,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	commitment_transaction_number_obscure_factor: u64,
 
 	destination_script: Script,
-	broadcasted_local_revokable_script: Option<(Script, SecretKey, Script)>,
+	broadcasted_local_revokable_script: Option<(Script, PublicKey, PublicKey)>,
 	remote_payment_script: Script,
 	shutdown_script: Script,
 
@@ -1615,14 +1615,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
 	}
 
-	fn broadcast_by_local_state(&self, commitment_tx: &Transaction, local_tx: &LocalSignedTx) -> (Vec<ClaimRequest>, Vec<TxOut>, Option<(Script, SecretKey, Script)>) {
+	fn broadcast_by_local_state(&self, commitment_tx: &Transaction, local_tx: &LocalSignedTx) -> (Vec<ClaimRequest>, Vec<TxOut>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(local_tx.htlc_outputs.len());
 		let mut watch_outputs = Vec::with_capacity(local_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&local_tx.revocation_key, self.their_to_self_delay, &local_tx.delayed_payment_key);
-		let broadcasted_local_revokable_script = if let Ok(local_delayedkey) = chan_utils::derive_private_key(&self.secp_ctx, &local_tx.per_commitment_point, self.keys.delayed_payment_base_key()) {
-			Some((redeemscript.to_v0_p2wsh(), local_delayedkey, redeemscript))
-		} else { None };
+		let broadcasted_local_revokable_script = Some((redeemscript.to_v0_p2wsh(), local_tx.per_commitment_point.clone(), local_tx.revocation_key.clone()));
 
 		for &(ref htlc, _, _) in local_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
@@ -2121,10 +2119,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				if broadcasted_local_revokable_script.0 == outp.script_pubkey {
 					spendable_output =  Some(SpendableOutputDescriptor::DynamicOutputP2WSH {
 						outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
-						key: broadcasted_local_revokable_script.1,
-						witness_script: broadcasted_local_revokable_script.2.clone(),
+						per_commitment_point: broadcasted_local_revokable_script.1,
 						to_self_delay: self.their_to_self_delay,
 						output: outp.clone(),
+						key_derivation_params: self.keys.key_derivation_params(),
+						remote_revocation_pubkey: broadcasted_local_revokable_script.2.clone(),
 					});
 					break;
 				}
@@ -2183,9 +2182,9 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 		let broadcasted_local_revokable_script = match <u8 as Readable>::read(reader)? {
 			0 => {
 				let revokable_address = Readable::read(reader)?;
-				let local_delayedkey = Readable::read(reader)?;
+				let per_commitment_point = Readable::read(reader)?;
 				let revokable_script = Readable::read(reader)?;
-				Some((revokable_address, local_delayedkey, revokable_script))
+				Some((revokable_address, per_commitment_point, revokable_script))
 			},
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),

@@ -184,7 +184,7 @@ pub(crate) fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>,
 	Ok(key)
 }
 
-pub(super) fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+pub(crate) fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
@@ -224,7 +224,7 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 	Ok(part_a)
 }
 
-pub(super) fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+pub(crate) fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let rev_append_commit_hash_key = {
 		let mut sha = Sha256::engine();
 		sha.input(&revocation_base_point.serialize());
@@ -313,7 +313,7 @@ impl TxCreationKeys {
 
 /// Gets the "to_local" output redeemscript, ie the script which is time-locked or spendable by
 /// the revocation key
-pub(super) fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u16, delayed_payment_key: &PublicKey) -> Script {
+pub(crate) fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u16, delayed_payment_key: &PublicKey) -> Script {
 	Builder::new().push_opcode(opcodes::all::OP_IF)
 	              .push_slice(&revocation_key.serialize())
 	              .push_opcode(opcodes::all::OP_ELSE)
