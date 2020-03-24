@@ -31,7 +31,7 @@ use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-use ln::onchaintx::OnchainTxHandler;
+use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
@@ -437,7 +437,7 @@ pub(crate) enum InputMaterial {
 		witness_script: Script,
 		pubkey: Option<PublicKey>,
 		key: SecretKey,
-		is_htlc: bool,
+		input_descriptor: InputDescriptors,
 		amount: u64,
 	},
 	RemoteHTLC {
@@ -459,12 +459,12 @@ pub(crate) enum InputMaterial {
 impl Writeable for InputMaterial  {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
-			&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref amount} => {
+			&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref input_descriptor, ref amount} => {
 				writer.write_all(&[0; 1])?;
 				witness_script.write(writer)?;
 				pubkey.write(writer)?;
 				writer.write_all(&key[..])?;
-				is_htlc.write(writer)?;
+				input_descriptor.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
 			&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
@@ -496,13 +496,13 @@ impl Readable for InputMaterial {
 				let witness_script = Readable::read(reader)?;
 				let pubkey = Readable::read(reader)?;
 				let key = Readable::read(reader)?;
-				let is_htlc = Readable::read(reader)?;
+				let input_descriptor = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
 				InputMaterial::Revoked {
 					witness_script,
 					pubkey,
 					key,
-					is_htlc,
+					input_descriptor,
 					amount
 				}
 			},
@@ -1441,7 +1441,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			// First, process non-htlc outputs (to_local & to_remote)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let witness_data = InputMaterial::Revoked { witness_script: revokeable_redeemscript.clone(), pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, amount: outp.value };
+					let witness_data = InputMaterial::Revoked { witness_script: revokeable_redeemscript.clone(), pubkey: Some(revocation_pubkey), key: revocation_key, input_descriptor: InputDescriptors::RevokedOutput, amount: outp.value };
 					claimable_outpoints.push(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 }, witness_data});
 				}
 			}
@@ -1456,7 +1456,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								tx.output[transaction_output_index as usize].script_pubkey != expected_script.to_v0_p2wsh() {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
-						let witness_data = InputMaterial::Revoked { witness_script: expected_script, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: true, amount: tx.output[transaction_output_index as usize].value };
+						let witness_data = InputMaterial::Revoked { witness_script: expected_script, pubkey: Some(revocation_pubkey), key: revocation_key, input_descriptor: if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }, amount: tx.output[transaction_output_index as usize].value };
 						claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 					}
 				}
@@ -1627,7 +1627,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 
 		log_trace!(logger, "Remote HTLC broadcast {}:{}", htlc_txid, 0);
-		let witness_data = InputMaterial::Revoked { witness_script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, is_htlc: false, amount: tx.output[0].value };
+		let witness_data = InputMaterial::Revoked { witness_script: redeemscript, pubkey: Some(revocation_pubkey), key: revocation_key, input_descriptor: InputDescriptors::RevokedOutput, amount: tx.output[0].value };
 		let claimable_outpoints = vec!(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: htlc_txid, vout: 0}, witness_data });
 		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
 	}

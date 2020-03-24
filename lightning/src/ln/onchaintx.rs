@@ -17,7 +17,7 @@ use bitcoin::secp256k1::key::PublicKey;
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::channelmanager::PaymentPreimage;
-use ln::chan_utils::{HTLCType, LocalCommitmentTransaction, HTLCOutputInCommitment};
+use ln::chan_utils::{LocalCommitmentTransaction, HTLCOutputInCommitment};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -53,7 +53,7 @@ enum OnchainEvent {
 struct RemoteTxCache {
 	remote_delayed_payment_base_key: PublicKey,
 	remote_htlc_base_key: PublicKey,
-	per_htlc: HashMap<Sha256dHash, Vec<(HTLCOutputInCommitment)>>
+	per_htlc: HashMap<Txid, Vec<HTLCOutputInCommitment>>
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -101,13 +101,60 @@ impl Readable for ClaimTxBumpMaterial {
 	}
 }
 
-#[derive(PartialEq)]
-pub(super) enum InputDescriptors {
+#[derive(PartialEq, Clone, Copy)]
+pub(crate) enum InputDescriptors {
 	RevokedOfferedHTLC,
 	RevokedReceivedHTLC,
 	OfferedHTLC,
 	ReceivedHTLC,
 	RevokedOutput, // either a revoked to_local output on commitment tx, a revoked HTLC-Timeout output or a revoked HTLC-Success output
+}
+
+impl Writeable for InputDescriptors {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&InputDescriptors::RevokedOfferedHTLC => {
+				writer.write_all(&[0; 1])?;
+			},
+			&InputDescriptors::RevokedReceivedHTLC => {
+				writer.write_all(&[1; 1])?;
+			},
+			&InputDescriptors::OfferedHTLC => {
+				writer.write_all(&[2; 1])?;
+			},
+			&InputDescriptors::ReceivedHTLC => {
+				writer.write_all(&[3; 1])?;
+			}
+			&InputDescriptors::RevokedOutput => {
+				writer.write_all(&[4; 1])?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for InputDescriptors {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let input_descriptor = match <u8 as Readable>::read(reader)? {
+			0 => {
+				InputDescriptors::RevokedOfferedHTLC
+			},
+			1 => {
+				InputDescriptors::RevokedReceivedHTLC
+			},
+			2 => {
+				InputDescriptors::OfferedHTLC
+			},
+			3 => {
+				InputDescriptors::ReceivedHTLC
+			},
+			4 => {
+				InputDescriptors::RevokedOutput
+			}
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		Ok(input_descriptor)
+	}
 }
 
 macro_rules! subtract_high_prio_fee {
@@ -316,7 +363,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 			let per_htlc_len: u64 = Readable::read(reader)?;
 			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
 			for _  in 0..per_htlc_len {
-				let txid: Sha256dHash = Readable::read(reader)?;
+				let txid: Txid = Readable::read(reader)?;
 				let htlcs_count: u64 = Readable::read(reader)?;
 				let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
 				for _ in 0..htlcs_count {
@@ -545,8 +592,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		let mut dynamic_fee = true;
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
-				&InputMaterial::Revoked { ref witness_script, ref is_htlc, ref amount, .. } => {
-					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { unreachable!() });
+				&InputMaterial::Revoked { ref input_descriptor, ref amount, .. } => {
+					inputs_witnesses_weight += Self::get_witnesses_weight(&[*input_descriptor]);
 					amt += *amount;
 				},
 				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
@@ -584,19 +631,19 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref amount } => {
+					&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref input_descriptor, ref amount } => {
 						let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
 						let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
 						let sig = self.secp_ctx.sign(&sighash, &key);
 						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-						if *is_htlc {
+						if *input_descriptor !=  InputDescriptors::RevokedOutput {
 							bumped_tx.input[i].witness.push(pubkey.unwrap().clone().serialize().to_vec());
 						} else {
 							bumped_tx.input[i].witness.push(vec!(1));
 						}
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-						log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
+						log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 					},
 					&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
 						if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
@@ -927,7 +974,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_remote_tx(&mut self, commitment_txid: Sha256dHash, htlcs: Vec<HTLCOutputInCommitment>) {
+	pub(super) fn provide_latest_remote_tx(&mut self, commitment_txid: Txid, htlcs: Vec<HTLCOutputInCommitment>) {
 		self.remote_tx_cache.per_htlc.insert(commitment_txid, htlcs);
 	}
 
