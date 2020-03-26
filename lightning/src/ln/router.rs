@@ -427,6 +427,7 @@ impl RoutingMessageHandler for Router {
 					},
 					None => {},
 				}
+				log_trace!(self, "Announced node {}", msg.contents.node_id);
 
 				node.features = msg.contents.features.clone();
 				node.last_update = Some(msg.contents.timestamp);
@@ -555,6 +556,7 @@ impl RoutingMessageHandler for Router {
 				}
 			};
 		}
+		log_trace!(self, "Announced channel {} between {} and {}", msg.contents.short_channel_id, msg.contents.node_id_1, msg.contents.node_id_2);
 
 		add_channel_to_node!(msg.contents.node_id_1);
 		add_channel_to_node!(msg.contents.node_id_2);
@@ -868,6 +870,7 @@ impl Router {
 		if let Some(hops) = first_hops {
 			for chan in hops {
 				let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
+				log_trace!(self, "First hop link {} to {}", chan.short_channel_id.unwrap(), chan.remote_network_id);
 				if chan.remote_network_id == *target {
 					return Ok(Route {
 						hops: vec![RouteHop {
@@ -955,8 +958,11 @@ impl Router {
 					}
 				}
 
+				log_trace!(self, "Node {} requires {}", $node_id, $node.features.requires_unknown_bits());
 				if !$node.features.requires_unknown_bits() {
+					log_trace!(self, "Node {} with {} links", $node_id, $node.channels.len());
 					for chan_id in $node.channels.iter() {
+						log_trace!(self, "Adding link {}", chan_id);
 						let chan = network.channels.get(chan_id).unwrap();
 						if !chan.features.requires_unknown_bits() {
 							if chan.one_to_two.src_node_id == *$node_id {
@@ -979,6 +985,7 @@ impl Router {
 			};
 		}
 
+		log_trace!(self, "Tracing route to {}...", target);
 		match network.nodes.get(target) {
 			None => {},
 			Some(node) => {
@@ -1006,6 +1013,7 @@ impl Router {
 		}
 
 		while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
+			log_trace!(self, "Finding link for destination {}", pubkey);
 			if pubkey == network.our_node_id {
 				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
 				loop {
