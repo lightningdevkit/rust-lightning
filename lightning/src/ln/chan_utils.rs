@@ -522,9 +522,18 @@ pub struct LocalCommitmentTransaction {
 impl LocalCommitmentTransaction {
 	#[cfg(test)]
 	pub fn dummy() -> Self {
+		let dummy_input = TxIn {
+			previous_output: OutPoint {
+				txid: Default::default(),
+				vout: 0,
+			},
+			script_sig: Default::default(),
+			sequence: 0,
+			witness: vec![vec![], vec![], vec![]]
+		};
 		Self { tx: Transaction {
 			version: 2,
-			input: Vec::new(),
+			input: vec![dummy_input],
 			output: Vec::new(),
 			lock_time: 0,
 		} }

@@ -1241,10 +1241,18 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if self.their_to_self_delay.is_none() {
 			return Err(MonitorUpdateError("Got a local commitment tx info update before we'd set basic information about the channel"));
 		}
+		// Returning a monitor error before updating tracking points means in case of using
+		// a concurrent watchtower implementation for same channel, if this one doesn't
+		// reject update as we do, you MAY have the latest local valid commitment tx onchain
+		// for which you want to spend outputs. We're NOT robust again this scenario right
+		// now but we should consider it later.
+		if let Err(_) = self.onchain_tx_handler.provide_latest_local_tx(commitment_tx.clone()) {
+			return Err(MonitorUpdateError("Local commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed"));
+		}
 		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
 		self.current_local_signed_commitment_tx = Some(LocalSignedTx {
 			txid: commitment_tx.txid(),
-			tx: commitment_tx.clone(),
+			tx: commitment_tx,
 			revocation_key: local_keys.revocation_key,
 			a_htlc_key: local_keys.a_htlc_key,
 			b_htlc_key: local_keys.b_htlc_key,
@@ -1253,7 +1261,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			feerate_per_kw,
 			htlc_outputs,
 		});
-		self.onchain_tx_handler.provide_latest_local_tx(commitment_tx);
 		Ok(())
 	}
 

@@ -725,8 +725,17 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) {
+	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) -> Result<(), ()> {
+		// To prevent any unsafe state discrepancy between offchain and onchain, once local
+		// commitment transaction has been signed due to an event (either block height for
+		// HTLC-timeout or channel force-closure), don't allow any further update of local
+		// commitment transaction view to avoid delivery of revocation secret to counterparty
+		// for the aformentionned signed transaction.
+		if let Some(ref local_commitment) = self.local_commitment {
+			if local_commitment.has_local_sig() { return Err(()) }
+		}
 		self.prev_local_commitment = self.local_commitment.take();
 		self.local_commitment = Some(tx);
+		Ok(())
 	}
 }
