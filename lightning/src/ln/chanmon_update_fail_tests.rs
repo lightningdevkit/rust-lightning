@@ -1458,7 +1458,7 @@ fn test_monitor_update_fail_claim() {
 	nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Temporary failure claiming HTLC, treating as success: Failed to update ChannelMonitor".to_string(), 1);
 	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false, true);
 
 	let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
@@ -1599,7 +1599,7 @@ fn monitor_update_claim_fail_no_response() {
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Temporary failure claiming HTLC, treating as success: Failed to update ChannelMonitor".to_string(), 1);
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(());
 	let (outpoint, latest_update) = nodes[1].chan_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
