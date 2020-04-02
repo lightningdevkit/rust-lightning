@@ -4009,7 +4009,7 @@ macro_rules! check_spendable_outputs {
 									let local_delaysig = secp_ctx.sign(&sighash, key);
 									spend_tx.input[0].witness.push(local_delaysig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-									spend_tx.input[0].witness.push(vec!(0));
+									spend_tx.input[0].witness.push(vec!());
 									spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
 									txn.push(spend_tx);
 								},
