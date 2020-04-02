@@ -470,7 +470,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					if let &Some(preimage) = preimage {
 						bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
 					} else {
-						bumped_tx.input[i].witness.push(vec![0]);
+						bumped_tx.input[i].witness.push(vec![]);
 					}
 					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 					log_trace!(self, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
