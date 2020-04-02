@@ -162,6 +162,7 @@ impl_writeable!(ChannelInfo, 0, {
 
 #[derive(PartialEq)]
 struct NodeInfo {
+	node_id: PublicKey,
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: Vec<(u64, Sha256dHash)>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
@@ -216,6 +217,7 @@ const MAX_ALLOC_SIZE: u64 = 64*1024;
 impl Readable for NodeInfo {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
 		let channels_count: u64 = Readable::read(reader)?;
+		let node_id = Readable::read(reader)?;
 		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
 		for _ in 0..channels_count {
 			channels.push(Readable::read(reader)?);
@@ -238,6 +240,7 @@ impl Readable for NodeInfo {
 		}
 		let announcement_message = Readable::read(reader)?;
 		Ok(NodeInfo {
+			node_id,
 			channels,
 			lowest_inbound_channel_fee_base_msat,
 			lowest_inbound_channel_fee_proportional_millionths,
@@ -558,6 +561,7 @@ impl RoutingMessageHandler for Router {
 					},
 					BtreeEntry::Vacant(node_entry) => {
 						node_entry.insert(NodeInfo {
+							node_id: $node_id,
 							channels: vec!(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)),
 							lowest_inbound_channel_fee_base_msat: u32::max_value(),
 							lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
@@ -772,6 +776,7 @@ impl Router {
 	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
 		let mut nodes = BTreeMap::new();
 		nodes.insert(our_pubkey.clone(), NodeInfo {
+			node_id: our_pubkey.clone(),
 			channels: Vec::new(),
 			lowest_inbound_channel_fee_base_msat: u32::max_value(),
 			lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
@@ -1212,6 +1217,7 @@ mod tests {
 			let mut network = router.network_map.write().unwrap();
 
 			network.nodes.insert(node1.clone(), NodeInfo {
+				node_id: node1.clone(),
 				channels: vec!(NetworkMap::get_key(1, zero_hash.clone()), NetworkMap::get_key(3, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 100,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
@@ -1247,6 +1253,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node2.clone(), NodeInfo {
+				node_id: node2.clone(),
 				channels: vec!(NetworkMap::get_key(2, zero_hash.clone()), NetworkMap::get_key(4, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
@@ -1282,6 +1289,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node8.clone(), NodeInfo {
+				node_id: node8.clone(),
 				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
@@ -1317,6 +1325,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node3.clone(), NodeInfo {
+				node_id: node3.clone(),
 				channels: vec!(
 					NetworkMap::get_key(3, zero_hash.clone()),
 					NetworkMap::get_key(4, zero_hash.clone()),
@@ -1406,6 +1415,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node4.clone(), NodeInfo {
+				node_id: node4.clone(),
 				channels: vec!(NetworkMap::get_key(5, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
@@ -1441,6 +1451,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node5.clone(), NodeInfo {
+				node_id: node5.clone(),
 				channels: vec!(NetworkMap::get_key(6, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
@@ -1500,6 +1511,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node6.clone(), NodeInfo {
+				node_id: node6.clone(),
 				channels: vec!(NetworkMap::get_key(7, zero_hash.clone())),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
