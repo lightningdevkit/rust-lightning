@@ -91,14 +91,22 @@ impl Readable for Route {
 	}
 }
 
-#[derive(PartialEq)]
-struct DirectionalChannelInfo {
+/// Details of channel routing parameters for one-direction, as stored in ChannelInfo
+#[derive(Clone, PartialEq)]
+pub struct DirectionalChannelInfo {
+	/// node_id
 	src_node_id: PublicKey,
+	/// last update on channel state sent by node_id
 	last_update: u32,
+	/// channel readiness as assess by node_id
 	enabled: bool,
+	/// CLTV delta added by node_id for an outgoing HTLC
 	cltv_expiry_delta: u16,
+	/// Minimum outgoing HLTC value
 	htlc_minimum_msat: u64,
+	/// Minimum fee payed on outgoing HTLC
 	fee_base_msat: u32,
+	/// Proportional fee payed on outgoing HTLC
 	fee_proportional_millionths: u32,
 	last_update_message: Option<msgs::ChannelUpdate>,
 }
@@ -121,12 +129,17 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 	last_update_message
 });
 
-#[derive(PartialEq)]
-struct ChannelInfo {
-	short_channel_id: u64,
-	features: ChannelFeatures,
-	one_to_two: DirectionalChannelInfo,
-	two_to_one: DirectionalChannelInfo,
+/// Details of a channel, as stored in NetworkMap and returned by Router::list_edges
+#[derive(Clone, PartialEq)]
+pub struct ChannelInfo {
+	/// The short_channel_id of this channel
+	pub short_channel_id: u64,
+	/// The channel features
+	pub features: ChannelFeatures,
+	/// Alice to Bob channel routing parameters
+	pub one_to_two: DirectionalChannelInfo,
+	/// Bob to Alice channel routing parameters
+	pub two_to_one: DirectionalChannelInfo,
 	//this is cached here so we can send out it later if required by route_init_sync
 	//keep an eye on this to see if the extra memory is a problem
 	announcement_message: Option<msgs::ChannelAnnouncement>,
@@ -1059,6 +1072,17 @@ impl Router {
 		}
 
 		Err(LightningError{err: "Failed to find a path to the given destination", action: ErrorAction::IgnoreError})
+	}
+
+	/// Gets the list of announced channels, in random order. See ChannelInfo details field documentation for more information
+	pub fn list_edges(&self) -> Vec<ChannelInfo> {
+		let mut edges = Vec::new();
+		let network = self.network_map.read().unwrap();
+		edges.reserve(network.channels.len());
+		for (_, chan) in network.channels.iter() {
+			edges.push((*chan).clone());
+		}
+		edges
 	}
 }
 
