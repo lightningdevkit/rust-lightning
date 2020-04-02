@@ -1057,7 +1057,8 @@ mod tests {
 	use ln::channelmanager;
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler};
+	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	   UnsignedChannelAnnouncement, ChannelAnnouncement};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -1066,6 +1067,8 @@ mod tests {
 	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin_hashes::Hash;
 	use bitcoin::network::constants::Network;
+	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::util::hash::BitcoinHash;
 
 	use hex;
 
@@ -1863,5 +1866,109 @@ mod tests {
 		assert!(router.should_request_full_sync(&node_id));
 		assert!(router.should_request_full_sync(&node_id));
 		assert!(!router.should_request_full_sync(&node_id));
+	}
+
+	#[test]
+	fn handling_node_announcements() {
+		let (secp_ctx, _, router) = create_router();
+
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
+		let zero_hash = Sha256dHash::hash(&[0; 32]);
+		let first_announcement_time = 500;
+
+		let mut unsigned_announcement = UnsignedNodeAnnouncement {
+			features: NodeFeatures::supported(),
+			timestamp: first_announcement_time,
+			node_id: node_id_1,
+			rgb: [0; 3],
+			alias: [0; 32],
+			addresses: Vec::new(),
+			excess_address_data: Vec::new(),
+			excess_data: Vec::new(),
+		};
+		let mut msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+		let valid_announcement = NodeAnnouncement {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_announcement.clone()
+		};
+
+		match router.handle_node_announcement(&valid_announcement) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!("No existing channels for node_announcement", e.err)
+		};
+
+		{
+			// Announce a channel to add a corresponding node.
+			let unsigned_announcement = UnsignedChannelAnnouncement {
+				features: ChannelFeatures::supported(),
+		 		chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+				short_channel_id: 0,
+				node_id_1,
+				node_id_2,
+				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
+				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+				excess_data: Vec::new(),
+			};
+
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_announcement = ChannelAnnouncement {
+				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
+				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
+				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
+				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+				contents: unsigned_announcement.clone(),
+			};
+			match router.handle_channel_announcement(&valid_announcement) {
+				Ok(res) => assert!(res),
+				_ => panic!()
+			};
+		}
+
+		match router.handle_node_announcement(&valid_announcement) {
+			Ok(res) => assert!(res),
+			Err(_) => panic!()
+		};
+
+		let fake_msghash = hash_to_message!(&zero_hash);
+		match router.handle_node_announcement(
+			&NodeAnnouncement {
+				signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
+				contents: unsigned_announcement.clone()
+		}) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+		};
+
+		unsigned_announcement.timestamp += 1000;
+		unsigned_announcement.excess_data.push(1);
+		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+		let announcement_with_data = NodeAnnouncement {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_announcement.clone()
+		};
+		// Return false because contains excess data.
+		match router.handle_node_announcement(&announcement_with_data) {
+			Ok(res) => assert!(!res),
+			Err(_) => panic!()
+		};
+		unsigned_announcement.excess_data = Vec::new();
+
+		// Even though previous announcement was not relayed further, we still accepted it,
+		// so we now won't accept announcements before the previous one.
+		unsigned_announcement.timestamp -= 10;
+		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+		let outdated_announcement = NodeAnnouncement {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_announcement.clone()
+		};
+		match router.handle_node_announcement(&outdated_announcement) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Update older than last processed update")
+		};
 	}
 }
