@@ -160,9 +160,11 @@ impl_writeable!(ChannelInfo, 0, {
 	announcement_message
 });
 
-#[derive(PartialEq)]
-struct NodeInfo {
-	node_id: PublicKey,
+/// Details of a node, as stored in NetworkMap, and returned by Router::list_vertices
+#[derive(Clone, PartialEq)]
+pub struct NodeInfo {
+	/// The node id
+	pub node_id: PublicKey,
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	channels: Vec<(u64, Sha256dHash)>,
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
@@ -171,14 +173,19 @@ struct NodeInfo {
 	lowest_inbound_channel_fee_base_msat: u32,
 	lowest_inbound_channel_fee_proportional_millionths: u32,
 
-	features: NodeFeatures,
+	/// The node features
+	pub features: NodeFeatures,
 	/// Unlike for channels, we may have a NodeInfo entry before having received a node_update.
 	/// Thus, we have to be able to capture "no update has been received", which we do with an
 	/// Option here.
-	last_update: Option<u32>,
-	rgb: [u8; 3],
-	alias: [u8; 32],
-	addresses: Vec<NetAddress>,
+	/// The last tine a node announcement has been received
+	pub last_update: Option<u32>,
+	/// The custom node color
+	pub rgb: [u8; 3],
+	/// The custom node alias
+	pub alias: [u8; 32],
+	/// The network addresses
+	pub addresses: Vec<NetAddress>,
 	//this is cached here so we can send out it later if required by route_init_sync
 	//keep an eye on this to see if the extra memory is a problem
 	announcement_message: Option<msgs::NodeAnnouncement>,
@@ -1088,6 +1095,17 @@ impl Router {
 			edges.push((*chan).clone());
 		}
 		edges
+	}
+
+	/// Gets the list of announced nodes, in random order. See NodeInfo details field documentation for more information
+	pub fn list_vertices(&self) -> Vec<NodeInfo> {
+		let mut vertices = Vec::new();
+		let network = self.network_map.read().unwrap();
+		vertices.reserve(network.nodes.len());
+		for (_, node) in network.nodes.iter() {
+			vertices.push((*node).clone());
+		}
+		vertices
 	}
 }
 
