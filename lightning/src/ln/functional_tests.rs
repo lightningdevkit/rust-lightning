@@ -2989,6 +2989,76 @@ fn test_commitment_revoked_fail_backward_exhaustive_b() {
 }
 
 #[test]
+fn fail_backward_pending_htlc_upon_channel_failure() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::supported(), InitFeatures::supported());
+
+	// Alice -> Bob: Route a payment but without Bob sending revoke_and_ack.
+	{
+		let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 50_000, TEST_FINAL_CLTV).unwrap();
+		nodes[0].node.send_payment(route, payment_hash).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let payment_event = {
+			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
+		};
+		assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
+		assert_eq!(payment_event.msgs.len(), 1);
+	}
+
+	// Alice -> Bob: Route another payment but now Alice waits for Bob's earlier revoke_and_ack.
+	let (_, failed_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	{
+		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 50_000, TEST_FINAL_CLTV).unwrap();
+		nodes[0].node.send_payment(route, failed_payment_hash).unwrap();
+		check_added_monitors!(nodes[0], 0);
+
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	}
+
+	// Alice <- Bob: Send a malformed update_add_htlc so Alice fails the channel.
+	{
+		let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 50_000, TEST_FINAL_CLTV).unwrap();
+		let (_, payment_hash) = get_payment_preimage_hash!(nodes[1]);
+
+		let secp_ctx = Secp256k1::new();
+		let session_priv = {
+			let mut session_key = [0; 32];
+			let mut rng = thread_rng();
+			rng.fill_bytes(&mut session_key);
+			SecretKey::from_slice(&session_key).expect("RNG is bad!")
+		};
+
+		let current_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route, current_height).unwrap();
+		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route, &session_priv).unwrap();
+		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+
+		// Send a 0-msat update_add_htlc to fail the channel.
+		let update_add_htlc = msgs::UpdateAddHTLC {
+			channel_id: chan.2,
+			htlc_id: 0,
+			amount_msat: 0,
+			payment_hash,
+			cltv_expiry,
+			onion_routing_packet,
+		};
+		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_htlc);
+	}
+
+	// Check that Alice fails backward the pending HTLC from the second payment.
+	expect_payment_failed!(nodes[0], failed_payment_hash, true);
+	check_closed_broadcast!(nodes[0], true);
+	check_added_monitors!(nodes[0], 1);
+}
+
+#[test]
 fn test_htlc_ignore_latest_remote_commitment() {
 	// Test that HTLC transactions spending the latest remote commitment transaction are simply
 	// ignored if we cannot claim them. This originally tickled an invalid unwrap().
