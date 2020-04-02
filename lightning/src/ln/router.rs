@@ -123,6 +123,7 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 
 #[derive(PartialEq)]
 struct ChannelInfo {
+	short_channel_id: u64,
 	features: ChannelFeatures,
 	one_to_two: DirectionalChannelInfo,
 	two_to_one: DirectionalChannelInfo,
@@ -133,12 +134,13 @@ struct ChannelInfo {
 
 impl std::fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "features: {}, one_to_two: {}, two_to_one: {}", log_bytes!(self.features.encode()), self.one_to_two, self.two_to_one)?;
+		write!(f, "short_channel_id: {}, features: {}, one_to_two: {}, two_to_one: {}", self.short_channel_id, log_bytes!(self.features.encode()), self.one_to_two, self.two_to_one)?;
 		Ok(())
 	}
 }
 
 impl_writeable!(ChannelInfo, 0, {
+	short_channel_id,
 	features,
 	one_to_two,
 	two_to_one,
@@ -485,6 +487,7 @@ impl RoutingMessageHandler for Router {
 		let should_relay = msg.contents.excess_data.is_empty();
 
 		let chan_info = ChannelInfo {
+				short_channel_id: msg.contents.short_channel_id,
 				features: msg.contents.features.clone(),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: msg.contents.node_id_1.clone(),
@@ -1196,6 +1199,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(1, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(1, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(1)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
@@ -1230,6 +1234,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(2, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(2, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(2)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
@@ -1264,6 +1269,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(12, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(12)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
@@ -1304,6 +1310,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(3, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(3, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(3)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node1.clone(),
@@ -1327,6 +1334,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(4, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(4, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(4)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node2.clone(),
@@ -1350,6 +1358,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(13, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(13)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node8.clone(),
@@ -1384,6 +1393,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(5, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(5, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(5)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
@@ -1418,6 +1428,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(6, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(6, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(6)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
@@ -1441,6 +1452,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(11, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(11, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(11)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node5.clone(),
@@ -1475,6 +1487,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.channels.insert(NetworkMap::get_key(7, zero_hash.clone()), ChannelInfo {
+				short_channel_id: NetworkMap::get_key(7, zero_hash.clone()),
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(7)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
