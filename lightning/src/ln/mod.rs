@@ -19,9 +19,9 @@ pub mod features;
 pub(crate) mod onchaintx;
 
 #[cfg(feature = "fuzztarget")]
-pub mod peer_channel_encryptor;
+pub mod transport_encryptor;
 #[cfg(not(feature = "fuzztarget"))]
-pub(crate) mod peer_channel_encryptor;
+pub(crate) mod transport_encryptor;
 
 mod channel;
 mod onion_utils;

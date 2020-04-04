@@ -13,7 +13,7 @@ use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use util::ser::VecWriter;
-use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
+use ln::transport_encryptor::{TransportEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
 use util::byte_utils;
@@ -108,7 +108,7 @@ enum InitSyncTracker{
 }
 
 struct Peer {
-	channel_encryptor: PeerChannelEncryptor,
+	channel_encryptor: TransportEncryptor,
 	outbound: bool,
 	their_node_id: Option<PublicKey>,
 	their_features: Option<InitFeatures>,
@@ -273,7 +273,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet had a
 	/// socket_disconnected().
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
-		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
+		let mut peer_encryptor = TransportEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
 		let res = peer_encryptor.get_act_one().to_vec();
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act two is 50 bytes
 
@@ -311,7 +311,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet had
 	/// socket_disconnected called.
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
-		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret);
+		let peer_encryptor = TransportEncryptor::new_inbound(&self.our_node_secret);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
 
 		let mut peers = self.peers.lock().unwrap();

@@ -62,15 +62,15 @@ enum NoiseState {
 	}
 }
 
-pub struct PeerChannelEncryptor {
+pub struct TransportEncryptor {
 	secp_ctx: Secp256k1<secp256k1::SignOnly>,
 	their_node_id: Option<PublicKey>, // filled in for outbound, or inbound after noise_state is Finished
 
 	noise_state: NoiseState,
 }
 
-impl PeerChannelEncryptor {
-	pub fn new_outbound(their_node_id: PublicKey, ephemeral_key: SecretKey) -> PeerChannelEncryptor {
+impl TransportEncryptor {
+	pub fn new_outbound(their_node_id: PublicKey, ephemeral_key: SecretKey) -> TransportEncryptor {
 		let secp_ctx = Secp256k1::signing_only();
 
 		let mut sha = Sha256::engine();
@@ -78,7 +78,7 @@ impl PeerChannelEncryptor {
 		sha.input(&their_node_id.serialize()[..]);
 		let h = Sha256::from_engine(sha).into_inner();
 
-		PeerChannelEncryptor {
+		TransportEncryptor {
 			their_node_id: Some(their_node_id),
 			secp_ctx: secp_ctx,
 			noise_state: NoiseState::InProgress {
@@ -94,7 +94,7 @@ impl PeerChannelEncryptor {
 		}
 	}
 
-	pub fn new_inbound(our_node_secret: &SecretKey) -> PeerChannelEncryptor {
+	pub fn new_inbound(our_node_secret: &SecretKey) -> TransportEncryptor {
 		let secp_ctx = Secp256k1::signing_only();
 
 		let mut sha = Sha256::engine();
@@ -103,7 +103,7 @@ impl PeerChannelEncryptor {
 		sha.input(&our_node_id.serialize()[..]);
 		let h = Sha256::from_engine(sha).into_inner();
 
-		PeerChannelEncryptor {
+		TransportEncryptor {
 			their_node_id: None,
 			secp_ctx: secp_ctx,
 			noise_state: NoiseState::InProgress {
@@ -174,11 +174,11 @@ impl PeerChannelEncryptor {
 		state.h = Sha256::from_engine(sha).into_inner();
 
 		let ss = SharedSecret::new(&their_key, &our_key);
-		let temp_k = PeerChannelEncryptor::hkdf(state, ss);
+		let temp_k = TransportEncryptor::hkdf(state, ss);
 
 		let mut res = [0; 50];
 		res[1..34].copy_from_slice(&our_pub.serialize()[..]);
-		PeerChannelEncryptor::encrypt_with_ad(&mut res[34..], 0, &temp_k, &state.h, &[0; 0]);
+		TransportEncryptor::encrypt_with_ad(&mut res[34..], 0, &temp_k, &state.h, &[0; 0]);
 
 		let mut sha = Sha256::engine();
 		sha.input(&state.h);
@@ -207,10 +207,10 @@ impl PeerChannelEncryptor {
 		state.h = Sha256::from_engine(sha).into_inner();
 
 		let ss = SharedSecret::new(&their_pub, &our_key);
-		let temp_k = PeerChannelEncryptor::hkdf(state, ss);
+		let temp_k = TransportEncryptor::hkdf(state, ss);
 
 		let mut dec = [0; 0];
-		PeerChannelEncryptor::decrypt_with_ad(&mut dec, 0, &temp_k, &state.h, &act[34..])?;
+		TransportEncryptor::decrypt_with_ad(&mut dec, 0, &temp_k, &state.h, &act[34..])?;
 
 		let mut sha = Sha256::engine();
 		sha.input(&state.h);
@@ -229,7 +229,7 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 
-						let (res, _) = PeerChannelEncryptor::outbound_noise_act(&self.secp_ctx, bidirectional_state, &ie, &self.their_node_id.unwrap());
+						let (res, _) = TransportEncryptor::outbound_noise_act(&self.secp_ctx, bidirectional_state, &ie, &self.their_node_id.unwrap());
 						*state = NoiseStep::PostActOne;
 						res
 					},
@@ -250,12 +250,12 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 
-						let (their_pub, _) = PeerChannelEncryptor::inbound_noise_act(bidirectional_state, act_one, &our_node_secret)?;
+						let (their_pub, _) = TransportEncryptor::inbound_noise_act(bidirectional_state, act_one, &our_node_secret)?;
 						ie.get_or_insert(their_pub);
 
 						re.get_or_insert(our_ephemeral);
 
-						let (res, temp_k) = PeerChannelEncryptor::outbound_noise_act(&self.secp_ctx, bidirectional_state, &re.unwrap(), &ie.unwrap());
+						let (res, temp_k) = TransportEncryptor::outbound_noise_act(&self.secp_ctx, bidirectional_state, &re.unwrap(), &ie.unwrap());
 						*temp_k2 = Some(temp_k);
 						*state = NoiseStep::PostActTwo;
 						Ok(res)
@@ -279,12 +279,12 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 
-						let (re, temp_k2) = PeerChannelEncryptor::inbound_noise_act(bidirectional_state, act_two, &ie)?;
+						let (re, temp_k2) = TransportEncryptor::inbound_noise_act(bidirectional_state, act_two, &ie)?;
 
 						let mut res = [0; 66];
 						let our_node_id = PublicKey::from_secret_key(&self.secp_ctx, &our_node_secret);
 
-						PeerChannelEncryptor::encrypt_with_ad(&mut res[1..50], 1, &temp_k2, &bidirectional_state.h, &our_node_id.serialize()[..]);
+						TransportEncryptor::encrypt_with_ad(&mut res[1..50], 1, &temp_k2, &bidirectional_state.h, &our_node_id.serialize()[..]);
 
 						let mut sha = Sha256::engine();
 						sha.input(&bidirectional_state.h);
@@ -292,9 +292,9 @@ impl PeerChannelEncryptor {
 						bidirectional_state.h = Sha256::from_engine(sha).into_inner();
 
 						let ss = SharedSecret::new(&re, our_node_secret);
-						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
+						let temp_k = TransportEncryptor::hkdf(bidirectional_state, ss);
 
-						PeerChannelEncryptor::encrypt_with_ad(&mut res[50..], 0, &temp_k, &bidirectional_state.h, &[0; 0]);
+						TransportEncryptor::encrypt_with_ad(&mut res[50..], 0, &temp_k, &bidirectional_state.h, &[0; 0]);
 						final_hkdf = Self::hkdf_extract_expand(&bidirectional_state.ck, &[0; 0]);
 						ck = bidirectional_state.ck.clone();
 						res
@@ -334,7 +334,7 @@ impl PeerChannelEncryptor {
 						}
 
 						let mut their_node_id = [0; 33];
-						PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
+						TransportEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
 						self.their_node_id = Some(match PublicKey::from_slice(&their_node_id) {
 							Ok(key) => key,
 							Err(_) => return Err(LightningError{err: "Bad node_id from peer", action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
@@ -346,9 +346,9 @@ impl PeerChannelEncryptor {
 						bidirectional_state.h = Sha256::from_engine(sha).into_inner();
 
 						let ss = SharedSecret::new(&self.their_node_id.unwrap(), &re.unwrap());
-						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
+						let temp_k = TransportEncryptor::hkdf(bidirectional_state, ss);
 
-						PeerChannelEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..])?;
+						TransportEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..])?;
 						final_hkdf = Self::hkdf_extract_expand(&bidirectional_state.ck, &[0; 0]);
 						ck = bidirectional_state.ck.clone();
 					},
@@ -471,12 +471,12 @@ mod tests {
 
 	use hex;
 
-	use ln::peer_channel_encryptor::{PeerChannelEncryptor,NoiseState};
+	use ln::transport_encryptor::{TransportEncryptor,NoiseState};
 
-	fn get_outbound_peer_for_initiator_test_vectors() -> PeerChannelEncryptor {
+	fn get_outbound_peer_for_initiator_test_vectors() -> TransportEncryptor {
 		let their_node_id = PublicKey::from_slice(&hex::decode("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();
 
-		let mut outbound_peer = PeerChannelEncryptor::new_outbound(their_node_id, SecretKey::from_slice(&hex::decode("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap());
+		let mut outbound_peer = TransportEncryptor::new_outbound(their_node_id, SecretKey::from_slice(&hex::decode("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap());
 		assert_eq!(outbound_peer.get_act_one()[..], hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap()[..]);
 		outbound_peer
 	}
@@ -540,7 +540,7 @@ mod tests {
 
 		{
 			// transport-responder successful handshake
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
@@ -568,28 +568,28 @@ mod tests {
 		}
 		{
 			// transport-responder act1 bad version test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("01036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act1 bad key serialization test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one =hex::decode("00046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act1 bad MAC test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6b").unwrap().to_vec();
 			assert!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).is_err());
 		}
 		{
 			// transport-responder act3 bad version test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
@@ -603,7 +603,7 @@ mod tests {
 		}
 		{
 			// transport-responder act3 bad MAC for ciphertext test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
@@ -613,7 +613,7 @@ mod tests {
 		}
 		{
 			// transport-responder act3 bad rs test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
@@ -623,7 +623,7 @@ mod tests {
 		}
 		{
 			// transport-responder act3 bad MAC test
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			let mut inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
@@ -666,7 +666,7 @@ mod tests {
 			let our_node_id = SecretKey::from_slice(&hex::decode("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
 			let our_ephemeral = SecretKey::from_slice(&hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
 
-			inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+			inbound_peer = TransportEncryptor::new_inbound(&our_node_id);
 
 			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
 			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
