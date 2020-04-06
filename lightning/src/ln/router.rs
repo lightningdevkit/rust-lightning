@@ -2516,4 +2516,122 @@ mod tests {
 		let channels_with_announcements = router.get_next_channel_announcements(channel_key + 1000, 1);
 		assert_eq!(channels_with_announcements.len(), 0);
 	}
+
+	#[test]
+	fn getting_next_node_announcements() {
+		let (secp_ctx, _, router) = create_router();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
+
+		let short_channel_id = 1;
+		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+
+		// No nodes yet.
+		let next_announcements = router.get_next_node_announcements(None, 10);
+		assert_eq!(next_announcements.len(), 0);
+
+		{
+			// Announce a channel to add 2 nodes
+			let unsigned_announcement = UnsignedChannelAnnouncement {
+				features: ChannelFeatures::empty(),
+				chain_hash,
+				short_channel_id,
+				node_id_1,
+				node_id_2,
+				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
+				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+				excess_data: Vec::new(),
+			};
+
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_channel_announcement = ChannelAnnouncement {
+				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
+				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
+				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
+				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+				contents: unsigned_announcement.clone(),
+			};
+			match router.handle_channel_announcement(&valid_channel_announcement) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+		}
+
+
+		// Nodes were never announced
+		let next_announcements = router.get_next_node_announcements(None, 3);
+		assert_eq!(next_announcements.len(), 0);
+
+		{
+			let mut unsigned_announcement = UnsignedNodeAnnouncement {
+				features: NodeFeatures::supported(),
+				timestamp: 1000,
+				node_id: node_id_1,
+				rgb: [0; 3],
+				alias: [0; 32],
+				addresses: Vec::new(),
+				excess_address_data: Vec::new(),
+				excess_data: Vec::new(),
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_announcement = NodeAnnouncement {
+				signature: secp_ctx.sign(&msghash, node_1_privkey),
+				contents: unsigned_announcement.clone()
+			};
+			match router.handle_node_announcement(&valid_announcement) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+
+			unsigned_announcement.node_id = node_id_2;
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_announcement = NodeAnnouncement {
+				signature: secp_ctx.sign(&msghash, node_2_privkey),
+				contents: unsigned_announcement.clone()
+			};
+
+			match router.handle_node_announcement(&valid_announcement) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+		}
+
+		let next_announcements = router.get_next_node_announcements(None, 3);
+		assert_eq!(next_announcements.len(), 2);
+
+		// Skip the first node.
+		let next_announcements = router.get_next_node_announcements(Some(&node_id_1), 2);
+		assert_eq!(next_announcements.len(), 1);
+
+		{
+			// Later announcement which should not be relayed (excess data) prevent us from sharing a node
+			let unsigned_announcement = UnsignedNodeAnnouncement {
+				features: NodeFeatures::supported(),
+				timestamp: 1010,
+				node_id: node_id_2,
+				rgb: [0; 3],
+				alias: [0; 32],
+				addresses: Vec::new(),
+				excess_address_data: Vec::new(),
+				excess_data: [1; 3].to_vec(),
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_announcement = NodeAnnouncement {
+				signature: secp_ctx.sign(&msghash, node_2_privkey),
+				contents: unsigned_announcement.clone()
+			};
+			match router.handle_node_announcement(&valid_announcement) {
+				Ok(res) => assert!(!res),
+				Err(_) => panic!()
+			};
+		}
+
+		let next_announcements = router.get_next_node_announcements(Some(&node_id_1), 2);
+		assert_eq!(next_announcements.len(), 0);
+
+	}
 }
