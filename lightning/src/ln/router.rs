@@ -1056,7 +1056,7 @@ mod tests {
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-	   UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate};
+	   UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -2295,4 +2295,94 @@ mod tests {
 		};
 
 	}
+
+	#[test]
+	fn handling_htlc_fail_channel_update() {
+		let (secp_ctx, our_id, router) = create_router();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
+
+		let short_channel_id = 0;
+		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
+
+		{
+			// There is only local node in the table at the beginning.
+			let network = router.network_map.read().unwrap();
+			assert_eq!(network.nodes.len(), 1);
+			assert_eq!(network.nodes.contains_key(&our_id), true);
+		}
+
+		{
+			// Announce a channel we will update
+			let unsigned_announcement = UnsignedChannelAnnouncement {
+				features: ChannelFeatures::empty(),
+				chain_hash,
+				short_channel_id,
+				node_id_1,
+				node_id_2,
+				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
+				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+				excess_data: Vec::new(),
+			};
+
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_channel_announcement = ChannelAnnouncement {
+				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
+				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
+				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
+				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+				contents: unsigned_announcement.clone(),
+			};
+			match router.handle_channel_announcement(&valid_channel_announcement) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+
+		}
+
+		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
+			short_channel_id,
+			is_permanent: false
+		};
+
+		router.handle_htlc_fail_channel_update(&channel_close_msg);
+
+		{
+			// Non-permanent closing just disables a channel
+			let network = router.network_map.write().unwrap();
+			match network.channels.get(&channel_key) {
+				None => panic!(),
+				Some(channel_info) => {
+					assert!(!channel_info.one_to_two.enabled);
+					assert!(!channel_info.two_to_one.enabled);
+				}
+			}
+		}
+
+		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
+			short_channel_id,
+			is_permanent: true
+		};
+
+		router.handle_htlc_fail_channel_update(&channel_close_msg);
+
+		{
+			// Permanent closing deletes a channel
+			let network = router.network_map.read().unwrap();
+			assert_eq!(network.channels.len(), 0);
+			// Nodes are also deleted because there are no associated channels anymore
+			// Only the local node remains in the table.
+			assert_eq!(network.nodes.len(), 1);
+			assert_eq!(network.nodes.contains_key(&our_id), true);
+		}
+
+		// TODO: Test HTLCFailChannelUpdate::NodeFailure, which is not implemented yet.
+	}
+
+
 }
