@@ -2384,5 +2384,136 @@ mod tests {
 		// TODO: Test HTLCFailChannelUpdate::NodeFailure, which is not implemented yet.
 	}
 
+	#[test]
+	fn getting_next_channel_announcements() {
+		let (secp_ctx, _, router) = create_router();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
+		let short_channel_id = 1;
+		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
+
+		// Channels were not announced yet.
+		let channels_with_announcements = router.get_next_channel_announcements(0, 1);
+		assert_eq!(channels_with_announcements.len(), 0);
+
+		{
+			// Announce a channel we will update
+			let unsigned_announcement = UnsignedChannelAnnouncement {
+				features: ChannelFeatures::empty(),
+				chain_hash,
+				short_channel_id,
+				node_id_1,
+				node_id_2,
+				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
+				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+				excess_data: Vec::new(),
+			};
+
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_channel_announcement = ChannelAnnouncement {
+				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
+				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
+				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
+				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+				contents: unsigned_announcement.clone(),
+			};
+			match router.handle_channel_announcement(&valid_channel_announcement) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+		}
+
+		// Contains initial channel announcement now.
+		let channels_with_announcements = router.get_next_channel_announcements(channel_key, 1);
+		assert_eq!(channels_with_announcements.len(), 1);
+		if let Some(channel_announcements) = channels_with_announcements.first() {
+			let &(_, ref update_1, ref update_2) = channel_announcements;
+			assert_eq!(update_1, &None);
+			assert_eq!(update_2, &None);
+		} else {
+			panic!();
+		}
+
+
+		{
+			// Valid channel update
+			let unsigned_channel_update = UnsignedChannelUpdate {
+				chain_hash,
+				short_channel_id,
+				timestamp: 101,
+				flags: 0,
+				cltv_expiry_delta: 144,
+				htlc_minimum_msat: 1000000,
+				fee_base_msat: 10000,
+				fee_proportional_millionths: 20,
+				excess_data: Vec::new()
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+			let valid_channel_update = ChannelUpdate {
+				signature: secp_ctx.sign(&msghash, node_1_privkey),
+				contents: unsigned_channel_update.clone()
+			};
+			match router.handle_channel_update(&valid_channel_update) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+		}
+
+		// Now contains an initial announcement and an update.
+		let channels_with_announcements = router.get_next_channel_announcements(channel_key, 1);
+		assert_eq!(channels_with_announcements.len(), 1);
+		if let Some(channel_announcements) = channels_with_announcements.first() {
+			let &(_, ref update_1, ref update_2) = channel_announcements;
+			assert_ne!(update_1, &None);
+			assert_eq!(update_2, &None);
+		} else {
+			panic!();
+		}
+
+
+		{
+			// Channel update with excess data.
+			let unsigned_channel_update = UnsignedChannelUpdate {
+				chain_hash,
+				short_channel_id,
+				timestamp: 102,
+				flags: 0,
+				cltv_expiry_delta: 144,
+				htlc_minimum_msat: 1000000,
+				fee_base_msat: 10000,
+				fee_proportional_millionths: 20,
+				excess_data: [1; 3].to_vec()
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+			let valid_channel_update = ChannelUpdate {
+				signature: secp_ctx.sign(&msghash, node_1_privkey),
+				contents: unsigned_channel_update.clone()
+			};
+			match router.handle_channel_update(&valid_channel_update) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+		}
+
+		// Test that announcements with excess data won't be returned
+		let channels_with_announcements = router.get_next_channel_announcements(channel_key, 1);
+		assert_eq!(channels_with_announcements.len(), 1);
+		if let Some(channel_announcements) = channels_with_announcements.first() {
+			let &(_, ref update_1, ref update_2) = channel_announcements;
+			assert_eq!(update_1, &None);
+			assert_eq!(update_2, &None);
+		} else {
+			panic!();
+		}
+
+		// Further starting point have no channels after it
+		let channels_with_announcements = router.get_next_channel_announcements(channel_key + 1000, 1);
+		assert_eq!(channels_with_announcements.len(), 0);
+	}
 }
