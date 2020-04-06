@@ -1056,7 +1056,7 @@ mod tests {
 	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-	   UnsignedChannelAnnouncement, ChannelAnnouncement};
+	   UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
 	use util::logger::Logger;
@@ -2162,5 +2162,137 @@ mod tests {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself")
 		};
+	}
+
+	#[test]
+	fn handling_channel_update() {
+		let (secp_ctx, _, router) = create_router();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
+
+		let zero_hash = Sha256dHash::hash(&[0; 32]);
+		let short_channel_id = 0;
+		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
+
+
+		{
+			// Announce a channel we will update
+			let unsigned_announcement = UnsignedChannelAnnouncement {
+				features: ChannelFeatures::empty(),
+				chain_hash,
+				short_channel_id,
+				node_id_1,
+				node_id_2,
+				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
+				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+				excess_data: Vec::new(),
+			};
+
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+			let valid_channel_announcement = ChannelAnnouncement {
+				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
+				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
+				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
+				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+				contents: unsigned_announcement.clone(),
+			};
+			match router.handle_channel_announcement(&valid_channel_announcement) {
+				Ok(_) => (),
+				Err(_) => panic!()
+			};
+
+		}
+
+		let mut unsigned_channel_update = UnsignedChannelUpdate {
+			chain_hash,
+			short_channel_id,
+			timestamp: 100,
+			flags: 0,
+			cltv_expiry_delta: 144,
+			htlc_minimum_msat: 1000000,
+			fee_base_msat: 10000,
+			fee_proportional_millionths: 20,
+			excess_data: Vec::new()
+		};
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match router.handle_channel_update(&valid_channel_update) {
+			Ok(res) => assert!(res),
+			_ => panic!()
+		};
+
+		{
+			let network = router.network_map.write().unwrap();
+			match network.channels.get(&channel_key) {
+				None => panic!(),
+				Some(channel_info) => {
+					assert_eq!(channel_info.one_to_two.cltv_expiry_delta, 144);
+					assert_eq!(channel_info.two_to_one.cltv_expiry_delta, u16::max_value());
+				}
+			}
+		}
+
+		unsigned_channel_update.timestamp += 100;
+		unsigned_channel_update.excess_data.push(1);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+		// Return false because contains excess data
+		match router.handle_channel_update(&valid_channel_update) {
+			Ok(res) => assert!(!res),
+			_ => panic!()
+		};
+
+		unsigned_channel_update.short_channel_id += 1;
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match router.handle_channel_update(&valid_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Couldn't find channel for update")
+		};
+		unsigned_channel_update.short_channel_id = short_channel_id;
+
+
+		// Even though previous update was not relayed further, we still accepted it,
+		// so we now won't accept update before the previous one.
+		unsigned_channel_update.timestamp -= 10;
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match router.handle_channel_update(&valid_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Update older than last processed update")
+		};
+		unsigned_channel_update.timestamp += 500;
+
+		let fake_msghash = hash_to_message!(&zero_hash);
+		let invalid_sig_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match router.handle_channel_update(&invalid_sig_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+		};
+
 	}
 }
