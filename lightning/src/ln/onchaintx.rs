@@ -537,18 +537,15 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						return None;
 					},
 					&InputMaterial::Funding { ref channel_value } => {
-						if let Some(ref mut local_commitment) = self.local_commitment {
-							self.key_storage.sign_local_commitment(local_commitment, &self.funding_redeemscript, *channel_value, &self.secp_ctx);
-							let signed_tx = local_commitment.with_valid_witness().clone();
-							let mut amt_outputs = 0;
-							for outp in signed_tx.output.iter() {
-								amt_outputs += outp.value;
-							}
-							let feerate = (channel_value - amt_outputs) * 1000 / signed_tx.get_weight() as u64;
-							// Timer set to $NEVER given we can't bump tx without anchor outputs
-							log_trace!(self, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
-							return Some((None, feerate, signed_tx));
+						let signed_tx = self.get_fully_signed_local_tx(*channel_value).unwrap();
+						let mut amt_outputs = 0;
+						for outp in signed_tx.output.iter() {
+							amt_outputs += outp.value;
 						}
+						let feerate = (channel_value - amt_outputs) * 1000 / signed_tx.get_weight() as u64;
+						// Timer set to $NEVER given we can't bump tx without anchor outputs
+						log_trace!(self, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
+						return Some((None, feerate, signed_tx));
 					}
 					_ => unreachable!()
 				}
@@ -793,6 +790,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		Ok(())
 	}
 
+	//TODO: getting lastest local transactions should be infaillible and result in us "force-closing the channel", but we may
+	// have empty local commitment transaction if a ChannelMonitor is asked to force-close just after Channel::get_outbound_funding_created,
+	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
+	// to monitor before.
 	pub(super) fn get_fully_signed_local_tx(&mut self, channel_value_satoshis: u64) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			self.key_storage.sign_local_commitment(local_commitment, &self.funding_redeemscript, channel_value_satoshis, &self.secp_ctx);
