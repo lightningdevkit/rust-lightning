@@ -794,6 +794,9 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	#[cfg(not(test))]
 	onchain_tx_handler: OnchainTxHandler<ChanSigner>,
 
+	// Used to detect programming bug due to unsafe monitor update sequence { ChannelForceClosed, LatestLocalCommitmentTXInfo }
+	lockdown_from_offchain: bool,
+
 	// We simply modify last_block_hash in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
@@ -1053,6 +1056,8 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		}
 		self.onchain_tx_handler.write(writer)?;
 
+		self.lockdown_from_offchain.write(writer)?;
+
 		Ok(())
 	}
 
@@ -1135,6 +1140,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			outputs_to_watch: HashMap::new(),
 
 			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, funding_redeemscript, their_to_self_delay, logger.clone()),
+
+			lockdown_from_offchain: false,
 
 			last_block_hash: Default::default(),
 			secp_ctx: Secp256k1::new(),
@@ -1305,8 +1312,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub(super) fn update_monitor_ooo(&mut self, mut updates: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
 		for update in updates.updates.drain(..) {
 			match update {
-				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } =>
-					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?,
+				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } => {
+					if self.lockdown_from_offchain { panic!(); }
+					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?
+				},
 				ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
 					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point),
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
@@ -1334,8 +1343,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 		for update in updates.updates.drain(..) {
 			match update {
-				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } =>
-					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?,
+				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, local_keys, feerate_per_kw, htlc_outputs } => {
+					if self.lockdown_from_offchain { panic!(); }
+					self.provide_latest_local_commitment_tx_info(commitment_tx, local_keys, feerate_per_kw, htlc_outputs)?
+				},
 				ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
 					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point),
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
@@ -1345,6 +1356,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
 					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
+					self.lockdown_from_offchain = true;
 					if should_broadcast {
 						self.broadcast_latest_local_commitment_txn(broadcaster);
 					} else {
@@ -2485,6 +2497,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		}
 		let onchain_tx_handler = ReadableArgs::read(reader, logger.clone())?;
 
+		let lockdown_from_offchain = Readable::read(reader)?;
+
 		Ok((last_block_hash.clone(), ChannelMonitor {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
@@ -2522,6 +2536,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			outputs_to_watch,
 
 			onchain_tx_handler,
+
+			lockdown_from_offchain,
 
 			last_block_hash,
 			secp_ctx: Secp256k1::new(),
