@@ -408,7 +408,7 @@ pub fn do_test(data: &[u8]) {
 			($source: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(Route {
+				if let Err(_) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
@@ -425,7 +425,7 @@ pub fn do_test(data: &[u8]) {
 			($source: expr, $middle: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(Route {
+				if let Err(_) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
@@ -453,7 +453,7 @@ pub fn do_test(data: &[u8]) {
 				payment_id = payment_id.wrapping_add(1);
 				let payment_secret = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(Route {
+				if let Err(_) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),

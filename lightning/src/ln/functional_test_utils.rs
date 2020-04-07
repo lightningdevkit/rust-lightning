@@ -777,7 +777,7 @@ macro_rules! expect_payment_failed {
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>) {
-	origin_node.node.send_payment(route, our_payment_hash, &our_payment_secret).unwrap();
+	origin_node.node.send_payment(&route, our_payment_hash, &our_payment_secret).unwrap();
 	check_added_monitors!(origin_node, expected_paths.len());
 
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
@@ -953,7 +953,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	}
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(origin_node);
-	unwrap_send_err!(origin_node.node.send_payment(route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
 		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 }
 

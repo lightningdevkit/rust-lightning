@@ -1261,7 +1261,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	/// If a payment_secret *is* provided, we assume that the invoice had the payment_secret feature
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
-	pub fn send_payment(&self, route: Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), PaymentSendFailure> {
+	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), PaymentSendFailure> {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}

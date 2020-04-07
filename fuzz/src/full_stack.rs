@@ -401,7 +401,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				sha.input(&payment_hash.0[..]);
 				payment_hash.0 = Sha256::from_engine(sha).into_inner();
 				payments_sent += 1;
-				match channelmanager.send_payment(route, payment_hash, &None) {
+				match channelmanager.send_payment(&route, payment_hash, &None) {
 					Ok(_) => {},
 					Err(_) => return,
 				}
