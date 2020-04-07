@@ -15,7 +15,8 @@ use secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use ln::chan_utils::{HTLCType, LocalCommitmentTransaction};
+use ln::chan_utils;
+use ln::chan_utils::{HTLCType, LocalCommitmentTransaction, TxCreationKeys};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -45,6 +46,14 @@ enum OnchainEvent {
 		outpoint: BitcoinOutPoint,
 		input_material: InputMaterial,
 	}
+}
+
+/// Cache public keys and feerate used to compute any HTLC transaction.
+/// We only keep state for latest 2 commitment transactions as we should
+/// never have to generate HTLC txn for revoked local commitment
+struct HTLCTxCache {
+	local_keys: TxCreationKeys,
+	feerate_per_kw: u64,
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -144,6 +153,8 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	funding_redeemscript: Script,
 	local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
+	current_htlc_cache: Option<HTLCTxCache>,
+	prev_htlc_cache: Option<HTLCTxCache>,
 
 	key_storage: ChanSigner,
 
@@ -186,6 +197,27 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.funding_redeemscript.write(writer)?;
 		self.local_commitment.write(writer)?;
 		self.prev_local_commitment.write(writer)?;
+
+		macro_rules! serialize_htlc_cache {
+			($cache: expr) => {
+				$cache.local_keys.write(writer)?;
+				$cache.feerate_per_kw.write(writer)?;
+			}
+		}
+
+		if let Some(ref current) = self.current_htlc_cache {
+			writer.write_all(&[1; 1])?;
+			serialize_htlc_cache!(current);
+		} else {
+			writer.write_all(&[0; 1])?;
+		}
+
+		if let Some(ref prev) = self.prev_htlc_cache {
+			writer.write_all(&[1; 1])?;
+			serialize_htlc_cache!(prev);
+		} else {
+			writer.write_all(&[0; 1])?;
+		}
 
 		self.key_storage.write(writer)?;
 
@@ -230,6 +262,35 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 		let funding_redeemscript = Readable::read(reader)?;
 		let local_commitment = Readable::read(reader)?;
 		let prev_local_commitment = Readable::read(reader)?;
+
+		macro_rules! read_htlc_cache {
+			() => {
+				{
+					let local_keys = Readable::read(reader)?;
+					let feerate_per_kw = Readable::read(reader)?;
+					HTLCTxCache {
+						local_keys,
+						feerate_per_kw,
+					}
+				}
+			}
+		}
+
+		let current_htlc_cache = match <u8 as Readable>::read(reader)? {
+			0 => None,
+			1 => {
+				Some(read_htlc_cache!())
+			}
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let prev_htlc_cache = match <u8 as Readable>::read(reader)? {
+			0 => None,
+			1 => {
+				Some(read_htlc_cache!())
+			}
+			_ => return Err(DecodeError::InvalidValue),
+		};
 
 		let key_storage = Readable::read(reader)?;
 
@@ -281,6 +342,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 			funding_redeemscript,
 			local_commitment,
 			prev_local_commitment,
+			current_htlc_cache,
+			prev_htlc_cache,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -301,6 +364,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			funding_redeemscript,
 			local_commitment: None,
 			prev_local_commitment: None,
+			current_htlc_cache: None,
+			prev_htlc_cache: None,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
@@ -756,7 +821,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction) -> Result<(), ()> {
+	pub(super) fn provide_latest_local_tx(&mut self, tx: LocalCommitmentTransaction, local_keys: chan_utils::TxCreationKeys, feerate_per_kw: u64) -> Result<(), ()> {
 		// To prevent any unsafe state discrepancy between offchain and onchain, once local
 		// commitment transaction has been signed due to an event (either block height for
 		// HTLC-timeout or channel force-closure), don't allow any further update of local
@@ -767,6 +832,11 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 		self.prev_local_commitment = self.local_commitment.take();
 		self.local_commitment = Some(tx);
+		self.prev_htlc_cache = self.current_htlc_cache.take();
+		self.current_htlc_cache = Some(HTLCTxCache {
+			local_keys,
+			feerate_per_kw,
+		});
 		Ok(())
 	}
 
