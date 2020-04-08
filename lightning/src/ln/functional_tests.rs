@@ -5927,6 +5927,31 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.delayed_payment_basepoint.serialize()).is_ok());
 }
 
+#[test]
+fn bolt2_open_channel_sane_dust_limit() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel_value_satoshis=1000000;
+	let push_msat=10001;
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).unwrap();
+	let mut node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	node0_to_1_send_open_channel.dust_limit_satoshis = 661;
+	node0_to_1_send_open_channel.channel_reserve_satoshis = 100001;
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &node0_to_1_send_open_channel);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	let err_msg = match events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	assert_eq!(err_msg.data, "dust_limit_satoshis (661) is greater than the implementation limit (660)");
+}
+
 // Test that if we fail to send an HTLC that is being freed from the holding cell, and the HTLC
 // originated from our node, its failure is surfaced to the user. We trigger this failure to
 // free the HTLC by increasing our fee while the HTLC is in the holding cell such that the HTLC
