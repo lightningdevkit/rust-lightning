@@ -4,10 +4,12 @@
 
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
+use chain::chaininterface;
 use chain::chaininterface::{ChainListener, ChainWatchInterfaceUtil, BlockNotifier};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager,ChannelManagerReadArgs,HTLCForwardInfo,RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
+use ln::channelmonitor;
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::router::{Route, RouteHop};
@@ -7580,4 +7582,65 @@ fn test_simple_mpp() {
 	assert_eq!(nodes[3].node.claim_funds(payment_preimage, &Some(PaymentSecret([42; 32])), 200_000), false);
 	// ...but with the right secret we should be able to claim all the way back
 	claim_payment_along_route_with_secret(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, Some(payment_secret), 200_000);
+}
+
+#[test]
+fn test_update_err_monitor_lockdown() {
+	// Our monitor will lock update of local commitment transaction if a broadcastion condition
+	// has been fulfilled (either force-close from Channel or block height requiring a HTLC-
+	// timeout). Trying to update monitor after lockdown should return a ChannelMonitorUpdateErr.
+	//
+	// This scenario may happen in a watchtower setup, where watchtower process a block height
+	// triggering a timeout while a slow-block-processing ChannelManager receives a local signed
+	// commitment at same time.
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create some initial channel
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let outpoint = OutPoint { txid: chan_1.3.txid(), index: 0 };
+
+	// Rebalance the network to generate htlc in the two directions
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000, 10_000_000);
+
+	// Route a HTLC from node 0 to node 1 (but don't settle)
+	let preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
+
+	// Copy SimpleManyChannelMonitor to simulate a watchtower and update block height of node 0 until its ChannelMonitor timeout HTLC onchain
+	let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", 0)));
+	let watchtower = {
+		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitor = monitors.get(&outpoint).unwrap();
+		let mut w = test_utils::TestVecWriter(Vec::new());
+		monitor.write_for_disk(&mut w).unwrap();
+		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0), Arc::new(test_utils::TestLogger::new())).unwrap().1;
+		assert!(new_monitor == *monitor);
+		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, logger.clone() as Arc<Logger>));
+		let watchtower = test_utils::TestChannelMonitor::new(chain_monitor, &chanmon_cfgs[0].tx_broadcaster, logger.clone(), &chanmon_cfgs[0].fee_estimator);
+		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
+		watchtower
+	};
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	watchtower.simple_monitor.block_connected(&header, 200, &vec![], &vec![]);
+
+	// Try to update ChannelMonitor
+	assert!(nodes[1].node.claim_funds(preimage, &None, 9_000_000));
+	check_added_monitors!(nodes[1], 1);
+	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
+		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator) {
+			if let Err(_) =  watchtower.simple_monitor.update_monitor(outpoint, update.clone()) {} else { assert!(false); }
+			if let Ok(_) = nodes[0].chan_monitor.update_monitor(outpoint, update) {} else { assert!(false); }
+		} else { assert!(false); }
+	} else { assert!(false); };
+	// Our local monitor is in-sync and hasn't processed yet timeout
+	check_added_monitors!(nodes[0], 1);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
 }
