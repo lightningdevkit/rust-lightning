@@ -17,7 +17,7 @@ use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::chan_utils::HTLCType;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
-use chain::keysinterface::SpendableOutputDescriptor;
+use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
 use util::ser::{ReadableArgs, Readable, Writer, Writeable};
 use util::byte_utils;
@@ -139,9 +139,10 @@ macro_rules! subtract_high_prio_fee {
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-#[derive(Clone)]
-pub struct OnchainTxHandler {
+pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	destination_script: Script,
+
+	key_storage: ChanSigner,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
 	// it (RBF or CPFP). If an input has been part of an aggregate tx at first claim try, we need to keep it within
@@ -176,9 +177,11 @@ pub struct OnchainTxHandler {
 	logger: Arc<Logger>
 }
 
-impl Writeable for OnchainTxHandler {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
+	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
+
+		self.key_storage.write(writer)?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.pending_claim_requests.len() as u64))?;
 		for (ref ancestor_claim_txid, claim_tx_data) in self.pending_claim_requests.iter() {
@@ -215,9 +218,11 @@ impl Writeable for OnchainTxHandler {
 	}
 }
 
-impl ReadableArgs<Arc<Logger>> for OnchainTxHandler {
+impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTxHandler<ChanSigner> {
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
+
+		let key_storage = Readable::read(reader)?;
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -264,6 +269,7 @@ impl ReadableArgs<Arc<Logger>> for OnchainTxHandler {
 
 		Ok(OnchainTxHandler {
 			destination_script,
+			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
 			onchain_events_waiting_threshold_conf,
@@ -273,10 +279,14 @@ impl ReadableArgs<Arc<Logger>> for OnchainTxHandler {
 	}
 }
 
-impl OnchainTxHandler {
-	pub(super) fn new(destination_script: Script, logger: Arc<Logger>) -> Self {
+impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, logger: Arc<Logger>) -> Self {
+
+		let key_storage = keys;
+
 		OnchainTxHandler {
 			destination_script,
+			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
 			onchain_events_waiting_threshold_conf: HashMap::new(),
@@ -460,7 +470,7 @@ impl OnchainTxHandler {
 					if let &Some(preimage) = preimage {
 						bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
 					} else {
-						bumped_tx.input[i].witness.push(vec![0]);
+						bumped_tx.input[i].witness.push(vec![]);
 					}
 					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 					log_trace!(self, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
@@ -478,14 +488,14 @@ impl OnchainTxHandler {
 		Some((new_timer, new_feerate, bumped_tx))
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F) -> Vec<SpendableOutputDescriptor>
+	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
+		log_trace!(self, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
-		let mut spendable_outputs = Vec::new();
 
 		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
@@ -521,10 +531,6 @@ impl OnchainTxHandler {
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
 				log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
-				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: 0 },
-					output: tx.output[0].clone(),
-				});
 				broadcaster.broadcast_transaction(&tx);
 			}
 		}
@@ -573,9 +579,11 @@ impl OnchainTxHandler {
 						if set_equality {
 							clean_claim_request_after_safety_delay!();
 						} else { // If false, generate new claim request with update outpoint set
+							let mut at_least_one_drop = false;
 							for input in tx.input.iter() {
 								if let Some(input_material) = claim_material.per_input_material.remove(&input.previous_output) {
 									claimed_outputs_material.push((input.previous_output, input_material));
+									at_least_one_drop = true;
 								}
 								// If there are no outpoints left to claim in this request, drop it entirely after ANTI_REORG_DELAY.
 								if claim_material.per_input_material.is_empty() {
@@ -583,7 +591,9 @@ impl OnchainTxHandler {
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
-							bump_candidates.insert(first_claim_txid_height.0.clone());
+							if at_least_one_drop {
+								bump_candidates.insert(first_claim_txid_height.0.clone());
+							}
 						}
 						break; //No need to iterate further, either tx is our or their
 					} else {
@@ -634,6 +644,7 @@ impl OnchainTxHandler {
 		}
 
 		// Build, bump and rebroadcast tx accordingly
+		log_trace!(self, "Bumping {} candidates", bump_candidates.len());
 		for first_claim_txid in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate)) = {
 				if let Some(claim_material) = self.pending_claim_requests.get(first_claim_txid) {
@@ -650,8 +661,6 @@ impl OnchainTxHandler {
 				} else { unreachable!(); }
 			}
 		}
-
-		spendable_outputs
 	}
 
 	pub(super) fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F)

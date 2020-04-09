@@ -1138,8 +1138,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
-	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
-	/// Ok(_) if debug assertions are turned on and preconditions are met.
+	/// In such cases we debug_assert!(false) and return a ChannelError::Ignore. Thus, will always
+	/// return Ok(_) if debug assertions are turned on or preconditions are met.
+	///
+	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
+	/// but then have a reorg which settles on an HTLC-failure on chain.
 	fn get_update_fulfill_htlc(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitorUpdate>), ChannelError> {
 		// Either ChannelFunded got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -1167,6 +1170,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						} else {
 							log_warn!(self, "Have preimage and want to fulfill HTLC with payment hash {} we already failed against channel {}", log_bytes!(htlc.payment_hash.0), log_bytes!(self.channel_id()));
 						}
+						debug_assert!(false, "Tried to fulfill an HTLC that was already fail/fulfilled");
 						return Ok((None, None));
 					},
 					_ => {
@@ -1200,6 +1204,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							// Make sure we don't leave latest_monitor_update_id incremented here:
+							self.latest_monitor_update_id -= 1;
+							debug_assert!(false, "Tried to fulfill an HTLC that was already fulfilled");
 							return Ok((None, None));
 						}
 					},
@@ -1208,6 +1215,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							log_warn!(self, "Have preimage and want to fulfill HTLC with pending failure against channel {}", log_bytes!(self.channel_id()));
 							// TODO: We may actually be able to switch to a fulfill here, though its
 							// rare enough it may not be worth the complexity burden.
+							debug_assert!(false, "Tried to fulfill an HTLC that was already failed");
 							return Ok((None, Some(monitor_update)));
 						}
 					},
@@ -1259,8 +1267,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
-	/// In such cases we debug_assert!(false) and return an IgnoreError. Thus, will always return
-	/// Ok(_) if debug assertions are turned on and preconditions are met.
+	/// In such cases we debug_assert!(false) and return a ChannelError::Ignore. Thus, will always
+	/// return Ok(_) if debug assertions are turned on or preconditions are met.
+	///
+	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
+	/// but then have a reorg which settles on an HTLC-failure on chain.
 	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
@@ -1277,6 +1288,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match htlc.state {
 					InboundHTLCState::Committed => {},
 					InboundHTLCState::LocalRemoved(_) => {
+						debug_assert!(false, "Tried to fail an HTLC that was already fail/fulfilled");
 						return Ok(None);
 					},
 					_ => {
@@ -1297,11 +1309,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							debug_assert!(false, "Tried to fail an HTLC that was already fulfilled");
 							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
+							debug_assert!(false, "Tried to fail an HTLC that was already failed");
 							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
 						}
 					},
@@ -3444,10 +3458,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
 			})
 		} else {
-			log_debug!(self, "We don't seen yet any revoked secret, if this channnel has already been updated it means we are fallen-behind, you should wait for other peer closing");
+			log_info!(self, "Sending a data_loss_protect with no previous remote per_commitment_secret");
 			OptionalField::Present(DataLossProtect {
 				your_last_per_commitment_secret: [0;32],
-				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number))
+				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
 			})
 		};
 		msgs::ChannelReestablish {
@@ -3760,7 +3774,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self) -> (Vec<Transaction>, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
@@ -3783,12 +3797,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		if self.channel_monitor.is_some() {
-			(self.channel_monitor.as_mut().unwrap().get_latest_local_commitment_txn(), dropped_outbound_htlcs)
-		} else {
-			// We aren't even signed funding yet, so can't broadcast anything
-			(Vec::new(), dropped_outbound_htlcs)
-		}
+		self.latest_monitor_update_id += 1;
+		(self.funding_txo.clone(), ChannelMonitorUpdate {
+			update_id: self.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+		}, dropped_outbound_htlcs)
 	}
 }
 
@@ -4255,22 +4268,28 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::BitcoinHash;
 	use bitcoin::util::bip143;
 	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::Transaction;
+	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
+	use bitcoin::network::constants::Network;
 	use bitcoin_hashes::hex::FromHex;
 	use hex;
 	use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
+	use ln::features::InitFeatures;
+	use ln::msgs::{OptionalField, DataLossProtect};
 	use ln::chan_utils;
 	use ln::chan_utils::{LocalCommitmentTransaction, ChannelPublicKeys};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
+	use util::enforcing_trait_impls::EnforcingChannelKeys;
 	use util::test_utils;
 	use util::logger::Logger;
 	use secp256k1::{Secp256k1, Message, Signature, All};
@@ -4280,6 +4299,7 @@ mod tests {
 	use bitcoin_hashes::hash160::Hash as Hash160;
 	use bitcoin_hashes::Hash;
 	use std::sync::Arc;
+	use rand::{thread_rng,Rng};
 
 	struct TestFeeEstimator {
 		fee_est: u64
@@ -4325,6 +4345,70 @@ mod tests {
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
+	}
+
+	#[test]
+	fn channel_reestablish_no_updates() {
+		let feeest = TestFeeEstimator{fee_est: 15000};
+		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let secp_ctx = Secp256k1::new();
+		let mut seed = [0; 32];
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut seed);
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network, logger.clone() as Arc<Logger>);
+
+		// Go through the flow of opening a channel between two nodes.
+
+		// Create Node A's channel
+		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap();
+
+		// Create Node B's channel by receiving Node A's open_channel message
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&feeest);
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
+		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::supported(), &open_channel_msg, 7, logger, &config).unwrap();
+
+		// Node B --> Node A: accept channel
+		let accept_channel_msg = node_b_chan.get_accept_channel();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::supported()).unwrap();
+
+		// Node A --> Node B: funding created
+		let output_script = node_a_chan.get_funding_redeemscript();
+		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+			value: 10000000, script_pubkey: output_script.clone(),
+		}]};
+		let funding_outpoint = OutPoint::new(tx.txid(), 0);
+		let (funding_created_msg, _) = node_a_chan.get_outbound_funding_created(funding_outpoint).unwrap();
+		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg).unwrap();
+
+		// Node B --> Node A: funding signed
+		let _ = node_a_chan.funding_signed(&funding_signed_msg);
+
+		// Now disconnect the two nodes and check that the commitment point in
+		// Node B's channel_reestablish message is sane.
+		node_b_chan.remove_uncommitted_htlcs_and_mark_paused();
+		let expected_commitment_point = PublicKey::from_secret_key(&secp_ctx, &node_b_chan.build_local_commitment_secret(node_b_chan.cur_local_commitment_transaction_number + 1));
+		let msg = node_b_chan.get_channel_reestablish();
+		match msg.data_loss_protect {
+			OptionalField::Present(DataLossProtect { my_current_per_commitment_point, .. }) => {
+				assert_eq!(expected_commitment_point, my_current_per_commitment_point);
+			},
+			_ => panic!()
+		}
+
+		// Check that the commitment point in Node A's channel_reestablish message
+		// is sane.
+		node_a_chan.remove_uncommitted_htlcs_and_mark_paused();
+		let expected_commitment_point = PublicKey::from_secret_key(&secp_ctx, &node_a_chan.build_local_commitment_secret(node_a_chan.cur_local_commitment_transaction_number + 1));
+		let msg = node_a_chan.get_channel_reestablish();
+		match msg.data_loss_protect {
+			OptionalField::Present(DataLossProtect { my_current_per_commitment_point, .. }) => {
+				assert_eq!(expected_commitment_point, my_current_per_commitment_point);
+			},
+			_ => panic!()
+		}
 	}
 
 	#[test]
