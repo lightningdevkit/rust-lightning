@@ -310,8 +310,11 @@ impl PeerHandshake {
 		let remote_pubkey_vec = chacha::decrypt(&act_three_expectation.temporary_key, 1, &hash.value, &tagged_encrypted_pubkey)?;
 		let mut remote_pubkey_bytes = [0u8; 33];
 		remote_pubkey_bytes.copy_from_slice(remote_pubkey_vec.as_slice());
-		// todo: replace unwrap with handleable error type
-		let remote_pubkey = PublicKey::from_slice(&remote_pubkey_bytes).unwrap();
+		let remote_pubkey = if let Ok(public_key) = PublicKey::from_slice(&remote_pubkey_bytes) {
+			public_key
+		} else {
+			return Err("invalid remote public key".to_string());
+		};
 
 		hash.update(&tagged_encrypted_pubkey);
 
@@ -360,8 +363,11 @@ impl PeerHandshake {
 
 		let mut ephemeral_public_key_bytes = [0u8; 33];
 		ephemeral_public_key_bytes.copy_from_slice(&act_bytes[1..34]);
-		// todo: replace unwrap with handleable error type
-		let ephemeral_public_key = PublicKey::from_slice(&ephemeral_public_key_bytes).unwrap();
+		let ephemeral_public_key = if let Ok(public_key) = PublicKey::from_slice(&ephemeral_public_key_bytes) {
+			public_key
+		} else {
+			return Err("invalid remote ephemeral public key".to_string());
+		};
 
 		let mut chacha_tag = [0u8; 16];
 		chacha_tag.copy_from_slice(&act_bytes[34..50]);
