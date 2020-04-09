@@ -485,7 +485,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						read_from_conduit_buffer = false;
 
 						if let &mut PeerState::Authenticating(ref mut handshake) = &mut peer.encryptor {
-							let (next_act, conduit) = handshake.process_act(&peer.pending_read_buffer).unwrap();
+							let (next_act, conduit) = match handshake.process_act(&peer.pending_read_buffer) {
+								Ok(act_result) => act_result,
+								Err(e) => {
+									log_trace!(self, "Invalid act message; disconnecting: {}", e);
+									return Err(PeerHandleError{ no_connection_possible: false });
+								}
+							};
 							peer.pending_read_buffer = Vec::new(); // empty the pending read buffer
 
 							if let Some(key) = handshake.get_remote_pubkey() {
