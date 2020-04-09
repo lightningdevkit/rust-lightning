@@ -474,13 +474,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			let pause_read = match peers.peers.get_mut(peer_descriptor) {
 				None => panic!("Descriptor for read_event is not already known to PeerManager"),
 				Some(peer) => {
+					let mut read_from_conduit_buffer = false;
 					peer.pending_read_buffer.extend_from_slice(&data);
-					while peer.pending_read_buffer.len() > 0 {
+					while peer.pending_read_buffer.len() > 0 || read_from_conduit_buffer {
 
 						let mut conduit_option = None;
 						let mut remote_pubkey_option = None;
 
 						let mut needs_to_send_init_message = false;
+						read_from_conduit_buffer = false;
 
 						if let &mut PeerState::Authenticating(ref mut handshake) = &mut peer.encryptor {
 							let (next_act, conduit) = handshake.process_act(&peer.pending_read_buffer).unwrap();
@@ -577,6 +579,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 							let message_option = conduit.decrypt_single_message(Some(&peer.pending_read_buffer.clone()));
 							peer.pending_read_buffer = Vec::new(); // empty the pending read buffer
 							let msg_data = if let Some(message) = message_option {
+								read_from_conduit_buffer = true;
 								message
 							} else {
 								break;
