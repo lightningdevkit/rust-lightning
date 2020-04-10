@@ -1039,7 +1039,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 				// OUR PAYMENT!
 				// final_expiry_too_soon
-				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
+				// We have to have some headroom to broadcast on chain if we have the preimage, so make sure we have at least
+				// HTLC_FAIL_BACK_BUFFER blocks to go.
+				// Also, ensure that, in the case of an unknown payment hash, our payment logic has enough time to fail the HTLC backward
+				// before our onchain logic triggers a channel closure (see HTLC_FAIL_BACK_BUFFER rational).
+				if (msg.cltv_expiry as u64) <= self.latest_block_height.load(Ordering::Acquire) as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount

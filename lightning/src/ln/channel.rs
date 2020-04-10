@@ -1727,8 +1727,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Remote provided CLTV expiry in seconds instead of block height"));
 		}
 
-		//TODO: Check msg.cltv_expiry further? Do this in channel manager?
-
 		if self.channel_state & ChannelState::LocalShutdownSent as u32 != 0 {
 			if let PendingHTLCStatus::Forward(_) = pending_forward_state {
 				panic!("ChannelManager shouldn't be trying to add a forwardable HTLC after we've started closing");
