@@ -18,10 +18,8 @@ should be more than sufficient.
 To install `honggfuzz`, simply run
 
 ```shell
+cargo update
 cargo install honggfuzz --force
-
-export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
-cargo hfuzz build
 ```
 
 ### Execution
@@ -30,10 +28,17 @@ To run the Hongg fuzzer, do
 
 ```shell
 export CPU_COUNT=1 # replace as needed
+export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
 export HFUZZ_RUN_ARGS="-n $CPU_COUNT --exit_upon_crash"
 
-export TARGET="" # replace with the target to be fuzzed
+export TARGET="msg_ping_target" # replace with the target to be fuzzed
 cargo hfuzz run $TARGET 
+```
+
+To see a list of available fuzzing targets, run:
+
+```shell
+ls ./src/bin/
 ```
 
 ## A fuzz test failed on Travis, what do I do?
