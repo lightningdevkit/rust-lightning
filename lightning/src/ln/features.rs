@@ -272,7 +272,7 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	}
 	#[cfg(test)]
 	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
-		self.flags[0] ^= 1 << 5;
+		self.flags[0] &= !(1 << 5);
 	}
 }
 
