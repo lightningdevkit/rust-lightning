@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
+#[macro_use]
 mod sealed { // You should just use the type aliases instead.
 	pub struct InitContext {}
 	pub struct NodeContext {}
@@ -19,28 +20,112 @@ mod sealed { // You should just use the type aliases instead.
 	impl Context for NodeContext {}
 	impl Context for ChannelContext {}
 
-	pub trait DataLossProtect: Context {}
-	impl DataLossProtect for InitContext {}
-	impl DataLossProtect for NodeContext {}
+	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
+	/// useful for manipulating feature flags.
+	///
+	/// [`Context`]: trait.Context.html
+	macro_rules! define_feature {
+		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr) => {
+			#[doc = $doc]
+			///
+			/// See [BOLT #9] for details.
+			///
+			/// [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
+			pub trait $feature: Context {
+				/// The bit used to signify that the feature is required.
+				const EVEN_BIT: usize = $odd_bit - 1;
 
-	pub trait InitialRoutingSync: Context {}
-	impl InitialRoutingSync for InitContext {}
+				/// The bit used to signify that the feature is optional.
+				const ODD_BIT: usize = $odd_bit;
 
-	pub trait UpfrontShutdownScript: Context {}
-	impl UpfrontShutdownScript for InitContext {}
-	impl UpfrontShutdownScript for NodeContext {}
+				/// Assertion that [`EVEN_BIT`] is actually even.
+				///
+				/// [`EVEN_BIT`]: #associatedconstant.EVEN_BIT
+				const ASSERT_EVEN_BIT_PARITY: usize;
 
-	pub trait VariableLengthOnion: Context {}
-	impl VariableLengthOnion for InitContext {}
-	impl VariableLengthOnion for NodeContext {}
+				/// Assertion that [`ODD_BIT`] is actually odd.
+				///
+				/// [`ODD_BIT`]: #associatedconstant.ODD_BIT
+				const ASSERT_ODD_BIT_PARITY: usize;
 
-	pub trait PaymentSecret: Context {}
-	impl PaymentSecret for InitContext {}
-	impl PaymentSecret for NodeContext {}
+				/// The byte where the feature is set.
+				const BYTE_OFFSET: usize = Self::EVEN_BIT / 8;
 
-	pub trait BasicMPP: Context {}
-	impl BasicMPP for InitContext {}
-	impl BasicMPP for NodeContext {}
+				/// The bitmask for the feature's required flag relative to the [`BYTE_OFFSET`].
+				///
+				/// [`BYTE_OFFSET`]: #associatedconstant.BYTE_OFFSET
+				const REQUIRED_MASK: u8 = 1 << (Self::EVEN_BIT - 8 * Self::BYTE_OFFSET);
+
+				/// The bitmask for the feature's optional flag relative to the [`BYTE_OFFSET`].
+				///
+				/// [`BYTE_OFFSET`]: #associatedconstant.BYTE_OFFSET
+				const OPTIONAL_MASK: u8 = 1 << (Self::ODD_BIT - 8 * Self::BYTE_OFFSET);
+
+				/// Returns whether the feature is supported by the given flags.
+				#[inline]
+				fn supports_feature(flags: &Vec<u8>) -> bool {
+					flags.len() > Self::BYTE_OFFSET &&
+						(flags[Self::BYTE_OFFSET] & (Self::REQUIRED_MASK | Self::OPTIONAL_MASK)) != 0
+				}
+
+				/// Sets the feature's optional (odd) bit in the given flags.
+				#[inline]
+				fn set_optional_bit(flags: &mut Vec<u8>) {
+					if flags.len() <= Self::BYTE_OFFSET {
+						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
+					}
+
+					flags[Self::BYTE_OFFSET] |= Self::OPTIONAL_MASK;
+				}
+
+				/// Clears the feature's optional (odd) bit from the given flags.
+				#[inline]
+				fn clear_optional_bit(flags: &mut Vec<u8>) {
+					if flags.len() > Self::BYTE_OFFSET {
+						flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
+					}
+				}
+			}
+
+			$(
+				impl $feature for $context {
+					// EVEN_BIT % 2 == 0
+					const ASSERT_EVEN_BIT_PARITY: usize = 0 - (<Self as $feature>::EVEN_BIT % 2);
+
+					// ODD_BIT % 2 == 1
+					const ASSERT_ODD_BIT_PARITY: usize = (<Self as $feature>::ODD_BIT % 2) - 1;
+				}
+			)*
+		}
+	}
+
+	define_feature!(1, DataLossProtect, [InitContext, NodeContext],
+		"Feature flags for `option_data_loss_protect`.");
+	// NOTE: Per Bolt #9, initial_routing_sync has no even bit.
+	define_feature!(3, InitialRoutingSync, [InitContext],
+		"Feature flags for `initial_routing_sync`.");
+	define_feature!(5, UpfrontShutdownScript, [InitContext, NodeContext],
+		"Feature flags for `option_upfront_shutdown_script`.");
+	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext],
+		"Feature flags for `var_onion_optin`.");
+	define_feature!(15, PaymentSecret, [InitContext, NodeContext],
+		"Feature flags for `payment_secret`.");
+	define_feature!(17, BasicMPP, [InitContext, NodeContext],
+		"Feature flags for `basic_mpp`.");
+
+	/// Generates a feature flag byte with the given features set as optional. Useful for initializing
+	/// the flags within [`Features`].
+	///
+	/// [`Features`]: struct.Features.html
+	macro_rules! feature_flags {
+		($context: ty; $($feature: ident)|*) => {
+			(0b00_00_00_00
+				$(
+					| <$context as sealed::$feature>::OPTIONAL_MASK
+				)*
+			)
+		}
+	}
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -81,7 +166,11 @@ impl InitFeatures {
 	/// Create a Features with the features we support
 	pub fn supported() -> InitFeatures {
 		InitFeatures {
-			flags: vec![2 | 1 << 3 | 1 << 5, 1 << (9-8) | 1 << (15 - 8), 1 << (17 - 8*2)],
+			flags: vec![
+				feature_flags![sealed::InitContext; DataLossProtect | InitialRoutingSync | UpfrontShutdownScript],
+				feature_flags![sealed::InitContext; VariableLengthOnion | PaymentSecret],
+				feature_flags![sealed::InitContext; BasicMPP],
+			],
 			mark: PhantomData,
 		}
 	}
@@ -144,14 +233,22 @@ impl NodeFeatures {
 	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) fn supported() -> NodeFeatures {
 		NodeFeatures {
-			flags: vec![2 | 1 << 5, 1 << (9 - 8) | 1 << (15 - 8), 1 << (17 - 8*2)],
+			flags: vec![
+				feature_flags![sealed::NodeContext; DataLossProtect | UpfrontShutdownScript],
+				feature_flags![sealed::NodeContext; VariableLengthOnion | PaymentSecret],
+				feature_flags![sealed::NodeContext; BasicMPP],
+			],
 			mark: PhantomData,
 		}
 	}
 	#[cfg(feature = "fuzztarget")]
 	pub fn supported() -> NodeFeatures {
 		NodeFeatures {
-			flags: vec![2 | 1 << 5, 1 << (9 - 8) | 1 << (15 - 8), 1 << (17 - 8*2)],
+			flags: vec![
+				feature_flags![sealed::NodeContext; DataLossProtect | UpfrontShutdownScript],
+				feature_flags![sealed::NodeContext; VariableLengthOnion | PaymentSecret],
+				feature_flags![sealed::NodeContext; BasicMPP],
+			],
 			mark: PhantomData,
 		}
 	}
@@ -160,15 +257,25 @@ impl NodeFeatures {
 	/// relevant in a node-context features and creates a node-context features from them.
 	/// Be sure to blank out features that are unknown to us.
 	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
+		// Generates a bitmask with both even and odd bits set for the given features. Bitwise
+		// AND-ing it with a byte will select only common features.
+		macro_rules! features_including {
+			($($feature: ident)|*) => {
+				(0b00_00_00_00
+					$(
+						| <sealed::NodeContext as sealed::$feature>::REQUIRED_MASK
+						| <sealed::NodeContext as sealed::$feature>::OPTIONAL_MASK
+					)*
+				)
+			}
+		}
+
 		let mut flags = Vec::new();
 		for (i, feature_byte)in init_ctx.flags.iter().enumerate() {
 			match i {
-				// Blank out initial_routing_sync (feature bits 2/3), gossip_queries (6/7),
-				// gossip_queries_ex (10/11), option_static_remotekey (12/13), and
-				// option_support_large_channel (16/17)
-				0 => flags.push(feature_byte & 0b00110011),
-				1 => flags.push(feature_byte & 0b11000011),
-				2 => flags.push(feature_byte & 0b00000011),
+				0 => flags.push(feature_byte & features_including![DataLossProtect | UpfrontShutdownScript]),
+				1 => flags.push(feature_byte & features_including![VariableLengthOnion | PaymentSecret]),
+				2 => flags.push(feature_byte & features_including![BasicMPP]),
 				_ => (),
 			}
 		}
@@ -201,33 +308,47 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
+		// Generates a bitmask with all even bits set except for the given features. Bitwise
+		// AND-ing it with a byte will select unknown required features.
+		macro_rules! features_excluding {
+			($($feature: ident)|*) => {
+				(0b01_01_01_01
+					$(
+						& !(<sealed::InitContext as sealed::$feature>::REQUIRED_MASK)
+					)*
+				)
+			}
+		}
+
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
-				// Unknown bits are even bits which we don't understand, we list ones which we do
-				// here:
-				// unknown, upfront_shutdown_script, unknown (actually initial_routing_sync, but it
-				// is only valid as an optional feature), and data_loss_protect:
-				0 => (byte & 0b01000100),
-				// payment_secret, unknown, unknown, var_onion_optin:
-				1 => (byte & 0b00010100),
-				// unknown, unknown, unknown, basic_mpp:
-				2 => (byte & 0b01010100),
-				// fallback, all even bits set:
-				_ => (byte & 0b01010101),
+				0 => (byte & features_excluding![DataLossProtect | InitialRoutingSync | UpfrontShutdownScript]),
+				1 => (byte & features_excluding![VariableLengthOnion | PaymentSecret]),
+				2 => (byte & features_excluding![BasicMPP]),
+				_ => (byte & features_excluding![]),
 			}) != 0
 		})
 	}
 
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
+		// Generates a bitmask with all even and odd bits set except for the given features. Bitwise
+		// AND-ing it with a byte will select unknown supported features.
+		macro_rules! features_excluding {
+			($($feature: ident)|*) => {
+				(0b11_11_11_11
+					$(
+						& !(<sealed::InitContext as sealed::$feature>::REQUIRED_MASK)
+						& !(<sealed::InitContext as sealed::$feature>::OPTIONAL_MASK)
+					)*
+				)
+			}
+		}
+
 		self.flags.iter().enumerate().any(|(idx, &byte)| {
 			(match idx {
-				// unknown, upfront_shutdown_script, initial_routing_sync (is only valid as an
-				// optional feature), and data_loss_protect:
-				0 => (byte & 0b11000100),
-				// payment_secret, unknown, unknown, var_onion_optin:
-				1 => (byte & 0b00111100),
-				// unknown, unknown, unknown, basic_mpp:
-				2 => (byte & 0b11111100),
+				0 => (byte & features_excluding![DataLossProtect | InitialRoutingSync | UpfrontShutdownScript]),
+				1 => (byte & features_excluding![VariableLengthOnion | PaymentSecret]),
+				2 => (byte & features_excluding![BasicMPP]),
 				_ => byte,
 			}) != 0
 		})
@@ -262,34 +383,32 @@ impl<T: sealed::Context> Features<T> {
 
 impl<T: sealed::DataLossProtect> Features<T> {
 	pub(crate) fn supports_data_loss_protect(&self) -> bool {
-		self.flags.len() > 0 && (self.flags[0] & 3) != 0
+		<T as sealed::DataLossProtect>::supports_feature(&self.flags)
 	}
 }
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
-		self.flags.len() > 0 && (self.flags[0] & (3 << 4)) != 0
+		<T as sealed::UpfrontShutdownScript>::supports_feature(&self.flags)
 	}
 	#[cfg(test)]
 	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
-		self.flags[0] &= !(1 << 5);
+		<T as sealed::UpfrontShutdownScript>::clear_optional_bit(&mut self.flags)
 	}
 }
 
 impl<T: sealed::VariableLengthOnion> Features<T> {
 	pub(crate) fn supports_variable_length_onion(&self) -> bool {
-		self.flags.len() > 1 && (self.flags[1] & 3) != 0
+		<T as sealed::VariableLengthOnion>::supports_feature(&self.flags)
 	}
 }
 
 impl<T: sealed::InitialRoutingSync> Features<T> {
 	pub(crate) fn initial_routing_sync(&self) -> bool {
-		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
+		<T as sealed::InitialRoutingSync>::supports_feature(&self.flags)
 	}
 	pub(crate) fn clear_initial_routing_sync(&mut self) {
-		if self.flags.len() > 0 {
-			self.flags[0] &= !(1 << 3);
-		}
+		<T as sealed::InitialRoutingSync>::clear_optional_bit(&mut self.flags)
 	}
 }
 
@@ -299,7 +418,7 @@ impl<T: sealed::PaymentSecret> Features<T> {
 	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
 	// supports payment_secret).
 	pub(crate) fn supports_payment_secret(&self) -> bool {
-		self.flags.len() > 1 && (self.flags[1] & (3 << (14-8))) != 0
+		<T as sealed::PaymentSecret>::supports_feature(&self.flags)
 	}
 }
 
@@ -307,7 +426,7 @@ impl<T: sealed::BasicMPP> Features<T> {
 	// We currently never test for this since we don't actually *generate* multipath routes.
 	#[allow(dead_code)]
 	pub(crate) fn supports_basic_mpp(&self) -> bool {
-		self.flags.len() > 2 && (self.flags[2] & (3 << (16-8*2))) != 0
+		<T as sealed::BasicMPP>::supports_feature(&self.flags)
 	}
 }
 
