@@ -1,5 +1,5 @@
 use chain::chaininterface;
-use chain::chaininterface::ConfirmationTarget;
+use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface};
 use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::channelmonitor;
@@ -13,7 +13,9 @@ use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::block::Block;
+use bitcoin::blockdata::opcodes;
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
 
@@ -176,7 +178,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
-	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, msgs::ChannelUpdate,msgs::ChannelUpdate)> {
+	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		Vec::new()
 	}
 	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
@@ -261,5 +263,30 @@ impl TestKeysInterface {
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
 		}
+	}
+}
+
+pub struct TestChainWatcher {
+	pub utxo_ret: Mutex<Result<(Script, u64), ChainError>>,
+}
+
+impl TestChainWatcher {
+	pub fn new() -> Self {
+		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		Self { utxo_ret: Mutex::new(Ok((script, u64::max_value()))) }
+	}
+}
+
+impl ChainWatchInterface for TestChainWatcher {
+	fn install_watch_tx(&self, _txid: &Sha256dHash, _script_pub_key: &Script) { }
+	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
+	fn watch_all_txn(&self) { }
+	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
+		(Vec::new(), Vec::new())
+	}
+	fn reentered(&self) -> usize { 0 }
+
+	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+		self.utxo_ret.lock().unwrap().clone()
 	}
 }

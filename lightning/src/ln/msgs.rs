@@ -601,7 +601,7 @@ pub trait RoutingMessageHandler : Send + Sync {
 	/// Gets a subset of the channel announcements and updates required to dump our routing table
 	/// to a remote node, starting at the short_channel_id indicated by starting_point and
 	/// including the batch_amount entries immediately higher in numerical value than starting_point.
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, ChannelUpdate, ChannelUpdate)>;
+	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)>;
 	/// Gets a subset of the node announcements required to dump our routing table to a remote node,
 	/// starting at the node *after* the provided publickey and including batch_amount entries
 	/// immediately higher (as defined by <PublicKey as Ord>::cmp) than starting_point.

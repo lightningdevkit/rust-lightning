@@ -22,6 +22,7 @@ use std::marker::PhantomData;
 use std::ptr;
 
 /// Used to give chain error details upstream
+#[derive(Clone)]
 pub enum ChainError {
 	/// Client doesn't support UTXO lookup (but the chain hash matches our genesis block hash)
 	NotSupported,
