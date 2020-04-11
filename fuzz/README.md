@@ -6,7 +6,9 @@ Fuzz tests generate a ton of random parameter arguments to the program and then 
 
 Typically, Travis CI will run `travis-fuzz.sh` on one of the environments the automated tests are configured for.
 This is the most time-consuming component of the continuous integration workflow, so it is recommended that you detect
-issues locally, and Travis merely acts as a sanity check.
+issues locally, and Travis merely acts as a sanity check. Fuzzing is further only effective with
+a lot of CPU time, indicating that if crash scenarios are discovered on Travis with its low
+runtime constraints, the crash is caused relatively easily.
 
 ## How do I run fuzz tests locally?
 
@@ -19,7 +21,7 @@ To install `honggfuzz`, simply run
 
 ```shell
 cargo update
-cargo install honggfuzz --force
+cargo install --force honggfuzz
 ```
 
 ### Execution
@@ -55,6 +57,7 @@ Seen a crash. Terminating all fuzzing threads
 
 … # a lot of lines in between
 
+<0x0000555555565559> [func:UNKNOWN file: line:0 module:/home/travis/build/rust-bitcoin/rust-lightning/fuzz/hfuzz_target/x86_64-unknown-linux-gnu/release/full_stack_target]
 <0x0000000000000000> [func:UNKNOWN file: line:0 module:UNKNOWN]
 =====================================================================
 2d3136383734090101010101010101010101010101010101010101010101
@@ -63,13 +66,18 @@ Seen a crash. Terminating all fuzzing threads
 The command "if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd fuzz && cargo test --verbose && ./travis-fuzz.sh; fi" exited with 1.
 ```
 
-Simply copy the hex, and run the following from the `fuzz` directory:
+Note that the penultimate stack trace line ends in `release/full_stack_target]`. That indicates that
+the failing target was `full_stack`. To reproduce the error locally, simply copy the hex, 
+and run the following from the `fuzz` directory:
 
 ```shell
+export TARGET="full_stack" # adjust for your output
 export HEX="2d3136383734090101010101010101010101010101010101010101010101\
 010101010100040101010101010101010101010103010101010100010101\
 0069d07c319a4961" # adjust for your output
-echo $HEX | xxd -r -p > ./test_cases/full_stack/your_test_case_name
+
+mkdir -p ./test_cases/$TARGET
+echo $HEX | xxd -r -p > ./test_cases/$TARGET/any_filename_works
 
 export RUST_BACKTRACE=1
 cargo test
