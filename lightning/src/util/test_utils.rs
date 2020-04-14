@@ -51,6 +51,9 @@ pub struct TestChannelMonitor<'a> {
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
 	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
+	// If this is set to Some(), after the next return, we'll always return this until update_ret
+	// is changed:
+	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChannelMonitor<'a> {
 	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: &'a TestFeeEstimator) -> Self {
@@ -59,6 +62,7 @@ impl<'a> TestChannelMonitor<'a> {
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
+			next_update_ret: Mutex::new(None),
 		}
 	}
 }
@@ -74,7 +78,12 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
-		self.update_ret.lock().unwrap().clone()
+
+		let ret = self.update_ret.lock().unwrap().clone();
+		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
+			*self.update_ret.lock().unwrap() = next_ret;
+		}
+		ret
 	}
 
 	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
@@ -96,7 +105,12 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
-		self.update_ret.lock().unwrap().clone()
+
+		let ret = self.update_ret.lock().unwrap().clone();
+		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
+			*self.update_ret.lock().unwrap() = next_ret;
+		}
+		ret
 	}
 
 	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {

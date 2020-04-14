@@ -4,7 +4,7 @@
 //! here. See also the chanmon_fail_consistency fuzz test.
 
 use chain::transaction::OutPoint;
-use ln::channelmanager::{RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSendFailure};
+use ln::channelmanager::{RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::ChannelMonitorUpdateErr;
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -1730,4 +1730,64 @@ fn during_funding_monitor_fail() {
 	do_during_funding_monitor_fail(true, true);
 	do_during_funding_monitor_fail(true, false);
 	do_during_funding_monitor_fail(false, false);
+}
+
+#[test]
+fn test_path_paused_mpp() {
+	// Simple test of sending a multi-part payment where one path is currently blocked awaiting
+	// monitor update
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
+	let (chan_2_ann, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
+	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
+
+	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
+	let payment_secret = PaymentSecret([0xdb; 32]);
+	let mut route = nodes[0].router.get_route(&nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+
+	// Set us up to take multiple routes, one 0 -> 1 -> 3 and one 0 -> 2 -> 3:
+	let path = route.paths[0].clone();
+	route.paths.push(path);
+	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0][0].short_channel_id = chan_1_id;
+	route.paths[0][1].short_channel_id = chan_3_id;
+	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1][0].short_channel_id = chan_2_ann.contents.short_channel_id;
+	route.paths[1][1].short_channel_id = chan_4_id;
+
+	// Set it so that the first monitor update (for the path 0 -> 1 -> 3) succeeds, but the second
+	// (for the path 0 -> 2 -> 3) fails.
+	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+	*nodes[0].chan_monitor.next_update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+
+	// Now check that we get the right return value, indicating that the first path succeeded but
+	// the second got a MonitorUpdateFailed err. This implies PaymentSendFailure::PartialFailure as
+	// some paths succeeded, preventing retry.
+	if let Err(PaymentSendFailure::PartialFailure(results)) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) {
+		assert_eq!(results.len(), 2);
+		if let Ok(()) = results[0] {} else { panic!(); }
+		if let Err(APIError::MonitorUpdateFailed) = results[1] {} else { panic!(); }
+	} else { panic!(); }
+	check_added_monitors!(nodes[0], 2);
+	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Ok(());
+
+	// Pass the first HTLC of the payment along to nodes[3].
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 0, payment_hash.clone(), Some(payment_secret), events.pop().unwrap(), false);
+
+	// And check that, after we successfully update the monitor for chan_2 we can pass the second
+	// HTLC along to nodes[3] and claim the whole payment back to nodes[0].
+	let (outpoint, latest_update) = nodes[0].chan_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_2_id).unwrap().clone();
+	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), Some(payment_secret), events.pop().unwrap(), true);
+
+	claim_payment_along_route_with_secret(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, Some(payment_secret), 200_000);
 }
