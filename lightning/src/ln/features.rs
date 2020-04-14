@@ -1,5 +1,15 @@
-//! Lightning exposes sets of supported operations through "feature flags". This module includes
-//! types to store those feature flags and query for specific flags.
+//! Feature flag definitions for the Lightning protocol according to [BOLT #9].
+//!
+//! Lightning nodes advertise a supported set of operation through feature flags. Features are
+//! applicable for a specific context as indicated in some [messages]. [`Features`] encapsulates
+//! behavior for specifying and checking feature flags for a particular context. Each feature is
+//! defined internally by a trait specifying the corresponding flags (i.e., even and odd bits). A
+//! [`Context`] is used to parameterize [`Features`] and defines which features it can support.
+//!
+//! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
+//! [messages]: ../msgs/index.html
+//! [`Features`]: struct.Features.html
+//! [`Context`]: sealed/trait.Context.html
 
 use std::{cmp, fmt};
 use std::result::Result;
@@ -131,7 +141,7 @@ mod sealed { // You should just use the type aliases instead.
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
 pub struct Features<T: sealed::Context> {
-	/// Note that, for convinience, flags is LITTLE endian (despite being big-endian on the wire)
+	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,
 	mark: PhantomData<T>,
 }
@@ -155,11 +165,11 @@ impl<T: sealed::Context> fmt::Debug for Features<T> {
 	}
 }
 
-/// A feature message as it appears in an init message
+/// Features used within an `init` message.
 pub type InitFeatures = Features<sealed::InitContext>;
-/// A feature message as it appears in a node_announcement message
+/// Features used within a `node_announcement` message.
 pub type NodeFeatures = Features<sealed::NodeContext>;
-/// A feature message as it appears in a channel_announcement message
+/// Features used within a `channel_announcement` message.
 pub type ChannelFeatures = Features<sealed::ChannelContext>;
 
 impl InitFeatures {
