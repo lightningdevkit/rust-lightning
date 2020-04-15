@@ -39,7 +39,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let (our_payment_preimage, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Provide preimage to node 2 by claiming payment
-	nodes[2].node.claim_funds(our_payment_preimage, 1000000);
+	nodes[2].node.claim_funds(our_payment_preimage, &None, 1000000);
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 

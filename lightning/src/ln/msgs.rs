@@ -31,7 +31,10 @@ use std::result::Result;
 use util::events;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
-use ln::channelmanager::{PaymentPreimage, PaymentHash};
+use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
+
+/// 21 million * 10^8 * 1000
+pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
 /// An error in decoding a message or struct.
 #[derive(Debug)]
@@ -612,8 +615,17 @@ pub trait RoutingMessageHandler : Send + Sync {
 }
 
 mod fuzzy_internal_msgs {
+	use ln::channelmanager::PaymentSecret;
+
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
+	#[derive(Clone)]
+	pub(crate) struct FinalOnionHopData {
+		pub(crate) payment_secret: PaymentSecret,
+		/// The total value, in msat, of the payment as received by the ultimate recipient.
+		/// Message serialization may panic if this value is more than 21 million Bitcoin.
+		pub(crate) total_msat: u64,
+	}
 
 	pub(crate) enum OnionHopDataFormat {
 		Legacy { // aka Realm-0
@@ -622,11 +634,15 @@ mod fuzzy_internal_msgs {
 		NonFinalNode {
 			short_channel_id: u64,
 		},
-		FinalNode,
+		FinalNode {
+			payment_data: Option<FinalOnionHopData>,
+		},
 	}
 
 	pub struct OnionHopData {
 		pub(crate) format: OnionHopDataFormat,
+		/// The value, in msat, of the payment after this hop's fee is deducted.
+		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
 		// 12 bytes of 0-padding for Legacy format
@@ -965,9 +981,29 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 	onion_routing_packet
 });
 
+impl Writeable for FinalOnionHopData {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 8 - (self.total_msat.leading_zeros()/8) as usize);
+		self.payment_secret.0.write(w)?;
+		HighZeroBytesDroppedVarInt(self.total_msat).write(w)
+	}
+}
+
+impl Readable for FinalOnionHopData {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let secret: [u8; 32] = Readable::read(r)?;
+		let amt: HighZeroBytesDroppedVarInt<u64> = Readable::read(r)?;
+		Ok(Self { payment_secret: PaymentSecret(secret), total_msat: amt.0 })
+	}
+}
+
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(33);
+		// Note that this should never be reachable if Rust-Lightning generated the message, as we
+		// check values are sane long before we get here, though its possible in the future
+		// user-generated messages may hit this.
+		if self.amt_to_forward > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
 		match self.format {
 			OnionHopDataFormat::Legacy { short_channel_id } => {
 				0u8.write(w)?;
@@ -983,7 +1019,15 @@ impl Writeable for OnionHopData {
 					(6, short_channel_id)
 				});
 			},
-			OnionHopDataFormat::FinalNode => {
+			OnionHopDataFormat::FinalNode { payment_data: Some(ref final_data) } => {
+				if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
+				encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
+					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value)),
+					(8, final_data)
+				});
+			},
+			OnionHopDataFormat::FinalNode { payment_data: None } => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value))
@@ -1008,19 +1052,29 @@ impl Readable for OnionHopData {
 			let mut amt = HighZeroBytesDroppedVarInt(0u64);
 			let mut cltv_value = HighZeroBytesDroppedVarInt(0u32);
 			let mut short_id: Option<u64> = None;
+			let mut payment_data: Option<FinalOnionHopData> = None;
 			decode_tlv!(&mut rd, {
 				(2, amt),
 				(4, cltv_value)
 			}, {
-				(6, short_id)
+				(6, short_id),
+				(8, payment_data)
 			});
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 			let format = if let Some(short_channel_id) = short_id {
+				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
 				OnionHopDataFormat::NonFinalNode {
 					short_channel_id,
 				}
 			} else {
-				OnionHopDataFormat::FinalNode
+				if let &Some(ref data) = &payment_data {
+					if data.total_msat > MAX_VALUE_MSAT {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
+				OnionHopDataFormat::FinalNode {
+					payment_data
+				}
 			};
 			(format, amt.0, cltv_value.0)
 		} else {
@@ -1033,6 +1087,9 @@ impl Readable for OnionHopData {
 			(format, amt, cltv_value)
 		};
 
+		if amt > MAX_VALUE_MSAT {
+			return Err(DecodeError::InvalidValue);
+		}
 		Ok(OnionHopData {
 			format,
 			amt_to_forward: amt,
@@ -1305,8 +1362,8 @@ impl_writeable_len_match!(NodeAnnouncement, {
 mod tests {
 	use hex;
 	use ln::msgs;
-	use ln::msgs::{ChannelFeatures, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
-	use ln::channelmanager::{PaymentPreimage, PaymentHash};
+	use ln::msgs::{ChannelFeatures, FinalOnionHopData, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use util::ser::{Writeable, Readable};
 
 	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
@@ -1998,7 +2055,9 @@ mod tests {
 	#[test]
 	fn encoding_final_onion_hop_data() {
 		let mut msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::FinalNode,
+			format: OnionHopDataFormat::FinalNode {
+				payment_data: None,
+			},
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
@@ -2006,7 +2065,36 @@ mod tests {
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
-		if let OnionHopDataFormat::FinalNode = msg.format { } else { panic!(); }
+		if let OnionHopDataFormat::FinalNode { payment_data: None } = msg.format { } else { panic!(); }
+		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
+		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_secret() {
+		let expected_payment_secret = PaymentSecret([0x42u8; 32]);
+		let mut msg = msgs::OnionHopData {
+			format: OnionHopDataFormat::FinalNode {
+				payment_data: Some(FinalOnionHopData {
+					payment_secret: expected_payment_secret,
+					total_msat: 0x1badca1f
+				}),
+			},
+			amt_to_forward: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+		};
+		let encoded_value = msg.encode();
+		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
+		assert_eq!(encoded_value, target_value);
+		msg = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		if let OnionHopDataFormat::FinalNode {
+			payment_data: Some(FinalOnionHopData {
+				payment_secret,
+				total_msat: 0x1badca1f
+			})
+		} = msg.format {
+			assert_eq!(payment_secret, expected_payment_secret);
+		} else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
 		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
 	}

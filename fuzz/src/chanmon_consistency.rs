@@ -27,7 +27,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,C
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
-use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
 use lightning::ln::router::{Route, RouteHop};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
@@ -408,16 +408,16 @@ pub fn do_test(data: &[u8]) {
 			($source: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(Route {
-					hops: vec![RouteHop {
+				if let Err(_) = $source.send_payment(&Route {
+					paths: vec![vec![RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
-					}],
-				}, PaymentHash(payment_hash.into_inner())) {
+					}]],
+				}, PaymentHash(payment_hash.into_inner()), &None) {
 					// Probably ran out of funds
 					test_return!();
 				}
@@ -425,8 +425,8 @@ pub fn do_test(data: &[u8]) {
 			($source: expr, $middle: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(Route {
-					hops: vec![RouteHop {
+				if let Err(_) = $source.send_payment(&Route {
+					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
@@ -440,8 +440,50 @@ pub fn do_test(data: &[u8]) {
 						channel_features: ChannelFeatures::empty(),
 						fee_msat: 5000000,
 						cltv_expiry_delta: 200,
-					}],
-				}, PaymentHash(payment_hash.into_inner())) {
+					}]],
+				}, PaymentHash(payment_hash.into_inner()), &None) {
+					// Probably ran out of funds
+					test_return!();
+				}
+			} }
+		}
+		macro_rules! send_payment_with_secret {
+			($source: expr, $middle: expr, $dest: expr) => { {
+				let payment_hash = Sha256::hash(&[payment_id; 1]);
+				payment_id = payment_id.wrapping_add(1);
+				let payment_secret = Sha256::hash(&[payment_id; 1]);
+				payment_id = payment_id.wrapping_add(1);
+				if let Err(_) = $source.send_payment(&Route {
+					paths: vec![vec![RouteHop {
+						pubkey: $middle.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $middle.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 50000,
+						cltv_expiry_delta: 100,
+					},RouteHop {
+						pubkey: $dest.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $dest.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 5000000,
+						cltv_expiry_delta: 200,
+					}],vec![RouteHop {
+						pubkey: $middle.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $middle.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 50000,
+						cltv_expiry_delta: 100,
+					},RouteHop {
+						pubkey: $dest.0.get_our_node_id(),
+						node_features: NodeFeatures::empty(),
+						short_channel_id: $dest.1,
+						channel_features: ChannelFeatures::empty(),
+						fee_msat: 5000000,
+						cltv_expiry_delta: 200,
+					}]],
+				}, PaymentHash(payment_hash.into_inner()), &Some(PaymentSecret(payment_secret.into_inner()))) {
 					// Probably ran out of funds
 					test_return!();
 				}
@@ -599,12 +641,12 @@ pub fn do_test(data: &[u8]) {
 				});
 				for event in events.drain(..) {
 					match event {
-						events::Event::PaymentReceived { payment_hash, .. } => {
+						events::Event::PaymentReceived { payment_hash, payment_secret, .. } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
-									assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
+									assert!(nodes[$node].fail_htlc_backwards(&payment_hash, &payment_secret));
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), 5_000_000));
+									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), &payment_secret, 5_000_000));
 								}
 							}
 						},
@@ -734,6 +776,8 @@ pub fn do_test(data: &[u8]) {
 				nodes[2] = node_c.clone();
 				monitor_c = new_monitor_c;
 			},
+			0x22 => send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
+			0x23 => send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
 			// 0x24 defined above
 			_ => test_return!(),
 		}
