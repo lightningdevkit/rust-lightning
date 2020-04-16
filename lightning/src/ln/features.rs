@@ -165,9 +165,10 @@ impl NodeFeatures {
 			match i {
 				// Blank out initial_routing_sync (feature bits 2/3), gossip_queries (6/7),
 				// gossip_queries_ex (10/11), option_static_remotekey (12/13), and
-				// payment_secret (14/15)
+				// option_support_large_channel (16/17)
 				0 => flags.push(feature_byte & 0b00110011),
-				1 => flags.push(feature_byte & 0b00000011),
+				1 => flags.push(feature_byte & 0b11000011),
+				2 => flags.push(feature_byte & 0b00000011),
 				_ => (),
 			}
 		}
@@ -388,10 +389,12 @@ mod tests {
 
 		{
 			// Check that the flags are as expected: optional_data_loss_protect,
-			// option_upfront_shutdown_script, and var_onion_optin set.
+			// option_upfront_shutdown_script, var_onion_optin, payment_secret, and
+			// basic_mpp.
+			assert_eq!(res.flags.len(), 3);
 			assert_eq!(res.flags[0], 0b00100010);
-			assert_eq!(res.flags[1], 0b00000010);
-			assert_eq!(res.flags.len(), 2);
+			assert_eq!(res.flags[1], 0b10000010);
+			assert_eq!(res.flags[2], 0b00000010);
 		}
 
 		// Check that the initial_routing_sync feature was correctly blanked out.
