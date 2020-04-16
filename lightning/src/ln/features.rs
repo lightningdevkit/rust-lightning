@@ -284,33 +284,6 @@ impl InitFeatures {
 	}
 }
 
-impl ChannelFeatures {
-	/// Takes the flags that we know how to interpret in an init-context features that are also
-	/// relevant in a channel-context features and creates a channel-context features from them.
-	pub(crate) fn with_known_relevant_init_flags(_init_ctx: &InitFeatures) -> Self {
-		// There are currently no channel flags defined that we understand.
-		Self { flags: Vec::new(), mark: PhantomData, }
-	}
-}
-
-impl NodeFeatures {
-	/// Takes the flags that we know how to interpret in an init-context features that are also
-	/// relevant in a node-context features and creates a node-context features from them.
-	/// Be sure to blank out features that are unknown to us.
-	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
-		use ln::features::sealed::Context;
-		let byte_count = sealed::NodeContext::KNOWN_FEATURE_MASK.len();
-
-		let mut flags = Vec::new();
-		for (i, feature_byte) in init_ctx.flags.iter().enumerate() {
-			if i < byte_count {
-				flags.push(feature_byte & sealed::NodeContext::KNOWN_FEATURE_MASK[i]);
-			}
-		}
-		Self { flags, mark: PhantomData, }
-	}
-}
-
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
 	pub fn empty() -> Features<T> {
@@ -330,6 +303,20 @@ impl<T: sealed::Context> Features<T> {
 		}
 	}
 
+	/// Takes the flags that we know how to interpret in an init-context features that are also
+	/// relevant in a node-context features and creates a node-context features from them.
+	/// Be sure to blank out features that are unknown to us.
+	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
+		let byte_count = T::KNOWN_FEATURE_MASK.len();
+		let mut flags = Vec::new();
+		for (i, feature_byte) in init_ctx.flags.iter().enumerate() {
+			if i < byte_count {
+				flags.push(feature_byte & T::KNOWN_FEATURE_MASK[i]);
+			}
+		}
+		Self { flags, mark: PhantomData, }
+	}
+
 	#[cfg(test)]
 	/// Create a Features given a set of flags, in LE.
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
@@ -346,15 +333,13 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
-		use ln::features::sealed::Context;
-		let byte_count = sealed::InitContext::KNOWN_FEATURE_MASK.len();
-
-		// Bitwise AND-ing with all even bits set except for known features will select unknown
-		// required features.
+		// Bitwise AND-ing with all even bits set except for known features will select required
+		// unknown features.
+		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
 			let required_features = 0b01_01_01_01;
 			let unknown_features = if i < byte_count {
-				!sealed::InitContext::KNOWN_FEATURE_MASK[i]
+				!T::KNOWN_FEATURE_MASK[i]
 			} else {
 				0b11_11_11_11
 			};
@@ -363,14 +348,12 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
-		use ln::features::sealed::Context;
-		let byte_count = sealed::InitContext::KNOWN_FEATURE_MASK.len();
-
 		// Bitwise AND-ing with all even and odd bits set except for known features will select
-		// unknown features.
+		// both required and optional unknown features.
+		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
 			let unknown_features = if i < byte_count {
-				!sealed::InitContext::KNOWN_FEATURE_MASK[i]
+				!T::KNOWN_FEATURE_MASK[i]
 			} else {
 				0b11_11_11_11
 			};
