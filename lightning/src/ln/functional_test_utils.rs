@@ -467,6 +467,7 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
+		#[cfg(not(target_arch = "wasm32"))]
 		{
 			$tx.verify(|out_point| {
 				$(

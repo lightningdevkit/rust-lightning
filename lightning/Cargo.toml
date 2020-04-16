@@ -10,6 +10,9 @@ Does most of the hard work, without implying a specific runtime, requiring clien
 Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
 """
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 # Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
 non_bitcoin_chain_hash_routing = []
@@ -26,7 +29,13 @@ bitcoin = "0.21"
 bitcoin_hashes = "0.7"
 secp256k1 = "0.15"
 
-[dev-dependencies.bitcoin]
+# Building libbitcoinconsensus in wasm32 requires a stdlibc, which is...complicated
+# Instead, just skip the script verification runs in wasm test runs.
+# Note that due to a long-standing bug only recently fixed in an RFC on nightly, this
+# workaround requires building with cargo nightly -Z features=itarget. See
+# tracking issue https://github.com/rust-lang/cargo/issues/7914 and
+# https://github.com/rust-lang/cargo/issues/1197.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.bitcoin]
 version = "0.21"
 features = ["bitcoinconsensus"]
 
