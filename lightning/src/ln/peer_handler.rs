@@ -548,7 +548,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut features = InitFeatures::supported();
+									let mut features = InitFeatures::known();
 									if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
 										features.clear_initial_routing_sync();
 									}
@@ -642,7 +642,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 												}
 
 												if !peer.outbound {
-													let mut features = InitFeatures::supported();
+													let mut features = InitFeatures::known();
 													if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
 														features.clear_initial_routing_sync();
 													}
@@ -1358,7 +1358,7 @@ mod tests {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		let unsigned_ann = msgs::UnsignedChannelAnnouncement {
-			features: ChannelFeatures::supported(),
+			features: ChannelFeatures::known(),
 			chain_hash: genesis_block(network).header.bitcoin_hash(),
 			short_channel_id: short_chan_id,
 			node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),

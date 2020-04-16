@@ -75,7 +75,7 @@ fn test_insane_channel_opens() {
 	// Test helper that asserts we get the correct error string given a mutator
 	// that supposedly makes the channel open message insane
 	let insane_open_helper = |expected_error_str: &str, message_mutator: fn(msgs::OpenChannel) -> msgs::OpenChannel| {
-		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &message_mutator(open_channel_message.clone()));
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &message_mutator(open_channel_message.clone()));
 		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
 		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[0] {
@@ -117,7 +117,7 @@ fn test_async_inbound_update_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	// balancing
@@ -230,7 +230,7 @@ fn test_update_fee_unordered_raa() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	// balancing
@@ -283,7 +283,7 @@ fn test_multi_flight_update_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	// A                                        B
@@ -401,7 +401,7 @@ fn test_1_conf_open() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(alice_config), Some(bob_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::supported(), InitFeatures::supported());
+	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 	assert!(nodes[0].chain_monitor.does_match_tx(&tx));
 	assert!(nodes[1].chain_monitor.does_match_tx(&tx));
 
@@ -442,11 +442,11 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	if steps & 0x0f == 1 { return; }
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &open_channel);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 
 	if steps & 0x0f == 2 { return; }
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::supported(), &accept_channel);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
 
@@ -520,7 +520,7 @@ fn test_update_fee_vanilla() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	let feerate = get_feerate!(nodes[0], channel_id);
@@ -562,7 +562,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_value = 1888;
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	let feerate = 260;
@@ -611,7 +611,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	// balancing
@@ -708,7 +708,7 @@ fn test_update_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
 	// A                                        B
@@ -812,7 +812,7 @@ fn pre_funding_lock_shutdown_test() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 8000000, 0, InitFeatures::supported(), InitFeatures::supported());
+	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 8000000, 0, InitFeatures::known(), InitFeatures::known());
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![tx.clone()]}, 1);
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![tx.clone()]}, 1);
@@ -841,8 +841,8 @@ fn updates_shutdown_wait() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	let route_1 = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let route_2 = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 
@@ -914,8 +914,8 @@ fn htlc_fail_async_shutdown() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -990,8 +990,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
 
@@ -1155,9 +1155,9 @@ fn fake_network_test() {
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
-	let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network a bit by relaying one payment through all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], 8000000, 8_000_000);
@@ -1175,7 +1175,7 @@ fn fake_network_test() {
 	fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3])[..], payment_hash_1);
 
 	// Add a new channel that skips 3
-	let chan_4 = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::supported(), InitFeatures::supported());
+	let chan_4 = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
 
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 1000000, 1_000_000);
 	send_payment(&nodes[2], &vec!(&nodes[3])[..], 1000000, 1_000_000);
@@ -1249,7 +1249,7 @@ fn fake_network_test() {
 	claim_payment(&nodes[1], &vec!(&nodes[2], &nodes[3], &nodes[1])[..], payment_preimage_1, 1_000_000);
 
 	// Add a duplicate new channel from 2 to 4
-	let chan_5 = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::supported(), InitFeatures::supported());
+	let chan_5 = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
 
 	// Send some payments across both channels
 	let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
@@ -1285,8 +1285,8 @@ fn holding_cell_htlc_counting() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let mut payments = Vec::new();
 	for _ in 0..::ln::channel::OUR_MAX_HTLCS {
@@ -1408,11 +1408,11 @@ fn duplicate_htlc_test() {
 	let mut nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels to route via 3 to 4/5 from 0/1/2
-	create_announced_chan_between_nodes(&nodes, 0, 3, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 3, 5, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 3, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 3, 5, InitFeatures::known(), InitFeatures::known());
 
 	let (payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[3], &nodes[4])[..], 1000000);
 
@@ -1437,7 +1437,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
@@ -1505,8 +1505,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1900, 1001, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1900, 1001, InitFeatures::known(), InitFeatures::known());
 
 	let mut stat01 = get_channel_value_stat!(nodes[0], chan_1.2);
 	let mut stat11 = get_channel_value_stat!(nodes[1], chan_1.2);
@@ -1785,7 +1785,7 @@ fn channel_reserve_in_flight_removes() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let b_chan_values = get_channel_value_stat!(nodes[1], chan_1.2);
 	// Route the first two HTLCs.
@@ -1917,10 +1917,10 @@ fn channel_monitor_network_test() {
 	let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
-	let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::supported(), InitFeatures::supported());
-	let chan_4 = create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
+	let chan_4 = create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network a bit by relaying one payment through all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3], &nodes[4])[..], 8000000, 8_000_000);
@@ -2075,7 +2075,7 @@ fn test_justice_tx() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	// Create some new channels:
-	let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// A pending HTLC which will be revoked:
 	let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
@@ -2122,7 +2122,7 @@ fn test_justice_tx() {
 
 	// We test justice_tx build by A on B's revoked HTLC-Success tx
 	// Create some new channels:
-	let chan_6 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_6 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		node_txn.clear();
@@ -2172,7 +2172,7 @@ fn revoked_output_claim() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn.len(), 1);
@@ -2206,7 +2206,7 @@ fn claim_htlc_outputs_shared_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some new channel:
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
@@ -2275,7 +2275,7 @@ fn claim_htlc_outputs_single_tx() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
@@ -2361,8 +2361,8 @@ fn test_htlc_on_chain_success() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network a bit by relaying one payment through all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000, 8_000_000);
@@ -2534,8 +2534,8 @@ fn test_htlc_on_chain_timeout() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Create some intial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network a bit by relaying one payment thorugh all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000, 8_000_000);
@@ -2644,8 +2644,8 @@ fn test_simple_commitment_revoked_fail_backward() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 	// Get the will-be-revoked local txn from nodes[2]
@@ -2710,8 +2710,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (payment_preimage, _payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], if no_to_remote { 10_000 } else { 3_000_000 });
 	// Get the will-be-revoked local txn from nodes[2]
@@ -2921,7 +2921,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
 
 	// Alice -> Bob: Route a payment but without Bob sending revoke_and_ack.
 	{
@@ -2993,7 +2993,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
 	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
@@ -3020,8 +3020,8 @@ fn test_force_close_fail_back() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, 42).unwrap();
 
@@ -3099,7 +3099,7 @@ fn test_unconf_chan() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 1);
@@ -3132,8 +3132,8 @@ fn test_simple_peer_disconnect() {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -3189,10 +3189,10 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	if messages_delivered == 0 {
-		create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::supported(), InitFeatures::supported());
+		create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 		// nodes[1] doesn't receive the funding_locked message (it'll be re-sent on reconnect)
 	} else {
-		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	}
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels()), &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
@@ -3398,7 +3398,7 @@ fn test_funding_peer_disconnect() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::supported(), InitFeatures::supported());
+	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -3483,7 +3483,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
@@ -3626,7 +3626,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let our_payment_hash = if send_partial_mpp {
 		let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
@@ -3684,8 +3684,8 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Route a first payment to get the 1 -> 2 channel in awaiting_raa...
 	let route = nodes[1].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
@@ -3764,7 +3764,7 @@ fn test_invalid_channel_announcement() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan_announcement = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::supported(), InitFeatures::supported());
+	let chan_announcement = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
 
 	let a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
 	let b_channel_lock = nodes[1].node.channel_state.lock().unwrap();
@@ -3786,7 +3786,7 @@ fn test_invalid_channel_announcement() {
 	macro_rules! dummy_unsigned_msg {
 		() => {
 			msgs::UnsignedChannelAnnouncement {
-				features: ChannelFeatures::supported(),
+				features: ChannelFeatures::known(),
 				chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 				short_channel_id: as_chan.get_short_channel_id().unwrap(),
 				node_id_1: if were_node_one { as_network_key } else { bs_network_key },
@@ -3843,7 +3843,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::supported(), InitFeatures::supported());
+	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
@@ -3914,7 +3914,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 	let (_, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -3971,9 +3971,9 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 2, 0, InitFeatures::supported(), InitFeatures::supported());
-	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 2, 0, InitFeatures::known(), InitFeatures::known());
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3, InitFeatures::known(), InitFeatures::known());
 
 	let mut node_0_stale_monitors_serialized = Vec::new();
 	for monitor in nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter() {
@@ -4206,7 +4206,7 @@ fn test_claim_sizeable_push_msat() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::known(), InitFeatures::known());
 	nodes[1].node.force_close_channel(&chan.2);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
@@ -4233,7 +4233,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::known(), InitFeatures::known());
 	nodes[0].node.force_close_channel(&chan.2);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
@@ -4265,7 +4265,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 59000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 59000000, InitFeatures::known(), InitFeatures::known());
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
@@ -4297,7 +4297,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 
@@ -4346,7 +4346,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network a bit by relaying one payment through all the channels ...
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
@@ -4393,7 +4393,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -4429,7 +4429,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -4485,7 +4485,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
@@ -4546,8 +4546,8 @@ fn test_onchain_to_onchain_claim() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network a bit by relaying one payment through all the channels ...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000, 8_000_000);
@@ -4640,8 +4640,8 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (our_payment_preimage, duplicate_payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
 	*nodes[0].network_payment_count.borrow_mut() -= 1;
@@ -4756,7 +4756,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
 	let local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
@@ -4815,11 +4815,11 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
-	let chan = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 3, 5, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 3, 5, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance and check output sanity...
 	send_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 500000, 500_000);
@@ -5058,7 +5058,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let (_, our_payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
 	let local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -5099,7 +5099,7 @@ fn test_static_output_closing_tx() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
 	let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
@@ -5125,7 +5125,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3000000 });
 
@@ -5166,7 +5166,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), if use_dust { 50000 } else { 3000000 }, TEST_FINAL_CLTV).unwrap();
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -5195,7 +5195,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Fail the payment, but don't deliver A's final RAA, resulting in the HTLC only being present
 	// in B's previous (unrevoked) commitment transaction, but none of A's commitment transactions.
@@ -5491,7 +5491,7 @@ fn test_onion_failure() {
 	for node in nodes.iter() {
 		*node.keys_manager.override_session_priv.lock().unwrap() = Some(SecretKey::from_slice(&[3; 32]).unwrap());
 	}
-	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported())];
+	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 40000, TEST_FINAL_CLTV).unwrap();
 	// positve case
@@ -5727,7 +5727,7 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	let push_msat=10001;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).unwrap();
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &node0_to_1_send_open_channel);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &node0_to_1_send_open_channel);
 
 	//Create a second channel with a channel_id collision
 	assert!(nodes[0].node.create_channel(nodes[0].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).is_err());
@@ -5789,7 +5789,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let mut route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
@@ -5808,7 +5808,7 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let mut route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
@@ -5827,7 +5827,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
@@ -5850,7 +5850,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0, InitFeatures::supported(), InitFeatures::supported());
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 100000000, 500000001).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
@@ -5867,7 +5867,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, InitFeatures::known(), InitFeatures::known());
 	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_accepted_htlcs as u64;
 
 	for i in 0..max_accepted_htlcs {
@@ -5910,7 +5910,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_value = 100000;
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0, InitFeatures::known(), InitFeatures::known());
 	let max_in_flight = get_channel_value_stat!(nodes[0], chan.2).their_max_htlc_value_in_flight_msat;
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], max_in_flight, max_in_flight);
@@ -5934,7 +5934,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let htlc_minimum_msat: u64;
 	{
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
@@ -5961,7 +5961,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 
 	let their_channel_reserve = get_channel_value_stat!(nodes[0], chan.2).channel_reserve_msat;
 
@@ -5988,7 +5988,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 
@@ -6033,7 +6033,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
@@ -6055,7 +6055,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
@@ -6079,7 +6079,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
@@ -6124,7 +6124,7 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6155,7 +6155,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6186,7 +6186,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6218,7 +6218,7 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
 
@@ -6259,7 +6259,7 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
 
@@ -6300,7 +6300,7 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
 	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &[], 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
@@ -6346,8 +6346,8 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1000000, 1000000, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
 
 	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6424,7 +6424,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan =create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan =create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
 
@@ -6513,7 +6513,7 @@ fn test_no_failure_dust_htlc_local_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance a bit
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
@@ -6570,7 +6570,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
 
@@ -6670,7 +6670,7 @@ fn test_upfront_shutdown_script() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	// We test that in case of peer committing upfront to a script, if it changes at closing, we refuse to sign
-	let flags = InitFeatures::supported();
+	let flags = InitFeatures::known();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
 	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
 	let mut node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
@@ -6694,7 +6694,7 @@ fn test_upfront_shutdown_script() {
 	}
 
 	// We test that if case of peer non-signaling we don't enforce committed script at channel opening
-	let mut flags_no = InitFeatures::supported();
+	let mut flags_no = InitFeatures::known();
 	flags_no.unset_upfront_shutdown_script();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags_no, flags.clone());
 	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
@@ -6768,7 +6768,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &low_our_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
 			_ => panic!("Unexpected event"),
@@ -6777,10 +6777,10 @@ fn test_user_configurable_csv_delay() {
 
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in Chanel::accept_channel()
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	accept_channel.to_self_delay = 200;
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::supported(), &accept_channel);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
 	if let MessageSendEvent::HandleError { ref action, .. } = nodes[0].node.get_and_clear_pending_msg_events()[0] {
 		match action {
 			&ErrorAction::SendErrorMessage { ref msg } => {
@@ -6794,7 +6794,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::supported(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &high_their_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, Arc::new(test_utils::TestLogger::new()), &high_their_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert_eq!(err, "They wanted our payments to be delayed by a needlessly long period"); },
 			_ => panic!("Unexpected event"),
@@ -6818,7 +6818,7 @@ fn test_data_loss_protect() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
 
 	// Cache node A state before any channel update
 	let previous_node_state = nodes[0].node.encode();
@@ -6926,7 +6926,7 @@ fn test_check_htlc_underpaying() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channels
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let (payment_preimage, payment_hash) = route_payment(&nodes[0], &[&nodes[1]], 10_000);
 
@@ -6970,9 +6970,9 @@ fn test_announce_disable_channels() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let short_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
-	let short_id_2 = create_announced_chan_between_nodes(&nodes, 1, 0, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
-	let short_id_3 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
+	let short_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let short_id_2 = create_announced_chan_between_nodes(&nodes, 1, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let short_id_3 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
 	// Disconnect peers
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
@@ -7032,7 +7032,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 3000000, 30).unwrap();
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
@@ -7135,7 +7135,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	// Lock HTLC in both directions
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3_000_000).0;
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
@@ -7258,7 +7258,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000).0;
 
@@ -7366,7 +7366,7 @@ fn test_set_outpoints_partial_claiming() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	let payment_preimage_1 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
 	let payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
 
@@ -7467,7 +7467,7 @@ fn test_counterparty_raa_skip_no_crash() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()).2;
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let commitment_seed = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&channel_id).unwrap().local_keys.commitment_seed().clone();
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
@@ -7491,7 +7491,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::supported(), InitFeatures::supported());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	// Lock HTLC in both directions
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
 	route_payment(&nodes[1], &vec!(&nodes[0])[..], 9_000_000).0;
@@ -7565,7 +7565,7 @@ fn test_override_0msat_htlc_minimum() {
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	assert_eq!(res.htlc_minimum_msat, 1);
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::supported(), &res);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
 	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	assert_eq!(res.htlc_minimum_msat, 1);
 }
@@ -7579,8 +7579,8 @@ fn test_simple_payment_secret() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
 	let payment_secret = PaymentSecret([0xdb; 32]);
@@ -7601,10 +7601,10 @@ fn test_simple_mpp() {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::supported(), InitFeatures::supported()).0.contents.short_channel_id;
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
 	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
 	let payment_secret = PaymentSecret([0xdb; 32]);
@@ -7641,7 +7641,7 @@ fn test_update_err_monitor_lockdown() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Create some initial channel
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let outpoint = OutPoint { txid: chan_1.3.txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions

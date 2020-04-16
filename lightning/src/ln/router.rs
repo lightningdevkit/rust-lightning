@@ -1906,7 +1906,7 @@ mod tests {
 		let first_announcement_time = 500;
 
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
-			features: NodeFeatures::supported(),
+			features: NodeFeatures::known(),
 			timestamp: first_announcement_time,
 			node_id: node_id_1,
 			rgb: [0; 3],
@@ -1929,7 +1929,7 @@ mod tests {
 		{
 			// Announce a channel to add a corresponding node.
 			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::supported(),
+				features: ChannelFeatures::known(),
 		 		chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 				short_channel_id: 0,
 				node_id_1,
@@ -2020,7 +2020,7 @@ mod tests {
 
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::supported(),
+			features: ChannelFeatures::known(),
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 0,
 			node_id_1,
@@ -2591,7 +2591,7 @@ mod tests {
 
 		{
 			let mut unsigned_announcement = UnsignedNodeAnnouncement {
-				features: NodeFeatures::supported(),
+				features: NodeFeatures::known(),
 				timestamp: 1000,
 				node_id: node_id_1,
 				rgb: [0; 3],
@@ -2633,7 +2633,7 @@ mod tests {
 		{
 			// Later announcement which should not be relayed (excess data) prevent us from sharing a node
 			let unsigned_announcement = UnsignedNodeAnnouncement {
-				features: NodeFeatures::supported(),
+				features: NodeFeatures::known(),
 				timestamp: 1010,
 				node_id: node_id_2,
 				rgb: [0; 3],

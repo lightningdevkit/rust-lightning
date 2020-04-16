@@ -6,6 +6,11 @@
 //! defined internally by a trait specifying the corresponding flags (i.e., even and odd bits). A
 //! [`Context`] is used to parameterize [`Features`] and defines which features it can support.
 //!
+//! Whether a feature is considered "known" or "unknown" is relative to the implementation, whereas
+//! the term "supports" is used in reference to a particular set of [`Features`]. That is, a node
+//! supports a feature if it advertises the feature (as either required or optional) to its peers.
+//! And the implementation can interpret a feature if the feature is known to it.
+//!
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
 //! [messages]: ../msgs/index.html
 //! [`Features`]: struct.Features.html
@@ -18,17 +23,107 @@ use std::marker::PhantomData;
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
-#[macro_use]
-mod sealed { // You should just use the type aliases instead.
-	pub struct InitContext {}
-	pub struct NodeContext {}
-	pub struct ChannelContext {}
+mod sealed {
+	/// The context in which [`Features`] are applicable. Defines which features are required and
+	/// which are optional for the context.
+	///
+	/// [`Features`]: ../struct.Features.html
+	pub trait Context {
+		/// Features that are known to the implementation, where a required feature is indicated by
+		/// its even bit and an optional feature is indicated by its odd bit.
+		const KNOWN_FEATURE_FLAGS: &'static [u8];
 
-	/// An internal trait capturing the various feature context types
-	pub trait Context {}
-	impl Context for InitContext {}
-	impl Context for NodeContext {}
-	impl Context for ChannelContext {}
+		/// Bitmask for selecting features that are known to the implementation, regardless of
+		/// whether each feature is required or optional.
+		const KNOWN_FEATURE_MASK: &'static [u8];
+	}
+
+	/// Defines a [`Context`] by stating which features it requires and which are optional. Features
+	/// are specified as a comma-separated list of bytes where each byte is a pipe-delimited list of
+	/// feature identifiers.
+	///
+	/// [`Context`]: trait.Context.html
+	macro_rules! define_context {
+		($context: ident {
+			required_features: [$( $( $required_feature: ident )|*, )*],
+			optional_features: [$( $( $optional_feature: ident )|*, )*],
+		}) => {
+			pub struct $context {}
+
+			impl Context for $context {
+				const KNOWN_FEATURE_FLAGS: &'static [u8] = &[
+					// For each byte, use bitwise-OR to compute the applicable flags for known
+					// required features `r_i` and optional features `o_j` for all `i` and `j` such
+					// that the following slice is formed:
+					//
+					// [
+					//  `r_0` | `r_1` | ... | `o_0` | `o_1` | ...,
+					//  ...,
+					// ]
+					$(
+						0b00_00_00_00 $(|
+							<Self as $required_feature>::REQUIRED_MASK)*
+						$(|
+							<Self as $optional_feature>::OPTIONAL_MASK)*,
+					)*
+				];
+
+				const KNOWN_FEATURE_MASK: &'static [u8] = &[
+					// Similar as above, but set both flags for each feature regardless of whether
+					// the feature is required or optional.
+					$(
+						0b00_00_00_00 $(|
+							<Self as $required_feature>::REQUIRED_MASK |
+							<Self as $required_feature>::OPTIONAL_MASK)*
+						$(|
+							<Self as $optional_feature>::REQUIRED_MASK |
+							<Self as $optional_feature>::OPTIONAL_MASK)*,
+					)*
+				];
+			}
+		};
+	}
+
+	define_context!(InitContext {
+		required_features: [
+			// Byte 0
+			,
+			// Byte 1
+			,
+			// Byte 2
+			,
+		],
+		optional_features: [
+			// Byte 0
+			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript,
+			// Byte 1
+			VariableLengthOnion | PaymentSecret,
+			// Byte 2
+			BasicMPP,
+		],
+	});
+	define_context!(NodeContext {
+		required_features: [
+			// Byte 0
+			,
+			// Byte 1
+			,
+			// Byte 2
+			,
+		],
+		optional_features: [
+			// Byte 0
+			DataLossProtect | UpfrontShutdownScript,
+			// Byte 1
+			VariableLengthOnion | PaymentSecret,
+			// Byte 2
+			BasicMPP,
+		],
+	});
+	define_context!(ChannelContext {
+		required_features: [],
+		optional_features: [],
+	});
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
 	/// useful for manipulating feature flags.
@@ -88,10 +183,12 @@ mod sealed { // You should just use the type aliases instead.
 					flags[Self::BYTE_OFFSET] |= Self::OPTIONAL_MASK;
 				}
 
-				/// Clears the feature's optional (odd) bit from the given flags.
+				/// Clears the feature's required (even) and optional (odd) bits from the given
+				/// flags.
 				#[inline]
-				fn clear_optional_bit(flags: &mut Vec<u8>) {
+				fn clear_bits(flags: &mut Vec<u8>) {
 					if flags.len() > Self::BYTE_OFFSET {
+						flags[Self::BYTE_OFFSET] &= !Self::REQUIRED_MASK;
 						flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
 					}
 				}
@@ -122,20 +219,6 @@ mod sealed { // You should just use the type aliases instead.
 		"Feature flags for `payment_secret`.");
 	define_feature!(17, BasicMPP, [InitContext, NodeContext],
 		"Feature flags for `basic_mpp`.");
-
-	/// Generates a feature flag byte with the given features set as optional. Useful for initializing
-	/// the flags within [`Features`].
-	///
-	/// [`Features`]: struct.Features.html
-	macro_rules! feature_flags {
-		($context: ty; $($feature: ident)|*) => {
-			(0b00_00_00_00
-				$(
-					| <$context as sealed::$feature>::OPTIONAL_MASK
-				)*
-			)
-		}
-	}
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -173,18 +256,6 @@ pub type NodeFeatures = Features<sealed::NodeContext>;
 pub type ChannelFeatures = Features<sealed::ChannelContext>;
 
 impl InitFeatures {
-	/// Create a Features with the features we support
-	pub fn supported() -> InitFeatures {
-		InitFeatures {
-			flags: vec![
-				feature_flags![sealed::InitContext; DataLossProtect | InitialRoutingSync | UpfrontShutdownScript],
-				feature_flags![sealed::InitContext; VariableLengthOnion | PaymentSecret],
-				feature_flags![sealed::InitContext; BasicMPP],
-			],
-			mark: PhantomData,
-		}
-	}
-
 	/// Writes all features present up to, and including, 13.
 	pub(crate) fn write_up_to_13<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		let len = cmp::min(2, self.flags.len());
@@ -214,22 +285,6 @@ impl InitFeatures {
 }
 
 impl ChannelFeatures {
-	/// Create a Features with the features we support
-	#[cfg(not(feature = "fuzztarget"))]
-	pub(crate) fn supported() -> ChannelFeatures {
-		ChannelFeatures {
-			flags: Vec::new(),
-			mark: PhantomData,
-		}
-	}
-	#[cfg(feature = "fuzztarget")]
-	pub fn supported() -> ChannelFeatures {
-		ChannelFeatures {
-			flags: Vec::new(),
-			mark: PhantomData,
-		}
-	}
-
 	/// Takes the flags that we know how to interpret in an init-context features that are also
 	/// relevant in a channel-context features and creates a channel-context features from them.
 	pub(crate) fn with_known_relevant_init_flags(_init_ctx: &InitFeatures) -> Self {
@@ -239,54 +294,17 @@ impl ChannelFeatures {
 }
 
 impl NodeFeatures {
-	/// Create a Features with the features we support
-	#[cfg(not(feature = "fuzztarget"))]
-	pub(crate) fn supported() -> NodeFeatures {
-		NodeFeatures {
-			flags: vec![
-				feature_flags![sealed::NodeContext; DataLossProtect | UpfrontShutdownScript],
-				feature_flags![sealed::NodeContext; VariableLengthOnion | PaymentSecret],
-				feature_flags![sealed::NodeContext; BasicMPP],
-			],
-			mark: PhantomData,
-		}
-	}
-	#[cfg(feature = "fuzztarget")]
-	pub fn supported() -> NodeFeatures {
-		NodeFeatures {
-			flags: vec![
-				feature_flags![sealed::NodeContext; DataLossProtect | UpfrontShutdownScript],
-				feature_flags![sealed::NodeContext; VariableLengthOnion | PaymentSecret],
-				feature_flags![sealed::NodeContext; BasicMPP],
-			],
-			mark: PhantomData,
-		}
-	}
-
 	/// Takes the flags that we know how to interpret in an init-context features that are also
 	/// relevant in a node-context features and creates a node-context features from them.
 	/// Be sure to blank out features that are unknown to us.
 	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
-		// Generates a bitmask with both even and odd bits set for the given features. Bitwise
-		// AND-ing it with a byte will select only common features.
-		macro_rules! features_including {
-			($($feature: ident)|*) => {
-				(0b00_00_00_00
-					$(
-						| <sealed::NodeContext as sealed::$feature>::REQUIRED_MASK
-						| <sealed::NodeContext as sealed::$feature>::OPTIONAL_MASK
-					)*
-				)
-			}
-		}
+		use ln::features::sealed::Context;
+		let byte_count = sealed::NodeContext::KNOWN_FEATURE_MASK.len();
 
 		let mut flags = Vec::new();
-		for (i, feature_byte)in init_ctx.flags.iter().enumerate() {
-			match i {
-				0 => flags.push(feature_byte & features_including![DataLossProtect | UpfrontShutdownScript]),
-				1 => flags.push(feature_byte & features_including![VariableLengthOnion | PaymentSecret]),
-				2 => flags.push(feature_byte & features_including![BasicMPP]),
-				_ => (),
+		for (i, feature_byte) in init_ctx.flags.iter().enumerate() {
+			if i < byte_count {
+				flags.push(feature_byte & sealed::NodeContext::KNOWN_FEATURE_MASK[i]);
 			}
 		}
 		Self { flags, mark: PhantomData, }
@@ -298,6 +316,16 @@ impl<T: sealed::Context> Features<T> {
 	pub fn empty() -> Features<T> {
 		Features {
 			flags: Vec::new(),
+			mark: PhantomData,
+		}
+	}
+
+	/// Creates features known by the implementation as defined by [`T::KNOWN_FEATURE_FLAGS`].
+	///
+	/// [`T::KNOWN_FEATURE_FLAGS`]: sealed/trait.Context.html#associatedconstant.KNOWN_FEATURE_FLAGS
+	pub fn known() -> Features<T> {
+		Self {
+			flags: T::KNOWN_FEATURE_FLAGS.to_vec(),
 			mark: PhantomData,
 		}
 	}
@@ -318,49 +346,35 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	pub(crate) fn requires_unknown_bits(&self) -> bool {
-		// Generates a bitmask with all even bits set except for the given features. Bitwise
-		// AND-ing it with a byte will select unknown required features.
-		macro_rules! features_excluding {
-			($($feature: ident)|*) => {
-				(0b01_01_01_01
-					$(
-						& !(<sealed::InitContext as sealed::$feature>::REQUIRED_MASK)
-					)*
-				)
-			}
-		}
+		use ln::features::sealed::Context;
+		let byte_count = sealed::InitContext::KNOWN_FEATURE_MASK.len();
 
-		self.flags.iter().enumerate().any(|(idx, &byte)| {
-			(match idx {
-				0 => (byte & features_excluding![DataLossProtect | InitialRoutingSync | UpfrontShutdownScript]),
-				1 => (byte & features_excluding![VariableLengthOnion | PaymentSecret]),
-				2 => (byte & features_excluding![BasicMPP]),
-				_ => (byte & features_excluding![]),
-			}) != 0
+		// Bitwise AND-ing with all even bits set except for known features will select unknown
+		// required features.
+		self.flags.iter().enumerate().any(|(i, &byte)| {
+			let required_features = 0b01_01_01_01;
+			let unknown_features = if i < byte_count {
+				!sealed::InitContext::KNOWN_FEATURE_MASK[i]
+			} else {
+				0b11_11_11_11
+			};
+			(byte & (required_features & unknown_features)) != 0
 		})
 	}
 
 	pub(crate) fn supports_unknown_bits(&self) -> bool {
-		// Generates a bitmask with all even and odd bits set except for the given features. Bitwise
-		// AND-ing it with a byte will select unknown supported features.
-		macro_rules! features_excluding {
-			($($feature: ident)|*) => {
-				(0b11_11_11_11
-					$(
-						& !(<sealed::InitContext as sealed::$feature>::REQUIRED_MASK)
-						& !(<sealed::InitContext as sealed::$feature>::OPTIONAL_MASK)
-					)*
-				)
-			}
-		}
+		use ln::features::sealed::Context;
+		let byte_count = sealed::InitContext::KNOWN_FEATURE_MASK.len();
 
-		self.flags.iter().enumerate().any(|(idx, &byte)| {
-			(match idx {
-				0 => (byte & features_excluding![DataLossProtect | InitialRoutingSync | UpfrontShutdownScript]),
-				1 => (byte & features_excluding![VariableLengthOnion | PaymentSecret]),
-				2 => (byte & features_excluding![BasicMPP]),
-				_ => byte,
-			}) != 0
+		// Bitwise AND-ing with all even and odd bits set except for known features will select
+		// unknown features.
+		self.flags.iter().enumerate().any(|(i, &byte)| {
+			let unknown_features = if i < byte_count {
+				!sealed::InitContext::KNOWN_FEATURE_MASK[i]
+			} else {
+				0b11_11_11_11
+			};
+			(byte & unknown_features) != 0
 		})
 	}
 
@@ -403,7 +417,7 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	}
 	#[cfg(test)]
 	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
-		<T as sealed::UpfrontShutdownScript>::clear_optional_bit(&mut self.flags)
+		<T as sealed::UpfrontShutdownScript>::clear_bits(&mut self.flags)
 	}
 }
 
@@ -418,7 +432,7 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 		<T as sealed::InitialRoutingSync>::supports_feature(&self.flags)
 	}
 	pub(crate) fn clear_initial_routing_sync(&mut self) {
-		<T as sealed::InitialRoutingSync>::clear_optional_bit(&mut self.flags)
+		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags)
 	}
 }
 
@@ -468,29 +482,29 @@ mod tests {
 
 	#[test]
 	fn sanity_test_our_features() {
-		assert!(!ChannelFeatures::supported().requires_unknown_bits());
-		assert!(!ChannelFeatures::supported().supports_unknown_bits());
-		assert!(!InitFeatures::supported().requires_unknown_bits());
-		assert!(!InitFeatures::supported().supports_unknown_bits());
-		assert!(!NodeFeatures::supported().requires_unknown_bits());
-		assert!(!NodeFeatures::supported().supports_unknown_bits());
+		assert!(!ChannelFeatures::known().requires_unknown_bits());
+		assert!(!ChannelFeatures::known().supports_unknown_bits());
+		assert!(!InitFeatures::known().requires_unknown_bits());
+		assert!(!InitFeatures::known().supports_unknown_bits());
+		assert!(!NodeFeatures::known().requires_unknown_bits());
+		assert!(!NodeFeatures::known().supports_unknown_bits());
 
-		assert!(InitFeatures::supported().supports_upfront_shutdown_script());
-		assert!(NodeFeatures::supported().supports_upfront_shutdown_script());
+		assert!(InitFeatures::known().supports_upfront_shutdown_script());
+		assert!(NodeFeatures::known().supports_upfront_shutdown_script());
 
-		assert!(InitFeatures::supported().supports_data_loss_protect());
-		assert!(NodeFeatures::supported().supports_data_loss_protect());
+		assert!(InitFeatures::known().supports_data_loss_protect());
+		assert!(NodeFeatures::known().supports_data_loss_protect());
 
-		assert!(InitFeatures::supported().supports_variable_length_onion());
-		assert!(NodeFeatures::supported().supports_variable_length_onion());
+		assert!(InitFeatures::known().supports_variable_length_onion());
+		assert!(NodeFeatures::known().supports_variable_length_onion());
 
-		assert!(InitFeatures::supported().supports_payment_secret());
-		assert!(NodeFeatures::supported().supports_payment_secret());
+		assert!(InitFeatures::known().supports_payment_secret());
+		assert!(NodeFeatures::known().supports_payment_secret());
 
-		assert!(InitFeatures::supported().supports_basic_mpp());
-		assert!(NodeFeatures::supported().supports_basic_mpp());
+		assert!(InitFeatures::known().supports_basic_mpp());
+		assert!(NodeFeatures::known().supports_basic_mpp());
 
-		let mut init_features = InitFeatures::supported();
+		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 		init_features.clear_initial_routing_sync();
 		assert!(!init_features.initial_routing_sync());
@@ -498,7 +512,7 @@ mod tests {
 
 	#[test]
 	fn sanity_test_unkown_bits_testing() {
-		let mut features = ChannelFeatures::supported();
+		let mut features = ChannelFeatures::known();
 		features.set_require_unknown_bits();
 		assert!(features.requires_unknown_bits());
 		features.clear_require_unknown_bits();
@@ -508,7 +522,7 @@ mod tests {
 	#[test]
 	fn test_node_with_known_relevant_init_flags() {
 		// Create an InitFeatures with initial_routing_sync supported.
-		let init_features = InitFeatures::supported();
+		let init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 
 		// Attempt to pull out non-node-context feature flags from these InitFeatures.
