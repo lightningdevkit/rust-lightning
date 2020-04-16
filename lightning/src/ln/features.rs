@@ -299,7 +299,7 @@ impl<T: sealed::PaymentSecret> Features<T> {
 	// Note that we never need to test this since what really matters is the invoice - iff the
 	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
 	// supports payment_secret).
-	pub(crate) fn payment_secret(&self) -> bool {
+	pub(crate) fn supports_payment_secret(&self) -> bool {
 		self.flags.len() > 1 && (self.flags[1] & (3 << (14-8))) != 0
 	}
 }
@@ -307,7 +307,7 @@ impl<T: sealed::PaymentSecret> Features<T> {
 impl<T: sealed::BasicMPP> Features<T> {
 	// We currently never test for this since we don't actually *generate* multipath routes.
 	#[allow(dead_code)]
-	pub(crate) fn basic_mpp(&self) -> bool {
+	pub(crate) fn supports_basic_mpp(&self) -> bool {
 		self.flags.len() > 2 && (self.flags[2] & (3 << (16-8*2))) != 0
 	}
 }
@@ -355,6 +355,12 @@ mod tests {
 
 		assert!(InitFeatures::supported().supports_variable_length_onion());
 		assert!(NodeFeatures::supported().supports_variable_length_onion());
+
+		assert!(InitFeatures::supported().supports_payment_secret());
+		assert!(NodeFeatures::supported().supports_payment_secret());
+
+		assert!(InitFeatures::supported().supports_basic_mpp());
+		assert!(NodeFeatures::supported().supports_basic_mpp());
 
 		let mut init_features = InitFeatures::supported();
 		init_features.set_initial_routing_sync();
