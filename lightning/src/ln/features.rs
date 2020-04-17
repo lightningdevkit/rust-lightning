@@ -165,9 +165,10 @@ impl NodeFeatures {
 			match i {
 				// Blank out initial_routing_sync (feature bits 2/3), gossip_queries (6/7),
 				// gossip_queries_ex (10/11), option_static_remotekey (12/13), and
-				// payment_secret (14/15)
+				// option_support_large_channel (16/17)
 				0 => flags.push(feature_byte & 0b00110011),
-				1 => flags.push(feature_byte & 0b00000011),
+				1 => flags.push(feature_byte & 0b11000011),
+				2 => flags.push(feature_byte & 0b00000011),
 				_ => (),
 			}
 		}
@@ -299,7 +300,7 @@ impl<T: sealed::PaymentSecret> Features<T> {
 	// Note that we never need to test this since what really matters is the invoice - iff the
 	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
 	// supports payment_secret).
-	pub(crate) fn payment_secret(&self) -> bool {
+	pub(crate) fn supports_payment_secret(&self) -> bool {
 		self.flags.len() > 1 && (self.flags[1] & (3 << (14-8))) != 0
 	}
 }
@@ -307,7 +308,7 @@ impl<T: sealed::PaymentSecret> Features<T> {
 impl<T: sealed::BasicMPP> Features<T> {
 	// We currently never test for this since we don't actually *generate* multipath routes.
 	#[allow(dead_code)]
-	pub(crate) fn basic_mpp(&self) -> bool {
+	pub(crate) fn supports_basic_mpp(&self) -> bool {
 		self.flags.len() > 2 && (self.flags[2] & (3 << (16-8*2))) != 0
 	}
 }
@@ -356,6 +357,12 @@ mod tests {
 		assert!(InitFeatures::supported().supports_variable_length_onion());
 		assert!(NodeFeatures::supported().supports_variable_length_onion());
 
+		assert!(InitFeatures::supported().supports_payment_secret());
+		assert!(NodeFeatures::supported().supports_payment_secret());
+
+		assert!(InitFeatures::supported().supports_basic_mpp());
+		assert!(NodeFeatures::supported().supports_basic_mpp());
+
 		let mut init_features = InitFeatures::supported();
 		init_features.set_initial_routing_sync();
 		assert!(!init_features.requires_unknown_bits());
@@ -382,10 +389,12 @@ mod tests {
 
 		{
 			// Check that the flags are as expected: optional_data_loss_protect,
-			// option_upfront_shutdown_script, and var_onion_optin set.
+			// option_upfront_shutdown_script, var_onion_optin, payment_secret, and
+			// basic_mpp.
+			assert_eq!(res.flags.len(), 3);
 			assert_eq!(res.flags[0], 0b00100010);
-			assert_eq!(res.flags[1], 0b00000010);
-			assert_eq!(res.flags.len(), 2);
+			assert_eq!(res.flags[1], 0b10000010);
+			assert_eq!(res.flags[2], 0b00000010);
 		}
 
 		// Check that the initial_routing_sync feature was correctly blanked out.
