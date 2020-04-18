@@ -142,7 +142,6 @@ macro_rules! subtract_high_prio_fee {
 /// do RBF bumping if possible.
 pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	destination_script: Script,
-	funding_redeemscript: Script,
 	local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
 	local_csv: u16,
@@ -185,7 +184,6 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
-		self.funding_redeemscript.write(writer)?;
 		self.local_commitment.write(writer)?;
 		self.prev_local_commitment.write(writer)?;
 
@@ -231,7 +229,6 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTxHandler<ChanSigner> {
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
-		let funding_redeemscript = Readable::read(reader)?;
 
 		let local_commitment = Readable::read(reader)?;
 		let prev_local_commitment = Readable::read(reader)?;
@@ -285,7 +282,6 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 
 		Ok(OnchainTxHandler {
 			destination_script,
-			funding_redeemscript,
 			local_commitment,
 			prev_local_commitment,
 			local_csv,
@@ -300,13 +296,12 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, funding_redeemscript: Script, local_csv: u16, logger: Arc<Logger>) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16, logger: Arc<Logger>) -> Self {
 
 		let key_storage = keys;
 
 		OnchainTxHandler {
 			destination_script,
-			funding_redeemscript,
 			local_commitment: None,
 			prev_local_commitment: None,
 			local_csv,
@@ -537,7 +532,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						return None;
 					},
 					&InputMaterial::Funding { ref channel_value } => {
-						let signed_tx = self.get_fully_signed_local_tx(*channel_value).unwrap();
+						let signed_tx = self.get_fully_signed_local_tx().unwrap();
 						let mut amt_outputs = 0;
 						for outp in signed_tx.output.iter() {
 							amt_outputs += outp.value;
@@ -790,19 +785,19 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// have empty local commitment transaction if a ChannelMonitor is asked to force-close just after Channel::get_outbound_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
-	pub(super) fn get_fully_signed_local_tx(&mut self, channel_value_satoshis: u64) -> Option<Transaction> {
+	pub(super) fn get_fully_signed_local_tx(&mut self) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
-			self.key_storage.sign_local_commitment(local_commitment, &self.funding_redeemscript, channel_value_satoshis, &self.secp_ctx);
+			self.key_storage.sign_local_commitment(local_commitment, &self.secp_ctx);
 			return Some(local_commitment.with_valid_witness().clone());
 		}
 		None
 	}
 
 	#[cfg(test)]
-	pub(super) fn get_fully_signed_copy_local_tx(&mut self, channel_value_satoshis: u64) -> Option<Transaction> {
+	pub(super) fn get_fully_signed_copy_local_tx(&mut self) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			let mut local_commitment = local_commitment.clone();
-			self.key_storage.unsafe_sign_local_commitment(&mut local_commitment, &self.funding_redeemscript, channel_value_satoshis, &self.secp_ctx);
+			self.key_storage.unsafe_sign_local_commitment(&mut local_commitment, &self.secp_ctx);
 			return Some(local_commitment.with_valid_witness().clone());
 		}
 		None

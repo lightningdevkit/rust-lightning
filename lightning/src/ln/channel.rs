@@ -4418,7 +4418,7 @@ mod tests {
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
-		let chan_keys = InMemoryChannelKeys::new(
+		let mut chan_keys = InMemoryChannelKeys::new(
 			&secp_ctx,
 			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
@@ -4428,7 +4428,7 @@ mod tests {
 
 			// These aren't set in the test vectors:
 			[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-			7000000000,
+			10_000_000,
 		);
 
 		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
@@ -4438,7 +4438,7 @@ mod tests {
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&&feeest, &&keys_provider, their_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&&feeest, &&keys_provider, their_node_id, 10_000_000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
@@ -4452,6 +4452,7 @@ mod tests {
 			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
 			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
 		};
+		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
 
 		assert_eq!(their_pubkeys.payment_basepoint.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
@@ -4491,7 +4492,7 @@ mod tests {
 				secp_ctx.verify(&sighash, &their_signature, chan.their_funding_pubkey()).unwrap();
 
 				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey());
-				chan_keys.sign_local_commitment(&mut localtx, &redeemscript, chan.channel_value_satoshis, &chan.secp_ctx);
+				chan_keys.sign_local_commitment(&mut localtx, &chan.secp_ctx);
 
 				assert_eq!(serialize(localtx.with_valid_witness())[..],
 						hex::decode($tx_hex).unwrap()[..]);

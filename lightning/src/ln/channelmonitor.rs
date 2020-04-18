@@ -1086,7 +1086,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 			outputs_to_watch: HashMap::new(),
 
-			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, funding_redeemscript, their_to_self_delay, logger.clone()),
+			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, their_to_self_delay, logger.clone()),
 
 			lockdown_from_offchain: false,
 
@@ -1743,7 +1743,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// In any-case, choice is up to the user.
 	pub fn get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
 		log_trace!(self, "Getting signed latest local commitment transaction!");
-		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx(self.channel_value_satoshis) {
+		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
@@ -1769,7 +1769,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	#[cfg(test)]
 	pub fn unsafe_get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
 		log_trace!(self, "Getting signed copy of latest local commitment transaction!");
-		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx(self.channel_value_satoshis) {
+		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx() {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
@@ -1855,7 +1855,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
 			if should_broadcast {
-				if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx(self.channel_value_satoshis) {
+				if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
 					let (mut new_outpoints, new_outputs, _) = self.broadcast_by_local_state(&commitment_tx, cur_local_tx);
 					if !new_outputs.is_empty() {
 						watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
