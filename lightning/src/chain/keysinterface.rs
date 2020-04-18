@@ -24,7 +24,8 @@ use util::logger::Logger;
 use util::ser::{Writeable, Writer, Readable};
 
 use ln::chan_utils;
-use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys};
+use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction};
+use ln::channelmanager::PaymentPreimage;
 use ln::msgs;
 
 use std::sync::Arc;
@@ -215,6 +216,26 @@ pub trait ChannelKeys : Send+Clone {
 	/// making the callee generate it via some util function we expose)!
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
+	/// Create a signature for a local commitment transaction
+	///
+	/// TODO: Document the things someone using this interface should enforce before signing.
+	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
+	/// TODO: Ensure test-only version doesn't enforce uniqueness of signature when it's enforced in this method
+	/// making the callee generate it via some util function we expose)!
+	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>);
+
+	/// Create a signature for a local commitment transaction without enforcing one-time signing.
+	///
+	/// Testing revocation logic by our test framework needs to sign multiple local commitment
+	/// transactions. This unsafe test-only version doesn't enforce one-time signing security
+	/// requirement.
+	#[cfg(test)]
+	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>);
+
+	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
+	/// HTLC-Success transaction, preimage must be set!
+	/// TODO: should be merged with sign_local_commitment as a slice of HTLC transactions to sign
+	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>);
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
@@ -340,6 +361,19 @@ impl ChannelKeys for InMemoryChannelKeys {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
+	}
+
+	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) {
+		local_commitment_tx.add_local_sig(&self.funding_key, funding_redeemscript, channel_value_satoshis, secp_ctx);
+	}
+
+	#[cfg(test)]
+	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) {
+		local_commitment_tx.add_local_sig(&self.funding_key, funding_redeemscript, channel_value_satoshis, secp_ctx);
+	}
+
+	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
+		local_commitment_tx.add_htlc_sig(&self.htlc_base_key, htlc_index, preimage, local_csv, secp_ctx);
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
