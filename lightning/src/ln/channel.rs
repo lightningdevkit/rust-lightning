@@ -1539,22 +1539,25 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed(&mut self, msg: &msgs::FundingSigned) -> Result<ChannelMonitorUpdate, (Option<ChannelMonitorUpdate>, ChannelError)> {
+	pub fn funding_signed(&mut self, msg: &msgs::FundingSigned) -> Result<ChannelMonitor<ChanSigner>, ChannelError> {
 		if !self.channel_outbound {
-			return Err((None, ChannelError::Close("Received funding_signed for an inbound channel?")));
+			return Err(ChannelError::Close("Received funding_signed for an inbound channel?"));
 		}
 		if self.channel_state & !(ChannelState::MonitorUpdateFailed as u32) != ChannelState::FundingCreated as u32 {
-			return Err((None, ChannelError::Close("Received funding_signed in strange state!")));
+			return Err(ChannelError::Close("Received funding_signed in strange state!"));
 		}
 		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER - 1 ||
+				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
 				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number).map_err(|e| (None, e))?;
+		let remote_keys = self.build_remote_transaction_keys()?;
+		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
+
+		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
 
@@ -1562,27 +1565,39 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		// They sign the "local" commitment transaction, allowing us to broadcast the tx if we wish.
 		if let Err(_) = self.secp_ctx.verify(&local_sighash, &msg.signature, their_funding_pubkey) {
-			return Err((None, ChannelError::Close("Invalid funding_signed signature from peer")));
+			return Err(ChannelError::Close("Invalid funding_signed signature from peer"));
 		}
 
-		self.latest_monitor_update_id += 1;
-		let monitor_update = ChannelMonitorUpdate {
-			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
-				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey, local_keys, self.feerate_per_kw, Vec::new()),
-				htlc_outputs: Vec::new(),
-			}]
-		};
-		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone()).unwrap();
-		self.channel_state = ChannelState::FundingSent as u32 | (self.channel_state & (ChannelState::MonitorUpdateFailed as u32));
+		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
+		let funding_redeemscript = self.get_funding_redeemscript();
+		let funding_txo = self.funding_txo.as_ref().unwrap();
+		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+		macro_rules! create_monitor {
+			() => { {
+				let mut channel_monitor = ChannelMonitor::new(self.local_keys.clone(),
+				                                              &self.shutdown_pubkey, self.our_to_self_delay,
+				                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
+				                                              &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
+				                                              self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+				                                              self.get_commitment_transaction_number_obscure_factor(),
+				                                              self.logger.clone());
+
+				channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
+				channel_monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx.clone(), &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey, local_keys.clone(), self.feerate_per_kw, Vec::new()), Vec::new()).unwrap();
+
+				channel_monitor
+			} }
+		}
+
+		self.channel_monitor = Some(create_monitor!());
+		let channel_monitor = create_monitor!();
+
+		assert_eq!(self.channel_state & (ChannelState::MonitorUpdateFailed as u32), 0); // We have no had any monitor(s) yet to fail update!
+		self.channel_state = ChannelState::FundingSent as u32;
 		self.cur_local_commitment_transaction_number -= 1;
+		self.cur_remote_commitment_transaction_number -= 1;
 
-		if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-			Ok(monitor_update)
-		} else {
-			Err((Some(monitor_update),
-				ChannelError::Ignore("Previous monitor update failure prevented funding_signed from allowing funding broadcast")))
-		}
+		Ok(channel_monitor)
 	}
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), ChannelError> {
@@ -2951,7 +2966,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// May only be called after funding has been initiated (ie is_funding_initiated() is true)
 	pub fn channel_monitor(&mut self) -> &mut ChannelMonitor<ChanSigner> {
-		if self.channel_state < ChannelState::FundingCreated as u32 {
+		if self.channel_state < ChannelState::FundingSent as u32 {
 			panic!("Can't get a channel monitor until funding has been created");
 		}
 		self.channel_monitor.as_mut().unwrap()
@@ -3105,7 +3120,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Returns true if funding_created was sent/received.
 	pub fn is_funding_initiated(&self) -> bool {
-		self.channel_state >= ChannelState::FundingCreated as u32
+		self.channel_state >= ChannelState::FundingSent as u32
 	}
 
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
@@ -3337,11 +3352,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
-	fn get_outbound_funding_created_signature(&mut self) -> Result<(Signature, Transaction), ChannelError> {
+	fn get_outbound_funding_created_signature(&mut self) -> Result<Signature, ChannelError> {
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		Ok((self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
-				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0, remote_initial_commitment_tx))
+		Ok(self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0)
 	}
 
 	/// Updates channel state with knowledge of the funding transaction's txid/index, and generates
@@ -3351,7 +3366,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
-	pub fn get_outbound_funding_created(&mut self, funding_txo: OutPoint) -> Result<(msgs::FundingCreated, ChannelMonitor<ChanSigner>), ChannelError> {
+	pub fn get_outbound_funding_created(&mut self, funding_txo: OutPoint) -> Result<msgs::FundingCreated, ChannelError> {
 		if !self.channel_outbound {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
@@ -3365,7 +3380,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		self.funding_txo = Some(funding_txo.clone());
-		let (our_signature, commitment_tx) = match self.get_outbound_funding_created_signature() {
+		let our_signature = match self.get_outbound_funding_created_signature() {
 			Ok(res) => res,
 			Err(e) => {
 				log_error!(self, "Got bad signatures: {:?}!", e);
@@ -3378,37 +3393,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		// Now that we're past error-generating stuff, update our local state:
 
-		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
-		let funding_redeemscript = self.get_funding_redeemscript();
-		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		macro_rules! create_monitor {
-			() => { {
-				let mut channel_monitor = ChannelMonitor::new(self.local_keys.clone(),
-				                                              &self.shutdown_pubkey, self.our_to_self_delay,
-				                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
-				                                              &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
-				                                              self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
-				                                              self.get_commitment_transaction_number_obscure_factor(),
-				                                              self.logger.clone());
-
-				channel_monitor.provide_latest_remote_commitment_tx_info(&commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
-				channel_monitor
-			} }
-		}
-
-		self.channel_monitor = Some(create_monitor!());
-		let channel_monitor = create_monitor!();
-
 		self.channel_state = ChannelState::FundingCreated as u32;
 		self.channel_id = funding_txo.to_channel_id();
-		self.cur_remote_commitment_transaction_number -= 1;
 
-		Ok((msgs::FundingCreated {
-			temporary_channel_id: temporary_channel_id,
+		Ok(msgs::FundingCreated {
+			temporary_channel_id,
 			funding_txid: funding_txo.txid,
 			funding_output_index: funding_txo.index,
 			signature: our_signature
-		}, channel_monitor))
+		})
 	}
 
 	/// Gets an UnsignedChannelAnnouncement, as well as a signature covering it using our
@@ -4385,7 +4378,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint::new(tx.txid(), 0);
-		let (funding_created_msg, _) = node_a_chan.get_outbound_funding_created(funding_outpoint).unwrap();
+		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint).unwrap();
 		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg).unwrap();
 
 		// Node B --> Node A: funding signed

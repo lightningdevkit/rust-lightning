@@ -451,13 +451,8 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
 
 	if steps & 0x0f == 3 { return; }
-	{
-		nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
-		let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
-		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
-		added_monitors.clear();
-	}
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	check_added_monitors!(nodes[0], 0);
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
 	if steps & 0x0f == 4 { return; }

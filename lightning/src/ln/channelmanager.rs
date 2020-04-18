@@ -1412,7 +1412,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
 		let _ = self.total_consistency_lock.read().unwrap();
 
-		let (mut chan, msg, chan_monitor) = {
+		let (chan, msg) = {
 			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
 				Some(mut chan) => {
 					(chan.get_outbound_funding_created(funding_txo)
@@ -1425,30 +1425,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			};
 			match handle_error!(self, res, chan.get_their_node_id()) {
 				Ok(funding_msg) => {
-					(chan, funding_msg.0, funding_msg.1)
+					(chan, funding_msg)
 				},
 				Err(_) => { return; }
 			}
 		};
-		// Because we have exclusive ownership of the channel here we can release the channel_state
-		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(chan_monitor.get_funding_txo(), chan_monitor) {
-			match e {
-				ChannelMonitorUpdateErr::PermanentFailure => {
-					match handle_error!(self, Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", *temporary_channel_id, chan.force_shutdown(true), None)), chan.get_their_node_id()) {
-						Err(_) => { return; },
-						Ok(()) => unreachable!(),
-					}
-				},
-				ChannelMonitorUpdateErr::TemporaryFailure => {
-					// Its completely fine to continue with a FundingCreated until the monitor
-					// update is persisted, as long as we don't generate the FundingBroadcastSafe
-					// until the monitor has been safely persisted (as funding broadcast is not,
-					// in fact, safe).
-					chan.monitor_update_failed(false, false, Vec::new(), Vec::new());
-				},
-			}
-		}
 
 		let mut channel_state = self.channel_state.lock().unwrap();
 		channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
@@ -2337,17 +2318,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let monitor_update = match chan.get_mut().funding_signed(&msg) {
-						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
-						Err((Some(monitor_update), e)) => {
-							assert!(chan.get().is_awaiting_monitor_update());
-							let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update);
-							try_chan_entry!(self, Err(e), channel_state, chan);
-							unreachable!();
-						},
+					let monitor = match chan.get_mut().funding_signed(&msg) {
 						Ok(update) => update,
+						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
-					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
+					if let Err(e) = self.monitor.add_monitor(chan.get().get_funding_txo().unwrap(), monitor) {
 						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
 					}
 					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())
