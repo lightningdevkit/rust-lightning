@@ -555,7 +555,7 @@ impl LocalCommitmentTransaction {
 	}
 
 	/// Check if LocalCommitmentTransaction has already been signed by us
-	pub fn has_local_sig(&self) -> bool {
+	pub(crate) fn has_local_sig(&self) -> bool {
 		if self.tx.input.len() != 1 { panic!("Commitment transactions must have input count == 1!"); }
 		if self.tx.input[0].witness.len() == 4 {
 			assert!(!self.tx.input[0].witness[1].is_empty());
@@ -569,8 +569,7 @@ impl LocalCommitmentTransaction {
 		}
 	}
 
-	/// Add local signature for LocalCommitmentTransaction, do nothing if signature is already
-	/// present
+	/// Gets our signature for the contained commitment transaction given our funding private key.
 	///
 	/// Funding key is your key included in the 2-2 funding_outpoint lock. Should be provided
 	/// by your ChannelKeys.
@@ -578,11 +577,15 @@ impl LocalCommitmentTransaction {
 	/// between your own funding key and your counterparty's. Currently, this is provided in
 	/// ChannelKeys::sign_local_commitment() calls directly.
 	/// Channel value is amount locked in funding_outpoint.
-	pub fn add_local_sig<T: secp256k1::Signing>(&mut self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) {
-		if self.has_local_sig() { return; }
+	pub fn get_local_sig<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = hash_to_message!(&bip143::SighashComponents::new(&self.tx)
 			.sighash_all(&self.tx.input[0], funding_redeemscript, channel_value_satoshis)[..]);
-		let our_sig = secp_ctx.sign(&sighash, funding_key);
+		secp_ctx.sign(&sighash, funding_key)
+	}
+
+
+	pub(crate) fn add_local_sig(&mut self, funding_redeemscript: &Script, our_sig: Signature) {
+		if self.has_local_sig() { return; }
 
 		if self.tx.input[0].witness[1].is_empty() {
 			self.tx.input[0].witness[1] = our_sig.serialize_der().to_vec();
@@ -598,7 +601,7 @@ impl LocalCommitmentTransaction {
 	/// Get raw transaction without asserting if witness is complete
 	pub(crate) fn without_valid_witness(&self) -> &Transaction { &self.tx }
 	/// Get raw transaction with panics if witness is incomplete
-	pub fn with_valid_witness(&self) -> &Transaction {
+	pub(crate) fn with_valid_witness(&self) -> &Transaction {
 		assert!(self.has_local_sig());
 		&self.tx
 	}

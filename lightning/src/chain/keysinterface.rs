@@ -216,21 +216,20 @@ pub trait ChannelKeys : Send+Clone {
 	/// making the callee generate it via some util function we expose)!
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
-	/// Create a signature for a local commitment transaction
+	/// Create a signature for a local commitment transaction. This will only ever be called with
+	/// the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
+	/// that it will not be called multiple times.
 	///
 	/// TODO: Document the things someone using this interface should enforce before signing.
 	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
-	/// TODO: Ensure test-only version doesn't enforce uniqueness of signature when it's enforced in this method
-	/// making the callee generate it via some util function we expose)!
-	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>);
+	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
-	/// Create a signature for a local commitment transaction without enforcing one-time signing.
-	///
-	/// Testing revocation logic by our test framework needs to sign multiple local commitment
-	/// transactions. This unsafe test-only version doesn't enforce one-time signing security
-	/// requirement.
+	/// Same as sign_local_commitment, but exists only for tests to get access to local commitment
+	/// transactions which will be broadcasted later, after the channel has moved on to a newer
+	/// state. Thus, needs its own method as sign_local_commitment may enforce that we only ever
+	/// get called once.
 	#[cfg(test)]
-	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>);
+	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
 	/// HTLC-Success transaction, preimage must be set!
@@ -363,21 +362,21 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok((commitment_sig, htlc_sigs))
 	}
 
-	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) {
+	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
 
-		local_commitment_tx.add_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
+		Ok(local_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
 	#[cfg(test)]
-	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) {
+	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
 
-		local_commitment_tx.add_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx);
+		Ok(local_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
 	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {

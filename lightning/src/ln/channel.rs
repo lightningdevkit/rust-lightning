@@ -4517,7 +4517,8 @@ mod tests {
 				assert_eq!(unsigned_tx.1.len(), per_htlc.len());
 
 				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
-				chan_keys.sign_local_commitment(&mut localtx, &chan.secp_ctx);
+				let local_sig = chan_keys.sign_local_commitment(&localtx, &chan.secp_ctx).unwrap();
+				localtx.add_local_sig(&redeemscript, local_sig);
 
 				assert_eq!(serialize(localtx.with_valid_witness())[..],
 						hex::decode($tx_hex).unwrap()[..]);

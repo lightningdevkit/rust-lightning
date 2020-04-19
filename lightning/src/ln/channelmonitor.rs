@@ -442,7 +442,9 @@ pub(crate) enum InputMaterial {
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
 	},
-	Funding {}
+	Funding {
+		funding_redeemscript: Script,
+	}
 }
 
 impl Writeable for InputMaterial  {
@@ -469,8 +471,9 @@ impl Writeable for InputMaterial  {
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
-			&InputMaterial::Funding {} => {
+			&InputMaterial::Funding { ref funding_redeemscript } => {
 				writer.write_all(&[3; 1])?;
+				funding_redeemscript.write(writer)?;
 			}
 		}
 		Ok(())
@@ -517,7 +520,9 @@ impl Readable for InputMaterial {
 				}
 			},
 			3 => {
-				InputMaterial::Funding {}
+				InputMaterial::Funding {
+					funding_redeemscript: Readable::read(reader)?,
+				}
 			}
 			_ => return Err(DecodeError::InvalidValue),
 		};
@@ -1771,7 +1776,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub fn get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
 		log_trace!(self, "Getting signed latest local commitment transaction!");
 		self.local_tx_signed = true;
-		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
+		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx(&self.funding_redeemscript) {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			for htlc in self.current_local_commitment_tx.htlc_outputs.iter() {
@@ -1795,7 +1800,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	#[cfg(test)]
 	pub fn unsafe_get_latest_local_commitment_txn(&mut self) -> Vec<Transaction> {
 		log_trace!(self, "Getting signed copy of latest local commitment transaction!");
-		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx() {
+		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx(&self.funding_redeemscript) {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			for htlc in self.current_local_commitment_tx.htlc_outputs.iter() {
@@ -1873,10 +1878,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 		let should_broadcast = self.would_broadcast_at_height(height);
 		if should_broadcast {
-			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding {}});
+			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding { funding_redeemscript: self.funding_redeemscript.clone() }});
 		}
 		if should_broadcast {
-			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
+			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx(&self.funding_redeemscript) {
 				let (mut new_outpoints, new_outputs, _) = self.broadcast_by_local_state(&commitment_tx, &self.current_local_commitment_tx);
 				if !new_outputs.is_empty() {
 					watch_outputs.push((self.current_local_commitment_tx.txid.clone(), new_outputs));

@@ -531,8 +531,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						}
 						return None;
 					},
-					&InputMaterial::Funding {} => {
-						let signed_tx = self.get_fully_signed_local_tx().unwrap();
+					&InputMaterial::Funding { ref funding_redeemscript } => {
+						let signed_tx = self.get_fully_signed_local_tx(funding_redeemscript).unwrap();
 						// Timer set to $NEVER given we can't bump tx without anchor outputs
 						log_trace!(self, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
 						return Some((None, self.local_commitment.as_ref().unwrap().feerate_per_kw, signed_tx));
@@ -780,19 +780,25 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// have empty local commitment transaction if a ChannelMonitor is asked to force-close just after Channel::get_outbound_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
-	pub(super) fn get_fully_signed_local_tx(&mut self) -> Option<Transaction> {
+	pub(super) fn get_fully_signed_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
-			self.key_storage.sign_local_commitment(local_commitment, &self.secp_ctx);
+			match self.key_storage.sign_local_commitment(local_commitment, &self.secp_ctx) {
+				Ok(sig) => local_commitment.add_local_sig(funding_redeemscript, sig),
+				Err(_) => return None,
+			}
 			return Some(local_commitment.with_valid_witness().clone());
 		}
 		None
 	}
 
 	#[cfg(test)]
-	pub(super) fn get_fully_signed_copy_local_tx(&mut self) -> Option<Transaction> {
+	pub(super) fn get_fully_signed_copy_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			let mut local_commitment = local_commitment.clone();
-			self.key_storage.unsafe_sign_local_commitment(&mut local_commitment, &self.secp_ctx);
+			match self.key_storage.sign_local_commitment(&local_commitment, &self.secp_ctx) {
+				Ok(sig) => local_commitment.add_local_sig(funding_redeemscript, sig),
+				Err(_) => return None,
+			}
 			return Some(local_commitment.with_valid_witness().clone());
 		}
 		None

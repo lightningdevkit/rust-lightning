@@ -79,13 +79,13 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx).unwrap())
 	}
 
-	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) {
+	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		self.inner.sign_local_commitment(local_commitment_tx, secp_ctx)
 	}
 
 	#[cfg(test)]
-	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) {
-		self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx);
+	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx)
 	}
 
 	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
