@@ -738,7 +738,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// various monitors for one channel being out of sync, and us broadcasting a local
 	// transaction for which we have deleted claim information on some watchtowers.
 	prev_local_signed_commitment_tx: Option<LocalSignedTx>,
-	current_local_signed_commitment_tx: Option<LocalSignedTx>,
+	current_local_commitment_tx: LocalSignedTx,
 
 	// Used just for ChannelManager to make sure it has the latest channel data during
 	// deserialization
@@ -809,7 +809,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.prev_local_signed_commitment_tx != other.prev_local_signed_commitment_tx ||
 			self.current_remote_commitment_number != other.current_remote_commitment_number ||
 			self.current_local_commitment_number != other.current_local_commitment_number ||
-			self.current_local_signed_commitment_tx != other.current_local_signed_commitment_tx ||
+			self.current_local_commitment_tx != other.current_local_commitment_tx ||
 			self.payment_preimages != other.payment_preimages ||
 			self.pending_htlcs_updated != other.pending_htlcs_updated ||
 			self.pending_events.len() != other.pending_events.len() || // We trust events to round-trip properly
@@ -963,12 +963,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&[0; 1])?;
 		}
 
-		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			writer.write_all(&[1; 1])?;
-			serialize_local_tx!(cur_local_tx);
-		} else {
-			writer.write_all(&[0; 1])?;
-		}
+		serialize_local_tx!(self.current_local_commitment_tx);
 
 		writer.write_all(&byte_utils::be48_to_array(self.current_remote_commitment_number))?;
 		writer.write_all(&byte_utils::be48_to_array(self.current_local_commitment_number))?;
@@ -1031,11 +1026,33 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey,
 			their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64,
 			commitment_transaction_number_obscure_factor: u64,
+			initial_local_commitment_tx: LocalCommitmentTransaction,
 			logger: Arc<Logger>) -> ChannelMonitor<ChanSigner> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
+
+		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
+
+		let local_tx_sequence = initial_local_commitment_tx.without_valid_witness().input[0].sequence as u64;
+		let local_tx_locktime = initial_local_commitment_tx.without_valid_witness().lock_time as u64;
+		let local_commitment_tx = LocalSignedTx {
+			txid: initial_local_commitment_tx.txid(),
+			revocation_key: initial_local_commitment_tx.local_keys.revocation_key,
+			a_htlc_key: initial_local_commitment_tx.local_keys.a_htlc_key,
+			b_htlc_key: initial_local_commitment_tx.local_keys.b_htlc_key,
+			delayed_payment_key: initial_local_commitment_tx.local_keys.a_delayed_payment_key,
+			per_commitment_point: initial_local_commitment_tx.local_keys.per_commitment_point,
+			feerate_per_kw: initial_local_commitment_tx.feerate_per_kw,
+			htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
+		};
+		// Returning a monitor error before updating tracking points means in case of using
+		// a concurrent watchtower implementation for same channel, if this one doesn't
+		// reject update as we do, you MAY have the latest local valid commitment tx onchain
+		// for which you want to spend outputs. We're NOT robust again this scenario right
+		// now but we should consider it later.
+		onchain_tx_handler.provide_latest_local_tx(initial_local_commitment_tx).unwrap();
 
 		ChannelMonitor {
 			latest_update_id: 0,
@@ -1046,14 +1063,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			broadcasted_remote_payment_script: None,
 			shutdown_script,
 
-			keys: keys.clone(),
+			keys,
 			funding_info,
 			current_remote_commitment_txid: None,
 			prev_remote_commitment_txid: None,
 
 			their_htlc_base_key: their_htlc_base_key.clone(),
 			their_delayed_payment_base_key: their_delayed_payment_base_key.clone(),
-			funding_redeemscript: funding_redeemscript.clone(),
+			funding_redeemscript,
 			channel_value_satoshis: channel_value_satoshis,
 			their_cur_revocation_points: None,
 
@@ -1066,9 +1083,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			remote_hash_commitment_number: HashMap::new(),
 
 			prev_local_signed_commitment_tx: None,
-			current_local_signed_commitment_tx: None,
+			current_local_commitment_tx: local_commitment_tx,
 			current_remote_commitment_number: 1 << 48,
-			current_local_commitment_number: 0xffff_ffff_ffff,
+			current_local_commitment_number: 0xffff_ffff_ffff - ((((local_tx_sequence & 0xffffff) << 3*8) | (local_tx_locktime as u64 & 0xffffff)) ^ commitment_transaction_number_obscure_factor),
 
 			payment_preimages: HashMap::new(),
 			pending_htlcs_updated: Vec::new(),
@@ -1077,7 +1094,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 			outputs_to_watch: HashMap::new(),
 
-			onchain_tx_handler: OnchainTxHandler::new(destination_script.clone(), keys, their_to_self_delay, logger.clone()),
+			onchain_tx_handler,
 
 			lockdown_from_offchain: false,
 
@@ -1104,13 +1121,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 
 		if !self.payment_preimages.is_empty() {
-			let local_signed_commitment_tx = self.current_local_signed_commitment_tx.as_ref().expect("Channel needs at least an initial commitment tx !");
+			let cur_local_signed_commitment_tx = &self.current_local_commitment_tx;
 			let prev_local_signed_commitment_tx = self.prev_local_signed_commitment_tx.as_ref();
 			let min_idx = self.get_min_seen_secret();
 			let remote_hash_commitment_number = &mut self.remote_hash_commitment_number;
 
 			self.payment_preimages.retain(|&k, _| {
-				for &(ref htlc, _, _) in &local_signed_commitment_tx.htlc_outputs {
+				for &(ref htlc, _, _) in cur_local_signed_commitment_tx.htlc_outputs.iter() {
 					if k == htlc.payment_hash {
 						return true
 					}
@@ -1199,7 +1216,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let txid = commitment_tx.txid();
 		let sequence = commitment_tx.without_valid_witness().input[0].sequence as u64;
 		let locktime = commitment_tx.without_valid_witness().lock_time as u64;
-		let new_local_signed_commitment_tx = LocalSignedTx {
+		let mut new_local_commitment_tx = LocalSignedTx {
 			txid,
 			revocation_key: commitment_tx.local_keys.revocation_key,
 			a_htlc_key: commitment_tx.local_keys.a_htlc_key,
@@ -1218,8 +1235,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			return Err(MonitorUpdateError("Local commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed"));
 		}
 		self.current_local_commitment_number = 0xffff_ffff_ffff - ((((sequence & 0xffffff) << 3*8) | (locktime as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
-		self.prev_local_signed_commitment_tx = self.current_local_signed_commitment_tx.take();
-		self.current_local_signed_commitment_tx = Some(new_local_signed_commitment_tx);
+		mem::swap(&mut new_local_commitment_tx, &mut self.current_local_commitment_tx);
+		self.prev_local_signed_commitment_tx = Some(new_local_commitment_tx);
 		Ok(())
 	}
 
@@ -1676,15 +1693,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		// HTLCs set may differ between last and previous local commitment txn, in case of one them hitting chain, ensure we cancel all HTLCs backward
 		let mut is_local_tx = false;
 
-		if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-			if local_tx.txid == commitment_txid {
-				is_local_tx = true;
-				log_trace!(self, "Got latest local commitment tx broadcast, searching for available HTLCs to claim");
-				let mut res = self.broadcast_by_local_state(tx, local_tx);
-				append_onchain_update!(res);
-			}
-		}
-		if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
+		if self.current_local_commitment_tx.txid == commitment_txid {
+			is_local_tx = true;
+			log_trace!(self, "Got latest local commitment tx broadcast, searching for available HTLCs to claim");
+			let mut res = self.broadcast_by_local_state(tx, &self.current_local_commitment_tx);
+			append_onchain_update!(res);
+		} else if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
 			if local_tx.txid == commitment_txid {
 				is_local_tx = true;
 				log_trace!(self, "Got previous local commitment tx broadcast, searching for available HTLCs to claim");
@@ -1706,9 +1720,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 
 		if is_local_tx {
-			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-				fail_dust_htlcs_after_threshold_conf!(local_tx);
-			}
+			fail_dust_htlcs_after_threshold_conf!(self.current_local_commitment_tx);
 			if let &Some(ref local_tx) = &self.prev_local_signed_commitment_tx {
 				fail_dust_htlcs_after_threshold_conf!(local_tx);
 			}
@@ -1731,18 +1743,16 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
-			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-				for htlc in local_tx.htlc_outputs.iter() {
-					if let Some(htlc_index) = htlc.0.transaction_output_index {
-						let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
-						if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
-							res.push(htlc_tx);
-						}
+			for htlc in self.current_local_commitment_tx.htlc_outputs.iter() {
+				if let Some(htlc_index) = htlc.0.transaction_output_index {
+					let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
+					if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
+						res.push(htlc_tx);
 					}
 				}
-				// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
-				// The data will be re-generated and tracked in check_spend_local_transaction if we get a confirmation.
 			}
+			// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
+			// The data will be re-generated and tracked in check_spend_local_transaction if we get a confirmation.
 			return res
 		}
 		Vec::new()
@@ -1757,13 +1767,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx() {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
-			if let &Some(ref local_tx) = &self.current_local_signed_commitment_tx {
-				for htlc in local_tx.htlc_outputs.iter() {
-					if let Some(htlc_index) = htlc.0.transaction_output_index {
-						let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
-						if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
-							res.push(htlc_tx);
-						}
+			for htlc in self.current_local_commitment_tx.htlc_outputs.iter() {
+				if let Some(htlc_index) = htlc.0.transaction_output_index {
+					let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
+					if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
+						res.push(htlc_tx);
 					}
 				}
 			}
@@ -1832,21 +1840,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 			self.is_paying_spendable_output(&tx, height);
 		}
-		let should_broadcast = if let Some(_) = self.current_local_signed_commitment_tx {
-			self.would_broadcast_at_height(height)
-		} else { false };
+		let should_broadcast = self.would_broadcast_at_height(height);
 		if should_broadcast {
 			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding { channel_value: self.channel_value_satoshis }});
 		}
-		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			if should_broadcast {
-				if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
-					let (mut new_outpoints, new_outputs, _) = self.broadcast_by_local_state(&commitment_tx, cur_local_tx);
-					if !new_outputs.is_empty() {
-						watch_outputs.push((cur_local_tx.txid.clone(), new_outputs));
-					}
-					claimable_outpoints.append(&mut new_outpoints);
+		if should_broadcast {
+			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
+				let (mut new_outpoints, new_outputs, _) = self.broadcast_by_local_state(&commitment_tx, &self.current_local_commitment_tx);
+				if !new_outputs.is_empty() {
+					watch_outputs.push((self.current_local_commitment_tx.txid.clone(), new_outputs));
 				}
+				claimable_outpoints.append(&mut new_outpoints);
 			}
 		}
 		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&height) {
@@ -1942,9 +1946,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
-		if let Some(ref cur_local_tx) = self.current_local_signed_commitment_tx {
-			scan_commitment!(cur_local_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), true);
-		}
+		scan_commitment!(self.current_local_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, _)| a), true);
 
 		if let Some(ref txid) = self.current_remote_commitment_txid {
 			if let Some(ref htlc_outputs) = self.remote_claimable_outpoints.get(txid) {
@@ -2035,11 +2037,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				}
 			}
 
-			if let Some(ref current_local_signed_commitment_tx) = self.current_local_signed_commitment_tx {
-				if input.previous_output.txid == current_local_signed_commitment_tx.txid {
-					scan_commitment!(current_local_signed_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, ref b)| (a, b.as_ref())),
-						"our latest local commitment tx", true);
-				}
+			if input.previous_output.txid == self.current_local_commitment_tx.txid {
+				scan_commitment!(self.current_local_commitment_tx.htlc_outputs.iter().map(|&(ref a, _, ref b)| (a, b.as_ref())),
+					"our latest local commitment tx", true);
 			}
 			if let Some(ref prev_local_signed_commitment_tx) = self.prev_local_signed_commitment_tx {
 				if input.previous_output.txid == prev_local_signed_commitment_tx.txid {
@@ -2324,14 +2324,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			},
 			_ => return Err(DecodeError::InvalidValue),
 		};
-
-		let current_local_signed_commitment_tx = match <u8 as Readable>::read(reader)? {
-			0 => None,
-			1 => {
-				Some(read_local_tx!())
-			},
-			_ => return Err(DecodeError::InvalidValue),
-		};
+		let current_local_commitment_tx = read_local_tx!();
 
 		let current_remote_commitment_number = <U48 as Readable>::read(reader)?.0;
 		let current_local_commitment_number = <U48 as Readable>::read(reader)?.0;
@@ -2436,7 +2429,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			remote_hash_commitment_number,
 
 			prev_local_signed_commitment_tx,
-			current_local_signed_commitment_tx,
+			current_local_commitment_tx,
 			current_remote_commitment_number,
 			current_local_commitment_number,
 
@@ -2555,7 +2548,7 @@ mod tests {
 			(OutPoint { txid: Sha256dHash::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
 			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()),
-			10, Script::new(), 46, 0, logger.clone());
+			10, Script::new(), 46, 0, LocalCommitmentTransaction::dummy(), logger.clone());
 
 		monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::dummy(), preimages_to_local_htlcs!(preimages[0..10])).unwrap();
 		monitor.provide_latest_remote_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key);

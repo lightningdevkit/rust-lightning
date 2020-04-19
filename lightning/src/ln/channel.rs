@@ -1515,10 +1515,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				                                              &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
 				                                              self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
 				                                              self.get_commitment_transaction_number_obscure_factor(),
+				                                              local_initial_commitment_tx.clone(),
 				                                              self.logger.clone());
 
 				channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
-				channel_monitor.provide_latest_local_commitment_tx_info(local_initial_commitment_tx.clone(), Vec::new()).unwrap();
 				channel_monitor
 			} }
 		}
@@ -1574,16 +1574,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		macro_rules! create_monitor {
 			() => { {
+				let local_commitment_tx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx.clone(), &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey, local_keys.clone(), self.feerate_per_kw, Vec::new());
 				let mut channel_monitor = ChannelMonitor::new(self.local_keys.clone(),
 				                                              &self.shutdown_pubkey, self.our_to_self_delay,
 				                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
 				                                              &their_pubkeys.htlc_basepoint, &their_pubkeys.delayed_payment_basepoint,
 				                                              self.their_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
 				                                              self.get_commitment_transaction_number_obscure_factor(),
+				                                              local_commitment_tx,
 				                                              self.logger.clone());
 
 				channel_monitor.provide_latest_remote_commitment_tx_info(&remote_initial_commitment_tx, Vec::new(), self.cur_remote_commitment_transaction_number, self.their_cur_commitment_point.unwrap());
-				channel_monitor.provide_latest_local_commitment_tx_info(LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx.clone(), &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey, local_keys.clone(), self.feerate_per_kw, Vec::new()), Vec::new()).unwrap();
 
 				channel_monitor
 			} }
