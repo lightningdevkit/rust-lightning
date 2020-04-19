@@ -585,17 +585,17 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
-		for claim in new_claims {
-			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock: claim.0, per_input_material: claim.1.clone() };
+		for (soonest_timelock, claim) in new_claims.drain(..) {
+			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock, per_input_material: claim };
 			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
 				let txid = tx.txid();
-				self.pending_claim_requests.insert(txid, claim_material);
-				for k in claim.1.keys() {
+				for k in claim_material.per_input_material.keys() {
 					log_trace!(self, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
+				self.pending_claim_requests.insert(txid, claim_material);
 				log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
 				broadcaster.broadcast_transaction(&tx);
 			}
