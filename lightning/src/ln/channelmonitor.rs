@@ -833,8 +833,14 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 }
 
 impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
-	/// Serializes into a vec, with various modes for the exposed pub fns
-	fn write<W: Writer>(&self, writer: &mut W, for_local_storage: bool) -> Result<(), ::std::io::Error> {
+	/// Writes this monitor into the given writer, suitable for writing to disk.
+	///
+	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
+	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+	/// the "reorg path" (ie not just starting at the same height but starting at the highest
+	/// common block that appears on your best chain as well as on the chain which contains the
+	/// last block hash returned) upon deserializing the object!
+	pub fn write_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
 		//serialization framework we have, we should migrate things over to it.
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
@@ -929,14 +935,10 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			}
 		}
 
-		if for_local_storage {
-			writer.write_all(&byte_utils::be64_to_array(self.remote_hash_commitment_number.len() as u64))?;
-			for (ref payment_hash, commitment_number) in self.remote_hash_commitment_number.iter() {
-				writer.write_all(&payment_hash.0[..])?;
-				writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
-			}
-		} else {
-			writer.write_all(&byte_utils::be64_to_array(0))?;
+		writer.write_all(&byte_utils::be64_to_array(self.remote_hash_commitment_number.len() as u64))?;
+		for (ref payment_hash, commitment_number) in self.remote_hash_commitment_number.iter() {
+			writer.write_all(&payment_hash.0[..])?;
+			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
 		macro_rules! serialize_local_tx {
@@ -977,17 +979,8 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&[0; 1])?;
 		}
 
-		if for_local_storage {
-			writer.write_all(&byte_utils::be48_to_array(self.current_remote_commitment_number))?;
-		} else {
-			writer.write_all(&byte_utils::be48_to_array(0))?;
-		}
-
-		if for_local_storage {
-			writer.write_all(&byte_utils::be48_to_array(self.current_local_commitment_number))?;
-		} else {
-			writer.write_all(&byte_utils::be48_to_array(0))?;
-		}
+		writer.write_all(&byte_utils::be48_to_array(self.current_remote_commitment_number))?;
+		writer.write_all(&byte_utils::be48_to_array(self.current_local_commitment_number))?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.payment_preimages.len() as u64))?;
 		for payment_preimage in self.payment_preimages.values() {
@@ -1038,28 +1031,6 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		self.lockdown_from_offchain.write(writer)?;
 
 		Ok(())
-	}
-
-	/// Writes this monitor into the given writer, suitable for writing to disk.
-	///
-	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
-	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
-	/// the "reorg path" (ie not just starting at the same height but starting at the highest
-	/// common block that appears on your best chain as well as on the chain which contains the
-	/// last block hash returned) upon deserializing the object!
-	pub fn write_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.write(writer, true)
-	}
-
-	/// Encodes this monitor into the given writer, suitable for sending to a remote watchtower
-	///
-	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
-	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
-	/// the "reorg path" (ie not just starting at the same height but starting at the highest
-	/// common block that appears on your best chain as well as on the chain which contains the
-	/// last block hash returned) upon deserializing the object!
-	pub fn write_for_watchtower<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.write(writer, false)
 	}
 }
 
