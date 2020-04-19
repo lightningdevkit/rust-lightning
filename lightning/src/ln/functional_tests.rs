@@ -5326,7 +5326,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	if let &Event::PaymentFailed { payment_hash:_, ref rejected_by_dest, ref error_code } = &events[0] {
+	if let &Event::PaymentFailed { payment_hash:_, ref rejected_by_dest, ref error_code, error_data: _ } = &events[0] {
 		assert_eq!(*rejected_by_dest, !expected_retryable);
 		assert_eq!(*error_code, expected_error_code);
 	} else {
@@ -6914,9 +6914,20 @@ fn test_check_htlc_underpaying() {
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	if let &Event::PaymentFailed { payment_hash:_, ref rejected_by_dest, ref error_code } = &events[0] {
+	if let &Event::PaymentFailed { payment_hash:_, ref rejected_by_dest, ref error_code, ref error_data } = &events[0] {
 		assert_eq!(*rejected_by_dest, true);
 		assert_eq!(error_code.unwrap(), 0x4000|15);
+		// 10_000 msat as u64, followed by a height of 99 as u32
+		assert_eq!(&error_data.as_ref().unwrap()[..], &[
+			((10_000u64 >> 7*8) & 0xff) as u8,
+			((10_000u64 >> 6*8) & 0xff) as u8,
+			((10_000u64 >> 5*8) & 0xff) as u8,
+			((10_000u64 >> 4*8) & 0xff) as u8,
+			((10_000u64 >> 3*8) & 0xff) as u8,
+			((10_000u64 >> 2*8) & 0xff) as u8,
+			((10_000u64 >> 1*8) & 0xff) as u8,
+			((10_000u64 >> 0*8) & 0xff) as u8,
+			0, 0, 0, 99]);
 	} else {
 		panic!("Unexpected event");
 	}
