@@ -3678,6 +3678,83 @@ fn test_htlc_timeout() {
 	do_test_htlc_timeout(false);
 }
 
+fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
+	// Tests that HTLCs in the holding cell are timed out after the requisite number of blocks.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+
+	// Route a first payment to get the 1 -> 2 channel in awaiting_raa...
+	let route = nodes[1].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+	let (_, first_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	nodes[1].node.send_payment(&route, first_payment_hash, &None).unwrap();
+	assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
+	check_added_monitors!(nodes[1], 1);
+
+	// Now attempt to route a second payment, which should be placed in the holding cell
+	let (_, second_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	if forwarded_htlc {
+		let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV).unwrap();
+		nodes[0].node.send_payment(&route, second_payment_hash, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let payment_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 0);
+	} else {
+		nodes[1].node.send_payment(&route, second_payment_hash, &None).unwrap();
+		check_added_monitors!(nodes[1], 0);
+	}
+
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[1].block_notifier.block_connected_checked(&header, 101, &[], &[]);
+	for i in 102..TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
+		header.prev_blockhash = header.bitcoin_hash();
+		nodes[1].block_notifier.block_connected_checked(&header, i, &[], &[]);
+	}
+
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	header.prev_blockhash = header.bitcoin_hash();
+	nodes[1].block_notifier.block_connected_checked(&header, TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS, &[], &[]);
+
+	if forwarded_htlc {
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let fail_commit = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(fail_commit.len(), 1);
+		match fail_commit[0] {
+			MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fail_htlcs, ref commitment_signed, .. }, .. } => {
+				nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
+				commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, true, true);
+			},
+			_ => unreachable!(),
+		}
+		expect_payment_failed!(nodes[0], second_payment_hash, false);
+		if let &MessageSendEvent::PaymentFailureNetworkUpdate { ref update } = &nodes[0].node.get_and_clear_pending_msg_events()[0] {
+			match update {
+				&HTLCFailChannelUpdate::ChannelUpdateMessage { .. } => {},
+				_ => panic!("Unexpected event"),
+			}
+		} else {
+			panic!("Unexpected event");
+		}
+	} else {
+		expect_payment_failed!(nodes[1], second_payment_hash, true);
+	}
+}
+
+#[test]
+fn test_holding_cell_htlc_add_timeouts() {
+	do_test_holding_cell_htlc_add_timeouts(false);
+	do_test_holding_cell_htlc_add_timeouts(true);
+}
+
 #[test]
 fn test_invalid_channel_announcement() {
 	//Test BOLT 7 channel_announcement msg requirement for final node, gather data to build customed channel_announcement msgs
