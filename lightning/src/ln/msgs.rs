@@ -702,6 +702,7 @@ impl Error for DecodeError {
 }
 impl fmt::Display for DecodeError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		#[allow(deprecated)]
 		f.write_str(self.description())
 	}
 }
