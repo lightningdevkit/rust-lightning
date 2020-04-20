@@ -96,6 +96,8 @@ pub enum Event {
 		rejected_by_dest: bool,
 #[cfg(test)]
 		error_code: Option<u16>,
+#[cfg(test)]
+		error_data: Option<Vec<u8>>,
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
 	/// time in the future.
@@ -142,12 +144,16 @@ impl Writeable for Event {
 			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
 				#[cfg(test)]
 				ref error_code,
+				#[cfg(test)]
+				ref error_data,
 			} => {
 				4u8.write(writer)?;
 				payment_hash.write(writer)?;
 				rejected_by_dest.write(writer)?;
 				#[cfg(test)]
 				error_code.write(writer)?;
+				#[cfg(test)]
+				error_data.write(writer)?;
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
 				5u8.write(writer)?;
@@ -186,6 +192,8 @@ impl MaybeReadable for Event {
 					rejected_by_dest: Readable::read(reader)?,
 					#[cfg(test)]
 					error_code: Readable::read(reader)?,
+					#[cfg(test)]
+					error_data: Readable::read(reader)?,
 				})),
 			5u8 => Ok(Some(Event::PendingHTLCsForwardable {
 					time_forwardable: Duration::from_secs(0)

@@ -1733,12 +1733,19 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 									}
 									if total_value >= msgs::MAX_VALUE_MSAT || total_value > data.total_msat  {
 										for htlc in htlcs.iter() {
+											let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
+											htlc_msat_height_data.extend_from_slice(
+												&byte_utils::be32_to_array(
+													self.latest_block_height.load(Ordering::Acquire)
+														as u32,
+												),
+											);
 											failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: htlc.prev_hop.short_channel_id,
 													htlc_id: htlc.prev_hop.htlc_id,
 													incoming_packet_shared_secret: htlc.prev_hop.incoming_packet_shared_secret,
 												}), payment_hash,
-												HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(htlc.value).to_vec() }
+												HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
 											));
 										}
 									} else if total_value == data.total_msat {
@@ -1819,9 +1826,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		if let Some(mut sources) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
+				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
+				htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
+					self.latest_block_height.load(Ordering::Acquire) as u32,
+				));
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
-						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: byte_utils::be64_to_array(htlc.value).to_vec() });
+						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data });
 			}
 			true
 		} else { false }
@@ -1845,9 +1856,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
-						let (channel_update, payment_retryable, onion_error_code) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (channel_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
-						let (channel_update, payment_retryable, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (channel_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
@@ -1863,13 +1874,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
 #[cfg(test)]
-								error_code: onion_error_code
+								error_code: onion_error_code,
+#[cfg(test)]
+								error_data: onion_error_data
 							}
 						);
 					},
 					&HTLCFailReason::Reason {
 #[cfg(test)]
 							ref failure_code,
+#[cfg(test)]
+							ref data,
 							.. } => {
 						// we get a fail_malformed_htlc from the first hop
 						// TODO: We'd like to generate a PaymentFailureNetworkUpdate for temporary
@@ -1884,6 +1899,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 								rejected_by_dest: path.len() == 1,
 #[cfg(test)]
 								error_code: Some(*failure_code),
+#[cfg(test)]
+								error_data: Some(data.clone()),
 							}
 						);
 					}
@@ -1982,12 +1999,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				if (is_mpp && !valid_mpp) || (!is_mpp && (htlc.value < expected_amount || htlc.value > expected_amount * 2)) {
-					let mut htlc_msat_data = byte_utils::be64_to_array(htlc.value).to_vec();
-					let mut height_data = byte_utils::be32_to_array(self.latest_block_height.load(Ordering::Acquire) as u32).to_vec();
-					htlc_msat_data.append(&mut height_data);
+					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
+					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
+						self.latest_block_height.load(Ordering::Acquire) as u32,
+					));
 					self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
-									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_data });
+									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data });
 				} else {
 					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage) {
 						Err(Some(e)) => {
