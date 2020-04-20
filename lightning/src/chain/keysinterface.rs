@@ -184,11 +184,11 @@ pub trait KeysInterface: Send + Sync {
 /// Readable/Writable to serialize out a unique reference to this set of keys so
 /// that you can serialize the full ChannelManager object.
 ///
-/// (TODO: We shouldn't require that, and should have an API to get them at deser time, due mostly
-/// to the possibility of reentrancy issues by calling the user's code during our deserialization
-/// routine).
-/// TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
-/// ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
+// (TODO: We shouldn't require that, and should have an API to get them at deser time, due mostly
+// to the possibility of reentrancy issues by calling the user's code during our deserialization
+// routine).
+// TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
+// ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
 	/// Gets the private key for the anchor tx
 	fn funding_key<'a>(&'a self) -> &'a SecretKey;
@@ -209,18 +209,18 @@ pub trait ChannelKeys : Send+Clone {
 	/// Create a signature for a remote commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
-	///
-	/// TODO: Document the things someone using this interface should enforce before signing.
-	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
-	/// making the callee generate it via some util function we expose)!
+	//
+	// TODO: Document the things someone using this interface should enforce before signing.
+	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
+	// making the callee generate it via some util function we expose)!
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a local commitment transaction. This will only ever be called with
 	/// the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
 	/// that it will not be called multiple times.
-	///
-	/// TODO: Document the things someone using this interface should enforce before signing.
-	/// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
+	//
+	// TODO: Document the things someone using this interface should enforce before signing.
+	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Same as sign_local_commitment, but exists only for tests to get access to local commitment
