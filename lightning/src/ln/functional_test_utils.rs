@@ -764,13 +764,19 @@ macro_rules! expect_payment_sent {
 }
 
 macro_rules! expect_payment_failed {
-	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr) => {
+	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, .. } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data } => {
 				assert_eq!(*payment_hash, $expected_payment_hash);
 				assert_eq!(rejected_by_dest, $rejected_by_dest);
+				assert!(error_code.is_some());
+				assert!(error_data.is_some());
+				$(
+					assert_eq!(error_code.unwrap(), $expected_error_code);
+					assert_eq!(&error_data.as_ref().unwrap()[..], $expected_error_data);
+				)*
 			},
 			_ => panic!("Unexpected event"),
 		}
