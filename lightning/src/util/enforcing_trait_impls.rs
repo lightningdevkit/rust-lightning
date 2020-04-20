@@ -1,12 +1,12 @@
 use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction};
-use ln::channelmanager::PaymentPreimage;
-use ln::msgs;
+use ln::{chan_utils, msgs};
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
 use std::cmp;
 use std::sync::{Mutex, Arc};
 
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::util::bip143;
 
 use secp256k1;
 use secp256k1::key::{SecretKey, PublicKey};
@@ -80,16 +80,29 @@ impl ChannelKeys for EnforcingChannelKeys {
 	}
 
 	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		self.inner.sign_local_commitment(local_commitment_tx, secp_ctx)
+		Ok(self.inner.sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(test)]
 	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx)
+		Ok(self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
-		self.inner.sign_htlc_transaction(local_commitment_tx, htlc_index, preimage, local_csv, secp_ctx);
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+		let commitment_txid = local_commitment_tx.txid();
+
+		for this_htlc in local_commitment_tx.per_htlc.iter() {
+			if this_htlc.0.transaction_output_index.is_some() {
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, local_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &local_commitment_tx.local_keys.a_delayed_payment_key, &local_commitment_tx.local_keys.revocation_key);
+
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &local_commitment_tx.local_keys);
+
+				let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, this_htlc.0.amount_msat / 1000)[..]);
+				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &local_commitment_tx.local_keys.b_htlc_key).unwrap();
+			}
+		}
+
+		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, local_csv, secp_ctx).unwrap())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

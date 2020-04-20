@@ -1677,8 +1677,18 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		for &(ref htlc, _, _) in local_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) { Some(*preimage) } else { None };
-				claim_requests.push(ClaimRequest { absolute_timelock: ::std::u32::MAX, aggregable: false, outpoint: BitcoinOutPoint { txid: local_tx.txid, vout: transaction_output_index as u32 }, witness_data: InputMaterial::LocalHTLC { preimage, amount: htlc.amount_msat / 1000 }});
+				claim_requests.push(ClaimRequest { absolute_timelock: ::std::u32::MAX, aggregable: false, outpoint: BitcoinOutPoint { txid: local_tx.txid, vout: transaction_output_index as u32 },
+					witness_data: InputMaterial::LocalHTLC {
+						preimage: if !htlc.offered {
+								if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+									Some(preimage.clone())
+								} else {
+									// We can't build an HTLC-Success transaction without the preimage
+									continue;
+								}
+							} else { None },
+						amount: htlc.amount_msat,
+				}});
 				watch_outputs.push(commitment_tx.output[transaction_output_index as usize].clone());
 			}
 		}
@@ -1780,9 +1790,15 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			for htlc in self.current_local_commitment_tx.htlc_outputs.iter() {
-				if let Some(htlc_index) = htlc.0.transaction_output_index {
-					let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
-					if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
+				if let Some(vout) = htlc.0.transaction_output_index {
+					let preimage = if !htlc.0.offered {
+							if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
+								// We can't build an HTLC-Success transaction without the preimage
+								continue;
+							}
+						} else { None };
+					if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
+							&::bitcoin::OutPoint { txid, vout }, &preimage) {
 						res.push(htlc_tx);
 					}
 				}
@@ -1804,9 +1820,15 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let txid = commitment_tx.txid();
 			let mut res = vec![commitment_tx];
 			for htlc in self.current_local_commitment_tx.htlc_outputs.iter() {
-				if let Some(htlc_index) = htlc.0.transaction_output_index {
-					let preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(*preimage) } else { None };
-					if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(txid, htlc_index, preimage) {
+				if let Some(vout) = htlc.0.transaction_output_index {
+					let preimage = if !htlc.0.offered {
+							if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
+								// We can't build an HTLC-Success transaction without the preimage
+								continue;
+							}
+						} else { None };
+					if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
+							&::bitcoin::OutPoint { txid, vout }, &preimage) {
 						res.push(htlc_tx);
 					}
 				}

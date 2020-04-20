@@ -25,7 +25,6 @@ use util::ser::{Writeable, Writer, Readable};
 
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction};
-use ln::channelmanager::PaymentPreimage;
 use ln::msgs;
 
 use std::sync::Arc;
@@ -231,10 +230,21 @@ pub trait ChannelKeys : Send+Clone {
 	#[cfg(test)]
 	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
-	/// Signs a transaction created by build_htlc_transaction. If the transaction is an
-	/// HTLC-Success transaction, preimage must be set!
-	/// TODO: should be merged with sign_local_commitment as a slice of HTLC transactions to sign
-	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>);
+	/// Create a signature for each HTLC transaction spending a local commitment transaction.
+	///
+	/// Unlike sign_local_commitment, this may be called multiple times with *different*
+	/// local_commitment_tx values. While this will never be called with a revoked
+	/// local_commitment_tx, it is possible that it is called with the second-latest
+	/// local_commitment_tx (only if we haven't yet revoked it) if some watchtower/secondary
+	/// ChannelMonitor decided to broadcast before it had been updated to the latest.
+	///
+	/// Either an Err should be returned, or a Vec with one entry for each HTLC which exists in
+	/// local_commitment_tx. For those HTLCs which have transaction_output_index set to None
+	/// (implying they were considered dust at the time the commitment transaction was negotiated),
+	/// a corresponding None should be included in the return value. All other positions in the
+	/// return value must contain a signature.
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()>;
+
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
@@ -379,8 +389,8 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(local_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
-	fn sign_htlc_transaction<T: secp256k1::Signing>(&self, local_commitment_tx: &mut LocalCommitmentTransaction, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
-		local_commitment_tx.add_htlc_sig(&self.htlc_base_key, htlc_index, preimage, local_csv, secp_ctx);
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+		local_commitment_tx.get_htlc_sigs(&self.htlc_base_key, local_csv, secp_ctx)
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
