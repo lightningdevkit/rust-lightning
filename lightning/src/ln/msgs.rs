@@ -696,6 +696,7 @@ impl Error for DecodeError {
 			DecodeError::InvalidValue => "Nonsense bytes didn't map to the type they were interpreted as",
 			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
 			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
+			#[allow(deprecated)]
 			DecodeError::Io(ref e) => e.description(),
 		}
 	}
