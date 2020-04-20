@@ -55,13 +55,10 @@ macro_rules! log_funding_channel_id {
 	}
 }
 
-pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a Option<(OutPoint, T)>);
+pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a (OutPoint, T));
 impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		match self.0.as_ref() {
-			Some(&(ref funding_output, _)) => DebugBytes(&funding_output.to_channel_id()[..]).fmt(f),
-			None => write!(f, "without funding output set"),
-		}
+		DebugBytes(&(self.0).0.to_channel_id()[..]).fmt(f)
 	}
 }
 macro_rules! log_funding_info {

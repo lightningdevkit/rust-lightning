@@ -1432,7 +1432,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
 		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(chan_monitor.get_funding_txo().unwrap(), chan_monitor) {
+		if let Err(e) = self.monitor.add_monitor(chan_monitor.get_funding_txo(), chan_monitor) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					match handle_error!(self, Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", *temporary_channel_id, chan.force_shutdown(true), None)), chan.get_their_node_id()) {
@@ -2293,7 +2293,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
 		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo().unwrap(), monitor_update) {
+		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo(), monitor_update) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					// Note that we reply with the new channel_id in error messages if we gave up on the

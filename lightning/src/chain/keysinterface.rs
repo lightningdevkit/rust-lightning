@@ -620,6 +620,6 @@ impl KeysInterface for KeysManager {
 		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
 		sha.input(&child_privkey.private_key.key[..]);
 
-		(Sha256::from_engine(sha).into_inner())
+		Sha256::from_engine(sha).into_inner()
 	}
 }

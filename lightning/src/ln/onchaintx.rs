@@ -713,18 +713,14 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(self, "Bumping {} candidates", bump_candidates.len());
-		let mut pending_claim_updates = Vec::with_capacity(bump_candidates.len());
 		for (first_claim_txid, claim_material) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
 				log_trace!(self, "Broadcast onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
-				pending_claim_updates.push((*first_claim_txid, new_timer, new_feerate));
-			}
-		}
-		for updates in pending_claim_updates {
-			if let Some(claim_material) = self.pending_claim_requests.get_mut(&updates.0) {
-				claim_material.height_timer = updates.1;
-				claim_material.feerate_previous = updates.2;
+				if let Some(claim_material) = self.pending_claim_requests.get_mut(first_claim_txid) {
+					claim_material.height_timer = new_timer;
+					claim_material.feerate_previous = new_feerate;
+				}
 			}
 		}
 	}

@@ -23,7 +23,6 @@ use bitcoin::blockdata::script::Script;
 
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
-use std::error::Error;
 use std::{cmp, fmt};
 use std::io::Read;
 use std::result::Result;
@@ -688,21 +687,16 @@ pub(crate) struct OnionErrorPacket {
 	pub(crate) data: Vec<u8>,
 }
 
-impl Error for DecodeError {
-	fn description(&self) -> &str {
-		match *self {
-			DecodeError::UnknownVersion => "Unknown realm byte in Onion packet",
-			DecodeError::UnknownRequiredFeature => "Unknown required feature preventing decode",
-			DecodeError::InvalidValue => "Nonsense bytes didn't map to the type they were interpreted as",
-			DecodeError::ShortRead => "Packet extended beyond the provided bytes",
-			DecodeError::BadLengthDescriptor => "A length descriptor in the packet didn't describe the later data correctly",
-			DecodeError::Io(ref e) => e.description(),
-		}
-	}
-}
 impl fmt::Display for DecodeError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_str(self.description())
+		match *self {
+			DecodeError::UnknownVersion => f.write_str("Unknown realm byte in Onion packet"),
+			DecodeError::UnknownRequiredFeature => f.write_str("Unknown required feature preventing decode"),
+			DecodeError::InvalidValue => f.write_str("Nonsense bytes didn't map to the type they were interpreted as"),
+			DecodeError::ShortRead => f.write_str("Packet extended beyond the provided bytes"),
+			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
+			DecodeError::Io(ref e) => e.fmt(f),
+		}
 	}
 }
 
