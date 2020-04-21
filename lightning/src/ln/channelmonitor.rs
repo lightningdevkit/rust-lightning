@@ -837,9 +837,9 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 	///
 	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
 	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
-	/// the "reorg path" (ie not just starting at the same height but starting at the highest
-	/// common block that appears on your best chain as well as on the chain which contains the
-	/// last block hash returned) upon deserializing the object!
+	/// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
+	/// returned block hash and the the current chain and then reconnecting blocks to get to the
+	/// best chain) upon deserializing the object!
 	pub fn write_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
 		//serialization framework we have, we should migrate things over to it.
