@@ -5408,12 +5408,10 @@ impl Writeable for BogusOnionHopData {
 fn test_onion_failure() {
 	use ln::msgs::ChannelUpdate;
 	use ln::channelmanager::CLTV_FAR_FAR_AWAY;
+	use ln::onion_utils::{NODE, PERM, UPDATE};
 	use secp256k1;
 
 	const BADONION: u16 = 0x8000;
-	const PERM: u16 = 0x4000;
-	const NODE: u16 = 0x2000;
-	const UPDATE: u16 = 0x1000;
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);

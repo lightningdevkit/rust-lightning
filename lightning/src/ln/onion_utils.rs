@@ -315,6 +315,10 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 }
 
+pub const UPDATE: u16 = 0x1000;
+pub const NODE: u16 = 0x2000;
+pub const PERM: u16 = 0x4000;
+
 #[derive(Clone)]
 pub(crate) enum MessageFailure {
 	TemporaryChannelFailure { channel_update: ChannelUpdate },
@@ -327,10 +331,10 @@ impl MessageFailure {
 	pub fn code(&self) -> u16 {
 		use ln::onion_utils::MessageFailure::*;
 		match *self {
-			TemporaryChannelFailure { .. } => 0x1000 | 7,
-			IncorrectOrUnknownPaymentDetails { .. } => 0x4000 | 15,
-			PermanentChannelFailure => 0x4000 | 8,
-			UnknownNextPeer => 0x4000 | 10,
+			TemporaryChannelFailure { .. } => UPDATE | 7,
+			IncorrectOrUnknownPaymentDetails { .. } => PERM | 15,
+			PermanentChannelFailure => PERM | 8,
+			UnknownNextPeer => PERM | 10,
 		}
 	}
 
@@ -393,10 +397,6 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<
 
 				if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
 					if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
-						const PERM: u16 = 0x4000;
-						const NODE: u16 = 0x2000;
-						const UPDATE: u16 = 0x1000;
-
 						let error_code = byte_utils::slice_to_be16(&error_code_slice);
 						error_code_ret = Some(error_code);
 						error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
