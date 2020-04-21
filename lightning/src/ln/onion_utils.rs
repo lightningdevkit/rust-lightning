@@ -318,6 +318,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 pub(crate) enum MessageFailure {
 	IncorrectOrUnknownPaymentDetails { htlc_msat: u64, height: u32 },
 	PermanentChannelFailure,
+	UnknownNextPeer,
 }
 
 impl MessageFailure {
@@ -326,6 +327,7 @@ impl MessageFailure {
 		match *self {
 			IncorrectOrUnknownPaymentDetails { .. } => 0x4000 | 15,
 			PermanentChannelFailure => 0x4000 | 8,
+			UnknownNextPeer => 0x4000 | 10,
 		}
 	}
 
@@ -337,7 +339,8 @@ impl MessageFailure {
 				data.extend_from_slice(&byte_utils::be32_to_array(height));
 				data
 			},
-			&PermanentChannelFailure => Vec::new()
+			&PermanentChannelFailure => Vec::new(),
+			&UnknownNextPeer => Vec::new()
 		}
 	}
 }

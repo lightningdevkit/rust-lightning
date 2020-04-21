@@ -1577,9 +1577,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 										});
-										failed_forwards.push((htlc_source, forward_info.payment_hash,
-											HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() }
+										failed_forwards.push((
+											htlc_source,
+											forward_info.payment_hash,
+											HTLCFailReason::TypedReason(
+												MessageFailure::UnknownNextPeer,
+											),
 										));
+
 									},
 									HTLCForwardInfo::FailHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
