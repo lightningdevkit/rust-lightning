@@ -19,6 +19,7 @@ use secp256k1;
 
 use std::io::Cursor;
 use std::sync::Arc;
+use ln::msgs::ChannelUpdate;
 
 pub(super) struct OnionKeys {
 	#[cfg(test)]
@@ -316,6 +317,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 
 #[derive(Clone)]
 pub(crate) enum MessageFailure {
+	TemporaryChannelFailure { channel_update: ChannelUpdate },
 	IncorrectOrUnknownPaymentDetails { htlc_msat: u64, height: u32 },
 	PermanentChannelFailure,
 	UnknownNextPeer,
@@ -325,6 +327,7 @@ impl MessageFailure {
 	pub fn code(&self) -> u16 {
 		use ln::onion_utils::MessageFailure::*;
 		match *self {
+			TemporaryChannelFailure { .. } => 0x1000 | 7,
 			IncorrectOrUnknownPaymentDetails { .. } => 0x4000 | 15,
 			PermanentChannelFailure => 0x4000 | 8,
 			UnknownNextPeer => 0x4000 | 10,
@@ -334,6 +337,7 @@ impl MessageFailure {
 	pub fn data(&self) -> Vec<u8> {
 		use ln::onion_utils::MessageFailure::*;
 		match self {
+			&TemporaryChannelFailure { ref channel_update } => channel_update.encode_with_len(),
 			&IncorrectOrUnknownPaymentDetails { htlc_msat, height } => {
 				let mut data = byte_utils::be64_to_array(htlc_msat).to_vec();
 				data.extend_from_slice(&byte_utils::be32_to_array(height));

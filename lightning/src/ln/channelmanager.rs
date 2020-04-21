@@ -1619,9 +1619,15 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
-											let chan_update = self.get_channel_update(chan.get()).unwrap();
-											failed_forwards.push((htlc_source, payment_hash,
-												HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.encode_with_len() }
+											let channel_update = self.get_channel_update(chan.get()).unwrap();
+											failed_forwards.push((
+												htlc_source,
+												payment_hash,
+												HTLCFailReason::TypedReason(
+													MessageFailure::TemporaryChannelFailure {
+														channel_update,
+													},
+												),
 											));
 											continue;
 										},
@@ -3271,7 +3277,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused();
 						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {
-							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
+							let chan_update = self.get_channel_update(&chan).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 							failed_payments.push((chan_update, failed_adds));
 						}
 						if chan.is_shutdown() {
@@ -3314,9 +3320,14 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
 		}
-		for (chan_update, mut htlc_sources) in failed_payments {
+		for (channel_update, mut htlc_sources) in failed_payments {
 			for (htlc_source, payment_hash) in htlc_sources.drain(..) {
-				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.clone() });
+				self.fail_htlc_backwards_internal(
+					self.channel_state.lock().unwrap(),
+					htlc_source,
+					&payment_hash,
+					HTLCFailReason::TypedReason(MessageFailure::TemporaryChannelFailure { channel_update: channel_update.clone() })
+				);
 			}
 		}
 	}
