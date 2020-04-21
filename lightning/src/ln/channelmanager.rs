@@ -32,7 +32,7 @@ use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpd
 use ln::features::{InitFeatures, NodeFeatures};
 use ln::router::{Route, RouteHop};
 use ln::msgs;
-use ln::onion_utils;
+use ln::onion_utils::{self, MessageFailure};
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use chain::keysinterface::{ChannelKeys, KeysInterface, KeysManager, InMemoryChannelKeys};
 use util::config::UserConfig;
@@ -1741,7 +1741,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 													htlc_id: htlc.prev_hop.htlc_id,
 													incoming_packet_shared_secret: htlc.prev_hop.incoming_packet_shared_secret,
 												}), payment_hash,
-												HTLCFailReason::TypedReason(onion_utils::MessageFailure::IncorrectOrUnknownPaymentDetails { htlc_msat, height})
+												HTLCFailReason::TypedReason(MessageFailure::IncorrectOrUnknownPaymentDetails { htlc_msat, height})
 											));
 										}
 									} else if total_value == data.total_msat {
@@ -1822,13 +1822,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		if let Some(mut sources) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-				htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
-					self.latest_block_height.load(Ordering::Acquire) as u32,
-				));
+				let htlc_msat = htlc.value;
+				let height = self.latest_block_height.load(Ordering::Acquire) as u32;
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
-						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data });
+						HTLCFailReason::TypedReason(MessageFailure::IncorrectOrUnknownPaymentDetails { htlc_msat, height}));
 			}
 			true
 		} else { false }
@@ -2016,13 +2014,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				if (is_mpp && !valid_mpp) || (!is_mpp && (htlc.value < expected_amount || htlc.value > expected_amount * 2)) {
-					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
-						self.latest_block_height.load(Ordering::Acquire) as u32,
-					));
+					let htlc_msat = htlc.value;
+					let height = self.latest_block_height.load(Ordering::Acquire) as u32;
 					self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
-									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data });
+									 HTLCFailReason::TypedReason(MessageFailure::IncorrectOrUnknownPaymentDetails { htlc_msat, height }));
 				} else {
 					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage) {
 						Err(Some(e)) => {
