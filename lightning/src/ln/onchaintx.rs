@@ -531,16 +531,11 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						}
 						return None;
 					},
-					&InputMaterial::Funding { ref channel_value } => {
+					&InputMaterial::Funding {} => {
 						let signed_tx = self.get_fully_signed_local_tx().unwrap();
-						let mut amt_outputs = 0;
-						for outp in signed_tx.output.iter() {
-							amt_outputs += outp.value;
-						}
-						let feerate = (channel_value - amt_outputs) * 1000 / signed_tx.get_weight() as u64;
 						// Timer set to $NEVER given we can't bump tx without anchor outputs
 						log_trace!(self, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
-						return Some((None, feerate, signed_tx));
+						return Some((None, self.local_commitment.as_ref().unwrap().feerate_per_kw, signed_tx));
 					}
 					_ => unreachable!()
 				}

@@ -442,9 +442,7 @@ pub(crate) enum InputMaterial {
 		preimage: Option<PaymentPreimage>,
 		amount: u64,
 	},
-	Funding {
-		channel_value: u64,
-	}
+	Funding {}
 }
 
 impl Writeable for InputMaterial  {
@@ -471,9 +469,8 @@ impl Writeable for InputMaterial  {
 				preimage.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
 			},
-			&InputMaterial::Funding { ref channel_value } => {
+			&InputMaterial::Funding {} => {
 				writer.write_all(&[3; 1])?;
-				channel_value.write(writer)?;
 			}
 		}
 		Ok(())
@@ -520,10 +517,7 @@ impl Readable for InputMaterial {
 				}
 			},
 			3 => {
-				let channel_value = Readable::read(reader)?;
-				InputMaterial::Funding {
-					channel_value
-				}
+				InputMaterial::Funding {}
 			}
 			_ => return Err(DecodeError::InvalidValue),
 		};
@@ -1864,7 +1858,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 		let should_broadcast = self.would_broadcast_at_height(height);
 		if should_broadcast {
-			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding { channel_value: self.channel_value_satoshis }});
+			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding {}});
 		}
 		if should_broadcast {
 			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx() {
