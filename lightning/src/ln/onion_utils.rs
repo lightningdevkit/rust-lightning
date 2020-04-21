@@ -4,7 +4,7 @@ use ln::router::RouteHop;
 use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
-use util::ser::{Readable, Writeable, LengthCalculatingWriter};
+use util::ser::{Readable, Writeable, Writer, LengthCalculatingWriter};
 use util::logger::{Logger, LogHolder};
 
 use bitcoin_hashes::{Hash, HashEngine};
@@ -312,6 +312,37 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
 	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data);
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
+}
+
+#[derive(Clone)]
+pub(crate) enum MessageFailure {
+	IncorrectOrUnknownPaymentDetails { htlc_msat: u64, height: u32 },
+}
+
+impl MessageFailure {
+	pub fn code(&self) -> u16 {
+		use ln::onion_utils::MessageFailure::*;
+		match *self {
+			IncorrectOrUnknownPaymentDetails { .. } => 0x4000 | 15,
+		}
+	}
+
+	pub fn data(&self) -> Vec<u8> {
+		use ln::onion_utils::MessageFailure::*;
+		match self {
+			&IncorrectOrUnknownPaymentDetails { htlc_msat, height } => {
+				let mut data = byte_utils::be64_to_array(htlc_msat).to_vec();
+				data.extend_from_slice(&byte_utils::be32_to_array(height));
+				data
+			}
+		}
+	}
+}
+
+impl Writeable for MessageFailure {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		writer.write_all(&self.data())
+	}
 }
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an

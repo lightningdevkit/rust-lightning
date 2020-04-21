@@ -162,7 +162,8 @@ pub(super) enum HTLCFailReason {
 	Reason {
 		failure_code: u16,
 		data: Vec<u8>,
-	}
+	},
+	TypedReason(onion_utils::MessageFailure)
 }
 
 /// payment_hash type, use to cross-lock hop
@@ -1733,19 +1734,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 									}
 									if total_value >= msgs::MAX_VALUE_MSAT || total_value > data.total_msat  {
 										for htlc in htlcs.iter() {
-											let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-											htlc_msat_height_data.extend_from_slice(
-												&byte_utils::be32_to_array(
-													self.latest_block_height.load(Ordering::Acquire)
-														as u32,
-												),
-											);
+											let htlc_msat = htlc.value;
+											let height = self.latest_block_height.load(Ordering::Acquire) as u32;
 											failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: htlc.prev_hop.short_channel_id,
 													htlc_id: htlc.prev_hop.htlc_id,
 													incoming_packet_shared_secret: htlc.prev_hop.incoming_packet_shared_secret,
 												}), payment_hash,
-												HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
+												HTLCFailReason::TypedReason(onion_utils::MessageFailure::IncorrectOrUnknownPaymentDetails { htlc_msat, height})
 											));
 										}
 									} else if total_value == data.total_msat {
@@ -1904,15 +1900,36 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 							}
 						);
 					}
+					&HTLCFailReason::TypedReason(ref _message_failure) => {
+						self.pending_events
+							.lock()
+							.unwrap()
+							.push(events::Event::PaymentFailed {
+								payment_hash: payment_hash.clone(),
+								rejected_by_dest: path.len() == 1,
+								#[cfg(test)]
+								error_code: Some(_message_failure.code()),
+								#[cfg(test)]
+								error_data: Some(_message_failure.data()),
+							});
+					}
 				}
-			},
+			}
+
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
 						log_trace!(self, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
 						let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
 						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
-					},
+					}
+					HTLCFailReason::TypedReason(ref message_failure) => {
+						let failure_code = message_failure.code();
+						log_trace!(self, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
+						let data = message_failure.data();
+						let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
+						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
+					}
 					HTLCFailReason::LightningError { err } => {
 						log_trace!(self, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
 						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &err.data)
@@ -3486,6 +3503,10 @@ impl Writeable for HTLCFailReason {
 				1u8.write(writer)?;
 				failure_code.write(writer)?;
 				data.write(writer)?;
+			}
+			&HTLCFailReason::TypedReason (ref message_failure) => {
+				1u8.write(writer)?;
+				message_failure.write(writer)?;
 			}
 		}
 		Ok(())
