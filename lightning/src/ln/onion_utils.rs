@@ -317,6 +317,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 #[derive(Clone)]
 pub(crate) enum MessageFailure {
 	IncorrectOrUnknownPaymentDetails { htlc_msat: u64, height: u32 },
+	PermanentChannelFailure,
 }
 
 impl MessageFailure {
@@ -324,6 +325,7 @@ impl MessageFailure {
 		use ln::onion_utils::MessageFailure::*;
 		match *self {
 			IncorrectOrUnknownPaymentDetails { .. } => 0x4000 | 15,
+			PermanentChannelFailure => 0x4000 | 8,
 		}
 	}
 
@@ -334,7 +336,8 @@ impl MessageFailure {
 				let mut data = byte_utils::be64_to_array(htlc_msat).to_vec();
 				data.extend_from_slice(&byte_utils::be32_to_array(height));
 				data
-			}
+			},
+			&PermanentChannelFailure => Vec::new()
 		}
 	}
 }

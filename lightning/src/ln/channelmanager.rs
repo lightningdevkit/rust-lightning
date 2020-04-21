@@ -868,7 +868,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			}
 		};
 		for htlc_source in failed_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			self.fail_htlc_backwards_internal(
+				self.channel_state.lock().unwrap(),
+				htlc_source.0,
+				&htlc_source.1,
+				HTLCFailReason::TypedReason(MessageFailure::PermanentChannelFailure),
+			);
+
 		}
 		let chan_update = if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
@@ -891,7 +897,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		let (funding_txo_option, monitor_update, mut failed_htlcs) = shutdown_res;
 		log_trace!(self, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			self.fail_htlc_backwards_internal(
+				self.channel_state.lock().unwrap(),
+				htlc_source.0,
+				&htlc_source.1,
+				HTLCFailReason::TypedReason(MessageFailure::PermanentChannelFailure)
+			);
 		}
 		if let Some(funding_txo) = funding_txo_option {
 			// There isn't anything we can do if we get an update failure - we're already
@@ -2441,7 +2452,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			self.fail_htlc_backwards_internal(
+				self.channel_state.lock().unwrap(),
+				htlc_source.0,
+				&htlc_source.1,
+				HTLCFailReason::TypedReason(MessageFailure::PermanentChannelFailure)
+			);
 		}
 		if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update(&chan) {
@@ -2942,7 +2958,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::Me
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
 					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+					self.fail_htlc_backwards_internal(
+						self.channel_state.lock().unwrap(),
+						htlc_update.source,
+						&htlc_update.payment_hash,
+						HTLCFailReason::TypedReason(MessageFailure::PermanentChannelFailure)
+					);
 				}
 			}
 		}
@@ -2972,7 +2993,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::Ev
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
 					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+					self.fail_htlc_backwards_internal(
+						self.channel_state.lock().unwrap(),
+						htlc_update.source,
+						&htlc_update.payment_hash,
+						HTLCFailReason::TypedReason(MessageFailure::PermanentChannelFailure)
+					);
 				}
 			}
 		}
@@ -3827,7 +3853,12 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		};
 
 		for htlc_source in failed_htlcs.drain(..) {
-			channel_manager.fail_htlc_backwards_internal(channel_manager.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			channel_manager.fail_htlc_backwards_internal(
+				channel_manager.channel_state.lock().unwrap(),
+				htlc_source.0,
+				&htlc_source.1,
+				HTLCFailReason::TypedReason(MessageFailure::PermanentChannelFailure)
+			);
 		}
 
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
