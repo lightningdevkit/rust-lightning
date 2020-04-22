@@ -6694,8 +6694,7 @@ fn test_upfront_shutdown_script() {
 	}
 
 	// We test that if case of peer non-signaling we don't enforce committed script at channel opening
-	let mut flags_no = InitFeatures::known();
-	flags_no.unset_upfront_shutdown_script();
+	let flags_no = InitFeatures::known().clear_upfront_shutdown_script();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags_no, flags.clone());
 	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
 	let mut node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());

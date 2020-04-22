@@ -893,9 +893,9 @@ impl Router {
 					return Ok(Route {
 						paths: vec![vec![RouteHop {
 							pubkey: chan.remote_network_id,
-							node_features: NodeFeatures::with_known_relevant_init_flags(&chan.counterparty_features),
+							node_features: chan.counterparty_features.to_context(),
 							short_channel_id,
-							channel_features: ChannelFeatures::with_known_relevant_init_flags(&chan.counterparty_features),
+							channel_features: chan.counterparty_features.to_context(),
 							fee_msat: final_value_msat,
 							cltv_expiry_delta: final_cltv,
 						}]],
@@ -972,7 +972,7 @@ impl Router {
 			( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 				if first_hops.is_some() {
 					if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&$node_id) {
-						add_entry!(first_hop, $node_id, dummy_directional_info, ChannelFeatures::with_known_relevant_init_flags(&features), $fee_to_target_msat);
+						add_entry!(first_hop, $node_id, dummy_directional_info, features.to_context(), $fee_to_target_msat);
 					}
 				}
 
@@ -1016,7 +1016,7 @@ impl Router {
 							// bit lazy here. In the future, we should pull them out via our
 							// ChannelManager, but there's no reason to waste the space until we
 							// need them.
-							add_entry!(first_hop, hop.src_node_id, dummy_directional_info, ChannelFeatures::with_known_relevant_init_flags(&features), 0);
+							add_entry!(first_hop, hop.src_node_id, dummy_directional_info, features.to_context(), 0);
 						}
 					}
 					// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
@@ -1031,7 +1031,7 @@ impl Router {
 				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
 				loop {
 					if let Some(&(_, ref features)) = first_hop_targets.get(&res.last().unwrap().pubkey) {
-						res.last_mut().unwrap().node_features = NodeFeatures::with_known_relevant_init_flags(&features);
+						res.last_mut().unwrap().node_features = features.to_context();
 					} else if let Some(node) = network.nodes.get(&res.last().unwrap().pubkey) {
 						res.last_mut().unwrap().node_features = node.features.clone();
 					} else {

@@ -282,6 +282,12 @@ impl InitFeatures {
 		}
 		self
 	}
+
+	/// Converts `InitFeatures` to `Features<C>`. Only known `InitFeatures` relevant to context `C`
+	/// are included in the result.
+	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
+		self.to_context_internal()
+	}
 }
 
 impl<T: sealed::Context> Features<T> {
@@ -303,18 +309,19 @@ impl<T: sealed::Context> Features<T> {
 		}
 	}
 
-	/// Takes the flags that we know how to interpret in an init-context features that are also
-	/// relevant in a node-context features and creates a node-context features from them.
-	/// Be sure to blank out features that are unknown to us.
-	pub(crate) fn with_known_relevant_init_flags(init_ctx: &InitFeatures) -> Self {
-		let byte_count = T::KNOWN_FEATURE_MASK.len();
+	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
+	/// included in the result.
+	fn to_context_internal<C: sealed::Context>(&self) -> Features<C> {
+		let byte_count = C::KNOWN_FEATURE_MASK.len();
 		let mut flags = Vec::new();
-		for (i, feature_byte) in init_ctx.flags.iter().enumerate() {
+		for (i, byte) in self.flags.iter().enumerate() {
 			if i < byte_count {
-				flags.push(feature_byte & T::KNOWN_FEATURE_MASK[i]);
+				let known_source_features = T::KNOWN_FEATURE_MASK[i];
+				let known_target_features = C::KNOWN_FEATURE_MASK[i];
+				flags.push(byte & known_source_features & known_target_features);
 			}
 		}
-		Self { flags, mark: PhantomData, }
+		Features::<C> { flags, mark: PhantomData, }
 	}
 
 	#[cfg(test)]
@@ -399,8 +406,9 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 		<T as sealed::UpfrontShutdownScript>::supports_feature(&self.flags)
 	}
 	#[cfg(test)]
-	pub(crate) fn unset_upfront_shutdown_script(&mut self) {
-		<T as sealed::UpfrontShutdownScript>::clear_bits(&mut self.flags)
+	pub(crate) fn clear_upfront_shutdown_script(mut self) -> Self {
+		<T as sealed::UpfrontShutdownScript>::clear_bits(&mut self.flags);
+		self
 	}
 }
 
@@ -461,7 +469,7 @@ impl<T: sealed::Context> Readable for Features<T> {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, InitFeatures, NodeFeatures, Features};
+	use super::{ChannelFeatures, InitFeatures, NodeFeatures};
 
 	#[test]
 	fn sanity_test_our_features() {
@@ -503,26 +511,28 @@ mod tests {
 	}
 
 	#[test]
-	fn test_node_with_known_relevant_init_flags() {
-		// Create an InitFeatures with initial_routing_sync supported.
-		let init_features = InitFeatures::known();
+	fn convert_to_context_with_relevant_flags() {
+		let init_features = InitFeatures::known().clear_upfront_shutdown_script();
 		assert!(init_features.initial_routing_sync());
+		assert!(!init_features.supports_upfront_shutdown_script());
 
-		// Attempt to pull out non-node-context feature flags from these InitFeatures.
-		let res = NodeFeatures::with_known_relevant_init_flags(&init_features);
-
+		let node_features: NodeFeatures = init_features.to_context();
 		{
-			// Check that the flags are as expected: optional_data_loss_protect,
-			// option_upfront_shutdown_script, var_onion_optin, payment_secret, and
-			// basic_mpp.
-			assert_eq!(res.flags.len(), 3);
-			assert_eq!(res.flags[0], 0b00100010);
-			assert_eq!(res.flags[1], 0b10000010);
-			assert_eq!(res.flags[2], 0b00000010);
+			// Check that the flags are as expected:
+			// - option_data_loss_protect
+			// - var_onion_optin | payment_secret
+			// - basic_mpp
+			assert_eq!(node_features.flags.len(), 3);
+			assert_eq!(node_features.flags[0], 0b00000010);
+			assert_eq!(node_features.flags[1], 0b10000010);
+			assert_eq!(node_features.flags[2], 0b00000010);
 		}
 
-		// Check that the initial_routing_sync feature was correctly blanked out.
-		let new_features: InitFeatures = Features::from_le_bytes(res.flags);
-		assert!(!new_features.initial_routing_sync());
+		// Check that cleared flags are kept blank when converting back:
+		// - initial_routing_sync was not applicable to NodeContext
+		// - upfront_shutdown_script was cleared before converting
+		let features: InitFeatures = node_features.to_context_internal();
+		assert!(!features.initial_routing_sync());
+		assert!(!features.supports_upfront_shutdown_script());
 	}
 }
