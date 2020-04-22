@@ -11,8 +11,8 @@ receive `ChannelMonitorUpdate`s from `ChannelManager` and persist them to disk b
 channel steps forward.
 
 There are two additional important structures that you may use either on the same device
-as the `ChannelManager` or on a separate one. `Router` handles receiving channel and node
-node announcements and calculates routes for sending payments. `PeerManager` handles the
+as the `ChannelManager` or on a separate one. `Router` handles receiving channel and node 
+announcements and calculates routes for sending payments. `PeerManager` handles the
 authenticated and encrypted communication protocol, monitoring for liveness of peers,
 routing messages to `ChannelManager` and `Router` instances directly, and receiving
 messages from them via the `EventsProvider` interface.
