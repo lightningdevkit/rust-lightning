@@ -81,7 +81,7 @@ impl InitFeatures {
 	/// Create a Features with the features we support
 	pub fn supported() -> InitFeatures {
 		InitFeatures {
-			flags: vec![2 | 1 << 5, 1 << (9-8) | 1 << (15 - 8), 1 << (17 - 8*2)],
+			flags: vec![2 | 1 << 3 | 1 << 5, 1 << (9-8) | 1 << (15 - 8), 1 << (17 - 8*2)],
 			mark: PhantomData,
 		}
 	}
@@ -286,11 +286,9 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 	pub(crate) fn initial_routing_sync(&self) -> bool {
 		self.flags.len() > 0 && (self.flags[0] & (1 << 3)) != 0
 	}
-	pub(crate) fn set_initial_routing_sync(&mut self) {
-		if self.flags.len() == 0 {
-			self.flags.resize(1, 1 << 3);
-		} else {
-			self.flags[0] |= 1 << 3;
+	pub(crate) fn clear_initial_routing_sync(&mut self) {
+		if self.flags.len() > 0 {
+			self.flags[0] &= !(1 << 3);
 		}
 	}
 }
@@ -364,9 +362,9 @@ mod tests {
 		assert!(NodeFeatures::supported().supports_basic_mpp());
 
 		let mut init_features = InitFeatures::supported();
-		init_features.set_initial_routing_sync();
-		assert!(!init_features.requires_unknown_bits());
-		assert!(!init_features.supports_unknown_bits());
+		assert!(init_features.initial_routing_sync());
+		init_features.clear_initial_routing_sync();
+		assert!(!init_features.initial_routing_sync());
 	}
 
 	#[test]
@@ -381,8 +379,8 @@ mod tests {
 	#[test]
 	fn test_node_with_known_relevant_init_flags() {
 		// Create an InitFeatures with initial_routing_sync supported.
-		let mut init_features = InitFeatures::supported();
-		init_features.set_initial_routing_sync();
+		let init_features = InitFeatures::supported();
+		assert!(init_features.initial_routing_sync());
 
 		// Attempt to pull out non-node-context feature flags from these InitFeatures.
 		let res = NodeFeatures::with_known_relevant_init_flags(&init_features);

@@ -170,11 +170,20 @@ impl events::MessageSendEventsProvider for TestChannelMessageHandler {
 	}
 }
 
-pub struct TestRoutingMessageHandler {}
+pub struct TestRoutingMessageHandler {
+	request_full_sync: bool,
+}
 
 impl TestRoutingMessageHandler {
 	pub fn new() -> Self {
-		TestRoutingMessageHandler {}
+		TestRoutingMessageHandler {
+			request_full_sync: false,
+		}
+	}
+
+	pub fn set_request_full_sync(mut self) -> Self {
+		self.request_full_sync = true;
+		self
 	}
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
@@ -195,7 +204,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Vec::new()
 	}
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		true
+		self.request_full_sync
 	}
 }
 
