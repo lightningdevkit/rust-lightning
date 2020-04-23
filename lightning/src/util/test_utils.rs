@@ -71,8 +71,6 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == monitor);
-		w.0.clear();
-		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
@@ -97,8 +95,6 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == *monitor);
-		w.0.clear();
-		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 		self.update_ret.lock().unwrap().clone()
 	}

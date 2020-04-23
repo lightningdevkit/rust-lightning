@@ -32,8 +32,6 @@ pub fn do_test(data: &[u8]) {
 		let deserialized_copy = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&w.0), logger.clone()).unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);
-		w.0.clear();
-		monitor.write_for_watchtower(&mut w).unwrap();
 	}
 }
 

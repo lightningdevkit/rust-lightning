@@ -485,9 +485,8 @@ pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_s
 /// just pass in the SecretKeys required.
 pub struct LocalCommitmentTransaction {
 	tx: Transaction,
-	//TODO: modify Channel methods to integrate HTLC material at LocalCommitmentTransaction generation to drop Option here
-	local_keys: Option<TxCreationKeys>,
-	feerate_per_kw: Option<u64>,
+	pub(crate) local_keys: TxCreationKeys,
+	pub(crate) feerate_per_kw: u64,
 	per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<Transaction>)>
 }
 impl LocalCommitmentTransaction {
@@ -502,21 +501,30 @@ impl LocalCommitmentTransaction {
 			sequence: 0,
 			witness: vec![vec![], vec![], vec![]]
 		};
-		Self { tx: Transaction {
-			version: 2,
-			input: vec![dummy_input],
-			output: Vec::new(),
-			lock_time: 0,
-		},
-			local_keys: None,
-			feerate_per_kw: None,
+		let dummy_key = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		Self {
+			tx: Transaction {
+				version: 2,
+				input: vec![dummy_input],
+				output: Vec::new(),
+				lock_time: 0,
+			},
+			local_keys: TxCreationKeys {
+					per_commitment_point: dummy_key.clone(),
+					revocation_key: dummy_key.clone(),
+					a_htlc_key: dummy_key.clone(),
+					b_htlc_key: dummy_key.clone(),
+					a_delayed_payment_key: dummy_key.clone(),
+					b_payment_key: dummy_key.clone(),
+				},
+			feerate_per_kw: 0,
 			per_htlc: Vec::new()
 		}
 	}
 
 	/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
 	/// remote signature and both parties keys
-	pub(crate) fn new_missing_local_sig(mut tx: Transaction, their_sig: &Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey) -> LocalCommitmentTransaction {
+	pub(crate) fn new_missing_local_sig(mut tx: Transaction, their_sig: &Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u64, mut htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
 		if tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
 		if tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
 
@@ -533,9 +541,10 @@ impl LocalCommitmentTransaction {
 		}
 
 		Self { tx,
-			local_keys: None,
-			feerate_per_kw: None,
-			per_htlc: Vec::new()
+			local_keys,
+			feerate_per_kw,
+			// TODO: Avoid the conversion of a Vec created likely just for this:
+			per_htlc: htlc_data.drain(..).map(|(a, b)| (a, b, None)).collect(),
 		}
 	}
 
@@ -594,33 +603,23 @@ impl LocalCommitmentTransaction {
 		&self.tx
 	}
 
-	/// Set HTLC cache to generate any local HTLC transaction spending one of htlc ouput
-	/// from this local commitment transaction
-	pub(crate) fn set_htlc_cache(&mut self, local_keys: TxCreationKeys, feerate_per_kw: u64, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<Transaction>)>) {
-		self.local_keys = Some(local_keys);
-		self.feerate_per_kw = Some(feerate_per_kw);
-		self.per_htlc = htlc_outputs;
-	}
-
 	/// Add local signature for a htlc transaction, do nothing if a cached signed transaction is
 	/// already present
 	pub fn add_htlc_sig<T: secp256k1::Signing>(&mut self, htlc_base_key: &SecretKey, htlc_index: u32, preimage: Option<PaymentPreimage>, local_csv: u16, secp_ctx: &Secp256k1<T>) {
-		if self.local_keys.is_none() || self.feerate_per_kw.is_none() { return; }
-		let local_keys = self.local_keys.as_ref().unwrap();
 		let txid = self.txid();
 		for this_htlc in self.per_htlc.iter_mut() {
-			if this_htlc.0.transaction_output_index.unwrap() == htlc_index {
+			if this_htlc.0.transaction_output_index == Some(htlc_index) {
 				if this_htlc.2.is_some() { return; } // we already have a cached htlc transaction at provided index
-				let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw.unwrap(), local_csv, &this_htlc.0, &local_keys.a_delayed_payment_key, &local_keys.revocation_key);
+				let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, local_csv, &this_htlc.0, &self.local_keys.a_delayed_payment_key, &self.local_keys.revocation_key);
 				if !this_htlc.0.offered && preimage.is_none() { return; } // if we don't have preimage for HTLC-Success, don't try to generate
 				let htlc_secret = if !this_htlc.0.offered { preimage } else { None }; // if we have a preimage for HTLC-Timeout, don't use it that's likely a duplicate HTLC hash
 				if this_htlc.1.is_none() { return; } // we don't have any remote signature for this htlc
 				if htlc_tx.input.len() != 1 { return; }
 				if htlc_tx.input[0].witness.len() != 0 { return; }
 
-				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &local_keys.a_htlc_key, &local_keys.b_htlc_key, &local_keys.revocation_key);
+				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.local_keys.a_htlc_key, &self.local_keys.b_htlc_key, &self.local_keys.revocation_key);
 
-				if let Ok(our_htlc_key) = derive_private_key(secp_ctx, &local_keys.per_commitment_point, htlc_base_key) {
+				if let Ok(our_htlc_key) = derive_private_key(secp_ctx, &self.local_keys.per_commitment_point, htlc_base_key) {
 					let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, this_htlc.0.amount_msat / 1000)[..]);
 					let our_sig = secp_ctx.sign(&sighash, &our_htlc_key);
 

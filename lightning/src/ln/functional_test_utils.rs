@@ -295,6 +295,16 @@ macro_rules! unwrap_send_err {
 	}
 }
 
+macro_rules! check_added_monitors {
+	($node: expr, $count: expr) => {
+		{
+			let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), $count);
+			added_monitors.clear();
+		}
+	}
+}
+
 pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
 	let chan_id = *node.network_chan_count.borrow();
 
@@ -322,13 +332,8 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, channel_value, 42);
 
-	{
-		node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
-		let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
-		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0, funding_output);
-		added_monitors.clear();
-	}
+	node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	check_added_monitors!(node_a, 0);
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
 	{
@@ -617,16 +622,6 @@ impl SendEvent {
 		let mut events = node.node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		SendEvent::from_event(events.pop().unwrap())
-	}
-}
-
-macro_rules! check_added_monitors {
-	($node: expr, $count: expr) => {
-		{
-			let mut added_monitors = $node.chan_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), $count);
-			added_monitors.clear();
-		}
 	}
 }
 
