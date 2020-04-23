@@ -1066,8 +1066,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
 
-		let local_tx_sequence = initial_local_commitment_tx.without_valid_witness().input[0].sequence as u64;
-		let local_tx_locktime = initial_local_commitment_tx.without_valid_witness().lock_time as u64;
+		let local_tx_sequence = initial_local_commitment_tx.unsigned_tx.input[0].sequence as u64;
+		let local_tx_locktime = initial_local_commitment_tx.unsigned_tx.lock_time as u64;
 		let local_commitment_tx = LocalSignedTx {
 			txid: initial_local_commitment_tx.txid(),
 			revocation_key: initial_local_commitment_tx.local_keys.revocation_key,
@@ -1249,8 +1249,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			return Err(MonitorUpdateError("A local commitment tx has already been signed, no new local commitment txn can be sent to our counterparty"));
 		}
 		let txid = commitment_tx.txid();
-		let sequence = commitment_tx.without_valid_witness().input[0].sequence as u64;
-		let locktime = commitment_tx.without_valid_witness().lock_time as u64;
+		let sequence = commitment_tx.unsigned_tx.input[0].sequence as u64;
+		let locktime = commitment_tx.unsigned_tx.lock_time as u64;
 		let mut new_local_commitment_tx = LocalSignedTx {
 			txid,
 			revocation_key: commitment_tx.local_keys.revocation_key,

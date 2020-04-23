@@ -814,9 +814,6 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		// HTLC-timeout or channel force-closure), don't allow any further update of local
 		// commitment transaction view to avoid delivery of revocation secret to counterparty
 		// for the aformentionned signed transaction.
-		if let Some(ref local_commitment) = self.local_commitment {
-			if local_commitment.has_local_sig() { return Err(()) }
-		}
 		if self.local_htlc_sigs.is_some() || self.prev_local_htlc_sigs.is_some() {
 			return Err(());
 		}
@@ -865,25 +862,25 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	pub(super) fn get_fully_signed_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			match self.key_storage.sign_local_commitment(local_commitment, &self.secp_ctx) {
-				Ok(sig) => local_commitment.add_local_sig(funding_redeemscript, sig),
+				Ok(sig) => Some(local_commitment.add_local_sig(funding_redeemscript, sig)),
 				Err(_) => return None,
 			}
-			return Some(local_commitment.with_valid_witness().clone());
+		} else {
+			None
 		}
-		None
 	}
 
 	#[cfg(test)]
 	pub(super) fn get_fully_signed_copy_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
-			let mut local_commitment = local_commitment.clone();
+			let local_commitment = local_commitment.clone();
 			match self.key_storage.sign_local_commitment(&local_commitment, &self.secp_ctx) {
-				Ok(sig) => local_commitment.add_local_sig(funding_redeemscript, sig),
+				Ok(sig) => Some(local_commitment.add_local_sig(funding_redeemscript, sig)),
 				Err(_) => return None,
 			}
-			return Some(local_commitment.with_valid_witness().clone());
+		} else {
+			None
 		}
-		None
 	}
 
 	pub(super) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {

@@ -484,10 +484,30 @@ pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_s
 /// to broadcast. Eventually this will require a signer which is possibly external, but for now we
 /// just pass in the SecretKeys required.
 pub struct LocalCommitmentTransaction {
-	tx: Transaction,
-	pub(crate) local_keys: TxCreationKeys,
-	pub(crate) feerate_per_kw: u64,
-	pub(crate) per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)>,
+	// TODO: We should migrate away from providing the transaction, instead providing enough to
+	// allow the ChannelKeys to construct it from scratch. Luckily we already have HTLC data here,
+	// so we're probably most of the way there.
+	/// The commitment transaction itself, in unsigned form.
+	pub unsigned_tx: Transaction,
+	/// Our counterparty's signature for the transaction, above.
+	pub their_sig: Signature,
+	// Which order the signatures should go in when constructing the final commitment tx witness.
+	// The user should be able to reconstruc this themselves, so we don't bother to expose it.
+	our_sig_first: bool,
+	/// The key derivation parameters for this commitment transaction
+	pub local_keys: TxCreationKeys,
+	/// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
+	/// controlled by the channel initiator.
+	pub feerate_per_kw: u64,
+	/// The HTLCs and remote htlc signatures which were included in this commitment transaction.
+	///
+	/// Note that this includes all HTLCs, including ones which were considered dust and not
+	/// actually included in the transaction as it appears on-chain, but who's value is burned as
+	/// fees and not included in the to_local or to_remote outputs.
+	///
+	/// The remote HTLC signatures in the second element will always be set for non-dust HTLCs, ie
+	/// those for which transaction_output_index.is_some().
+	pub per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)>,
 }
 impl LocalCommitmentTransaction {
 	#[cfg(test)]
@@ -499,16 +519,19 @@ impl LocalCommitmentTransaction {
 			},
 			script_sig: Default::default(),
 			sequence: 0,
-			witness: vec![vec![], vec![], vec![]]
+			witness: vec![]
 		};
 		let dummy_key = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sig = Secp256k1::new().sign(&secp256k1::Message::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
 		Self {
-			tx: Transaction {
+			unsigned_tx: Transaction {
 				version: 2,
 				input: vec![dummy_input],
 				output: Vec::new(),
 				lock_time: 0,
 			},
+			their_sig: dummy_sig,
+			our_sig_first: false,
 			local_keys: TxCreationKeys {
 					per_commitment_point: dummy_key.clone(),
 					revocation_key: dummy_key.clone(),
@@ -524,23 +547,14 @@ impl LocalCommitmentTransaction {
 
 	/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
 	/// remote signature and both parties keys
-	pub(crate) fn new_missing_local_sig(mut tx: Transaction, their_sig: &Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u64, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
-		if tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
-		if tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
+	pub(crate) fn new_missing_local_sig(unsigned_tx: Transaction, their_sig: Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u64, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
+		if unsigned_tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
+		if unsigned_tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
 
-		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
-
-		if our_funding_key.serialize()[..] < their_funding_key.serialize()[..] {
-			tx.input[0].witness.push(Vec::new());
-			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-			tx.input[0].witness[2].push(SigHashType::All as u8);
-		} else {
-			tx.input[0].witness.push(their_sig.serialize_der().to_vec());
-			tx.input[0].witness[1].push(SigHashType::All as u8);
-			tx.input[0].witness.push(Vec::new());
-		}
-
-		Self { tx,
+		Self {
+			unsigned_tx,
+			their_sig,
+			our_sig_first: our_funding_key.serialize()[..] < their_funding_key.serialize()[..],
 			local_keys,
 			feerate_per_kw,
 			per_htlc: htlc_data,
@@ -550,22 +564,7 @@ impl LocalCommitmentTransaction {
 	/// Get the txid of the local commitment transaction contained in this
 	/// LocalCommitmentTransaction
 	pub fn txid(&self) -> Sha256dHash {
-		self.tx.txid()
-	}
-
-	/// Check if LocalCommitmentTransaction has already been signed by us
-	pub(crate) fn has_local_sig(&self) -> bool {
-		if self.tx.input.len() != 1 { panic!("Commitment transactions must have input count == 1!"); }
-		if self.tx.input[0].witness.len() == 4 {
-			assert!(!self.tx.input[0].witness[1].is_empty());
-			assert!(!self.tx.input[0].witness[2].is_empty());
-			true
-		} else {
-			assert_eq!(self.tx.input[0].witness.len(), 3);
-			assert!(self.tx.input[0].witness[0].is_empty());
-			assert!(self.tx.input[0].witness[1].is_empty() || self.tx.input[0].witness[2].is_empty());
-			false
-		}
+		self.unsigned_tx.txid()
 	}
 
 	/// Gets our signature for the contained commitment transaction given our funding private key.
@@ -577,32 +576,28 @@ impl LocalCommitmentTransaction {
 	/// ChannelKeys::sign_local_commitment() calls directly.
 	/// Channel value is amount locked in funding_outpoint.
 	pub fn get_local_sig<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
-		let sighash = hash_to_message!(&bip143::SighashComponents::new(&self.tx)
-			.sighash_all(&self.tx.input[0], funding_redeemscript, channel_value_satoshis)[..]);
+		let sighash = hash_to_message!(&bip143::SighashComponents::new(&self.unsigned_tx)
+			.sighash_all(&self.unsigned_tx.input[0], funding_redeemscript, channel_value_satoshis)[..]);
 		secp_ctx.sign(&sighash, funding_key)
 	}
 
+	pub(crate) fn add_local_sig(&self, funding_redeemscript: &Script, our_sig: Signature) -> Transaction {
+		let mut tx = self.unsigned_tx.clone();
+		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
+		tx.input[0].witness.push(Vec::new());
 
-	pub(crate) fn add_local_sig(&mut self, funding_redeemscript: &Script, our_sig: Signature) {
-		if self.has_local_sig() { return; }
-
-		if self.tx.input[0].witness[1].is_empty() {
-			self.tx.input[0].witness[1] = our_sig.serialize_der().to_vec();
-			self.tx.input[0].witness[1].push(SigHashType::All as u8);
+		if self.our_sig_first {
+			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(self.their_sig.serialize_der().to_vec());
 		} else {
-			self.tx.input[0].witness[2] = our_sig.serialize_der().to_vec();
-			self.tx.input[0].witness[2].push(SigHashType::All as u8);
+			tx.input[0].witness.push(self.their_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
 		}
+		tx.input[0].witness[1].push(SigHashType::All as u8);
+		tx.input[0].witness[2].push(SigHashType::All as u8);
 
-		self.tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
-	}
-
-	/// Get raw transaction without asserting if witness is complete
-	pub(crate) fn without_valid_witness(&self) -> &Transaction { &self.tx }
-	/// Get raw transaction with panics if witness is incomplete
-	pub(crate) fn with_valid_witness(&self) -> &Transaction {
-		assert!(self.has_local_sig());
-		&self.tx
+		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
+		tx
 	}
 
 	/// Get a signature for each HTLC which was included in the commitment transaction (ie for
@@ -679,12 +674,14 @@ impl PartialEq for LocalCommitmentTransaction {
 }
 impl Writeable for LocalCommitmentTransaction {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		if let Err(e) = self.tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
+		if let Err(e) = self.unsigned_tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
 			match e {
 				encode::Error::Io(e) => return Err(e),
 				_ => panic!("local tx must have been well-formed!"),
 			}
 		}
+		self.their_sig.write(writer)?;
+		self.our_sig_first.write(writer)?;
 		self.local_keys.write(writer)?;
 		self.feerate_per_kw.write(writer)?;
 		writer.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
@@ -697,13 +694,15 @@ impl Writeable for LocalCommitmentTransaction {
 }
 impl Readable for LocalCommitmentTransaction {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let tx = match Transaction::consensus_decode(reader.by_ref()) {
+		let unsigned_tx = match Transaction::consensus_decode(reader.by_ref()) {
 			Ok(tx) => tx,
 			Err(e) => match e {
 				encode::Error::Io(ioe) => return Err(DecodeError::Io(ioe)),
 				_ => return Err(DecodeError::InvalidValue),
 			},
 		};
+		let their_sig = Readable::read(reader)?;
+		let our_sig_first = Readable::read(reader)?;
 		let local_keys = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 		let htlcs_count: u64 = Readable::read(reader)?;
@@ -714,12 +713,14 @@ impl Readable for LocalCommitmentTransaction {
 			per_htlc.push((htlc, sigs));
 		}
 
-		if tx.input.len() != 1 {
+		if unsigned_tx.input.len() != 1 {
 			// Ensure tx didn't hit the 0-input ambiguity case.
 			return Err(DecodeError::InvalidValue);
 		}
 		Ok(Self {
-			tx,
+			unsigned_tx,
+			their_sig,
+			our_sig_first,
 			local_keys,
 			feerate_per_kw,
 			per_htlc,
