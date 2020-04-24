@@ -21,6 +21,8 @@ for TARGET in src/bin/*.rs; do
 	HFUZZ_RUN_ARGS="--exit_upon_crash -v -n2"
 	if [ "$FILE" = "chanmon_consistency_target" ]; then
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -F 64 -N100000"
+	elif [ "$FILE" = "full_stack_target" ]; then
+		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -t0 -N1000000"
 	else
 		HFUZZ_RUN_ARGS="$HFUZZ_RUN_ARGS -N1000000"
 	fi
