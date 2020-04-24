@@ -614,8 +614,6 @@ impl LocalCommitmentTransaction {
 		for this_htlc in self.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
 				let htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, local_csv, &this_htlc.0, &self.local_keys.a_delayed_payment_key, &self.local_keys.revocation_key);
-				assert_eq!(htlc_tx.input.len(), 1);
-				assert_eq!(htlc_tx.input[0].witness.len(), 0);
 
 				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.local_keys.a_htlc_key, &self.local_keys.b_htlc_key, &self.local_keys.revocation_key);
 
@@ -642,8 +640,6 @@ impl LocalCommitmentTransaction {
 		// Channel should have checked that we have a remote signature for this HTLC at
 		// creation, and we should have a sensible htlc transaction:
 		assert!(this_htlc.1.is_some());
-		assert_eq!(htlc_tx.input.len(), 1);
-		assert_eq!(htlc_tx.input[0].witness.len(), 0);
 
 		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.local_keys.a_htlc_key, &self.local_keys.b_htlc_key, &self.local_keys.revocation_key);
 
