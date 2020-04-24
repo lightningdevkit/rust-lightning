@@ -37,6 +37,10 @@ members = ["."]
 lto = true
 codegen-units = 1
 
+# When testing a large fuzz corpus, -O1 offers a nice speedup
+[profile.dev]
+opt-level = 1
+
 [lib]
 name = "lightning_fuzz"
 path = "src/lib.rs"

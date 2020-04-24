@@ -24,8 +24,8 @@ impl Writer for VecWriter {
 }
 
 #[inline]
-pub fn do_test(data: &[u8]) {
-	let logger = Arc::new(test_logger::TestLogger::new("".to_owned()));
+pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+	let logger = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 	if let Ok((latest_block_hash, monitor)) = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(data), logger.clone()) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
@@ -35,7 +35,11 @@ pub fn do_test(data: &[u8]) {
 	}
 }
 
+pub fn chanmon_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+	do_test(data, out);
+}
+
 #[no_mangle]
 pub extern "C" fn chanmon_deser_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{});
 }
