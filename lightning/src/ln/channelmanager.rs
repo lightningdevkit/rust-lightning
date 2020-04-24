@@ -28,7 +28,7 @@ use secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use ln::features::{InitFeatures, NodeFeatures};
 use ln::router::{Route, RouteHop};
 use ln::msgs;
@@ -1039,7 +1039,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 				// OUR PAYMENT!
 				// final_expiry_too_soon
-				if (msg.cltv_expiry as u64) < self.latest_block_height.load(Ordering::Acquire) as u64 + (CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
+				// We have to have some headroom to broadcast on chain if we have the preimage, so make sure we have at least
+				// HTLC_FAIL_BACK_BUFFER blocks to go.
+				// Also, ensure that, in the case of an unknown payment hash, our payment logic has enough time to fail the HTLC backward
+				// before our onchain logic triggers a channel closure (see HTLC_FAIL_BACK_BUFFER rational).
+				if (msg.cltv_expiry as u64) <= self.latest_block_height.load(Ordering::Acquire) as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount
@@ -1163,13 +1167,20 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
 					}
 					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-					// We want to have at least LATENCY_GRACE_PERIOD_BLOCKS to fail prior to going on chain CLAIM_BUFFER blocks before expiration
-					if msg.cltv_expiry <= cur_height + CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS as u32 { // expiry_too_soon
+					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now, but we want to be robust wrt to counterparty
+					// packet sanitization (see HTLC_FAIL_BACK_BUFFER rational)
+					if msg.cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
 						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
 						break Some(("CLTV expiry is too far in the future", 21, None));
 					}
+					// In theory, we would be safe against unitentional channel-closure, if we only required a margin of LATENCY_GRACE_PERIOD_BLOCKS.
+					// But, to be safe against policy reception, we use a longuer delay.
+					if (*outgoing_cltv_value) as u64 <= (cur_height + HTLC_FAIL_BACK_BUFFER) as u64 {
+						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
+					}
+
 					break None;
 				}
 				{

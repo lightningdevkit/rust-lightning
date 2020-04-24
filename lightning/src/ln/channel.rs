@@ -1727,8 +1727,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Remote provided CLTV expiry in seconds instead of block height"));
 		}
 
-		//TODO: Check msg.cltv_expiry further? Do this in channel manager?
-
 		if self.channel_state & ChannelState::LocalShutdownSent as u32 != 0 {
 			if let PendingHTLCStatus::Forward(_) = pending_forward_state {
 				panic!("ChannelManager shouldn't be trying to add a forwardable HTLC after we've started closing");
@@ -3558,8 +3556,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
 			return Err(ChannelError::Ignore("Cannot send value that would put us over their reserve value"));
 		}
-
-		//TODO: Check cltv_expiry? Do this in channel manager?
 
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
