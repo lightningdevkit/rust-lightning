@@ -207,8 +207,8 @@ enum ChannelState {
 	/// to drop us, but we store this anyway.
 	ShutdownComplete = 4096,
 }
-const BOTH_SIDES_SHUTDOWN_MASK: u32 = (ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32);
-const MULTI_STATE_FLAGS: u32 = (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32);
+const BOTH_SIDES_SHUTDOWN_MASK: u32 = ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32;
+const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32;
 
 const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -382,7 +382,7 @@ pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
 /// Maximmum `funding_satoshis` value, according to the BOLT #2 specification
 /// it's 2^24.
-pub const MAX_FUNDING_SATOSHIS: u64 = (1 << 24);
+pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
 
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
