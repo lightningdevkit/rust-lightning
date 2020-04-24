@@ -6,9 +6,6 @@
 extern crate lightning_fuzz;
 use lightning_fuzz::msg_targets::msg_update_fee::*;
 
-use std::fs;
-use std::io::Read;
-
 #[cfg(feature = "afl")]
 #[macro_use] extern crate afl;
 #[cfg(feature = "afl")]
@@ -38,6 +35,8 @@ fuzz_target!(|data: &[u8]| {
 
 #[cfg(feature = "stdin_fuzz")]
 fn main() {
+	use std::io::Read;
+
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
 	msg_update_fee_run(data.as_ptr(), data.len());
@@ -45,6 +44,8 @@ fn main() {
 
 #[test]
 fn run_test_cases() {
+	use std::fs;
+	use std::io::Read;
 	use lightning_fuzz::utils::test_logger::StringBuffer;
 
 	use std::sync::{atomic, Arc};
