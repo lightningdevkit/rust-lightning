@@ -90,7 +90,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get -y install build-essential binutils-dev libunwind-dev
-      - name: Fuzz test on Rust ${{ matrix.TOOLCHAIN }}
+      - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: cd fuzz && cargo test --verbose --color always
-      - name: Generate fuzz report
+      - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh
