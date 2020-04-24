@@ -26,7 +26,7 @@ script:
      - if [ "$BUILD_NET_TOKIO" == "1" ]; then RUSTFLAGS="-C link-dead-code" cargo test --verbose; fi
      - if [ "$BUILD_NET_TOKIO" != "1" ]; then RUSTFLAGS="-C link-dead-code" cargo test --verbose -p lightning; fi
      # Run lightning workspace fuzz tests on Rust stable
-     - if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd fuzz && cargo test --verbose && ./travis-fuzz.sh; fi
+     - if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd fuzz && cargo test --verbose && ./ci-fuzz.sh; fi
      # Generate code cov information on Rust 1.39.0
      - if [ "$(rustup show | grep default | grep 1.39.0)" != "" ]; then
            wget https://github.com/SimonKagstrom/kcov/archive/master.tar.gz &&
