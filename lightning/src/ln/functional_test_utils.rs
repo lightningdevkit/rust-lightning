@@ -717,7 +717,7 @@ macro_rules! get_payment_preimage_hash {
 	}
 }
 
-macro_rules! expect_pending_htlcs_forwardable {
+macro_rules! expect_pending_htlcs_forwardable_ignore {
 	($node: expr) => {{
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
@@ -725,6 +725,12 @@ macro_rules! expect_pending_htlcs_forwardable {
 			Event::PendingHTLCsForwardable { .. } => { },
 			_ => panic!("Unexpected event"),
 		};
+	}}
+}
+
+macro_rules! expect_pending_htlcs_forwardable {
+	($node: expr) => {{
+		expect_pending_htlcs_forwardable_ignore!($node);
 		$node.node.process_pending_htlc_forwards();
 	}}
 }
@@ -758,13 +764,19 @@ macro_rules! expect_payment_sent {
 }
 
 macro_rules! expect_payment_failed {
-	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr) => {
+	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, .. } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data } => {
 				assert_eq!(*payment_hash, $expected_payment_hash);
 				assert_eq!(rejected_by_dest, $rejected_by_dest);
+				assert!(error_code.is_some());
+				assert!(error_data.is_some());
+				$(
+					assert_eq!(error_code.unwrap(), $expected_error_code);
+					assert_eq!(&error_data.as_ref().unwrap()[..], $expected_error_data);
+				)*
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -774,49 +786,57 @@ macro_rules! expect_payment_failed {
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>) {
 	origin_node.node.send_payment(&route, our_payment_hash, &our_payment_secret).unwrap();
 	check_added_monitors!(origin_node, expected_paths.len());
+	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
+}
 
-	let mut events = origin_node.node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), expected_paths.len());
-	for (path_idx, (ev, expected_route)) in events.drain(..).zip(expected_paths.iter()).enumerate() {
-		let mut payment_event = SendEvent::from_event(ev);
-		let mut prev_node = origin_node;
+pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool) {
+	let mut payment_event = SendEvent::from_event(ev);
+	let mut prev_node = origin_node;
 
-		for (idx, &node) in expected_route.iter().enumerate() {
-			assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
+	for (idx, &node) in expected_path.iter().enumerate() {
+		assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
 
-			node.node.handle_update_add_htlc(&prev_node.node.get_our_node_id(), &payment_event.msgs[0]);
-			check_added_monitors!(node, 0);
-			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
+		node.node.handle_update_add_htlc(&prev_node.node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(node, 0);
+		commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 
-			expect_pending_htlcs_forwardable!(node);
+		expect_pending_htlcs_forwardable!(node);
 
-			if idx == expected_route.len() - 1 {
-				let events_2 = node.node.get_and_clear_pending_events();
-				// Once we've gotten through all the HTLCs, the last one should result in a
-				// PaymentReceived (but each previous one should not!).
-				if path_idx == expected_paths.len() - 1 {
-					assert_eq!(events_2.len(), 1);
-					match events_2[0] {
-						Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
-							assert_eq!(our_payment_hash, *payment_hash);
-							assert_eq!(our_payment_secret, *payment_secret);
-							assert_eq!(amt, recv_value);
-						},
-						_ => panic!("Unexpected event"),
-					}
-				} else {
-					assert!(events_2.is_empty());
+		if idx == expected_path.len() - 1 {
+			let events_2 = node.node.get_and_clear_pending_events();
+			if payment_received_expected {
+				assert_eq!(events_2.len(), 1);
+				match events_2[0] {
+					Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
+						assert_eq!(our_payment_hash, *payment_hash);
+						assert_eq!(our_payment_secret, *payment_secret);
+						assert_eq!(amt, recv_value);
+					},
+					_ => panic!("Unexpected event"),
 				}
 			} else {
-				let mut events_2 = node.node.get_and_clear_pending_msg_events();
-				assert_eq!(events_2.len(), 1);
-				check_added_monitors!(node, 1);
-				payment_event = SendEvent::from_event(events_2.remove(0));
-				assert_eq!(payment_event.msgs.len(), 1);
+				assert!(events_2.is_empty());
 			}
-
-			prev_node = node;
+		} else {
+			let mut events_2 = node.node.get_and_clear_pending_msg_events();
+			assert_eq!(events_2.len(), 1);
+			check_added_monitors!(node, 1);
+			payment_event = SendEvent::from_event(events_2.remove(0));
+			assert_eq!(payment_event.msgs.len(), 1);
 		}
+
+		prev_node = node;
+	}
+}
+
+pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>) {
+	let mut events = origin_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), expected_route.len());
+	for (path_idx, (ev, expected_path)) in events.drain(..).zip(expected_route.iter()).enumerate() {
+		// Once we've gotten through all the HTLCs, the last one should result in a
+		// PaymentReceived (but each previous one should not!), .
+		let expect_payment = path_idx == expected_route.len() - 1;
+		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), our_payment_secret, ev, expect_payment);
 	}
 }
 

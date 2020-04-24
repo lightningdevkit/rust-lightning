@@ -383,6 +383,28 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 /// solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
 /// keeping bumping another claim tx to solve the outpoint.
 pub(crate) const ANTI_REORG_DELAY: u32 = 6;
+/// Number of blocks before confirmation at which we fail back an un-relayed HTLC or at which we
+/// refuse to accept a new HTLC.
+///
+/// This is used for a few separate purposes:
+/// 1) if we've received an MPP HTLC to us and it expires within this many blocks and we are
+///    waiting on additional parts (or waiting on the preimage for any HTLC from the user), we will
+///    fail this HTLC,
+/// 2) if we receive an HTLC within this many blocks of its expiry (plus one to avoid a race
+///    condition with the above), we will fail this HTLC without telling the user we received it,
+/// 3) if we are waiting on a connection or a channel state update to send an HTLC to a peer, and
+///    that HTLC expires within this many blocks, we will simply fail the HTLC instead.
+///
+/// (1) is all about protecting us - we need enough time to update the channel state before we hit
+/// CLTV_CLAIM_BUFFER, at which point we'd go on chain to claim the HTLC with the preimage.
+///
+/// (2) is the same, but with an additional buffer to avoid accepting an HTLC which is immediately
+/// in a race condition between the user connecting a block (which would fail it) and the user
+/// providing us the preimage (which would claim it).
+///
+/// (3) is about our counterparty - we don't want to relay an HTLC to a counterparty when they may
+/// end up force-closing the channel on us to claim it.
+pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
 #[derive(Clone, PartialEq)]
 struct LocalSignedTx {
