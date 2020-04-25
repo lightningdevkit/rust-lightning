@@ -1460,7 +1460,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// They sign the "local" commitment transaction...
 		secp_check!(self.secp_ctx.verify(&local_sighash, &sig, self.their_funding_pubkey()), "Invalid funding_created signature from peer");
 
-		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey(), local_keys, self.feerate_per_kw, Vec::new());
+		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig.clone(), &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey(), local_keys, self.feerate_per_kw, Vec::new());
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
@@ -1574,7 +1574,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		macro_rules! create_monitor {
 			() => { {
-				let local_commitment_tx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx.clone(), &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey, local_keys.clone(), self.feerate_per_kw, Vec::new());
+				let local_commitment_tx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx.clone(), msg.signature.clone(), &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), their_funding_pubkey, local_keys.clone(), self.feerate_per_kw, Vec::new());
 				let mut channel_monitor = ChannelMonitor::new(self.local_keys.clone(),
 				                                              &self.shutdown_pubkey, self.our_to_self_delay,
 				                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
@@ -1902,7 +1902,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
-				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, &msg.signature, &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), &their_funding_pubkey, local_keys, self.feerate_per_kw, htlcs_without_source),
+				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, msg.signature.clone(), &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), &their_funding_pubkey, local_keys, self.feerate_per_kw, htlcs_without_source),
 				htlc_outputs: htlcs_and_sigs
 			}]
 		};
@@ -4495,7 +4495,7 @@ mod tests {
 		macro_rules! test_commitment {
 			( $their_sig_hex: expr, $our_sig_hex: expr, $tx_hex: expr, {
 				$( { $htlc_idx: expr, $their_htlc_sig_hex: expr, $our_htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
-			} ) => {
+			} ) => { {
 				unsigned_tx = {
 					let mut res = chan.build_commitment_transaction(0xffffffffffff - 42, &keys, true, false, chan.feerate_per_kw);
 					let htlcs = res.2.drain(..)
@@ -4516,11 +4516,14 @@ mod tests {
 				})*
 				assert_eq!(unsigned_tx.1.len(), per_htlc.len());
 
-				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), &their_signature, &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
-				chan_keys.sign_local_commitment(&mut localtx, &chan.secp_ctx);
+				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), their_signature.clone(), &PublicKey::from_secret_key(&secp_ctx, chan.local_keys.funding_key()), chan.their_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
+				let local_sig = chan_keys.sign_local_commitment(&localtx, &chan.secp_ctx).unwrap();
 
-				assert_eq!(serialize(localtx.with_valid_witness())[..],
+				assert_eq!(serialize(&localtx.add_local_sig(&redeemscript, local_sig))[..],
 						hex::decode($tx_hex).unwrap()[..]);
+
+				let htlc_sigs = chan_keys.sign_local_commitment_htlc_transactions(&localtx, chan.their_to_self_delay, &chan.secp_ctx).unwrap();
+				let mut htlc_sig_iter = localtx.per_htlc.iter().zip(htlc_sigs.iter().enumerate());
 
 				$({
 					let remote_signature = Signature::from_der(&hex::decode($their_htlc_sig_hex).unwrap()[..]).unwrap();
@@ -4543,12 +4546,19 @@ mod tests {
 						assert!(preimage.is_some());
 					}
 
-					chan_keys.sign_htlc_transaction(&mut localtx, $htlc_idx, preimage, chan.their_to_self_delay, &chan.secp_ctx);
+					let mut htlc_sig = htlc_sig_iter.next().unwrap();
+					while (htlc_sig.1).1.is_none() { htlc_sig = htlc_sig_iter.next().unwrap(); }
+					assert_eq!((htlc_sig.0).0.transaction_output_index, Some($htlc_idx));
 
-					assert_eq!(serialize(localtx.htlc_with_valid_witness($htlc_idx).as_ref().unwrap())[..],
+					assert_eq!(serialize(&localtx.get_signed_htlc_tx((htlc_sig.1).0, &(htlc_sig.1).1.unwrap(), &preimage, chan.their_to_self_delay))[..],
 							hex::decode($htlc_tx_hex).unwrap()[..]);
 				})*
-			}
+				loop {
+					let htlc_sig = htlc_sig_iter.next();
+					if htlc_sig.is_none() { break; }
+					assert!((htlc_sig.unwrap().1).1.is_none());
+				}
+			} }
 		}
 
 		{
