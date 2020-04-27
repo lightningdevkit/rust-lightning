@@ -18,7 +18,7 @@
 use secp256k1::key::PublicKey;
 use secp256k1::Signature;
 use secp256k1;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::Script;
 
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
@@ -1360,8 +1360,8 @@ mod tests {
 	use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use util::ser::{Writeable, Readable};
 
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::hex::FromHex;
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::script::Builder;

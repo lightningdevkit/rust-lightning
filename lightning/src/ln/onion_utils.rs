@@ -7,10 +7,10 @@ use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable, LengthCalculatingWriter};
 use util::logger::{Logger, LogHolder};
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::cmp::fixed_time_eq;
-use bitcoin_hashes::hmac::{Hmac, HmacEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::cmp::fixed_time_eq;
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::Secp256k1;

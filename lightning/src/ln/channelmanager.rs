@@ -14,11 +14,11 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::BitcoinHash;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::hmac::{Hmac, HmacEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-use bitcoin_hashes::cmp::fixed_time_eq;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::cmp::fixed_time_eq;
 
 use secp256k1::key::{SecretKey,PublicKey};
 use secp256k1::Secp256k1;

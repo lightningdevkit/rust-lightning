@@ -19,7 +19,6 @@
 #![allow(ellipsis_inclusive_range_patterns)]
 
 extern crate bitcoin;
-extern crate bitcoin_hashes;
 extern crate secp256k1;
 #[cfg(test)] extern crate rand;
 #[cfg(test)] extern crate hex;

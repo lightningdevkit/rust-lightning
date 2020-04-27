@@ -7,8 +7,8 @@ use secp256k1::key::PublicKey;
 use secp256k1::Secp256k1;
 use secp256k1;
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::Hash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 
@@ -1085,8 +1085,8 @@ mod tests {
 	use util::logger::Logger;
 	use util::ser::{Writeable, Readable};
 
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::Hash;
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;

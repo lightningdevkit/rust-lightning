@@ -1,4 +1,4 @@
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::transaction::Transaction;

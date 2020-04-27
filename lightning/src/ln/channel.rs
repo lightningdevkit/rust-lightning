@@ -6,10 +6,10 @@ use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
 use secp256k1::key::{PublicKey,SecretKey};
 use secp256k1::{Secp256k1,Signature};
@@ -4291,7 +4291,7 @@ mod tests {
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
-	use bitcoin_hashes::hex::FromHex;
+	use bitcoin::hashes::hex::FromHex;
 	use hex;
 	use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
@@ -4309,10 +4309,10 @@ mod tests {
 	use util::logger::Logger;
 	use secp256k1::{Secp256k1, Message, Signature, All};
 	use secp256k1::key::{SecretKey,PublicKey};
-	use bitcoin_hashes::sha256::Hash as Sha256;
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::hash160::Hash as Hash160;
-	use bitcoin_hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin::hashes::hash160::Hash as Hash160;
+	use bitcoin::hashes::Hash;
 	use std::sync::Arc;
 	use rand::{thread_rng,Rng};
 

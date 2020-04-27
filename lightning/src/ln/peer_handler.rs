@@ -26,9 +26,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
 use std::ops::Deref;
 
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
-use bitcoin_hashes::{HashEngine, Hash};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
+use bitcoin::hashes::{HashEngine, Hash};
 
 /// Provides references to trait impls which handle different types of messages.
 pub struct MessageHandler<CM: Deref> where CM::Target: msgs::ChannelMessageHandler {

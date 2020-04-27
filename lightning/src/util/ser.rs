@@ -14,7 +14,7 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use std::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -542,7 +542,7 @@ impl Writeable for Sha256dHash {
 
 impl Readable for Sha256dHash {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		use bitcoin_hashes::Hash;
+		use bitcoin::hashes::Hash;
 
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(Sha256dHash::from_slice(&buf[..]).unwrap())

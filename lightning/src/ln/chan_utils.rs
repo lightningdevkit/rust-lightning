@@ -8,11 +8,11 @@ use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, SigHashTy
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
 use bitcoin::util::bip143;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::ripemd160::Hash as Ripemd160;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::ripemd160::Hash as Ripemd160;
+use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
 use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;

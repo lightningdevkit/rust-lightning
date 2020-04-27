@@ -8,7 +8,7 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::bip143;
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
 use secp256k1::{Secp256k1, Signature};
 use secp256k1;

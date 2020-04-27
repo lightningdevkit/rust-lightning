@@ -9,7 +9,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::util::hash::BitcoinHash;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
 
 use util::logger::Logger;

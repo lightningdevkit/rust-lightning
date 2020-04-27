@@ -1,7 +1,7 @@
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::transaction::Transaction;
 use secp256k1::key::PublicKey;
 

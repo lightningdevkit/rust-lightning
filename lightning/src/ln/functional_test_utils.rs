@@ -24,9 +24,9 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
 
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256d;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256d;
+use bitcoin::hashes::Hash;
 
 use secp256k1::Secp256k1;
 use secp256k1::key::PublicKey;

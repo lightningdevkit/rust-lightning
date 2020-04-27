@@ -16,10 +16,10 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 
-use bitcoin_hashes::Hash as TraitImport;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256d;
+use bitcoin::hashes::Hash as TraitImport;
+use bitcoin::hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256d;
 
 use lightning::chain::chaininterface;
 use lightning::chain::transaction::OutPoint;

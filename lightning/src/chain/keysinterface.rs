@@ -9,11 +9,11 @@ use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 use bitcoin::util::bip143;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::HashEngine as Sha256State;
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-use bitcoin_hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::HashEngine as Sha256State;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::hash160::Hash as Hash160;
 
 use secp256k1::key::{SecretKey, PublicKey};
 use secp256k1::{Secp256k1, Signature, Signing};

@@ -1,8 +1,8 @@
 use ln::msgs::LightningError;
 use ln::msgs;
 
-use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use secp256k1::Secp256k1;
 use secp256k1::key::{PublicKey,SecretKey};
