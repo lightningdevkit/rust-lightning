@@ -18,8 +18,8 @@
 use bitcoin::secp256k1::key::PublicKey;
 use bitcoin::secp256k1::Signature;
 use bitcoin::secp256k1;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::Script;
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
@@ -84,7 +84,7 @@ pub struct Pong {
 /// An open_channel message to be sent or received from a peer
 #[derive(Clone)]
 pub struct OpenChannel {
-	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) chain_hash: BlockHash,
 	pub(crate) temporary_channel_id: [u8; 32],
 	pub(crate) funding_satoshis: u64,
 	pub(crate) push_msat: u64,
@@ -129,7 +129,7 @@ pub struct AcceptChannel {
 #[derive(Clone)]
 pub struct FundingCreated {
 	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) funding_txid: Sha256dHash,
+	pub(crate) funding_txid: Txid,
 	pub(crate) funding_output_index: u16,
 	pub(crate) signature: Signature,
 }
@@ -403,7 +403,7 @@ pub struct NodeAnnouncement {
 #[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedChannelAnnouncement {
 	pub(crate) features: ChannelFeatures,
-	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) chain_hash: BlockHash,
 	pub(crate) short_channel_id: u64,
 	/// One of the two node_ids which are endpoints of this channel
 	pub        node_id_1: PublicKey,
@@ -425,7 +425,7 @@ pub struct ChannelAnnouncement {
 
 #[derive(PartialEq, Clone, Debug)]
 pub(crate) struct UnsignedChannelUpdate {
-	pub(crate) chain_hash: Sha256dHash,
+	pub(crate) chain_hash: BlockHash,
 	pub(crate) short_channel_id: u64,
 	pub(crate) timestamp: u32,
 	pub(crate) flags: u16,
@@ -1360,12 +1360,12 @@ mod tests {
 	use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use util::ser::{Writeable, Readable};
 
-	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
+	use bitcoin::hash_types::{Txid, BlockHash};
 
 	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
@@ -1461,7 +1461,7 @@ mod tests {
 		}
 		let unsigned_channel_announcement = msgs::UnsignedChannelAnnouncement {
 			features,
-			chain_hash: if !non_bitcoin_chain_hash { Sha256dHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { Sha256dHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			chain_hash: if !non_bitcoin_chain_hash { BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { BlockHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
 			short_channel_id: 2316138423780173,
 			node_id_1: pubkey_1,
 			node_id_2: pubkey_2,
@@ -1611,7 +1611,7 @@ mod tests {
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let unsigned_channel_update = msgs::UnsignedChannelUpdate {
-			chain_hash: if !non_bitcoin_chain_hash { Sha256dHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { Sha256dHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			chain_hash: if !non_bitcoin_chain_hash { BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { BlockHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
 			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 } | if htlc_maximum_msat { 1 << 8 } else { 0 },
@@ -1673,7 +1673,7 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let open_channel = msgs::OpenChannel {
-			chain_hash: if !non_bitcoin_chain_hash { Sha256dHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { Sha256dHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			chain_hash: if !non_bitcoin_chain_hash { BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { BlockHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
 			temporary_channel_id: [2; 32],
 			funding_satoshis: 1311768467284833366,
 			push_msat: 2536655962884945560,
@@ -1767,7 +1767,7 @@ mod tests {
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_created = msgs::FundingCreated {
 			temporary_channel_id: [2; 32],
-			funding_txid: Sha256dHash::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
+			funding_txid: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			funding_output_index: 255,
 			signature: sig_1,
 		};

@@ -19,6 +19,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::cmp::fixed_time_eq;
+use bitcoin::hash_types::BlockHash;
 
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
@@ -375,7 +376,7 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
         F::Target: FeeEstimator,
 {
 	default_configuration: UserConfig,
-	genesis_hash: Sha256dHash,
+	genesis_hash: BlockHash,
 	fee_estimator: F,
 	monitor: M,
 	tx_broadcaster: T,
@@ -384,7 +385,7 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
 	pub(super) latest_block_height: AtomicUsize,
 	#[cfg(not(test))]
 	latest_block_height: AtomicUsize,
-	last_block_hash: Mutex<Sha256dHash>,
+	last_block_hash: Mutex<BlockHash>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	#[cfg(test)]
@@ -3686,20 +3687,20 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (Sha256dHash, Arc<ChannelManager<ChanSigner, M, T, K, F>>)
+	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F>>)
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
 {
 	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(Sha256dHash, ChannelManager<ChanSigner, M, T, K, F>)>::read(reader, args)?;
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<ChanSigner, M, T, K, F>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
 impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (Sha256dHash, ChannelManager<ChanSigner, M, T, K, F>)
+	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F>)
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
@@ -3712,9 +3713,9 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			return Err(DecodeError::UnknownVersion);
 		}
 
-		let genesis_hash: Sha256dHash = Readable::read(reader)?;
+		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let latest_block_height: u32 = Readable::read(reader)?;
-		let last_block_hash: Sha256dHash = Readable::read(reader)?;
+		let last_block_hash: BlockHash = Readable::read(reader)?;
 
 		let mut failed_htlcs = Vec::new();
 

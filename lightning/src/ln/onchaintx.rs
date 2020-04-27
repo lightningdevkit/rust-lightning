@@ -8,7 +8,7 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 use bitcoin::util::bip143;
 
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::Txid;
 
 use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
@@ -37,7 +37,7 @@ enum OnchainEvent {
 	/// Outpoint under claim process by our own tx, once this one get enough confirmations, we remove it from
 	/// bump-txn candidate buffer.
 	Claim {
-		claim_request: Sha256dHash,
+		claim_request: Txid,
 	},
 	/// Claim tx aggregate multiple claimable outpoints. One of the outpoint may be claimed by a remote party tx.
 	/// In this case, we need to drop the outpoint and regenerate a new claim tx. By safety, we keep tracking
@@ -210,9 +210,9 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	// us and is immutable until all outpoint of the claimable set are post-anti-reorg-delay solved.
 	// Entry is cache of elements need to generate a bumped claiming transaction (see ClaimTxBumpMaterial)
 	#[cfg(test)] // Used in functional_test to verify sanitization
-	pub pending_claim_requests: HashMap<Sha256dHash, ClaimTxBumpMaterial>,
+	pub pending_claim_requests: HashMap<Txid, ClaimTxBumpMaterial>,
 	#[cfg(not(test))]
-	pending_claim_requests: HashMap<Sha256dHash, ClaimTxBumpMaterial>,
+	pending_claim_requests: HashMap<Txid, ClaimTxBumpMaterial>,
 
 	// Used to link outpoints claimed in a connected block to a pending claim request.
 	// Key is outpoint than monitor parsing has detected we have keys/scripts to claim
@@ -221,9 +221,9 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	// post-anti-reorg-delay solved, confirmaiton_block is used to erase entry if
 	// block with output gets disconnected.
 	#[cfg(test)] // Used in functional_test to verify sanitization
-	pub claimable_outpoints: HashMap<BitcoinOutPoint, (Sha256dHash, u32)>,
+	pub claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
 	#[cfg(not(test))]
-	claimable_outpoints: HashMap<BitcoinOutPoint, (Sha256dHash, u32)>,
+	claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
 
 	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
 

@@ -12,7 +12,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hashes::hash160::Hash as Hash160;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::Txid;
 
 use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
@@ -447,7 +447,7 @@ pub fn make_funding_redeemscript(a: &PublicKey, b: &PublicKey) -> Script {
 }
 
 /// panics if htlc.transaction_output_index.is_none()!
-pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
@@ -563,7 +563,7 @@ impl LocalCommitmentTransaction {
 
 	/// Get the txid of the local commitment transaction contained in this
 	/// LocalCommitmentTransaction
-	pub fn txid(&self) -> Sha256dHash {
+	pub fn txid(&self) -> Txid {
 		self.unsigned_tx.txid()
 	}
 
