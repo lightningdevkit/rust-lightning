@@ -21,8 +21,7 @@ use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::hash160::Hash as Hash160;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
@@ -1061,7 +1060,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			logger: Arc<Logger>) -> ChannelMonitor<ChanSigner> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
-		let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
+		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
 
 		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
@@ -1231,7 +1230,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
 		if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &self.keys.pubkeys().payment_basepoint) {
 			let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+				.push_slice(&WPubkeyHash::hash(&payment_key.serialize())[..])
 				.into_script();
 			if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &self.keys.payment_base_key()) {
 				self.broadcasted_remote_payment_script = Some((to_remote_script, to_remote_key));
@@ -1460,7 +1459,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			self.broadcasted_remote_payment_script = {
 				// Note that the Network here is ignored as we immediately drop the address for the
 				// script_pubkey version
-				let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
+				let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
 				Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
 			};
 
@@ -1609,7 +1608,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.broadcasted_remote_payment_script = {
 						// Note that the Network here is ignored as we immediately drop the address for the
 						// script_pubkey version
-						let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
+						let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
 						Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
 					};
 

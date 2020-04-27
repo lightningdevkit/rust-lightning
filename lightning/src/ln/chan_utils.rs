@@ -11,8 +11,7 @@ use bitcoin::util::bip143;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
-use bitcoin::hashes::hash160::Hash as Hash160;
-use bitcoin::hash_types::Txid;
+use bitcoin::hash_types::{Txid, PubkeyHash};
 
 use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
@@ -364,7 +363,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	if htlc.offered {
 		Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
+		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::all::OP_EQUAL)
 		              .push_opcode(opcodes::all::OP_IF)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
@@ -392,7 +391,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	} else {
 		Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
+		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::all::OP_EQUAL)
 		              .push_opcode(opcodes::all::OP_IF)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)

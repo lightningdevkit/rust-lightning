@@ -8,8 +8,7 @@ use bitcoin::consensus::encode;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::hash160::Hash as Hash160;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,Signature};
@@ -983,7 +982,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			log_trace!(self, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
 			txouts.push((TxOut {
 				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&Hash160::hash(&keys.b_payment_key.serialize())[..])
+				                             .push_slice(&WPubkeyHash::hash(&keys.b_payment_key.serialize())[..])
 				                             .into_script(),
 				value: value_to_b as u64
 			}, None));
@@ -1025,7 +1024,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let our_channel_close_key_hash = Hash160::hash(&self.shutdown_pubkey.serialize());
+		let our_channel_close_key_hash = WPubkeyHash::hash(&self.shutdown_pubkey.serialize());
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
 	}
 
@@ -4310,9 +4309,8 @@ mod tests {
 	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::hashes::hash160::Hash as Hash160;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hash_types::Txid;
+	use bitcoin::hash_types::{Txid, WPubkeyHash};
 	use std::sync::Arc;
 	use rand::{thread_rng,Rng};
 
@@ -4341,7 +4339,7 @@ mod tests {
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-			let our_channel_monitor_claim_key_hash = Hash160::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+			let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 			Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 		}
 
