@@ -20,10 +20,10 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::cmp::fixed_time_eq;
 
-use secp256k1::key::{SecretKey,PublicKey};
-use secp256k1::Secp256k1;
-use secp256k1::ecdh::SharedSecret;
-use secp256k1;
+use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1;
 
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;

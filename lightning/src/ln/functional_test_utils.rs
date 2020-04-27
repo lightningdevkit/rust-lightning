@@ -28,8 +28,8 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256d;
 use bitcoin::hashes::Hash;
 
-use secp256k1::Secp256k1;
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::key::PublicKey;
 
 use rand::{thread_rng,Rng};
 

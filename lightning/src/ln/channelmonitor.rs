@@ -24,9 +24,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::hash160::Hash as Hash160;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
-use secp256k1::{Secp256k1,Signature};
-use secp256k1::key::{SecretKey,PublicKey};
-use secp256k1;
+use bitcoin::secp256k1::{Secp256k1,Signature};
+use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::chan_utils;
@@ -2530,8 +2530,8 @@ mod tests {
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, LocalCommitmentTransaction};
 	use util::test_utils::TestLogger;
-	use secp256k1::key::{SecretKey,PublicKey};
-	use secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::Secp256k1;
 	use rand::{thread_rng,Rng};
 	use std::sync::Arc;
 	use chain::keysinterface::InMemoryChannelKeys;

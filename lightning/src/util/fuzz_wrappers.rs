@@ -3,13 +3,13 @@ macro_rules! hash_to_message {
 		{
 			#[cfg(not(feature = "fuzztarget"))]
 			{
-				::secp256k1::Message::from_slice($slice).unwrap()
+				::bitcoin::secp256k1::Message::from_slice($slice).unwrap()
 			}
 			#[cfg(feature = "fuzztarget")]
 			{
-				match ::secp256k1::Message::from_slice($slice) {
+				match ::bitcoin::secp256k1::Message::from_slice($slice) {
 					Ok(msg) => msg,
-					Err(_) => ::secp256k1::Message::from_slice(&[1; 32]).unwrap()
+					Err(_) => ::bitcoin::secp256k1::Message::from_slice(&[1; 32]).unwrap()
 				}
 			}
 		}

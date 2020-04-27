@@ -8,8 +8,8 @@ use std::hash::Hash;
 use std::sync::Mutex;
 use std::cmp;
 
-use secp256k1::Signature;
-use secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::Signature;
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;

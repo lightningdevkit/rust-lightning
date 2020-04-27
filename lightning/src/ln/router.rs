@@ -3,9 +3,9 @@
 //! You probably want to create a Router and use that as your RoutingMessageHandler and then
 //! interrogate it to get routes for your own payments.
 
-use secp256k1::key::PublicKey;
-use secp256k1::Secp256k1;
-use secp256k1;
+use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
@@ -1095,9 +1095,9 @@ mod tests {
 
 	use hex;
 
-	use secp256k1::key::{PublicKey,SecretKey};
-	use secp256k1::All;
-	use secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::All;
+	use bitcoin::secp256k1::Secp256k1;
 
 	use std::sync::Arc;
 	use std::collections::btree_map::Entry as BtreeEntry;

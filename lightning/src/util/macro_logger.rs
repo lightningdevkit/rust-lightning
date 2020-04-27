@@ -3,7 +3,7 @@ use chain::keysinterface::SpendableOutputDescriptor;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::transaction::Transaction;
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use ln::router::Route;
 use ln::chan_utils::HTLCType;

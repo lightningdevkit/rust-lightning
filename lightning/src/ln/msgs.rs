@@ -15,9 +15,9 @@
 //! raw socket events into your non-internet-facing system and then send routing events back to
 //! track the network on the less-secure system.
 
-use secp256k1::key::PublicKey;
-use secp256k1::Signature;
-use secp256k1;
+use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::Signature;
+use bitcoin::secp256k1;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::Script;
 
@@ -1367,8 +1367,8 @@ mod tests {
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
 
-	use secp256k1::key::{PublicKey,SecretKey};
-	use secp256k1::{Secp256k1, Message};
+	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::{Secp256k1, Message};
 
 	use std::io::Cursor;
 

@@ -13,7 +13,7 @@ use util::ser::{Writeable, Writer, MaybeReadable, Readable};
 
 use bitcoin::blockdata::script::Script;
 
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use std::time::Duration;
 

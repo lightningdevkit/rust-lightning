@@ -6,7 +6,7 @@
 //! call into the provided message handlers (probably a ChannelManager and Router) with messages
 //! they should handle, and encoding/sending response messages.
 
-use secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -1153,7 +1153,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 #[cfg(test)]
 mod tests {
-	use secp256k1::Signature;
+	use bitcoin::secp256k1::Signature;
 	use bitcoin::BitcoinHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
@@ -1164,8 +1164,8 @@ mod tests {
 	use util::test_utils;
 	use util::logger::Logger;
 
-	use secp256k1::Secp256k1;
-	use secp256k1::key::{SecretKey, PublicKey};
+	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
 	use rand::{thread_rng, Rng};
 
@@ -1343,7 +1343,7 @@ mod tests {
 	}
 
 	fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnouncement {
-		use secp256k1::ffi::Signature as FFISignature;
+		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		let secp_ctx = Secp256k1::new();
 		let network = Network::Testnet;
 		let node_1_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1371,7 +1371,7 @@ mod tests {
 	}
 
 	fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
-		use secp256k1::ffi::Signature as FFISignature;
+		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		let network = Network::Testnet;
 		msgs::ChannelUpdate {
 			signature: Signature::from(FFISignature::new()),

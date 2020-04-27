@@ -12,10 +12,10 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
-use secp256k1::key::{SecretKey,PublicKey};
-use secp256k1::Secp256k1;
-use secp256k1::ecdh::SharedSecret;
-use secp256k1;
+use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1;
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -478,8 +478,8 @@ mod tests {
 
 	use hex;
 
-	use secp256k1::Secp256k1;
-	use secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 	use super::OnionKeys;
 

@@ -12,7 +12,7 @@ use lightning::ln::router::{Router, RouteHint};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use utils::test_logger;
 

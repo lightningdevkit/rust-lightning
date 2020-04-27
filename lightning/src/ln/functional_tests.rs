@@ -39,8 +39,8 @@ use bitcoin::network::constants::Network;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 
-use secp256k1::{Secp256k1, Message};
-use secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{Secp256k1, Message};
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
@@ -5440,8 +5440,8 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 
 impl msgs::ChannelUpdate {
 	fn dummy() -> msgs::ChannelUpdate {
-		use secp256k1::ffi::Signature as FFISignature;
-		use secp256k1::Signature;
+		use bitcoin::secp256k1::ffi::Signature as FFISignature;
+		use bitcoin::secp256k1::Signature;
 		msgs::ChannelUpdate {
 			signature: Signature::from(FFISignature::new()),
 			contents: msgs::UnsignedChannelUpdate {
@@ -5477,7 +5477,7 @@ impl Writeable for BogusOnionHopData {
 fn test_onion_failure() {
 	use ln::msgs::ChannelUpdate;
 	use ln::channelmanager::CLTV_FAR_FAR_AWAY;
-	use secp256k1;
+	use bitcoin::secp256k1;
 
 	const BADONION: u16 = 0x8000;
 	const PERM: u16 = 0x4000;

@@ -19,7 +19,7 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
 
-use secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};

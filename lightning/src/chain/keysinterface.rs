@@ -15,9 +15,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::hash160::Hash as Hash160;
 
-use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::{Secp256k1, Signature, Signing};
-use secp256k1;
+use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, Signature, Signing};
+use bitcoin::secp256k1;
 
 use util::byte_utils;
 use util::logger::Logger;

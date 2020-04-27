@@ -11,9 +11,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::hash160::Hash as Hash160;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::{Secp256k1,Signature};
-use secp256k1;
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{Secp256k1,Signature};
+use bitcoin::secp256k1;
 
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
@@ -4307,8 +4307,8 @@ mod tests {
 	use util::enforcing_trait_impls::EnforcingChannelKeys;
 	use util::test_utils;
 	use util::logger::Logger;
-	use secp256k1::{Secp256k1, Message, Signature, All};
-	use secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
+	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::hash160::Hash as Hash160;

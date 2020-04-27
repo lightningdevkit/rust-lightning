@@ -10,8 +10,8 @@ use bitcoin::util::bip143;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
-use secp256k1::{Secp256k1, Signature};
-use secp256k1;
+use bitcoin::secp256k1::{Secp256k1, Signature};
+use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};

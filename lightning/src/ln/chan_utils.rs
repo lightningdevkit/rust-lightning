@@ -19,9 +19,9 @@ use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 use util::byte_utils;
 
-use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::{Secp256k1, Signature};
-use secp256k1;
+use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, Signature};
+use bitcoin::secp256k1;
 
 use std::{cmp, mem};
 

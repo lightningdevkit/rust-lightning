@@ -4,10 +4,10 @@ use ln::msgs;
 use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
-use secp256k1::Secp256k1;
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::ecdh::SharedSecret;
-use secp256k1;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::byte_utils;
@@ -467,7 +467,7 @@ impl PeerChannelEncryptor {
 
 #[cfg(test)]
 mod tests {
-	use secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 	use hex;
 

@@ -40,8 +40,8 @@ use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
 use utils::test_logger;
 
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::Secp256k1;
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::Secp256k1;
 
 use std::mem;
 use std::cmp::Ordering;
