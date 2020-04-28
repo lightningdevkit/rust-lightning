@@ -1539,8 +1539,8 @@ mod tests {
 
 		{ // Disable channels 4 and 12 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_require_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_require_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
 		}
 
 		{ // If all the channels require some features we don't understand, route should fail
@@ -1581,15 +1581,15 @@ mod tests {
 
 		{ // Re-enable channels 4 and 12 by wiping the unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_require_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_require_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_unknown_bits();
 		}
 
 		{ // Disable nodes 1, 2, and 8 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.nodes.get_mut(&node1).unwrap().features.set_require_unknown_bits();
-			network.nodes.get_mut(&node2).unwrap().features.set_require_unknown_bits();
-			network.nodes.get_mut(&node8).unwrap().features.set_require_unknown_bits();
+			network.nodes.get_mut(&node1).unwrap().features.set_required_unknown_bits();
+			network.nodes.get_mut(&node2).unwrap().features.set_required_unknown_bits();
+			network.nodes.get_mut(&node8).unwrap().features.set_required_unknown_bits();
 		}
 
 		{ // If all nodes require some features we don't understand, route should fail
@@ -1630,9 +1630,9 @@ mod tests {
 
 		{ // Re-enable nodes 1, 2, and 8
 			let mut network = router.network_map.write().unwrap();
-			network.nodes.get_mut(&node1).unwrap().features.clear_require_unknown_bits();
-			network.nodes.get_mut(&node2).unwrap().features.clear_require_unknown_bits();
-			network.nodes.get_mut(&node8).unwrap().features.clear_require_unknown_bits();
+			network.nodes.get_mut(&node1).unwrap().features.clear_unknown_bits();
+			network.nodes.get_mut(&node2).unwrap().features.clear_unknown_bits();
+			network.nodes.get_mut(&node8).unwrap().features.clear_unknown_bits();
 		}
 
 		// Note that we don't test disabling node 3 and failing to route to it, as we (somewhat

@@ -173,6 +173,16 @@ mod sealed {
 						(flags[Self::BYTE_OFFSET] & (Self::REQUIRED_MASK | Self::OPTIONAL_MASK)) != 0
 				}
 
+				/// Sets the feature's required (even) bit in the given flags.
+				#[inline]
+				fn set_required_bit(flags: &mut Vec<u8>) {
+					if flags.len() <= Self::BYTE_OFFSET {
+						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
+					}
+
+					flags[Self::BYTE_OFFSET] |= Self::REQUIRED_MASK;
+				}
+
 				/// Sets the feature's optional (odd) bit in the given flags.
 				#[inline]
 				fn set_optional_bit(flags: &mut Vec<u8>) {
@@ -191,6 +201,10 @@ mod sealed {
 						flags[Self::BYTE_OFFSET] &= !Self::REQUIRED_MASK;
 						flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
 					}
+
+					let last_non_zero_byte = flags.iter().rposition(|&byte| byte != 0);
+					let size = if let Some(offset) = last_non_zero_byte { offset + 1 } else { 0 };
+					flags.resize(size, 0u8);
 				}
 			}
 
@@ -219,6 +233,30 @@ mod sealed {
 		"Feature flags for `payment_secret`.");
 	define_feature!(17, BasicMPP, [InitContext, NodeContext],
 		"Feature flags for `basic_mpp`.");
+
+	#[cfg(test)]
+	define_context!(TestingContext {
+		required_features: [
+			// Byte 0
+			,
+			// Byte 1
+			,
+			// Byte 2
+			UnknownFeature,
+		],
+		optional_features: [
+			// Byte 0
+			,
+			// Byte 1
+			,
+			// Byte 2
+			,
+		],
+	});
+
+	#[cfg(test)]
+	define_feature!(23, UnknownFeature, [TestingContext],
+		"Feature flags for an unknown feature used in testing.");
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -375,23 +413,18 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn set_require_unknown_bits(&mut self) {
-		let newlen = cmp::max(3, self.flags.len());
-		self.flags.resize(newlen, 0u8);
-		self.flags[2] |= 0x40;
+	pub(crate) fn set_required_unknown_bits(&mut self) {
+		<sealed::TestingContext as sealed::UnknownFeature>::set_required_bit(&mut self.flags);
 	}
 
 	#[cfg(test)]
-	pub(crate) fn clear_require_unknown_bits(&mut self) {
-		let newlen = cmp::max(3, self.flags.len());
-		self.flags.resize(newlen, 0u8);
-		self.flags[2] &= !0x40;
-		if self.flags.len() == 3 && self.flags[2] == 0 {
-			self.flags.resize(2, 0u8);
-		}
-		if self.flags.len() == 2 && self.flags[1] == 0 {
-			self.flags.resize(1, 0u8);
-		}
+	pub(crate) fn set_optional_unknown_bits(&mut self) {
+		<sealed::TestingContext as sealed::UnknownFeature>::set_optional_bit(&mut self.flags);
+	}
+
+	#[cfg(test)]
+	pub(crate) fn clear_unknown_bits(&mut self) {
+		<sealed::TestingContext as sealed::UnknownFeature>::clear_bits(&mut self.flags);
 	}
 }
 
@@ -502,12 +535,22 @@ mod tests {
 	}
 
 	#[test]
-	fn sanity_test_unkown_bits_testing() {
-		let mut features = ChannelFeatures::known();
-		features.set_require_unknown_bits();
-		assert!(features.requires_unknown_bits());
-		features.clear_require_unknown_bits();
+	fn sanity_test_unknown_bits() {
+		let mut features = ChannelFeatures::empty();
 		assert!(!features.requires_unknown_bits());
+		assert!(!features.supports_unknown_bits());
+
+		features.set_required_unknown_bits();
+		assert!(features.requires_unknown_bits());
+		assert!(features.supports_unknown_bits());
+
+		features.clear_unknown_bits();
+		assert!(!features.requires_unknown_bits());
+		assert!(!features.supports_unknown_bits());
+
+		features.set_optional_unknown_bits();
+		assert!(!features.requires_unknown_bits());
+		assert!(features.supports_unknown_bits());
 	}
 
 	#[test]
