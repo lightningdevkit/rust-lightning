@@ -31,7 +31,7 @@ use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-use ln::onchaintx::{OnchainTxHandler, InputDescriptors, RemoteTxCache};
+use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
@@ -426,6 +426,15 @@ struct LocalSignedTx {
 	per_commitment_point: PublicKey,
 	feerate_per_kw: u64,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+}
+
+/// Cache remote basepoint to compute any transaction on
+/// remote outputs, either justice or preimage/timeout transactions.
+#[derive(PartialEq)]
+struct RemoteTxCache {
+	remote_delayed_payment_base_key: PublicKey,
+	remote_htlc_base_key: PublicKey,
+	per_htlc: HashMap<Txid, Vec<HTLCOutputInCommitment>>
 }
 
 /// When ChannelMonitor discovers an onchain outpoint being a step of a channel and that it needs
@@ -1069,7 +1078,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		let remote_tx_cache = RemoteTxCache { remote_delayed_payment_base_key: *remote_delayed_payment_base_key, remote_htlc_base_key: *remote_htlc_base_key, per_htlc: HashMap::new() };
 
-		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, *remote_delayed_payment_base_key, *remote_htlc_base_key ,our_to_self_delay);
+		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, our_to_self_delay);
 
 		let local_tx_sequence = initial_local_commitment_tx.unsigned_tx.input[0].sequence as u64;
 		let local_tx_locktime = initial_local_commitment_tx.unsigned_tx.lock_time as u64;
@@ -1235,8 +1244,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				htlcs.push(htlc.0);
 			}
 		}
-		self.remote_tx_cache.per_htlc.insert(new_txid, htlcs.clone());
-		self.onchain_tx_handler.provide_latest_remote_tx(new_txid, htlcs);
+		self.remote_tx_cache.per_htlc.insert(new_txid, htlcs);
 	}
 
 	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
