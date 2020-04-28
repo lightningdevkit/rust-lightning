@@ -166,6 +166,13 @@ mod sealed {
 				/// [`BYTE_OFFSET`]: #associatedconstant.BYTE_OFFSET
 				const OPTIONAL_MASK: u8 = 1 << (Self::ODD_BIT - 8 * Self::BYTE_OFFSET);
 
+				/// Returns whether the feature is required by the given flags.
+				#[inline]
+				fn requires_feature(flags: &Vec<u8>) -> bool {
+					flags.len() > Self::BYTE_OFFSET &&
+						(flags[Self::BYTE_OFFSET] & Self::REQUIRED_MASK) != 0
+				}
+
 				/// Returns whether the feature is supported by the given flags.
 				#[inline]
 				fn supports_feature(flags: &Vec<u8>) -> bool {
@@ -429,12 +436,20 @@ impl<T: sealed::Context> Features<T> {
 }
 
 impl<T: sealed::DataLossProtect> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn requires_data_loss_protect(&self) -> bool {
+		<T as sealed::DataLossProtect>::requires_feature(&self.flags)
+	}
 	pub(crate) fn supports_data_loss_protect(&self) -> bool {
 		<T as sealed::DataLossProtect>::supports_feature(&self.flags)
 	}
 }
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn requires_upfront_shutdown_script(&self) -> bool {
+		<T as sealed::UpfrontShutdownScript>::requires_feature(&self.flags)
+	}
 	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
 		<T as sealed::UpfrontShutdownScript>::supports_feature(&self.flags)
 	}
@@ -446,6 +461,10 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 }
 
 impl<T: sealed::VariableLengthOnion> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn requires_variable_length_onion(&self) -> bool {
+		<T as sealed::VariableLengthOnion>::requires_feature(&self.flags)
+	}
 	pub(crate) fn supports_variable_length_onion(&self) -> bool {
 		<T as sealed::VariableLengthOnion>::supports_feature(&self.flags)
 	}
@@ -461,16 +480,24 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 }
 
 impl<T: sealed::PaymentSecret> Features<T> {
-	#[allow(dead_code)]
+	#[cfg(test)]
+	pub(crate) fn requires_payment_secret(&self) -> bool {
+		<T as sealed::PaymentSecret>::requires_feature(&self.flags)
+	}
 	// Note that we never need to test this since what really matters is the invoice - iff the
 	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
 	// supports payment_secret).
+	#[allow(dead_code)]
 	pub(crate) fn supports_payment_secret(&self) -> bool {
 		<T as sealed::PaymentSecret>::supports_feature(&self.flags)
 	}
 }
 
 impl<T: sealed::BasicMPP> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn requires_basic_mpp(&self) -> bool {
+		<T as sealed::BasicMPP>::requires_feature(&self.flags)
+	}
 	// We currently never test for this since we don't actually *generate* multipath routes.
 	#[allow(dead_code)]
 	pub(crate) fn supports_basic_mpp(&self) -> bool {
@@ -505,7 +532,7 @@ mod tests {
 	use super::{ChannelFeatures, InitFeatures, NodeFeatures};
 
 	#[test]
-	fn sanity_test_our_features() {
+	fn sanity_test_known_features() {
 		assert!(!ChannelFeatures::known().requires_unknown_bits());
 		assert!(!ChannelFeatures::known().supports_unknown_bits());
 		assert!(!InitFeatures::known().requires_unknown_bits());
@@ -515,18 +542,28 @@ mod tests {
 
 		assert!(InitFeatures::known().supports_upfront_shutdown_script());
 		assert!(NodeFeatures::known().supports_upfront_shutdown_script());
+		assert!(!InitFeatures::known().requires_upfront_shutdown_script());
+		assert!(!NodeFeatures::known().requires_upfront_shutdown_script());
 
 		assert!(InitFeatures::known().supports_data_loss_protect());
 		assert!(NodeFeatures::known().supports_data_loss_protect());
+		assert!(!InitFeatures::known().requires_data_loss_protect());
+		assert!(!NodeFeatures::known().requires_data_loss_protect());
 
 		assert!(InitFeatures::known().supports_variable_length_onion());
 		assert!(NodeFeatures::known().supports_variable_length_onion());
+		assert!(!InitFeatures::known().requires_variable_length_onion());
+		assert!(!NodeFeatures::known().requires_variable_length_onion());
 
 		assert!(InitFeatures::known().supports_payment_secret());
 		assert!(NodeFeatures::known().supports_payment_secret());
+		assert!(!InitFeatures::known().requires_payment_secret());
+		assert!(!NodeFeatures::known().requires_payment_secret());
 
 		assert!(InitFeatures::known().supports_basic_mpp());
 		assert!(NodeFeatures::known().supports_basic_mpp());
+		assert!(!InitFeatures::known().requires_basic_mpp());
+		assert!(!NodeFeatures::known().requires_basic_mpp());
 
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
