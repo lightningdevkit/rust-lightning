@@ -1457,6 +1457,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
 
 		// They sign the "local" commitment transaction...
+		log_trace!(self, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_initial_commitment_tx), log_bytes!(local_sighash[..]), encode::serialize_hex(&funding_script));
 		secp_check!(self.secp_ctx.verify(&local_sighash, &sig, self.their_funding_pubkey()), "Invalid funding_created signature from peer");
 
 		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig.clone(), &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey(), local_keys, self.feerate_per_kw, Vec::new());
@@ -1837,7 +1838,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		};
 		let local_commitment_txid = local_commitment_tx.0.txid();
 		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]);
-		log_trace!(self, "Checking commitment tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.signature.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_commitment_tx.0), encode::serialize_hex(&funding_script));
+		log_trace!(self, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(msg.signature.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_commitment_tx.0), log_bytes!(local_sighash[..]), encode::serialize_hex(&funding_script));
 		if let Err(_) = self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey()) {
 			return Err((None, ChannelError::Close("Invalid commitment tx signature from peer")));
 		}
@@ -1864,8 +1865,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
-				log_trace!(self, "Checking HTLC tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), encode::serialize_hex(&htlc_redeemscript));
 				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+				log_trace!(self, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript));
 				if let Err(_) = self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key) {
 					return Err((None, ChannelError::Close("Invalid HTLC tx signature from peer")));
 				}
