@@ -894,9 +894,9 @@ impl Router {
 					return Ok(Route {
 						paths: vec![vec![RouteHop {
 							pubkey: chan.remote_network_id,
-							node_features: NodeFeatures::with_known_relevant_init_flags(&chan.counterparty_features),
+							node_features: chan.counterparty_features.to_context(),
 							short_channel_id,
-							channel_features: ChannelFeatures::with_known_relevant_init_flags(&chan.counterparty_features),
+							channel_features: chan.counterparty_features.to_context(),
 							fee_msat: final_value_msat,
 							cltv_expiry_delta: final_cltv,
 						}]],
@@ -973,7 +973,7 @@ impl Router {
 			( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 				if first_hops.is_some() {
 					if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&$node_id) {
-						add_entry!(first_hop, $node_id, dummy_directional_info, ChannelFeatures::with_known_relevant_init_flags(&features), $fee_to_target_msat);
+						add_entry!(first_hop, $node_id, dummy_directional_info, features.to_context(), $fee_to_target_msat);
 					}
 				}
 
@@ -1017,7 +1017,7 @@ impl Router {
 							// bit lazy here. In the future, we should pull them out via our
 							// ChannelManager, but there's no reason to waste the space until we
 							// need them.
-							add_entry!(first_hop, hop.src_node_id, dummy_directional_info, ChannelFeatures::with_known_relevant_init_flags(&features), 0);
+							add_entry!(first_hop, hop.src_node_id, dummy_directional_info, features.to_context(), 0);
 						}
 					}
 					// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
@@ -1032,7 +1032,7 @@ impl Router {
 				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
 				loop {
 					if let Some(&(_, ref features)) = first_hop_targets.get(&res.last().unwrap().pubkey) {
-						res.last_mut().unwrap().node_features = NodeFeatures::with_known_relevant_init_flags(&features);
+						res.last_mut().unwrap().node_features = features.to_context();
 					} else if let Some(node) = network.nodes.get(&res.last().unwrap().pubkey) {
 						res.last_mut().unwrap().node_features = node.features.clone();
 					} else {
@@ -1541,8 +1541,8 @@ mod tests {
 
 		{ // Disable channels 4 and 12 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_require_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_require_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
 		}
 
 		{ // If all the channels require some features we don't understand, route should fail
@@ -1583,15 +1583,15 @@ mod tests {
 
 		{ // Re-enable channels 4 and 12 by wiping the unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_require_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_require_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_unknown_bits();
+			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_unknown_bits();
 		}
 
 		{ // Disable nodes 1, 2, and 8 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.nodes.get_mut(&node1).unwrap().features.set_require_unknown_bits();
-			network.nodes.get_mut(&node2).unwrap().features.set_require_unknown_bits();
-			network.nodes.get_mut(&node8).unwrap().features.set_require_unknown_bits();
+			network.nodes.get_mut(&node1).unwrap().features.set_required_unknown_bits();
+			network.nodes.get_mut(&node2).unwrap().features.set_required_unknown_bits();
+			network.nodes.get_mut(&node8).unwrap().features.set_required_unknown_bits();
 		}
 
 		{ // If all nodes require some features we don't understand, route should fail
@@ -1632,9 +1632,9 @@ mod tests {
 
 		{ // Re-enable nodes 1, 2, and 8
 			let mut network = router.network_map.write().unwrap();
-			network.nodes.get_mut(&node1).unwrap().features.clear_require_unknown_bits();
-			network.nodes.get_mut(&node2).unwrap().features.clear_require_unknown_bits();
-			network.nodes.get_mut(&node8).unwrap().features.clear_require_unknown_bits();
+			network.nodes.get_mut(&node1).unwrap().features.clear_unknown_bits();
+			network.nodes.get_mut(&node2).unwrap().features.clear_unknown_bits();
+			network.nodes.get_mut(&node8).unwrap().features.clear_unknown_bits();
 		}
 
 		// Note that we don't test disabling node 3 and failing to route to it, as we (somewhat
@@ -1908,7 +1908,7 @@ mod tests {
 		let first_announcement_time = 500;
 
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
-			features: NodeFeatures::supported(),
+			features: NodeFeatures::known(),
 			timestamp: first_announcement_time,
 			node_id: node_id_1,
 			rgb: [0; 3],
@@ -1931,7 +1931,7 @@ mod tests {
 		{
 			// Announce a channel to add a corresponding node.
 			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::supported(),
+				features: ChannelFeatures::known(),
 		 		chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 				short_channel_id: 0,
 				node_id_1,
@@ -2022,7 +2022,7 @@ mod tests {
 
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::supported(),
+			features: ChannelFeatures::known(),
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 0,
 			node_id_1,
@@ -2593,7 +2593,7 @@ mod tests {
 
 		{
 			let mut unsigned_announcement = UnsignedNodeAnnouncement {
-				features: NodeFeatures::supported(),
+				features: NodeFeatures::known(),
 				timestamp: 1000,
 				node_id: node_id_1,
 				rgb: [0; 3],
@@ -2635,7 +2635,7 @@ mod tests {
 		{
 			// Later announcement which should not be relayed (excess data) prevent us from sharing a node
 			let unsigned_announcement = UnsignedNodeAnnouncement {
-				features: NodeFeatures::supported(),
+				features: NodeFeatures::known(),
 				timestamp: 1010,
 				node_id: node_id_2,
 				rgb: [0; 3],

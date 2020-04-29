@@ -3445,7 +3445,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let our_bitcoin_key = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key());
 
 		let msg = msgs::UnsignedChannelAnnouncement {
-			features: ChannelFeatures::supported(),
+			features: ChannelFeatures::known(),
 			chain_hash: chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { our_node_id } else { self.get_their_node_id() },
@@ -4381,11 +4381,11 @@ mod tests {
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&feeest);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::supported(), &open_channel_msg, 7, logger, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, logger, &config).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
-		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::supported()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::known()).unwrap();
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();

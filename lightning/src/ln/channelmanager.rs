@@ -1508,7 +1508,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		}
 
 		let announcement = msgs::UnsignedNodeAnnouncement {
-			features: NodeFeatures::supported(),
+			features: NodeFeatures::known(),
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel) as u32,
 			node_id: self.get_our_node_id(),
 			rgb, alias, addresses,
