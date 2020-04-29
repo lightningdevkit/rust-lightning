@@ -8,13 +8,14 @@ use std::hash::Hash;
 use std::sync::Mutex;
 use std::cmp;
 
-use secp256k1::Signature;
-use secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::Signature;
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::{Txid, BlockHash};
 use std::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -542,7 +543,7 @@ impl Writeable for Sha256dHash {
 
 impl Readable for Sha256dHash {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		use bitcoin_hashes::Hash;
+		use bitcoin::hashes::Hash;
 
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(Sha256dHash::from_slice(&buf[..]).unwrap())
@@ -629,6 +630,36 @@ impl<T: Readable> Readable for Option<T>
 				Ok(Some(Readable::read(&mut reader)?))
 			}
 		}
+	}
+}
+
+impl Writeable for Txid {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.write_all(&self[..])
+	}
+}
+
+impl Readable for Txid {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin::hashes::Hash;
+
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(Txid::from_slice(&buf[..]).unwrap())
+	}
+}
+
+impl Writeable for BlockHash {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.write_all(&self[..])
+	}
+}
+
+impl Readable for BlockHash {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin::hashes::Hash;
+
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(BlockHash::from_slice(&buf[..]).unwrap())
 	}
 }
 

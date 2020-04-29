@@ -9,15 +9,15 @@ use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 use bitcoin::util::bip143;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::HashEngine as Sha256State;
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-use bitcoin_hashes::hash160::Hash as Hash160;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::HashEngine as Sha256State;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::WPubkeyHash;
 
-use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::{Secp256k1, Signature, Signing};
-use secp256k1;
+use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, Signature, Signing};
+use bitcoin::secp256k1;
 
 use util::byte_utils;
 use util::logger::Logger;
@@ -513,9 +513,9 @@ impl KeysManager {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0).unwrap()).expect("Your RNG is busted").private_key.key;
 				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1).unwrap()) {
 					Ok(destination_key) => {
-						let pubkey_hash160 = Hash160::hash(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.key.serialize()[..]);
+						let wpubkey_hash = WPubkeyHash::hash(&ExtendedPubKey::from_private(&secp_ctx, &destination_key).public_key.to_bytes());
 						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-						              .push_slice(&pubkey_hash160.into_inner())
+						              .push_slice(&wpubkey_hash.into_inner())
 						              .into_script()
 					},
 					Err(_) => panic!("Your RNG is busted"),

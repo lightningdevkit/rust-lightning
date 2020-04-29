@@ -19,14 +19,13 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode;
 use bitcoin::util::hash::BitcoinHash;
 
-use bitcoin_hashes::Hash;
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
-use secp256k1::{Secp256k1,Signature};
-use secp256k1::key::{SecretKey,PublicKey};
-use secp256k1;
+use bitcoin::secp256k1::{Secp256k1,Signature};
+use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::chan_utils;
@@ -409,7 +408,7 @@ pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_
 #[derive(Clone, PartialEq)]
 struct LocalSignedTx {
 	/// txid of the transaction in tx, just used to make comparison faster
-	txid: Sha256dHash,
+	txid: Txid,
 	revocation_key: PublicKey,
 	a_htlc_key: PublicKey,
 	b_htlc_key: PublicKey,
@@ -727,8 +726,8 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 
 	keys: ChanSigner,
 	funding_info: (OutPoint, Script),
-	current_remote_commitment_txid: Option<Sha256dHash>,
-	prev_remote_commitment_txid: Option<Sha256dHash>,
+	current_remote_commitment_txid: Option<Txid>,
+	prev_remote_commitment_txid: Option<Txid>,
 
 	their_htlc_base_key: PublicKey,
 	their_delayed_payment_base_key: PublicKey,
@@ -741,13 +740,13 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	their_to_self_delay: u16,
 
 	commitment_secrets: CounterpartyCommitmentSecrets,
-	remote_claimable_outpoints: HashMap<Sha256dHash, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
+	remote_claimable_outpoints: HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
 	/// We cannot identify HTLC-Success or HTLC-Timeout transactions by themselves on the chain.
 	/// Nor can we figure out their commitment numbers without the commitment transaction they are
 	/// spending. Thus, in order to claim them via revocation key, we track all the remote
 	/// commitment transactions which we find on-chain, mapping them to the commitment number which
 	/// can be used to derive the revocation key and claim the transactions.
-	remote_commitment_txn_on_chain: HashMap<Sha256dHash, (u64, Vec<Script>)>,
+	remote_commitment_txn_on_chain: HashMap<Txid, (u64, Vec<Script>)>,
 	/// Cache used to make pruning of payment_preimages faster.
 	/// Maps payment_hash values to commitment numbers for remote transactions for non-revoked
 	/// remote transactions (ie should remain pretty small).
@@ -782,7 +781,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// interface knows about the TXOs that we want to be notified of spends of. We could probably
 	// be smart and derive them from the above storage fields, but its much simpler and more
 	// Obviously Correct (tm) if we just keep track of them explicitly.
-	outputs_to_watch: HashMap<Sha256dHash, Vec<Script>>,
+	outputs_to_watch: HashMap<Txid, Vec<Script>>,
 
 	#[cfg(test)]
 	pub onchain_tx_handler: OnchainTxHandler<ChanSigner>,
@@ -804,7 +803,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
 	// their last_block_hash from its state and not based on updated copies that didn't run through
 	// the full block_connected).
-	pub(crate) last_block_hash: Sha256dHash,
+	pub(crate) last_block_hash: BlockHash,
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 	logger: Arc<Logger>,
 }
@@ -1061,7 +1060,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			logger: Arc<Logger>) -> ChannelMonitor<ChanSigner> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
-		let our_channel_close_key_hash = Hash160::hash(&shutdown_pubkey.serialize());
+		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
 
 		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
@@ -1231,7 +1230,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
 		if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &self.keys.pubkeys().payment_basepoint) {
 			let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				.push_slice(&Hash160::hash(&payment_key.serialize())[..])
+				.push_slice(&WPubkeyHash::hash(&payment_key.serialize())[..])
 				.into_script();
 			if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &self.keys.payment_base_key()) {
 				self.broadcasted_remote_payment_script = Some((to_remote_script, to_remote_key));
@@ -1363,7 +1362,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
 	/// transaction), which we must learn about spends of via block_connected().
-	pub fn get_outputs_to_watch(&self) -> &HashMap<Sha256dHash, Vec<Script>> {
+	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<Script>> {
 		&self.outputs_to_watch
 	}
 
@@ -1371,7 +1370,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Generally useful when deserializing as during normal operation the return values of
 	/// block_connected are sufficient to ensure all relevant outpoints are being monitored (note
 	/// that the get_funding_txo outpoint and transaction must also be monitored for!).
-	pub fn get_monitored_outpoints(&self) -> Vec<(Sha256dHash, u32, &Script)> {
+	pub fn get_monitored_outpoints(&self) -> Vec<(Txid, u32, &Script)> {
 		let mut res = Vec::with_capacity(self.remote_commitment_txn_on_chain.len() * 2);
 		for (ref txid, &(_, ref outputs)) in self.remote_commitment_txn_on_chain.iter() {
 			for (idx, output) in outputs.iter().enumerate() {
@@ -1424,7 +1423,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked remote commitment tx
-	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<ClaimRequest>, (Sha256dHash, Vec<TxOut>)) {
+	fn check_spend_remote_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<ClaimRequest>, (Txid, Vec<TxOut>)) {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut claimable_outpoints = Vec::new();
@@ -1460,7 +1459,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			self.broadcasted_remote_payment_script = {
 				// Note that the Network here is ignored as we immediately drop the address for the
 				// script_pubkey version
-				let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
+				let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
 				Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
 			};
 
@@ -1609,7 +1608,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.broadcasted_remote_payment_script = {
 						// Note that the Network here is ignored as we immediately drop the address for the
 						// script_pubkey version
-						let payment_hash160 = Hash160::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
+						let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
 						Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
 					};
 
@@ -1637,7 +1636,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Attempts to claim a remote HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_remote_htlc(&mut self, tx: &Transaction, commitment_number: u64, height: u32) -> (Vec<ClaimRequest>, Option<(Sha256dHash, Vec<TxOut>)>) {
+	fn check_spend_remote_htlc(&mut self, tx: &Transaction, commitment_number: u64, height: u32) -> (Vec<ClaimRequest>, Option<(Txid, Vec<TxOut>)>) {
 		let htlc_txid = tx.txid();
 		if tx.input.len() != 1 || tx.output.len() != 1 || tx.input[0].witness.len() != 5 {
 			return (Vec::new(), None)
@@ -1699,7 +1698,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in local_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_local_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<ClaimRequest>, (Sha256dHash, Vec<TxOut>)) {
+	fn check_spend_local_transaction(&mut self, tx: &Transaction, height: u32) -> (Vec<ClaimRequest>, (Txid, Vec<TxOut>)) {
 		let commitment_txid = tx.txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -1843,7 +1842,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
 	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
 	/// on-chain.
-	fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: F)-> Vec<(Sha256dHash, Vec<TxOut>)>
+	fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F)-> Vec<(Txid, Vec<TxOut>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
@@ -1941,7 +1940,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		watch_outputs
 	}
 
-	fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, block_hash: &Sha256dHash, broadcaster: B, fee_estimator: F)
+	fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator
 	{
@@ -2210,7 +2209,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dHash, ChannelMonitor<ChanSigner>) {
+impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (BlockHash, ChannelMonitor<ChanSigner>) {
 	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -2307,7 +2306,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		let remote_claimable_outpoints_len: u64 = Readable::read(reader)?;
 		let mut remote_claimable_outpoints = HashMap::with_capacity(cmp::min(remote_claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 64));
 		for _ in 0..remote_claimable_outpoints_len {
-			let txid: Sha256dHash = Readable::read(reader)?;
+			let txid: Txid = Readable::read(reader)?;
 			let htlcs_count: u64 = Readable::read(reader)?;
 			let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
 			for _ in 0..htlcs_count {
@@ -2321,7 +2320,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		let remote_commitment_txn_on_chain_len: u64 = Readable::read(reader)?;
 		let mut remote_commitment_txn_on_chain = HashMap::with_capacity(cmp::min(remote_commitment_txn_on_chain_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..remote_commitment_txn_on_chain_len {
-			let txid: Sha256dHash = Readable::read(reader)?;
+			let txid: Txid = Readable::read(reader)?;
 			let commitment_number = <U48 as Readable>::read(reader)?.0;
 			let outputs_count = <u64 as Readable>::read(reader)?;
 			let mut outputs = Vec::with_capacity(cmp::min(outputs_count as usize, MAX_ALLOC_SIZE / 8));
@@ -2411,7 +2410,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 			}
 		}
 
-		let last_block_hash: Sha256dHash = Readable::read(reader)?;
+		let last_block_hash: BlockHash = Readable::read(reader)?;
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_waiting_threshold_conf = HashMap::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
@@ -2442,7 +2441,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (Sha256dH
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
-		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Sha256dHash>() + mem::size_of::<Vec<Script>>())));
+		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<Vec<Script>>())));
 		for _ in 0..outputs_to_watch_len {
 			let txid = Readable::read(reader)?;
 			let outputs_len: u64 = Readable::read(reader)?;
@@ -2518,10 +2517,10 @@ mod tests {
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::util::bip143;
-	use bitcoin_hashes::Hash;
-	use bitcoin_hashes::sha256::Hash as Sha256;
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::hex::FromHex;
+	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hash_types::Txid;
 	use hex;
 	use chain::transaction::OutPoint;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
@@ -2530,8 +2529,8 @@ mod tests {
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, LocalCommitmentTransaction};
 	use util::test_utils::TestLogger;
-	use secp256k1::key::{SecretKey,PublicKey};
-	use secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::Secp256k1;
 	use rand::{thread_rng,Rng};
 	use std::sync::Arc;
 	use chain::keysinterface::InMemoryChannelKeys;
@@ -2605,7 +2604,7 @@ mod tests {
 		// old state.
 		let mut monitor = ChannelMonitor::new(keys,
 			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
-			(OutPoint { txid: Sha256dHash::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
+			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
 			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()),
 			10, Script::new(), 46, 0, LocalCommitmentTransaction::dummy(), logger.clone());
@@ -2693,7 +2692,7 @@ mod tests {
 		}
 
 		let script_pubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script();
-		let txid = Sha256dHash::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
+		let txid = Txid::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
 
 		// Justice tx with 1 to_local, 2 revoked offered HTLCs, 1 revoked received HTLCs
 		let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };

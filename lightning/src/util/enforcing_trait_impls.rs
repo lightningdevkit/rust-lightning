@@ -8,9 +8,9 @@ use std::sync::{Mutex, Arc};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::bip143;
 
-use secp256k1;
-use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::{Secp256k1, Signature};
+use bitcoin::secp256k1;
+use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, Signature};
 use util::ser::{Writeable, Writer, Readable};
 use std::io::Error;
 use ln::msgs::DecodeError;

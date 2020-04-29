@@ -152,7 +152,7 @@ mod tests {
 	use std::io::{Cursor, Read};
 	use ln::msgs::DecodeError;
 	use util::ser::{Readable, Writeable, HighZeroBytesDroppedVarInt, VecWriter};
-	use secp256k1::PublicKey;
+	use bitcoin::secp256k1::PublicKey;
 
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since
 	// the encoding layer in the BOLTs has no such concept, though it makes our macros easier to

@@ -1,9 +1,9 @@
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use ln::router::Route;
 use ln::chan_utils::HTLCType;
@@ -40,7 +40,7 @@ macro_rules! log_bytes {
 	}
 }
 
-pub(crate) struct DebugFundingChannelId<'a>(pub &'a Sha256dHash, pub u16);
+pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
 impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		for i in OutPoint::new(self.0.clone(), self.1).to_channel_id().iter() {

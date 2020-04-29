@@ -16,10 +16,10 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::opcodes;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
+use bitcoin::hash_types::{Txid, BlockHash};
 
-use secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
@@ -72,7 +72,7 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
@@ -101,7 +101,7 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
@@ -288,15 +288,15 @@ impl TestChainWatcher {
 }
 
 impl ChainWatchInterface for TestChainWatcher {
-	fn install_watch_tx(&self, _txid: &Sha256dHash, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
+	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
+	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
 	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
 		(Vec::new(), Vec::new())
 	}
 	fn reentered(&self) -> usize { 0 }
 
-	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		self.utxo_ret.lock().unwrap().clone()
 	}
 }

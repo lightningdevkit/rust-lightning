@@ -16,10 +16,9 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 
-use bitcoin_hashes::Hash as TraitImport;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256d;
+use bitcoin::hashes::Hash as TraitImport;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain::chaininterface;
 use lightning::chain::transaction::OutPoint;
@@ -40,8 +39,8 @@ use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
 use utils::test_logger;
 
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::Secp256k1;
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::Secp256k1;
 
 use std::mem;
 use std::cmp::Ordering;
@@ -114,7 +113,7 @@ impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMon
 			hash_map::Entry::Occupied(entry) => entry,
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
-		let mut deserialized_monitor = <(Sha256d, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
+		let mut deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
 			read(&mut Cursor::new(&map_entry.get().1), Arc::clone(&self.logger)).unwrap().1;
 		deserialized_monitor.update_monitor(update.clone(), &&TestBroadcaster {}).unwrap();
 		let mut ser = VecWriter(Vec::new());
@@ -144,7 +143,7 @@ impl KeysInterface for KeyProvider {
 	fn get_destination_script(&self) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_id]).unwrap();
-		let our_channel_monitor_claim_key_hash = Hash160::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 
@@ -215,7 +214,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
-				monitors.insert(outpoint, <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&monitor_ser), Arc::clone(&logger)).expect("Failed to read monitor").1);
+				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&monitor_ser), Arc::clone(&logger)).expect("Failed to read monitor").1);
 				monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();
@@ -233,7 +232,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				channel_monitors: &mut monitor_refs,
 			};
 
-			(<(Sha256d, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
+			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
 		} }
 	}
 

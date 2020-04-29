@@ -24,12 +24,12 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
 
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256d::Hash as Sha256d;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
+use bitcoin::hash_types::BlockHash;
 
-use secp256k1::Secp256k1;
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::key::PublicKey;
 
 use rand::{thread_rng,Rng};
 
@@ -50,7 +50,7 @@ pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifi
 	}
 }
 
-pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>, depth: u32, height: u32, parent: bool, prev_blockhash: Sha256d) -> Sha256d {
+pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
 	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
 	for i in 2..depth + 1 {
@@ -137,7 +137,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				for (_, old_monitor) in old_monitors.iter() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					old_monitor.write_for_disk(&mut w).unwrap();
-					let (_, deserialized_monitor) = <(Sha256d, ChannelMonitor<EnforcingChannelKeys>)>::read(
+					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
 						&mut ::std::io::Cursor::new(&w.0), Arc::clone(&self.logger) as Arc<Logger>).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}
@@ -153,7 +153,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(Sha256d, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: UserConfig::default(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },

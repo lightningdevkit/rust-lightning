@@ -12,11 +12,10 @@ use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::BitcoinHash;
 
-use bitcoin_hashes::Hash as TraitImport;
-use bitcoin_hashes::HashEngine as TraitImportEngine;
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::Hash as TraitImport;
+use bitcoin::hashes::HashEngine as TraitImportEngine;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
 use lightning::chain::transaction::OutPoint;
@@ -32,13 +31,12 @@ use lightning::util::config::UserConfig;
 
 use utils::test_logger;
 
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::Secp256k1;
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, hash_map};
 use std::cmp;
-use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
 
@@ -129,7 +127,7 @@ impl<'a> PartialEq for Peer<'a> {
 	}
 }
 impl<'a> Eq for Peer<'a> {}
-impl<'a> Hash for Peer<'a> {
+impl<'a> std::hash::Hash for Peer<'a> {
 	fn hash<H : std::hash::Hasher>(&self, h: &mut H) {
 		self.id.hash(h)
 	}
@@ -142,8 +140,8 @@ struct MoneyLossDetector<'a> {
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
-	txids_confirmed: HashMap<Sha256dHash, usize>,
-	header_hashes: Vec<Sha256dHash>,
+	txids_confirmed: HashMap<Txid, usize>,
+	header_hashes: Vec<BlockHash>,
 	height: usize,
 	max_height: usize,
 	blocks_connected: u32,
@@ -241,7 +239,7 @@ impl KeysInterface for KeyProvider {
 	fn get_destination_script(&self) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-		let our_channel_monitor_claim_key_hash = <Hash160 as bitcoin_hashes::Hash>::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 

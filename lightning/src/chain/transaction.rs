@@ -1,6 +1,6 @@
 //! Contains simple structs describing parts of transactions on the chain.
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 
 /// A reference to a transaction output.
@@ -10,14 +10,14 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct OutPoint {
 	/// The referenced transaction's txid.
-	pub txid: Sha256dHash,
+	pub txid: Txid,
 	/// The index of the referenced output in its transaction's vout.
 	pub index: u16,
 }
 
 impl OutPoint {
 	/// Creates a new `OutPoint` from the txid and the index.
-	pub fn new(txid: Sha256dHash, index: u16) -> OutPoint {
+	pub fn new(txid: Txid, index: u16) -> OutPoint {
 		OutPoint { txid, index }
 	}
 

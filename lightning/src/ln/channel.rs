@@ -6,14 +6,13 @@ use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
-use secp256k1::key::{PublicKey,SecretKey};
-use secp256k1::{Secp256k1,Signature};
-use secp256k1;
+use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{Secp256k1,Signature};
+use bitcoin::secp256k1;
 
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
@@ -313,11 +312,11 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	/// to detect unconfirmation after a serialize-unserialize roundtrip where we may not see a full
 	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
-	funding_tx_confirmed_in: Option<Sha256dHash>,
+	funding_tx_confirmed_in: Option<BlockHash>,
 	short_channel_id: Option<u64>,
 	/// Used to deduplicate block_connected callbacks, also used to verify consistency during
 	/// ChannelManager deserialization (hence pub(super))
-	pub(super) last_block_connected: Sha256dHash,
+	pub(super) last_block_connected: BlockHash,
 	funding_tx_confirmations: u64,
 
 	their_dust_limit_satoshis: u64,
@@ -983,7 +982,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			log_trace!(self, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
 			txouts.push((TxOut {
 				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&Hash160::hash(&keys.b_payment_key.serialize())[..])
+				                             .push_slice(&WPubkeyHash::hash(&keys.b_payment_key.serialize())[..])
 				                             .into_script(),
 				value: value_to_b as u64
 			}, None));
@@ -1025,7 +1024,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let our_channel_close_key_hash = Hash160::hash(&self.shutdown_pubkey.serialize());
+		let our_channel_close_key_hash = WPubkeyHash::hash(&self.shutdown_pubkey.serialize());
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
 	}
 
@@ -1133,7 +1132,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
-	fn build_htlc_transaction(&self, prev_hash: &Sha256dHash, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u64) -> Transaction {
+	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u64) -> Transaction {
 		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
 	}
 
@@ -3299,7 +3298,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn get_open_channel<F: Deref>(&self, chain_hash: Sha256dHash, fee_estimator: &F) -> msgs::OpenChannel
+	pub fn get_open_channel<F: Deref>(&self, chain_hash: BlockHash, fee_estimator: &F) -> msgs::OpenChannel
 		where F::Target: FeeEstimator
 	{
 		if !self.channel_outbound {
@@ -3431,7 +3430,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// closing).
 	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
 	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
-	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: Sha256dHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
+	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: BlockHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
 		if !self.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements"));
 		}
@@ -4291,7 +4290,7 @@ mod tests {
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
-	use bitcoin_hashes::hex::FromHex;
+	use bitcoin::hashes::hex::FromHex;
 	use hex;
 	use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
@@ -4307,12 +4306,11 @@ mod tests {
 	use util::enforcing_trait_impls::EnforcingChannelKeys;
 	use util::test_utils;
 	use util::logger::Logger;
-	use secp256k1::{Secp256k1, Message, Signature, All};
-	use secp256k1::key::{SecretKey,PublicKey};
-	use bitcoin_hashes::sha256::Hash as Sha256;
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::hash160::Hash as Hash160;
-	use bitcoin_hashes::Hash;
+	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
+	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::Hash;
+	use bitcoin::hash_types::{Txid, WPubkeyHash};
 	use std::sync::Arc;
 	use rand::{thread_rng,Rng};
 
@@ -4341,7 +4339,7 @@ mod tests {
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-			let our_channel_monitor_claim_key_hash = Hash160::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+			let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 			Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 		}
 
@@ -4457,7 +4455,7 @@ mod tests {
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
-		let funding_info = OutPoint::new(Sha256dHash::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
+		let funding_info = OutPoint::new(Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
 		chan.funding_txo = Some(funding_info);
 
 		let their_pubkeys = ChannelPublicKeys {

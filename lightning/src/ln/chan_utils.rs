@@ -8,20 +8,19 @@ use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, SigHashTy
 use bitcoin::consensus::encode::{self, Decodable, Encodable};
 use bitcoin::util::bip143;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::ripemd160::Hash as Ripemd160;
-use bitcoin_hashes::hash160::Hash as Hash160;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::ripemd160::Hash as Ripemd160;
+use bitcoin::hash_types::{Txid, PubkeyHash};
 
 use ln::channelmanager::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, WriterWriteAdaptor};
 use util::byte_utils;
 
-use secp256k1::key::{SecretKey, PublicKey};
-use secp256k1::{Secp256k1, Signature};
-use secp256k1;
+use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, Signature};
+use bitcoin::secp256k1;
 
 use std::{cmp, mem};
 
@@ -364,7 +363,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	if htlc.offered {
 		Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
+		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::all::OP_EQUAL)
 		              .push_opcode(opcodes::all::OP_IF)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
@@ -392,7 +391,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	} else {
 		Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&Hash160::hash(&revocation_key.serialize())[..])
+		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::all::OP_EQUAL)
 		              .push_opcode(opcodes::all::OP_IF)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
@@ -447,7 +446,7 @@ pub fn make_funding_redeemscript(a: &PublicKey, b: &PublicKey) -> Script {
 }
 
 /// panics if htlc.transaction_output_index.is_none()!
-pub fn build_htlc_transaction(prev_hash: &Sha256dHash, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
@@ -563,7 +562,7 @@ impl LocalCommitmentTransaction {
 
 	/// Get the txid of the local commitment transaction contained in this
 	/// LocalCommitmentTransaction
-	pub fn txid(&self) -> Sha256dHash {
+	pub fn txid(&self) -> Txid {
 		self.unsigned_tx.txid()
 	}
 

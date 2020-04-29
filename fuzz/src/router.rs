@@ -1,7 +1,7 @@
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
 use lightning::ln::channelmanager::ChannelDetails;
@@ -12,7 +12,7 @@ use lightning::ln::router::{Router, RouteHint};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use utils::test_logger;
 
@@ -72,15 +72,15 @@ struct DummyChainWatcher {
 }
 
 impl ChainWatchInterface for DummyChainWatcher {
-	fn install_watch_tx(&self, _txid: &Sha256dHash, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
+	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
+	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
 	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
 		(Vec::new(), Vec::new())
 	}
 	fn reentered(&self) -> usize { 0 }
 
-	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		match self.input.get_slice(2) {
 			Some(&[0, _]) => Err(ChainError::NotSupported),
 			Some(&[1, _]) => Err(ChainError::NotWatched),

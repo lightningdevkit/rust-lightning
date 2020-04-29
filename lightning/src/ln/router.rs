@@ -3,12 +3,13 @@
 //! You probably want to create a Router and use that as your RoutingMessageHandler and then
 //! interrogate it to get routes for your own payments.
 
-use secp256k1::key::PublicKey;
-use secp256k1::Secp256k1;
-use secp256k1;
+use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1;
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::Hash;
+use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 
@@ -329,19 +330,19 @@ impl std::fmt::Display for NetworkMap {
 impl NetworkMap {
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	#[inline]
-	fn get_key(short_channel_id: u64, chain_hash: Sha256dHash) -> (u64, Sha256dHash) {
+	fn get_key(short_channel_id: u64, chain_hash: BlockHash) -> (u64, BlockHash) {
 		(short_channel_id, chain_hash)
 	}
 
 	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
 	#[inline]
-	fn get_key(short_channel_id: u64, _: Sha256dHash) -> u64 {
+	fn get_key(short_channel_id: u64, _: BlockHash) -> u64 {
 		short_channel_id
 	}
 
 	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
 	#[inline]
-	fn get_short_id(id: &(u64, Sha256dHash)) -> &u64 {
+	fn get_short_id(id: &(u64, BlockHash)) -> &u64 {
 		&id.0
 	}
 
@@ -1085,8 +1086,9 @@ mod tests {
 	use util::logger::Logger;
 	use util::ser::{Writeable, Readable};
 
-	use bitcoin_hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin_hashes::Hash;
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+	use bitcoin::hashes::Hash;
+	use bitcoin::hash_types::BlockHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;
@@ -1095,9 +1097,9 @@ mod tests {
 
 	use hex;
 
-	use secp256k1::key::{PublicKey,SecretKey};
-	use secp256k1::All;
-	use secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::All;
+	use bitcoin::secp256k1::Secp256k1;
 
 	use std::sync::Arc;
 	use std::collections::btree_map::Entry as BtreeEntry;
@@ -1181,7 +1183,7 @@ mod tests {
 		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap());
 		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap());
 
-		let zero_hash = Sha256dHash::hash(&[0; 32]);
+		let zero_hash = BlockHash::hash(&[0; 32]);
 
 		macro_rules! id_to_feature_flags {
 			// Set the feature flags to the id'th odd (ie non-required) feature bit so that we can
