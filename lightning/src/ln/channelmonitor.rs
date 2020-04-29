@@ -438,6 +438,53 @@ struct RemoteCommitmentTransaction {
 	per_htlc: HashMap<Txid, Vec<HTLCOutputInCommitment>>
 }
 
+impl Writeable for RemoteCommitmentTransaction {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.remote_delayed_payment_base_key.write(w)?;
+		self.remote_htlc_base_key.write(w)?;
+		w.write_all(&byte_utils::be16_to_array(self.on_remote_tx_csv))?;
+		w.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
+		for (ref txid, ref htlcs) in self.per_htlc.iter() {
+			w.write_all(&txid[..])?;
+			w.write_all(&byte_utils::be64_to_array(htlcs.len() as u64))?;
+			for &ref htlc in htlcs.iter() {
+				htlc.write(w)?;
+			}
+		}
+		Ok(())
+	}
+}
+impl Readable for RemoteCommitmentTransaction {
+	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let remote_commitment_transaction = {
+			let remote_delayed_payment_base_key = Readable::read(r)?;
+			let remote_htlc_base_key = Readable::read(r)?;
+			let on_remote_tx_csv: u16 = Readable::read(r)?;
+			let per_htlc_len: u64 = Readable::read(r)?;
+			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
+			for _  in 0..per_htlc_len {
+				let txid: Txid = Readable::read(r)?;
+				let htlcs_count: u64 = Readable::read(r)?;
+				let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
+				for _ in 0..htlcs_count {
+					let htlc = Readable::read(r)?;
+					htlcs.push(htlc);
+				}
+				if let Some(_) = per_htlc.insert(txid, htlcs) {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
+			RemoteCommitmentTransaction {
+				remote_delayed_payment_base_key,
+				remote_htlc_base_key,
+				on_remote_tx_csv,
+				per_htlc,
+			}
+		};
+		Ok(remote_commitment_transaction)
+	}
+}
+
 /// When ChannelMonitor discovers an onchain outpoint being a step of a channel and that it needs
 /// to generate a tx to push channel state forward, we cache outpoint-solving tx material to build
 /// a new bumped one in case of lenghty confirmation delay
@@ -904,17 +951,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		self.current_remote_commitment_txid.write(writer)?;
 		self.prev_remote_commitment_txid.write(writer)?;
 
-		self.remote_tx_cache.remote_delayed_payment_base_key.write(writer)?;
-		self.remote_tx_cache.remote_htlc_base_key.write(writer)?;
-		writer.write_all(&byte_utils::be16_to_array(self.remote_tx_cache.on_remote_tx_csv))?;
-		writer.write_all(&byte_utils::be64_to_array(self.remote_tx_cache.per_htlc.len() as u64))?;
-		for (ref txid, ref htlcs) in self.remote_tx_cache.per_htlc.iter() {
-			writer.write_all(&txid[..])?;
-			writer.write_all(&byte_utils::be64_to_array(htlcs.len() as u64))?;
-			for &ref htlc in htlcs.iter() {
-				htlc.write(writer)?;
-			}
-		}
+		self.remote_tx_cache.write(writer)?;
 		self.funding_redeemscript.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 
@@ -2237,31 +2274,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 		let current_remote_commitment_txid = Readable::read(reader)?;
 		let prev_remote_commitment_txid = Readable::read(reader)?;
 
-		let remote_tx_cache = {
-			let remote_delayed_payment_base_key = Readable::read(reader)?;
-			let remote_htlc_base_key = Readable::read(reader)?;
-			let on_remote_tx_csv: u16 = Readable::read(reader)?;
-			let per_htlc_len: u64 = Readable::read(reader)?;
-			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
-			for _  in 0..per_htlc_len {
-				let txid: Txid = Readable::read(reader)?;
-				let htlcs_count: u64 = Readable::read(reader)?;
-				let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
-				for _ in 0..htlcs_count {
-					let htlc = Readable::read(reader)?;
-					htlcs.push(htlc);
-				}
-				if let Some(_) = per_htlc.insert(txid, htlcs) {
-					return Err(DecodeError::InvalidValue);
-				}
-			}
-			RemoteCommitmentTransaction {
-				remote_delayed_payment_base_key,
-				remote_htlc_base_key,
-				on_remote_tx_csv,
-				per_htlc,
-			}
-		};
+		let remote_tx_cache = Readable::read(reader)?;
 		let funding_redeemscript = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
