@@ -428,10 +428,10 @@ struct LocalSignedTx {
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 }
 
-/// Cache remote basepoint to compute any transaction on
-/// remote outputs, either justice or preimage/timeout transactions.
+/// We use this to track remote commitment transactions and htlcs outputs and
+/// use it to generate any justice or 2nd-stage preimage/timeout transactions.
 #[derive(PartialEq)]
-struct RemoteTxCache {
+struct RemoteCommitmentTransaction {
 	remote_delayed_payment_base_key: PublicKey,
 	remote_htlc_base_key: PublicKey,
 	on_remote_tx_csv: u16,
@@ -747,7 +747,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	current_remote_commitment_txid: Option<Txid>,
 	prev_remote_commitment_txid: Option<Txid>,
 
-	remote_tx_cache: RemoteTxCache,
+	remote_tx_cache: RemoteCommitmentTransaction,
 	funding_redeemscript: Script,
 	channel_value_satoshis: u64,
 	// first is the idx of the first of the two revocation points
@@ -1079,7 +1079,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
 		let remote_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
 
-		let remote_tx_cache = RemoteTxCache { remote_delayed_payment_base_key: *remote_delayed_payment_base_key, remote_htlc_base_key: *remote_htlc_base_key, on_remote_tx_csv, per_htlc: HashMap::new() };
+		let remote_tx_cache = RemoteCommitmentTransaction { remote_delayed_payment_base_key: *remote_delayed_payment_base_key, remote_htlc_base_key: *remote_htlc_base_key, on_remote_tx_csv, per_htlc: HashMap::new() };
 
 		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), on_local_tx_csv);
 
@@ -2255,7 +2255,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 					return Err(DecodeError::InvalidValue);
 				}
 			}
-			RemoteTxCache {
+			RemoteCommitmentTransaction {
 				remote_delayed_payment_base_key,
 				remote_htlc_base_key,
 				on_remote_tx_csv,
