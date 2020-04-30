@@ -6,4 +6,5 @@
 mod chacha;
 pub mod conduit;
 pub mod handshake;
+pub mod handler;
 mod hkdf;

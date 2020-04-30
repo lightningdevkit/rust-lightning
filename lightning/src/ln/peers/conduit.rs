@@ -15,35 +15,120 @@ const KEY_ROTATION_INDEX: u32 = 1000;
 /// Automatically handles key rotation.
 /// For decryption, it is recommended to call `decrypt_message_stream` for automatic buffering.
 pub struct Conduit {
-	pub(crate) sending_key: SymmetricKey,
-	pub(crate) receiving_key: SymmetricKey,
+	pub(super) encryptor: Encryptor,
+	pub(super) decryptor: Decryptor
 
-	pub(crate) sending_chaining_key: SymmetricKey,
-	pub(crate) receiving_chaining_key: SymmetricKey,
+}
 
-	pub(crate) receiving_nonce: u32,
-	pub(crate) sending_nonce: u32,
+pub(super) struct Encryptor {
+	sending_key: SymmetricKey,
+	sending_chaining_key: SymmetricKey,
+	sending_nonce: u32,
+}
 
-	pub(super) read_buffer: Option<Vec<u8>>,
+pub(super) struct Decryptor {
+	receiving_key: SymmetricKey,
+	receiving_chaining_key: SymmetricKey,
+	receiving_nonce: u32,
+
+	pending_message_length: Option<usize>,
+	read_buffer: Option<Vec<u8>>,
+}
+
+impl Iterator for Decryptor {
+	type Item = Vec<u8>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		self.decrypt_single_message(None)
+	}
 }
 
 impl Conduit {
+	/// Instantiate a new Conduit with specified sending and receiving keys
+	pub fn new(sending_key: SymmetricKey, sending_chaining_key: SymmetricKey, receiving_key: SymmetricKey, receiving_chaining_key: SymmetricKey) -> Self {
+		Conduit {
+			encryptor: Encryptor {
+				sending_key,
+				sending_chaining_key,
+				sending_nonce: 0
+			},
+			decryptor: Decryptor {
+				receiving_key,
+				receiving_chaining_key,
+				receiving_nonce: 0,
+				read_buffer: None,
+				pending_message_length: None
+			}
+		}
+	}
+
 	/// Encrypt data to be sent to peer
 	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
+		self.encryptor.encrypt(buffer)
+	}
+
+	pub(super) fn read(&mut self, data: &[u8]) {
+		self.decryptor.read(data)
+	}
+
+	/// Decrypt a single message. If data containing more than one message has been received,
+	/// only the first message will be returned, and the rest stored in the internal buffer.
+	/// If a message pending in the buffer still hasn't been decrypted, that message will be
+	/// returned in lieu of anything new, even if new data is provided.
+	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Option<Vec<u8>> {
+		self.decryptor.decrypt_single_message(new_data)
+	}
+
+	/// Decrypt a message from the beginning of the provided buffer. Returns the consumed number of bytes.
+	fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) {
+		self.decryptor.decrypt(buffer)
+	}
+
+	fn increment_sending_nonce(&mut self) {
+		self.encryptor.increment_nonce()
+	}
+
+	fn increment_receiving_nonce(&mut self) {
+		self.decryptor.increment_nonce()
+	}
+
+	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
+		*nonce += 1;
+		if *nonce == KEY_ROTATION_INDEX {
+			Self::rotate_key(chaining_key, key);
+			*nonce = 0;
+		}
+	}
+
+	fn rotate_key(chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
+		let (new_chaining_key, new_key) = hkdf::derive(chaining_key, key);
+		chaining_key.copy_from_slice(&new_chaining_key);
+		key.copy_from_slice(&new_key);
+	}
+}
+
+impl Encryptor {
+	pub(super) fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
 		let length = buffer.len() as u16;
 		let length_bytes = byte_utils::be16_to_array(length);
 
 		let mut ciphertext = vec![0u8; TAGGED_MESSAGE_LENGTH_HEADER_SIZE + length as usize + chacha::TAG_SIZE];
 
 		ciphertext[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes));
-		self.increment_sending_nonce();
+		self.increment_nonce();
 
 		ciphertext[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer));
-		self.increment_sending_nonce();
+		self.increment_nonce();
 
 		ciphertext
 	}
 
+	fn increment_nonce(&mut self) {
+		Conduit::increment_nonce(&mut self.sending_nonce, &mut self.sending_chaining_key, &mut self.sending_key);
+	}
+}
+
+impl Decryptor {
 	pub(super) fn read(&mut self, data: &[u8]) {
 		let read_buffer = self.read_buffer.get_or_insert(Vec::new());
 		read_buffer.extend_from_slice(data);
@@ -70,61 +155,53 @@ impl Conduit {
 		current_message
 	}
 
-	/// Decrypt a message from the beginning of the provided buffer. Returns the consumed number of bytes.
 	fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) {
-		if buffer.len() < TAGGED_MESSAGE_LENGTH_HEADER_SIZE {
-			// A message must be at least 18 bytes (2 for encrypted length, 16 for the tag)
-			return (None, 0);
-		}
+		let message_length = if let Some(length) = self.pending_message_length {
+			// we have already decrypted the header
+			length
+		} else {
+			if buffer.len() < TAGGED_MESSAGE_LENGTH_HEADER_SIZE {
+				// A message must be at least 18 bytes (2 for encrypted length, 16 for the tag)
+				return (None, 0);
+			}
 
-		let encrypted_length = &buffer[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE];
-		let mut length_bytes = [0u8; MESSAGE_LENGTH_HEADER_SIZE];
-		length_bytes.copy_from_slice(&chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap());
-		// message_length is the length of the encrypted message excluding its trailing 16-byte tag
-		let message_length = byte_utils::slice_to_be16(&length_bytes) as usize;
+			let encrypted_length = &buffer[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE];
+			let mut length_bytes = [0u8; MESSAGE_LENGTH_HEADER_SIZE];
+			length_bytes.copy_from_slice(&chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap());
+
+			self.increment_nonce();
+
+			// the message length
+			byte_utils::slice_to_be16(&length_bytes) as usize
+		};
 
 		let message_end_index = TAGGED_MESSAGE_LENGTH_HEADER_SIZE + message_length + chacha::TAG_SIZE;
+
 		if buffer.len() < message_end_index {
+			self.pending_message_length = Some(message_length);
 			return (None, 0);
 		}
+
+		self.pending_message_length = None;
 
 		let encrypted_message = &buffer[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..message_end_index];
 
-		self.increment_receiving_nonce();
-
 		let message = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_message).unwrap();
 
-		self.increment_receiving_nonce();
+		self.increment_nonce();
 
 		(Some(message), message_end_index)
 	}
 
-	fn increment_sending_nonce(&mut self) {
-		Self::increment_nonce(&mut self.sending_nonce, &mut self.sending_chaining_key, &mut self.sending_key);
-	}
-
-	fn increment_receiving_nonce(&mut self) {
-		Self::increment_nonce(&mut self.receiving_nonce, &mut self.receiving_chaining_key, &mut self.receiving_key);
-	}
-
-	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
-		*nonce += 1;
-		if *nonce == KEY_ROTATION_INDEX {
-			Self::rotate_key(chaining_key, key);
-			*nonce = 0;
-		}
-	}
-
-	fn rotate_key(chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
-		let (new_chaining_key, new_key) = hkdf::derive(chaining_key, key);
-		chaining_key.copy_from_slice(&new_chaining_key);
-		key.copy_from_slice(&new_key);
+	fn increment_nonce(&mut self) {
+		Conduit::increment_nonce(&mut self.receiving_nonce, &mut self.receiving_chaining_key, &mut self.receiving_key);
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use hex;
+
 	use ln::peers::conduit::Conduit;
 
 	fn setup_peers() -> (Conduit, Conduit) {
@@ -140,25 +217,8 @@ mod tests {
 		let mut receiving_key = [0u8; 32];
 		receiving_key.copy_from_slice(&receiving_key_vec);
 
-		let connected_peer = Conduit {
-			sending_key,
-			receiving_key,
-			sending_chaining_key: chaining_key,
-			receiving_chaining_key: chaining_key,
-			sending_nonce: 0,
-			receiving_nonce: 0,
-			read_buffer: None,
-		};
-
-		let remote_peer = Conduit {
-			sending_key: receiving_key,
-			receiving_key: sending_key,
-			sending_chaining_key: chaining_key,
-			receiving_chaining_key: chaining_key,
-			sending_nonce: 0,
-			receiving_nonce: 0,
-			read_buffer: None,
-		};
+		let connected_peer = Conduit::new(sending_key, chaining_key, receiving_key, chaining_key);
+		let remote_peer = Conduit::new(receiving_key, chaining_key, sending_key, chaining_key);
 
 		(connected_peer, remote_peer)
 	}
