@@ -270,7 +270,7 @@ impl PeerHandshake {
 		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
 		act_three[50..].copy_from_slice(authentication_tag.as_slice());
 
-		let connected_peer = Conduit::new(sending_key, receiving_key, chaining_key, chaining_key);
+		let connected_peer = Conduit::new(sending_key, receiving_key, chaining_key);
 		Ok((ActThree(act_three), connected_peer))
 	}
 
@@ -315,7 +315,7 @@ impl PeerHandshake {
 		let _tag_check = chacha::decrypt(&temporary_key, 0, &hash.value, &chacha_tag)?;
 		let (receiving_key, sending_key) = hkdf::derive(&chaining_key, &[0; 0]);
 
-		let connected_peer = Conduit::new(sending_key, receiving_key, chaining_key, chaining_key);
+		let connected_peer = Conduit::new(sending_key, receiving_key, chaining_key);
 		Ok((remote_pubkey, connected_peer))
 	}
 

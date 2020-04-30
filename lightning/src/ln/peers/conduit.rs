@@ -45,16 +45,16 @@ impl Iterator for Decryptor {
 
 impl Conduit {
 	/// Instantiate a new Conduit with specified sending and receiving keys
-	pub fn new(sending_key: SymmetricKey, sending_chaining_key: SymmetricKey, receiving_key: SymmetricKey, receiving_chaining_key: SymmetricKey) -> Self {
+	pub fn new(sending_key: SymmetricKey, receiving_key: SymmetricKey, chaining_key: SymmetricKey) -> Self {
 		Conduit {
 			encryptor: Encryptor {
 				sending_key,
-				sending_chaining_key,
+				sending_chaining_key: chaining_key,
 				sending_nonce: 0
 			},
 			decryptor: Decryptor {
 				receiving_key,
-				receiving_chaining_key,
+				receiving_chaining_key: chaining_key,
 				receiving_nonce: 0,
 				read_buffer: None,
 				pending_message_length: None
@@ -217,8 +217,8 @@ mod tests {
 		let mut receiving_key = [0u8; 32];
 		receiving_key.copy_from_slice(&receiving_key_vec);
 
-		let connected_peer = Conduit::new(sending_key, chaining_key, receiving_key, chaining_key);
-		let remote_peer = Conduit::new(receiving_key, chaining_key, sending_key, chaining_key);
+		let connected_peer = Conduit::new(sending_key, receiving_key, chaining_key);
+		let remote_peer = Conduit::new(receiving_key, sending_key, chaining_key);
 
 		(connected_peer, remote_peer)
 	}
