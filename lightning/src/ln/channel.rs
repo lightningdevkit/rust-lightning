@@ -1,40 +1,46 @@
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::script::{Script,Builder};
-use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::hash::BitcoinHash;
-use bitcoin::util::bip143;
+use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::transaction::{SigHashType, Transaction, TxIn, TxOut};
 use bitcoin::consensus::encode;
+use bitcoin::util::bip143;
+use bitcoin::util::hash::BitcoinHash;
 
-use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hash_types::{BlockHash, Txid, WPubkeyHash};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hashes::{Hash, HashEngine};
 
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
-use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{Secp256k1, Signature};
 
+use chain::chaininterface::{ConfirmationTarget, FeeEstimator};
+use chain::keysinterface::{ChannelKeys, KeysInterface};
+use chain::transaction::OutPoint;
+use ln::chan_utils;
+use ln::chan_utils::{
+	make_funding_redeemscript, ChannelPublicKeys, CounterpartyCommitmentSecrets, HTLCOutputInCommitment,
+	LocalCommitmentTransaction, TxCreationKeys, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT,
+};
+use ln::channelmanager::{
+	HTLCFailReason, HTLCFailureMsg, HTLCSource, PaymentHash, PaymentPreimage, PendingHTLCInfo, PendingHTLCStatus,
+	RAACommitmentOrder, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT,
+};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
-use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
-use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{CounterpartyCommitmentSecrets, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
-use ln::chan_utils;
-use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-use chain::transaction::OutPoint;
-use chain::keysinterface::{ChannelKeys, KeysInterface};
-use util::transaction_utils;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use util::logger::{Logger, LogHolder};
+use ln::msgs::{DataLossProtect, DecodeError, OptionalField};
+use util::config::{ChannelConfig, UserConfig};
 use util::errors::APIError;
-use util::config::{UserConfig,ChannelConfig};
+use util::logger::{LogHolder, Logger};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use util::transaction_utils;
 
 use std;
 use std::default::Default;
-use std::{cmp,mem,fmt};
-use std::sync::{Arc};
 use std::ops::Deref;
+use std::sync::Arc;
+use std::{cmp, fmt, mem};
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -133,7 +139,8 @@ struct OutboundHTLCOutput {
 
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum HTLCUpdateAwaitingACK {
-	AddHTLC { // TODO: Time out if we're getting close to cltv_expiry
+	AddHTLC {
+		// TODO: Time out if we're getting close to cltv_expiry
 		// always outbound
 		amount_msat: u64,
 		cltv_expiry: u32,
@@ -207,7 +214,8 @@ enum ChannelState {
 	ShutdownComplete = 4096,
 }
 const BOTH_SIDES_SHUTDOWN_MASK: u32 = ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32;
-const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32;
+const MULTI_STATE_FLAGS: u32 =
+	BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32;
 
 const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -252,7 +260,6 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
 	// cost of others, but should really just be changed.
-
 	cur_local_commitment_transaction_number: u64,
 	cur_remote_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
@@ -389,10 +396,7 @@ pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
 pub(super) enum ChannelError {
 	Ignore(&'static str),
 	Close(&'static str),
-	CloseDelayBroadcast {
-		msg: &'static str,
-		update: ChannelMonitorUpdate,
-	},
+	CloseDelayBroadcast { msg: &'static str, update: ChannelMonitorUpdate },
 }
 
 impl fmt::Debug for ChannelError {
@@ -400,7 +404,7 @@ impl fmt::Debug for ChannelError {
 		match self {
 			&ChannelError::Ignore(e) => write!(f, "Ignore : {}", e),
 			&ChannelError::Close(e) => write!(f, "Close : {}", e),
-			&ChannelError::CloseDelayBroadcast { msg, .. } => write!(f, "CloseDelayBroadcast : {}", msg)
+			&ChannelError::CloseDelayBroadcast { msg, .. } => write!(f, "CloseDelayBroadcast : {}", msg),
 		}
 	}
 }
@@ -430,44 +434,58 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
-		cmp::max(at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
+		cmp::max(at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546)
+		//TODO
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError>
-	where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
-	      F::Target: FeeEstimator,
+	pub fn new_outbound<K: Deref, F: Deref>(
+		fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64,
+		user_id: u64, logger: Arc<Logger>, config: &UserConfig,
+	) -> Result<Channel<ChanSigner>, APIError>
+	where
+		K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+		F::Target: FeeEstimator,
 	{
 		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(APIError::APIMisuseError{err: "funding value > 2^24"});
+			return Err(APIError::APIMisuseError { err: "funding value > 2^24" });
 		}
 
 		if push_msat > channel_value_satoshis * 1000 {
-			return Err(APIError::APIMisuseError{err: "push value > channel value"});
+			return Err(APIError::APIMisuseError { err: "push value > channel value" });
 		}
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(APIError::APIMisuseError{err: "Configured with an unreasonable our_to_self_delay putting user funds at risks"});
+			return Err(APIError::APIMisuseError {
+				err: "Configured with an unreasonable our_to_self_delay putting user funds at risks",
+			});
 		}
 
-
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		if Channel::<ChanSigner>::get_our_channel_reserve_satoshis(channel_value_satoshis) < Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate) {
-			return Err(APIError::FeeRateTooHigh{err: format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate), feerate: background_feerate});
+		if Channel::<ChanSigner>::get_our_channel_reserve_satoshis(channel_value_satoshis)
+			< Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate)
+		{
+			return Err(APIError::FeeRateTooHigh {
+				err: format!(
+					"Not enough reserve above dust limit can be found at current fee rate({})",
+					background_feerate
+				),
+				feerate: background_feerate,
+			});
 		}
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		Ok(Channel {
-			user_id: user_id,
+			user_id,
 			config: config.channel_options.clone(),
 
 			channel_id: keys_provider.get_channel_id(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: Secp256k1::new(),
-			channel_value_satoshis: channel_value_satoshis,
+			channel_value_satoshis,
 
 			latest_monitor_update_id: 0,
 
@@ -497,9 +515,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			monitor_pending_failures: Vec::new(),
 
 			#[cfg(debug_assertions)]
-			max_commitment_tx_output_local: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((
+				channel_value_satoshis * 1000 - push_msat,
+				push_msat,
+			)),
 			#[cfg(debug_assertions)]
-			max_commitment_tx_output_remote: ::std::sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((
+				channel_value_satoshis * 1000 - push_msat,
+				push_msat,
+			)),
 
 			last_sent_closing_fee: None,
 
@@ -515,7 +539,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_max_htlc_value_in_flight_msat: 0,
 			their_channel_reserve_satoshis: 0,
 			their_htlc_minimum_msat: 0,
-			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
+			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 {
+				1
+			} else {
+				config.own_channel_config.our_htlc_minimum_msat
+			},
 			their_to_self_delay: 0,
 			our_to_self_delay: config.own_channel_config.our_to_self_delay,
 			their_max_accepted_htlcs: 0,
@@ -525,7 +553,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_cur_commitment_point: None,
 
 			their_prev_commitment_point: None,
-			their_node_id: their_node_id,
+			their_node_id,
 
 			their_shutdown_scriptpubkey: None,
 
@@ -539,7 +567,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	fn check_remote_fee<F: Deref>(fee_estimator: &F, feerate_per_kw: u32) -> Result<(), ChannelError>
-		where F::Target: FeeEstimator
+	where
+		F::Target: FeeEstimator,
 	{
 		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
 			return Err(ChannelError::Close("Peer's feerate much too low"));
@@ -552,9 +581,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError>
-		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
-          F::Target: FeeEstimator
+	pub fn new_from_req<K: Deref, F: Deref>(
+		fee_estimator: &F, keys_provider: &K, their_node_id: PublicKey, their_features: InitFeatures,
+		msg: &msgs::OpenChannel, user_id: u64, logger: Arc<Logger>, config: &UserConfig,
+	) -> Result<Channel<ChanSigner>, ChannelError>
+	where
+		K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+		F::Target: FeeEstimator,
 	{
 		let mut chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
 		let their_pubkeys = ChannelPublicKeys {
@@ -562,13 +595,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			revocation_basepoint: msg.revocation_basepoint,
 			payment_basepoint: msg.payment_basepoint,
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
-			htlc_basepoint: msg.htlc_basepoint
+			htlc_basepoint: msg.htlc_basepoint,
 		};
 		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
 		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(ChannelError::Close("Configured with an unreasonable our_to_self_delay putting user funds at risks"));
+			return Err(ChannelError::Close(
+				"Configured with an unreasonable our_to_self_delay putting user funds at risks",
+			));
 		}
 
 		// Check sanity of message fields:
@@ -592,7 +627,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		Channel::<ChanSigner>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 
-		if msg.to_self_delay > config.peer_channel_config_limits.their_to_self_delay || msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
+		if msg.to_self_delay > config.peer_channel_config_limits.their_to_self_delay
+			|| msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT
+		{
 			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
@@ -630,7 +667,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let their_announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if config.peer_channel_config_limits.force_announced_channel_preference {
 			if local_config.announced_channel != their_announce {
-				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours"));
+				return Err(ChannelError::Close(
+					"Peer tried to open channel but their announcement preference is different from ours",
+				));
 			}
 		}
 		// we either accept their preference or the preferences match
@@ -639,7 +678,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let our_dust_limit_satoshis = Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate);
-		let our_channel_reserve_satoshis = Channel::<ChanSigner>::get_our_channel_reserve_satoshis(msg.funding_satoshis);
+		let our_channel_reserve_satoshis =
+			Channel::<ChanSigner>::get_our_channel_reserve_satoshis(msg.funding_satoshis);
 		if our_channel_reserve_satoshis < our_dust_limit_satoshis {
 			return Err(ChannelError::Close("Suitable channel reserve not found. aborting"));
 		}
@@ -659,7 +699,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let to_local_msat = msg.push_msat;
 		let to_remote_msat = funders_amount_msat - background_feerate * COMMITMENT_TX_BASE_WEIGHT;
-		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= our_channel_reserve_satoshis * 1000 {
+		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= our_channel_reserve_satoshis * 1000
+		{
 			return Err(ChannelError::Close("Insufficient funding amount for initial commitment"));
 		}
 
@@ -674,18 +715,22 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						None
 					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
 					} else {
-						return Err(ChannelError::Close("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format"));
+						return Err(ChannelError::Close(
+							"Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format",
+						));
 					}
-				},
+				}
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
 				&OptionalField::Absent => {
 					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"));
 				}
 			}
-		} else { None };
+		} else {
+			None
+		};
 
 		let chan = Channel {
-			user_id: user_id,
+			user_id,
 			config: local_config,
 
 			channel_id: msg.temporary_channel_id,
@@ -721,9 +766,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			monitor_pending_failures: Vec::new(),
 
 			#[cfg(debug_assertions)]
-			max_commitment_tx_output_local: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
+			max_commitment_tx_output_local: ::std::sync::Mutex::new((
+				msg.push_msat,
+				msg.funding_satoshis * 1000 - msg.push_msat,
+			)),
 			#[cfg(debug_assertions)]
-			max_commitment_tx_output_remote: ::std::sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
+			max_commitment_tx_output_remote: ::std::sync::Mutex::new((
+				msg.push_msat,
+				msg.funding_satoshis * 1000 - msg.push_msat,
+			)),
 
 			last_sent_closing_fee: None,
 
@@ -736,11 +787,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			feerate_per_kw: msg.feerate_per_kw as u64,
 			channel_value_satoshis: msg.funding_satoshis,
 			their_dust_limit_satoshis: msg.dust_limit_satoshis,
-			our_dust_limit_satoshis: our_dust_limit_satoshis,
-			their_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
+			our_dust_limit_satoshis,
+			their_max_htlc_value_in_flight_msat: cmp::min(
+				msg.max_htlc_value_in_flight_msat,
+				msg.funding_satoshis * 1000,
+			),
 			their_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			their_htlc_minimum_msat: msg.htlc_minimum_msat,
-			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
+			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 {
+				1
+			} else {
+				config.own_channel_config.our_htlc_minimum_msat
+			},
 			their_to_self_delay: msg.to_self_delay,
 			our_to_self_delay: config.own_channel_config.our_to_self_delay,
 			their_max_accepted_htlcs: msg.max_accepted_htlcs,
@@ -750,7 +808,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_cur_commitment_point: Some(msg.first_per_commitment_point),
 
 			their_prev_commitment_point: None,
-			their_node_id: their_node_id,
+			their_node_id,
 
 			their_shutdown_scriptpubkey,
 
@@ -815,21 +873,26 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Note that below-dust HTLCs are included in the third return value, but not the second, and
 	/// sources are provided only for outbound HTLCs in the third return value.
 	#[inline]
-	fn build_commitment_transaction(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u64) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) {
-		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
+	fn build_commitment_transaction(
+		&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool,
+		feerate_per_kw: u64,
+	) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) {
+		let obscured_commitment_transaction_number =
+			self.get_commitment_transaction_number_obscure_factor() ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
 				previous_output: self.funding_txo.unwrap().into_bitcoin_outpoint(),
 				script_sig: Script::new(),
-				sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32),
+				sequence: ((0x80 as u32) << 8 * 3) | ((obscured_commitment_transaction_number >> 3 * 8) as u32),
 				witness: Vec::new(),
 			});
 			ins
 		};
 
-		let mut txouts: Vec<(TxOut, Option<(HTLCOutputInCommitment, Option<&HTLCSource>)>)> = Vec::with_capacity(self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len() + 2);
+		let mut txouts: Vec<(TxOut, Option<(HTLCOutputInCommitment, Option<&HTLCSource>)>)> =
+			Vec::with_capacity(self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len() + 2);
 		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 
 		let dust_limit_satoshis = if local { self.our_dust_limit_satoshis } else { self.their_dust_limit_satoshis };
@@ -837,7 +900,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut local_htlc_total_msat = 0;
 		let mut value_to_self_msat_offset = 0;
 
-		log_trace!(self, "Building commitment transaction number {} (really {} xor {}) for {}, generated by {} with fee {}...", commitment_number, (INITIAL_COMMITMENT_NUMBER - commitment_number), self.get_commitment_transaction_number_obscure_factor(), if local { "us" } else { "remote" }, if generated_by_local { "us" } else { "remote" }, feerate_per_kw);
+		log_trace!(
+			self,
+			"Building commitment transaction number {} (really {} xor {}) for {}, generated by {} with fee {}...",
+			commitment_number,
+			(INITIAL_COMMITMENT_NUMBER - commitment_number),
+			self.get_commitment_transaction_number_obscure_factor(),
+			if local { "us" } else { "remote" },
+			if generated_by_local { "us" } else { "remote" },
+			feerate_per_kw
+		);
 
 		#[cfg_attr(rustfmt, rustfmt_skip)]
 		macro_rules! get_htlc_in_commitment {
@@ -886,7 +958,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				InboundHTLCState::RemoteAnnounced(_) => (!generated_by_local, "RemoteAnnounced"),
-				InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => (!generated_by_local, "AwaitingRemoteRevokeToAnnounce"),
+				InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) => {
+					(!generated_by_local, "AwaitingRemoteRevokeToAnnounce")
+				}
 				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => (true, "AwaitingAnnouncedRemoteRevoke"),
 				InboundHTLCState::Committed => (true, "Committed"),
 				InboundHTLCState::LocalRemoved(_) => (!generated_by_local, "LocalRemoved"),
@@ -896,7 +970,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				add_htlc_output!(htlc, false, None, state_name);
 				remote_htlc_total_msat += htlc.amount_msat;
 			} else {
-				log_trace!(self, "   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, log_bytes!(htlc.payment_hash.0), htlc.amount_msat, state_name);
+				log_trace!(
+					self,
+					"   ...not including inbound HTLC {} (hash {}) with value {} due to state ({})",
+					htlc.htlc_id,
+					log_bytes!(htlc.payment_hash.0),
+					htlc.amount_msat,
+					state_name
+				);
 				match &htlc.state {
 					&InboundHTLCState::LocalRemoved(ref reason) => {
 						if generated_by_local {
@@ -904,8 +985,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 								value_to_self_msat_offset += htlc.amount_msat as i64;
 							}
 						}
-					},
-					_ => {},
+					}
+					_ => {}
 				}
 			}
 		}
@@ -915,7 +996,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				OutboundHTLCState::LocalAnnounced(_) => (generated_by_local, "LocalAnnounced"),
 				OutboundHTLCState::Committed => (true, "Committed"),
 				OutboundHTLCState::RemoteRemoved(_) => (generated_by_local, "RemoteRemoved"),
-				OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) => (generated_by_local, "AwaitingRemoteRevokeToRemove"),
+				OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) => {
+					(generated_by_local, "AwaitingRemoteRevokeToRemove")
+				}
 				OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) => (false, "AwaitingRemovedRemoteRevoke"),
 			};
 
@@ -923,28 +1006,40 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				add_htlc_output!(htlc, true, Some(&htlc.source), state_name);
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
-				log_trace!(self, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, log_bytes!(htlc.payment_hash.0), htlc.amount_msat, state_name);
+				log_trace!(
+					self,
+					"   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})",
+					htlc.htlc_id,
+					log_bytes!(htlc.payment_hash.0),
+					htlc.amount_msat,
+					state_name
+				);
 				match htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(None)|OutboundHTLCState::AwaitingRemovedRemoteRevoke(None) => {
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(None)
+					| OutboundHTLCState::AwaitingRemovedRemoteRevoke(None) => {
 						value_to_self_msat_offset -= htlc.amount_msat as i64;
-					},
+					}
 					OutboundHTLCState::RemoteRemoved(None) => {
 						if !generated_by_local {
 							value_to_self_msat_offset -= htlc.amount_msat as i64;
 						}
-					},
-					_ => {},
+					}
+					_ => {}
 				}
 			}
 		}
 
-		let value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+		let value_to_self_msat: i64 =
+			(self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
 		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
 		// "violate" their reserve value by couting those against it. Thus, we have to convert
 		// everything to i64 before subtracting as otherwise we can overflow.
-		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
+		let value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64
+			- (self.value_to_self_msat as i64)
+			- (remote_htlc_total_msat as i64)
+			- value_to_self_msat_offset;
 		assert!(value_to_remote_msat >= 0);
 
 		#[cfg(debug_assertions)]
@@ -956,13 +1051,21 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			} else {
 				self.max_commitment_tx_output_remote.lock().unwrap()
 			};
-			debug_assert!(max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.their_channel_reserve_satoshis as i64);
+			debug_assert!(
+				max_commitment_tx_output.0 <= value_to_self_msat as u64
+					|| value_to_self_msat / 1000 >= self.their_channel_reserve_satoshis as i64
+			);
 			max_commitment_tx_output.0 = cmp::max(max_commitment_tx_output.0, value_to_self_msat as u64);
-			debug_assert!(max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
+			debug_assert!(
+				max_commitment_tx_output.1 <= value_to_remote_msat as u64
+					|| value_to_remote_msat / 1000
+						>= Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis) as i64
+			);
 			max_commitment_tx_output.1 = cmp::max(max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee: u64 = feerate_per_kw * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		let total_fee: u64 =
+			feerate_per_kw * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 		let (value_to_self, value_to_remote) = if self.channel_outbound {
 			(value_to_self_msat / 1000 - total_fee as i64, value_to_remote_msat / 1000)
 		} else {
@@ -973,41 +1076,69 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let value_to_b = if local { value_to_remote } else { value_to_self };
 
 		if value_to_a >= (dust_limit_satoshis as i64) {
-			log_trace!(self, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
-			txouts.push((TxOut {
-				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
-				                                                       if local { self.their_to_self_delay } else { self.our_to_self_delay },
-				                                                       &keys.a_delayed_payment_key).to_v0_p2wsh(),
-				value: value_to_a as u64
-			}, None));
+			log_trace!(
+				self,
+				"   ...including {} output with value {}",
+				if local { "to_local" } else { "to_remote" },
+				value_to_a
+			);
+			txouts.push((
+				TxOut {
+					script_pubkey: chan_utils::get_revokeable_redeemscript(
+						&keys.revocation_key,
+						if local { self.their_to_self_delay } else { self.our_to_self_delay },
+						&keys.a_delayed_payment_key,
+					)
+					.to_v0_p2wsh(),
+					value: value_to_a as u64,
+				},
+				None,
+			));
 		}
 
 		if value_to_b >= (dust_limit_satoshis as i64) {
-			log_trace!(self, "   ...including {} output with value {}", if local { "to_remote" } else { "to_local" }, value_to_b);
-			txouts.push((TxOut {
-				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&WPubkeyHash::hash(&keys.b_payment_key.serialize())[..])
-				                             .into_script(),
-				value: value_to_b as u64
-			}, None));
+			log_trace!(
+				self,
+				"   ...including {} output with value {}",
+				if local { "to_remote" } else { "to_local" },
+				value_to_b
+			);
+			txouts.push((
+				TxOut {
+					script_pubkey: Builder::new()
+						.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+						.push_slice(&WPubkeyHash::hash(&keys.b_payment_key.serialize())[..])
+						.into_script(),
+					value: value_to_b as u64,
+				},
+				None,
+			));
 		}
 
 		transaction_utils::sort_outputs(&mut txouts, |a, b| {
 			if let &Some(ref a_htlc) = a {
 				if let &Some(ref b_htlc) = b {
-					a_htlc.0.cltv_expiry.cmp(&b_htlc.0.cltv_expiry)
+					a_htlc
+						.0
+						.cltv_expiry
+						.cmp(&b_htlc.0.cltv_expiry)
 						// Note that due to hash collisions, we have to have a fallback comparison
 						// here for fuzztarget mode (otherwise at least chanmon_fail_consistency
 						// may fail)!
 						.then(a_htlc.0.payment_hash.0.cmp(&b_htlc.0.payment_hash.0))
 				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
 				// close the channel due to mismatches - they're doing something dumb:
-				} else { cmp::Ordering::Equal }
-			} else { cmp::Ordering::Equal }
+				} else {
+					cmp::Ordering::Equal
+				}
+			} else {
+				cmp::Ordering::Equal
+			}
 		});
 
 		let mut outputs: Vec<TxOut> = Vec::with_capacity(txouts.len());
-		let mut htlcs_included: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(txouts.len() + included_dust_htlcs.len());
+		let mut htlcs_included: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> =
+			Vec::with_capacity(txouts.len() + included_dust_htlcs.len());
 		for (idx, mut out) in txouts.drain(..).enumerate() {
 			outputs.push(out.0);
 			if let Some((mut htlc, source_option)) = out.1.take() {
@@ -1018,27 +1149,37 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let non_dust_htlc_count = htlcs_included.len();
 		htlcs_included.append(&mut included_dust_htlcs);
 
-		(Transaction {
-			version: 2,
-			lock_time: ((0x20 as u32) << 8*3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
-			input: txins,
-			output: outputs,
-		}, non_dust_htlc_count, htlcs_included)
+		(
+			Transaction {
+				version: 2,
+				lock_time: ((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
+				input: txins,
+				output: outputs,
+			},
+			non_dust_htlc_count,
+			htlcs_included,
+		)
 	}
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
 		let our_channel_close_key_hash = WPubkeyHash::hash(&self.shutdown_pubkey.serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script()
+		Builder::new()
+			.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+			.push_slice(&our_channel_close_key_hash[..])
+			.into_script()
 	}
 
 	#[inline]
 	fn get_closing_transaction_weight(a_scriptpubkey: &Script, b_scriptpubkey: &Script) -> u64 {
-		(4 + 1 + 36 + 4 + 1 + 1 + 2*(8+1) + 4 + a_scriptpubkey.len() as u64 + b_scriptpubkey.len() as u64)*4 + 2 + 1 + 1 + 2*(1 + 72)
+		(4 + 1 + 36 + 4 + 1 + 1 + 2 * (8 + 1) + 4 + a_scriptpubkey.len() as u64 + b_scriptpubkey.len() as u64) * 4
+			+ 2 + 1 + 1 + 2 * (1 + 72)
 	}
 
 	#[inline]
-	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> (Transaction, u64) {
+	fn build_closing_transaction(
+		&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool,
+	) -> (Transaction, u64) {
 		let txins = {
 			let mut ins: Vec<TxIn> = Vec::new();
 			ins.push(TxIn {
@@ -1055,8 +1196,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut txouts: Vec<(TxOut, ())> = Vec::new();
 
 		let mut total_fee_satoshis = proposed_total_fee_satoshis;
-		let value_to_self: i64 = (self.value_to_self_msat as i64) / 1000 - if self.channel_outbound { total_fee_satoshis as i64 } else { 0 };
-		let value_to_remote: i64 = ((self.channel_value_satoshis * 1000 - self.value_to_self_msat) as i64 / 1000) - if self.channel_outbound { 0 } else { total_fee_satoshis as i64 };
+		let value_to_self: i64 =
+			(self.value_to_self_msat as i64) / 1000 - if self.channel_outbound { total_fee_satoshis as i64 } else { 0 };
+		let value_to_remote: i64 = ((self.channel_value_satoshis * 1000 - self.value_to_self_msat) as i64 / 1000)
+			- if self.channel_outbound { 0 } else { total_fee_satoshis as i64 };
 
 		if value_to_self < 0 {
 			assert!(self.channel_outbound);
@@ -1067,32 +1210,27 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		if !skip_remote_output && value_to_remote as u64 > self.our_dust_limit_satoshis {
-			txouts.push((TxOut {
-				script_pubkey: self.their_shutdown_scriptpubkey.clone().unwrap(),
-				value: value_to_remote as u64
-			}, ()));
+			txouts.push((
+				TxOut {
+					script_pubkey: self.their_shutdown_scriptpubkey.clone().unwrap(),
+					value: value_to_remote as u64,
+				},
+				(),
+			));
 		}
 
 		if value_to_self as u64 > self.our_dust_limit_satoshis {
-			txouts.push((TxOut {
-				script_pubkey: self.get_closing_scriptpubkey(),
-				value: value_to_self as u64
-			}, ()));
+			txouts.push((TxOut { script_pubkey: self.get_closing_scriptpubkey(), value: value_to_self as u64 }, ()));
 		}
 
-		transaction_utils::sort_outputs(&mut txouts, |_, _| { cmp::Ordering::Equal }); // Ordering doesnt matter if they used our pubkey...
+		transaction_utils::sort_outputs(&mut txouts, |_, _| cmp::Ordering::Equal); // Ordering doesnt matter if they used our pubkey...
 
 		let mut outputs: Vec<TxOut> = Vec::new();
 		for out in txouts.drain(..) {
 			outputs.push(out.0);
 		}
 
-		(Transaction {
-			version: 2,
-			lock_time: 0,
-			input: txins,
-			output: outputs,
-		}, total_fee_satoshis)
+		(Transaction { version: 2, lock_time: 0, input: txins, output: outputs }, total_fee_satoshis)
 	}
 
 	#[inline]
@@ -1102,12 +1240,25 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// The result is a transaction which we can revoke ownership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_local_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, ChannelError> {
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number));
-		let delayed_payment_base = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key());
+		let per_commitment_point =
+			PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number));
+		let delayed_payment_base =
+			PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key());
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key());
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.payment_basepoint, &their_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys"))
+		Ok(secp_check!(
+			TxCreationKeys::new(
+				&self.secp_ctx,
+				&per_commitment_point,
+				&delayed_payment_base,
+				&htlc_basepoint,
+				&their_pubkeys.revocation_basepoint,
+				&their_pubkeys.payment_basepoint,
+				&their_pubkeys.htlc_basepoint
+			),
+			"Local tx keys generation got bogus keys"
+		))
 	}
 
 	#[inline]
@@ -1122,7 +1273,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key());
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &their_pubkeys.delayed_payment_basepoint, &their_pubkeys.htlc_basepoint, &revocation_basepoint, &payment_basepoint, &htlc_basepoint), "Remote tx keys generation got bogus keys"))
+		Ok(secp_check!(
+			TxCreationKeys::new(
+				&self.secp_ctx,
+				&self.their_cur_commitment_point.unwrap(),
+				&their_pubkeys.delayed_payment_basepoint,
+				&their_pubkeys.htlc_basepoint,
+				&revocation_basepoint,
+				&payment_basepoint,
+				&htlc_basepoint
+			),
+			"Remote tx keys generation got bogus keys"
+		))
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -1136,8 +1298,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
-	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u64) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
+	fn build_htlc_transaction(
+		&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u64,
+	) -> Transaction {
+		chan_utils::build_htlc_transaction(
+			prev_hash,
+			feerate_per_kw,
+			if local { self.their_to_self_delay } else { self.our_to_self_delay },
+			htlc,
+			&keys.a_delayed_payment_key,
+			&keys.revocation_key,
+		)
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
@@ -1146,7 +1317,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	///
 	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
 	/// but then have a reorg which settles on an HTLC-failure on chain.
-	fn get_update_fulfill_htlc(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitorUpdate>), ChannelError> {
+	fn get_update_fulfill_htlc(
+		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
+	) -> Result<(Option<msgs::UpdateFulfillHTLC>, Option<ChannelMonitorUpdate>), ChannelError> {
 		// Either ChannelFunded got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
@@ -1167,7 +1340,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			if htlc.htlc_id == htlc_id_arg {
 				assert_eq!(htlc.payment_hash, payment_hash_calc);
 				match htlc.state {
-					InboundHTLCState::Committed => {},
+					InboundHTLCState::Committed => {}
 					InboundHTLCState::LocalRemoved(ref reason) => {
 						if let &InboundHTLCRemovalReason::Fulfill(_) = reason {
 						} else {
@@ -1175,7 +1348,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						}
 						debug_assert!(false, "Tried to fulfill an HTLC that was already fail/fulfilled");
 						return Ok((None, None));
-					},
+					}
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
 						// Don't return in release mode here so that we can update channel_monitor
@@ -1196,13 +1369,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
-				payment_preimage: payment_preimage_arg.clone(),
-			}],
+			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_arg.clone() }],
 		};
 		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone()).unwrap();
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state
+			& (ChannelState::AwaitingRemoteRevoke as u32
+				| ChannelState::PeerDisconnected as u32
+				| ChannelState::MonitorUpdateFailed as u32))
+			!= 0
+		{
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
@@ -1212,22 +1388,27 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							debug_assert!(false, "Tried to fulfill an HTLC that was already fulfilled");
 							return Ok((None, None));
 						}
-					},
+					}
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							log_warn!(self, "Have preimage and want to fulfill HTLC with pending failure against channel {}", log_bytes!(self.channel_id()));
+							log_warn!(
+								self,
+								"Have preimage and want to fulfill HTLC with pending failure against channel {}",
+								log_bytes!(self.channel_id())
+							);
 							// TODO: We may actually be able to switch to a fulfill here, though its
 							// rare enough it may not be worth the complexity burden.
 							debug_assert!(false, "Tried to fulfill an HTLC that was already failed");
 							return Ok((None, Some(monitor_update)));
 						}
-					},
+					}
 					_ => {}
 				}
 			}
 			log_trace!(self, "Adding HTLC claim to holding_cell! Current state: {}", self.channel_state);
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
-				payment_preimage: payment_preimage_arg, htlc_id: htlc_id_arg,
+				payment_preimage: payment_preimage_arg,
+				htlc_id: htlc_id_arg,
 			});
 			return Ok((None, Some(monitor_update)));
 		}
@@ -1240,17 +1421,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				return Ok((None, Some(monitor_update)));
 			}
 			log_trace!(self, "Upgrading HTLC {} to LocalRemoved with a Fulfill!", log_bytes!(htlc.payment_hash.0));
-			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
+			htlc.state =
+				InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(payment_preimage_arg.clone()));
 		}
 
-		Ok((Some(msgs::UpdateFulfillHTLC {
-			channel_id: self.channel_id(),
-			htlc_id: htlc_id_arg,
-			payment_preimage: payment_preimage_arg,
-		}), Some(monitor_update)))
+		Ok((
+			Some(msgs::UpdateFulfillHTLC {
+				channel_id: self.channel_id(),
+				htlc_id: htlc_id_arg,
+				payment_preimage: payment_preimage_arg,
+			}),
+			Some(monitor_update),
+		))
 	}
 
-	pub fn get_update_fulfill_htlc_and_commit(&mut self, htlc_id: u64, payment_preimage: PaymentPreimage) -> Result<(Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)>, Option<ChannelMonitorUpdate>), ChannelError> {
+	pub fn get_update_fulfill_htlc_and_commit(
+		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
+	) -> Result<(Option<(msgs::UpdateFulfillHTLC, msgs::CommitmentSigned)>, Option<ChannelMonitorUpdate>), ChannelError>
+	{
 		match self.get_update_fulfill_htlc(htlc_id, payment_preimage)? {
 			(Some(update_fulfill_htlc), Some(mut monitor_update)) => {
 				let (commitment, mut additional_update) = self.send_commitment_no_status_check()?;
@@ -1259,13 +1447,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				self.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 				Ok((Some((update_fulfill_htlc, commitment)), Some(monitor_update)))
-			},
+			}
 			(Some(update_fulfill_htlc), None) => {
 				let (commitment, monitor_update) = self.send_commitment_no_status_check()?;
 				Ok((Some((update_fulfill_htlc, commitment)), Some(monitor_update)))
-			},
+			}
 			(None, Some(monitor_update)) => Ok((None, Some(monitor_update))),
-			(None, None) => Ok((None, None))
+			(None, None) => Ok((None, None)),
 		}
 	}
 
@@ -1275,7 +1463,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	///
 	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
 	/// but then have a reorg which settles on an HTLC-failure on chain.
-	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> {
+	pub fn get_update_fail_htlc(
+		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket,
+	) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -1289,14 +1479,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
-					InboundHTLCState::Committed => {},
+					InboundHTLCState::Committed => {}
 					InboundHTLCState::LocalRemoved(_) => {
 						debug_assert!(false, "Tried to fail an HTLC that was already fail/fulfilled");
 						return Ok(None);
-					},
+					}
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
-						return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
+						return Err(ChannelError::Ignore(
+							"Unable to find a pending HTLC which matched the given HTLC ID",
+						));
 					}
 				}
 				pending_idx = idx;
@@ -1307,28 +1499,34 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		// Now update local state:
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state
+			& (ChannelState::AwaitingRemoteRevoke as u32
+				| ChannelState::PeerDisconnected as u32
+				| ChannelState::MonitorUpdateFailed as u32))
+			!= 0
+		{
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							debug_assert!(false, "Tried to fail an HTLC that was already fulfilled");
-							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
+							return Err(ChannelError::Ignore(
+								"Unable to find a pending HTLC which matched the given HTLC ID",
+							));
 						}
-					},
+					}
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							debug_assert!(false, "Tried to fail an HTLC that was already failed");
-							return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID"));
+							return Err(ChannelError::Ignore(
+								"Unable to find a pending HTLC which matched the given HTLC ID",
+							));
 						}
-					},
+					}
 					_ => {}
 				}
 			}
-			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
-				htlc_id: htlc_id_arg,
-				err_packet,
-			});
+			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC { htlc_id: htlc_id_arg, err_packet });
 			return Ok(None);
 		}
 
@@ -1337,16 +1535,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(err_packet.clone()));
 		}
 
-		Ok(Some(msgs::UpdateFailHTLC {
-			channel_id: self.channel_id(),
-			htlc_id: htlc_id_arg,
-			reason: err_packet
-		}))
+		Ok(Some(msgs::UpdateFailHTLC { channel_id: self.channel_id(), htlc_id: htlc_id_arg, reason: err_packet }))
 	}
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: InitFeatures) -> Result<(), ChannelError> {
+	pub fn accept_channel(
+		&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: InitFeatures,
+	) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.channel_outbound {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer"));
@@ -1366,13 +1562,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.channel_reserve_satoshis < self.our_dust_limit_satoshis {
 			return Err(ChannelError::Close("Peer never wants payout outputs?"));
 		}
-		if msg.dust_limit_satoshis > Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis) {
+		if msg.dust_limit_satoshis
+			> Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis)
+		{
 			return Err(ChannelError::Close("Dust limit is bigger than our channel reverse"));
 		}
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
 			return Err(ChannelError::Close("Minimum htlc value is full channel value"));
 		}
-		if msg.to_self_delay > config.peer_channel_config_limits.their_to_self_delay || msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT {
+		if msg.to_self_delay > config.peer_channel_config_limits.their_to_self_delay
+			|| msg.to_self_delay > MAX_LOCAL_BREAKDOWN_TIMEOUT
+		{
 			return Err(ChannelError::Close("They wanted our payments to be delayed by a needlessly long period"));
 		}
 		if msg.max_accepted_htlcs < 1 {
@@ -1416,18 +1616,23 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						None
 					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
 					} else {
-						return Err(ChannelError::Close("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format"));
+						return Err(ChannelError::Close(
+							"Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format",
+						));
 					}
-				},
+				}
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
 				&OptionalField::Absent => {
 					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"));
 				}
 			}
-		} else { None };
+		} else {
+			None
+		};
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
-		self.their_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
+		self.their_max_htlc_value_in_flight_msat =
+			cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
 		self.their_channel_reserve_satoshis = msg.channel_reserve_satoshis;
 		self.their_htlc_minimum_msat = msg.htlc_minimum_msat;
 		self.their_to_self_delay = msg.to_self_delay;
@@ -1439,7 +1644,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			revocation_basepoint: msg.revocation_basepoint,
 			payment_basepoint: msg.payment_basepoint,
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
-			htlc_basepoint: msg.htlc_basepoint
+			htlc_basepoint: msg.htlc_basepoint,
 		};
 
 		self.local_keys.set_remote_channel_pubkeys(&their_pubkeys);
@@ -1453,22 +1658,67 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
-	fn funding_created_signature(&mut self, sig: &Signature) -> Result<(Transaction, LocalCommitmentTransaction, Signature), ChannelError> {
+	fn funding_created_signature(
+		&mut self, sig: &Signature,
+	) -> Result<(Transaction, LocalCommitmentTransaction, Signature), ChannelError> {
 		let funding_script = self.get_funding_redeemscript();
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
-		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
+		let local_initial_commitment_tx = self
+			.build_commitment_transaction(
+				self.cur_local_commitment_transaction_number,
+				&local_keys,
+				true,
+				false,
+				self.feerate_per_kw,
+			)
+			.0;
+		let local_sighash = hash_to_message!(
+			&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(
+				&local_initial_commitment_tx.input[0],
+				&funding_script,
+				self.channel_value_satoshis
+			)[..]
+		);
 
 		// They sign the "local" commitment transaction...
-		secp_check!(self.secp_ctx.verify(&local_sighash, &sig, self.their_funding_pubkey()), "Invalid funding_created signature from peer");
+		secp_check!(
+			self.secp_ctx.verify(&local_sighash, &sig, self.their_funding_pubkey()),
+			"Invalid funding_created signature from peer"
+		);
 
-		let localtx = LocalCommitmentTransaction::new_missing_local_sig(local_initial_commitment_tx, sig.clone(), &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), self.their_funding_pubkey(), local_keys, self.feerate_per_kw, Vec::new());
+		let localtx = LocalCommitmentTransaction::new_missing_local_sig(
+			local_initial_commitment_tx,
+			sig.clone(),
+			&PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()),
+			self.their_funding_pubkey(),
+			local_keys,
+			self.feerate_per_kw,
+			Vec::new(),
+		);
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
-				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0;
+		let remote_initial_commitment_tx = self
+			.build_commitment_transaction(
+				self.cur_remote_commitment_transaction_number,
+				&remote_keys,
+				false,
+				false,
+				self.feerate_per_kw,
+			)
+			.0;
+		let remote_signature = self
+			.local_keys
+			.sign_remote_commitment(
+				self.feerate_per_kw,
+				&remote_initial_commitment_tx,
+				&remote_keys,
+				&Vec::new(),
+				self.our_to_self_delay,
+				&self.secp_ctx,
+			)
+			.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?
+			.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
 		Ok((remote_initial_commitment_tx, localtx, remote_signature))
@@ -1478,7 +1728,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		&self.their_pubkeys.as_ref().expect("their_funding_pubkey() only allowed after accept_channel").funding_pubkey
 	}
 
-	pub fn funding_created(&mut self, msg: &msgs::FundingCreated) -> Result<(msgs::FundingSigned, ChannelMonitor<ChanSigner>), ChannelError> {
+	pub fn funding_created(
+		&mut self, msg: &msgs::FundingCreated,
+	) -> Result<(msgs::FundingSigned, ChannelMonitor<ChanSigner>), ChannelError> {
 		if self.channel_outbound {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?"));
 		}
@@ -1488,22 +1740,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			// channel.
 			return Err(ChannelError::Close("Received funding_created after we got the channel!"));
 		}
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48)
+			|| self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+			|| self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+		{
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
 		let funding_txo = OutPoint::new(msg.funding_txid, msg.funding_output_index);
 		self.funding_txo = Some(funding_txo.clone());
 
-		let (remote_initial_commitment_tx, local_initial_commitment_tx, our_signature) = match self.funding_created_signature(&msg.signature) {
-			Ok(res) => res,
-			Err(e) => {
-				self.funding_txo = None;
-				return Err(e);
-			}
-		};
+		let (remote_initial_commitment_tx, local_initial_commitment_tx, our_signature) =
+			match self.funding_created_signature(&msg.signature) {
+				Ok(res) => res,
+				Err(e) => {
+					self.funding_txo = None;
+					return Err(e);
+				}
+			};
 
 		// Now that we're past error-generating stuff, update our local state:
 
@@ -1535,10 +1789,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.cur_remote_commitment_transaction_number -= 1;
 		self.cur_local_commitment_transaction_number -= 1;
 
-		Ok((msgs::FundingSigned {
-			channel_id: self.channel_id,
-			signature: our_signature
-		}, channel_monitor))
+		Ok((msgs::FundingSigned { channel_id: self.channel_id, signature: our_signature }, channel_monitor))
 	}
 
 	/// Handles a funding_signed message from the remote end.
@@ -1550,20 +1801,43 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_state & !(ChannelState::MonitorUpdateFailed as u32) != ChannelState::FundingCreated as u32 {
 			return Err(ChannelError::Close("Received funding_signed in strange state!"));
 		}
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48)
+			|| self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+			|| self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+		{
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
 		let funding_script = self.get_funding_redeemscript();
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
+		let remote_initial_commitment_tx = self
+			.build_commitment_transaction(
+				self.cur_remote_commitment_transaction_number,
+				&remote_keys,
+				false,
+				false,
+				self.feerate_per_kw,
+			)
+			.0;
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
-		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw).0;
-		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
+		let local_initial_commitment_tx = self
+			.build_commitment_transaction(
+				self.cur_local_commitment_transaction_number,
+				&local_keys,
+				true,
+				false,
+				self.feerate_per_kw,
+			)
+			.0;
+		let local_sighash = hash_to_message!(
+			&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(
+				&local_initial_commitment_tx.input[0],
+				&funding_script,
+				self.channel_value_satoshis
+			)[..]
+		);
 
 		let their_funding_pubkey = &self.their_pubkeys.as_ref().unwrap().funding_pubkey;
 
@@ -1624,7 +1898,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				 self.cur_remote_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1) ||
 				// If we reconnected before sending our funding locked they may still resend theirs:
 				(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) ==
-				                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32)) {
+				                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32))
+		{
 			if self.their_cur_commitment_point != Some(msg.next_per_commitment_point) {
 				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point"));
 			}
@@ -1673,12 +1948,23 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// corner case properly.
 	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
 		// Note that we have to handle overflow due to the above case.
-		(cmp::min(self.channel_value_satoshis as i64 * 1000 - self.value_to_self_msat as i64 - self.get_inbound_pending_htlc_stats().1 as i64, 0) as u64,
-		cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
+		(
+			cmp::min(
+				self.channel_value_satoshis as i64 * 1000
+					- self.value_to_self_msat as i64
+					- self.get_inbound_pending_htlc_stats().1 as i64,
+				0,
+			) as u64,
+			cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64,
+		)
 	}
 
-	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
+	pub fn update_add_htlc(
+		&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus,
+	) -> Result<(), ChannelError> {
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32))
+			!= (ChannelState::ChannelFunded as u32)
+		{
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -1699,7 +1985,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Remote tried to push more than our max accepted HTLCs"));
 		}
 		// Check our_max_htlc_value_in_flight_msat
-		if htlc_inbound_value_msat + msg.amount_msat > Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis) {
+		if htlc_inbound_value_msat + msg.amount_msat
+			> Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis)
+		{
 			return Err(ChannelError::Close("Remote HTLC add would put them over our max HTLC value"));
 		}
 		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
@@ -1722,7 +2010,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
-		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 + removed_outbound_total_msat {
+		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat
+			> (self.channel_value_satoshis
+				- Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis))
+				* 1000 + removed_outbound_total_msat
+		{
 			return Err(ChannelError::Close("Remote HTLC add would put them over their reserve value"));
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
@@ -1752,24 +2044,35 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentHash>, fail_reason: Option<HTLCFailReason>) -> Result<&HTLCSource, ChannelError> {
+	fn mark_outbound_htlc_removed(
+		&mut self, htlc_id: u64, check_preimage: Option<PaymentHash>, fail_reason: Option<HTLCFailReason>,
+	) -> Result<&HTLCSource, ChannelError> {
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
 				match check_preimage {
-					None => {},
-					Some(payment_hash) =>
+					None => {}
+					Some(payment_hash) => {
 						if payment_hash != htlc.payment_hash {
 							return Err(ChannelError::Close("Remote tried to fulfill HTLC with an incorrect preimage"));
 						}
+					}
 				};
 				match htlc.state {
-					OutboundHTLCState::LocalAnnounced(_) =>
-						return Err(ChannelError::Close("Remote tried to fulfill/fail HTLC before it had been committed")),
+					OutboundHTLCState::LocalAnnounced(_) => {
+						return Err(ChannelError::Close(
+							"Remote tried to fulfill/fail HTLC before it had been committed",
+						))
+					}
 					OutboundHTLCState::Committed => {
 						htlc.state = OutboundHTLCState::RemoteRemoved(fail_reason);
-					},
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) | OutboundHTLCState::RemoteRemoved(_) =>
-						return Err(ChannelError::Close("Remote tried to fulfill/fail HTLC that they'd already fulfilled/failed")),
+					}
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_)
+					| OutboundHTLCState::AwaitingRemovedRemoteRevoke(_)
+					| OutboundHTLCState::RemoteRemoved(_) => {
+						return Err(ChannelError::Close(
+							"Remote tried to fulfill/fail HTLC that they'd already fulfilled/failed",
+						))
+					}
 				}
 				return Ok(&htlc.source);
 			}
@@ -1789,7 +2092,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None).map(|source| source.clone())
 	}
 
-	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
+	pub fn update_fail_htlc(
+		&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason,
+	) -> Result<(), ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got fail HTLC message when channel was not in an operational state"));
 		}
@@ -1801,32 +2106,58 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
-	pub fn update_fail_malformed_htlc<'a>(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
+	pub fn update_fail_malformed_htlc<'a>(
+		&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason,
+	) -> Result<(), ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err(ChannelError::Close("Got fail malformed HTLC message when channel was not in an operational state"));
+			return Err(ChannelError::Close(
+				"Got fail malformed HTLC message when channel was not in an operational state",
+			));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(ChannelError::Close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish"));
+			return Err(ChannelError::Close(
+				"Peer sent update_fail_malformed_htlc when we needed a channel_reestablish",
+			));
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
 		Ok(())
 	}
 
-	pub fn commitment_signed<F: Deref>(&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &F) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), (Option<ChannelMonitorUpdate>, ChannelError)> where F::Target: FeeEstimator {
+	pub fn commitment_signed<F: Deref>(
+		&mut self, msg: &msgs::CommitmentSigned, fee_estimator: &F,
+	) -> Result<
+		(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate),
+		(Option<ChannelMonitorUpdate>, ChannelError),
+	>
+	where
+		F::Target: FeeEstimator,
+	{
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
-			return Err((None, ChannelError::Close("Got commitment signed message when channel was not in an operational state")));
+			return Err((
+				None,
+				ChannelError::Close("Got commitment signed message when channel was not in an operational state"),
+			));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err((None, ChannelError::Close("Peer sent commitment_signed when we needed a channel_reestablish")));
+			return Err((
+				None,
+				ChannelError::Close("Peer sent commitment_signed when we needed a channel_reestablish"),
+			));
 		}
-		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.last_sent_closing_fee.is_some() {
-			return Err((None, ChannelError::Close("Peer sent commitment_signed after we'd started exchanging closing_signeds")));
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK
+			&& self.last_sent_closing_fee.is_some()
+		{
+			return Err((
+				None,
+				ChannelError::Close("Peer sent commitment_signed after we'd started exchanging closing_signeds"),
+			));
 		}
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number).map_err(|e| (None, e))?;
+		let local_keys =
+			self.build_local_transaction_keys(self.cur_local_commitment_transaction_number).map_err(|e| (None, e))?;
 
 		let mut update_fee = false;
 		let feerate_per_kw = if !self.channel_outbound && self.pending_update_fee.is_some() {
@@ -1837,13 +2168,33 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		};
 
 		let mut local_commitment_tx = {
-			let mut commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, feerate_per_kw);
-			let htlcs_cloned: Vec<_> = commitment_tx.2.drain(..).map(|htlc| (htlc.0, htlc.1.map(|h| h.clone()))).collect();
+			let mut commitment_tx = self.build_commitment_transaction(
+				self.cur_local_commitment_transaction_number,
+				&local_keys,
+				true,
+				false,
+				feerate_per_kw,
+			);
+			let htlcs_cloned: Vec<_> =
+				commitment_tx.2.drain(..).map(|htlc| (htlc.0, htlc.1.map(|h| h.clone()))).collect();
 			(commitment_tx.0, commitment_tx.1, htlcs_cloned)
 		};
 		let local_commitment_txid = local_commitment_tx.0.txid();
-		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]);
-		log_trace!(self, "Checking commitment tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.signature.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_commitment_tx.0), encode::serialize_hex(&funding_script));
+		let local_sighash = hash_to_message!(
+			&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(
+				&local_commitment_tx.0.input[0],
+				&funding_script,
+				self.channel_value_satoshis
+			)[..]
+		);
+		log_trace!(
+			self,
+			"Checking commitment tx signature {} by key {} against tx {} with redeemscript {}",
+			log_bytes!(msg.signature.serialize_compact()[..]),
+			log_bytes!(self.their_funding_pubkey().serialize()),
+			encode::serialize_hex(&local_commitment_tx.0),
+			encode::serialize_hex(&funding_script)
+		);
 		if let Err(_) = self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey()) {
 			return Err((None, ChannelError::Close("Invalid commitment tx signature from peer")));
 		}
@@ -1851,9 +2202,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
 		if update_fee {
 			let num_htlcs = local_commitment_tx.1;
-			let total_fee: u64 = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+			let total_fee: u64 = feerate_per_kw as u64
+				* (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC)
+				/ 1000;
 
-			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + self.their_channel_reserve_satoshis {
+			if self.channel_value_satoshis - self.value_to_self_msat / 1000
+				< total_fee + self.their_channel_reserve_satoshis
+			{
 				return Err((None, ChannelError::Close("Funding remote cannot afford proposed new fee")));
 			}
 		}
@@ -1868,10 +2223,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut htlcs_and_sigs = Vec::with_capacity(local_commitment_tx.2.len());
 		for (idx, (htlc, source)) in local_commitment_tx.2.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
+				let htlc_tx =
+					self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
-				log_trace!(self, "Checking HTLC tx signature {} by key {} against tx {} with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), encode::serialize_hex(&htlc_redeemscript));
-				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+				log_trace!(
+					self,
+					"Checking HTLC tx signature {} by key {} against tx {} with redeemscript {}",
+					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]),
+					log_bytes!(local_keys.b_htlc_key.serialize()),
+					encode::serialize_hex(&htlc_tx),
+					encode::serialize_hex(&htlc_redeemscript)
+				);
+				let htlc_sighash = hash_to_message!(
+					&bip143::SighashComponents::new(&htlc_tx).sighash_all(
+						&htlc_tx.input[0],
+						&htlc_redeemscript,
+						htlc.amount_msat / 1000
+					)[..]
+				);
 				if let Err(_) = self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key) {
 					return Err((None, ChannelError::Close("Invalid HTLC tx signature from peer")));
 				}
@@ -1883,8 +2252,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1));
-		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), self.cur_local_commitment_transaction_number + 1);
+		let next_per_commitment_point = PublicKey::from_secret_key(
+			&self.secp_ctx,
+			&self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1),
+		);
+		let per_commitment_secret = chan_utils::build_commitment_secret(
+			self.local_keys.commitment_seed(),
+			self.cur_local_commitment_transaction_number + 1,
+		);
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_our_commitment = false;
@@ -1907,25 +2282,38 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
-				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(local_commitment_tx.0, msg.signature.clone(), &PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()), &their_funding_pubkey, local_keys, self.feerate_per_kw, htlcs_without_source),
-				htlc_outputs: htlcs_and_sigs
-			}]
+				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(
+					local_commitment_tx.0,
+					msg.signature.clone(),
+					&PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()),
+					&their_funding_pubkey,
+					local_keys,
+					self.feerate_per_kw,
+					htlcs_without_source,
+				),
+				htlc_outputs: htlcs_and_sigs,
+			}],
 		};
 		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone()).unwrap();
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
 				Some(forward_info.clone())
-			} else { None };
+			} else {
+				None
+			};
 			if let Some(forward_info) = new_forward {
 				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info);
 				need_our_commitment = true;
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if let Some(fail_reason) = if let &mut OutboundHTLCState::RemoteRemoved(ref mut fail_reason) = &mut htlc.state {
-				Some(fail_reason.take())
-			} else { None } {
+			if let Some(fail_reason) =
+				if let &mut OutboundHTLCState::RemoteRemoved(ref mut fail_reason) = &mut htlc.state {
+					Some(fail_reason.take())
+				} else {
+					None
+				} {
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(fail_reason);
 				need_our_commitment = true;
 			}
@@ -1953,36 +2341,50 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 			// TODO: Call maybe_propose_first_closing_signed on restoration (or call it here and
 			// re-send the message on restoration)
-			return Err((Some(monitor_update), ChannelError::Ignore("Previous monitor update failure prevented generation of RAA")));
+			return Err((
+				Some(monitor_update),
+				ChannelError::Ignore("Previous monitor update failure prevented generation of RAA"),
+			));
 		}
 
-		let (our_commitment_signed, closing_signed) = if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
-			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
-			// we'll send one right away when we get the revoke_and_ack when we
-			// free_holding_cell_htlcs().
-			let (msg, mut additional_update) = self.send_commitment_no_status_check().map_err(|e| (None, e))?;
-			// send_commitment_no_status_check may bump latest_monitor_id but we want them to be
-			// strictly increasing by one, so decrement it here.
-			self.latest_monitor_update_id = monitor_update.update_id;
-			monitor_update.updates.append(&mut additional_update.updates);
-			(Some(msg), None)
-		} else if !need_our_commitment {
-			(None, self.maybe_propose_first_closing_signed(fee_estimator))
-		} else { (None, None) };
+		let (our_commitment_signed, closing_signed) =
+			if need_our_commitment && (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == 0 {
+				// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
+				// we'll send one right away when we get the revoke_and_ack when we
+				// free_holding_cell_htlcs().
+				let (msg, mut additional_update) = self.send_commitment_no_status_check().map_err(|e| (None, e))?;
+				// send_commitment_no_status_check may bump latest_monitor_id but we want them to be
+				// strictly increasing by one, so decrement it here.
+				self.latest_monitor_update_id = monitor_update.update_id;
+				monitor_update.updates.append(&mut additional_update.updates);
+				(Some(msg), None)
+			} else if !need_our_commitment {
+				(None, self.maybe_propose_first_closing_signed(fee_estimator))
+			} else {
+				(None, None)
+			};
 
-		Ok((msgs::RevokeAndACK {
-			channel_id: self.channel_id,
-			per_commitment_secret: per_commitment_secret,
-			next_per_commitment_point: next_per_commitment_point,
-		}, our_commitment_signed, closing_signed, monitor_update))
+		Ok((
+			msgs::RevokeAndACK { channel_id: self.channel_id, per_commitment_secret, next_per_commitment_point },
+			our_commitment_signed,
+			closing_signed,
+			monitor_update,
+		))
 	}
 
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
 	/// fulfilling or failing the last pending HTLC)
-	fn free_holding_cell_htlcs(&mut self) -> Result<Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, ChannelError> {
+	fn free_holding_cell_htlcs(
+		&mut self,
+	) -> Result<Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, ChannelError> {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
 		if self.holding_cell_htlc_updates.len() != 0 || self.holding_cell_update_fee.is_some() {
-			log_trace!(self, "Freeing holding cell with {} HTLC updates{}", self.holding_cell_htlc_updates.len(), if self.holding_cell_update_fee.is_some() { " and a fee update" } else { "" });
+			log_trace!(
+				self,
+				"Freeing holding cell with {} HTLC updates{}",
+				self.holding_cell_htlc_updates.len(),
+				if self.holding_cell_update_fee.is_some() { " and a fee update" } else { "" }
+			);
 
 			let mut monitor_update = ChannelMonitorUpdate {
 				update_id: self.latest_monitor_update_id + 1, // We don't increment this yet!
@@ -2001,26 +2403,45 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				// the limit. In case it's less rare than I anticipate, we may want to revisit
 				// handling this case better and maybe fulfilling some of the HTLCs while attempting
 				// to rebalance channels.
-				if err.is_some() { // We're back to AwaitingRemoteRevoke (or are about to fail the channel)
+				if err.is_some() {
+					// We're back to AwaitingRemoteRevoke (or are about to fail the channel)
 					self.holding_cell_htlc_updates.push(htlc_update);
 				} else {
 					match &htlc_update {
-						&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, ..} => {
-							match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone()) {
+						&HTLCUpdateAwaitingACK::AddHTLC {
+							amount_msat,
+							cltv_expiry,
+							ref payment_hash,
+							ref source,
+							ref onion_routing_packet,
+							..
+						} => {
+							match self.send_htlc(
+								amount_msat,
+								*payment_hash,
+								cltv_expiry,
+								source.clone(),
+								onion_routing_packet.clone(),
+							) {
 								Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 								Err(e) => {
 									match e {
 										ChannelError::Ignore(ref msg) => {
-											log_info!(self, "Failed to send HTLC with payment_hash {} due to {}", log_bytes!(payment_hash.0), msg);
-										},
+											log_info!(
+												self,
+												"Failed to send HTLC with payment_hash {} due to {}",
+												log_bytes!(payment_hash.0),
+												msg
+											);
+										}
 										_ => {
 											log_info!(self, "Failed to send HTLC with payment_hash {} resulting in a channel closure during holding_cell freeing", log_bytes!(payment_hash.0));
-										},
+										}
 									}
 									err = Some(e);
 								}
 							}
-						},
+						}
 						&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
 							match self.get_update_fulfill_htlc(htlc_id, *payment_preimage) {
 								Ok((update_fulfill_msg_option, additional_monitor_update_opt)) => {
@@ -2028,26 +2449,26 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 									if let Some(mut additional_monitor_update) = additional_monitor_update_opt {
 										monitor_update.updates.append(&mut additional_monitor_update.updates);
 									}
-								},
+								}
 								Err(e) => {
-									if let ChannelError::Ignore(_) = e {}
-									else {
+									if let ChannelError::Ignore(_) = e {
+									} else {
 										panic!("Got a non-IgnoreError action trying to fulfill holding cell HTLC");
 									}
 								}
 							}
-						},
+						}
 						&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
 							match self.get_update_fail_htlc(htlc_id, err_packet.clone()) {
 								Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
 								Err(e) => {
-									if let ChannelError::Ignore(_) = e {}
-									else {
+									if let ChannelError::Ignore(_) = e {
+									} else {
 										panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
 									}
 								}
 							}
-						},
+						}
 					}
 					if err.is_some() {
 						self.holding_cell_htlc_updates.push(htlc_update);
@@ -2063,21 +2484,22 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			//fail it back the route, if it's a temporary issue we can ignore it...
 			match err {
 				None => {
-					if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.holding_cell_update_fee.is_none() {
+					if update_add_htlcs.is_empty()
+						&& update_fulfill_htlcs.is_empty()
+						&& update_fail_htlcs.is_empty()
+						&& self.holding_cell_update_fee.is_none()
+					{
 						// This should never actually happen and indicates we got some Errs back
 						// from update_fulfill_htlc/update_fail_htlc, but we handle it anyway in
 						// case there is some strange way to hit duplicate HTLC removes.
 						return Ok(None);
 					}
 					let update_fee = if let Some(feerate) = self.holding_cell_update_fee {
-							self.pending_update_fee = self.holding_cell_update_fee.take();
-							Some(msgs::UpdateFee {
-								channel_id: self.channel_id,
-								feerate_per_kw: feerate as u32,
-							})
-						} else {
-							None
-						};
+						self.pending_update_fee = self.holding_cell_update_fee.take();
+						Some(msgs::UpdateFee { channel_id: self.channel_id, feerate_per_kw: feerate as u32 })
+					} else {
+						None
+					};
 
 					let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check()?;
 					// send_commitment_no_status_check and get_update_fulfill_htlc may bump latest_monitor_id
@@ -2085,16 +2507,19 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					self.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
 
-					Ok(Some((msgs::CommitmentUpdate {
-						update_add_htlcs,
-						update_fulfill_htlcs,
-						update_fail_htlcs,
-						update_fail_malformed_htlcs: Vec::new(),
-						update_fee: update_fee,
-						commitment_signed,
-					}, monitor_update)))
-				},
-				Some(e) => Err(e)
+					Ok(Some((
+						msgs::CommitmentUpdate {
+							update_add_htlcs,
+							update_fulfill_htlcs,
+							update_fail_htlcs,
+							update_fail_malformed_htlcs: Vec::new(),
+							update_fee,
+							commitment_signed,
+						},
+						monitor_update,
+					)))
+				}
+				Some(e) => Err(e),
 			}
 		} else {
 			Ok(None)
@@ -2106,8 +2531,20 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack<F: Deref>(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &F) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), ChannelError>
-		where F::Target: FeeEstimator
+	pub fn revoke_and_ack<F: Deref>(
+		&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &F,
+	) -> Result<
+		(
+			Option<msgs::CommitmentUpdate>,
+			Vec<(PendingHTLCInfo, u64)>,
+			Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+			Option<msgs::ClosingSigned>,
+			ChannelMonitorUpdate,
+		),
+		ChannelError,
+	>
+	where
+		F::Target: FeeEstimator,
 	{
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state"));
@@ -2115,13 +2552,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent revoke_and_ack when we needed a channel_reestablish"));
 		}
-		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK && self.last_sent_closing_fee.is_some() {
+		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK == BOTH_SIDES_SHUTDOWN_MASK
+			&& self.last_sent_closing_fee.is_some()
+		{
 			return Err(ChannelError::Close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds"));
 		}
 
 		if let Some(their_prev_commitment_point) = self.their_prev_commitment_point {
-			if PublicKey::from_secret_key(&self.secp_ctx, &secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret")) != their_prev_commitment_point {
-				return Err(ChannelError::Close("Got a revoke commitment secret which didn't correspond to their current pubkey"));
+			if PublicKey::from_secret_key(
+				&self.secp_ctx,
+				&secp_check!(
+					SecretKey::from_slice(&msg.per_commitment_secret),
+					"Peer provided an invalid per_commitment_secret"
+				),
+			) != their_prev_commitment_point
+			{
+				return Err(ChannelError::Close(
+					"Got a revoke commitment secret which didn't correspond to their current pubkey",
+				));
 			}
 		}
 
@@ -2136,7 +2584,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Received an unexpected revoke_and_ack"));
 		}
 
-		self.commitment_secrets.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)
+		self.commitment_secrets
+			.provide_secret(self.cur_remote_commitment_transaction_number + 1, msg.per_commitment_secret)
 			.map_err(|_| ChannelError::Close("Previous secrets did not match new one"))?;
 		self.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
@@ -2179,28 +2628,47 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
 					false
-				} else { true }
+				} else {
+					true
+				}
 			});
 			pending_outbound_htlcs.retain(|htlc| {
 				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref fail_reason) = &htlc.state {
-					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", log_bytes!(htlc.payment_hash.0));
-					if let Some(reason) = fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
+					log_trace!(
+						logger,
+						" ...removing outbound AwaitingRemovedRemoteRevoke {}",
+						log_bytes!(htlc.payment_hash.0)
+					);
+					if let Some(reason) = fail_reason.clone() {
+						// We really want take() here, but, again, non-mut ref :(
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
 						// They fulfilled, so we sent them money
 						value_to_self_msat_diff -= htlc.amount_msat as i64;
 					}
 					false
-				} else { true }
+				} else {
+					true
+				}
 			});
 			for htlc in pending_inbound_htlcs.iter_mut() {
 				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
-					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to Committed", log_bytes!(htlc.payment_hash.0));
+					log_trace!(
+						logger,
+						" ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to Committed",
+						log_bytes!(htlc.payment_hash.0)
+					);
 					true
 				} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = &htlc.state {
-					log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", log_bytes!(htlc.payment_hash.0));
+					log_trace!(
+						logger,
+						" ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed",
+						log_bytes!(htlc.payment_hash.0)
+					);
 					true
-				} else { false };
+				} else {
+					false
+				};
 				if swap {
 					let mut state = InboundHTLCState::Committed;
 					mem::swap(&mut state, &mut htlc.state);
@@ -2214,15 +2682,21 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 								require_commitment = true;
 								match fail_msg {
 									HTLCFailureMsg::Relay(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+										htlc.state = InboundHTLCState::LocalRemoved(
+											InboundHTLCRemovalReason::FailRelay(msg.reason.clone()),
+										);
 										update_fail_htlcs.push(msg)
-									},
+									}
 									HTLCFailureMsg::Malformed(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+										htlc.state =
+											InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((
+												msg.sha256_of_onion,
+												msg.failure_code,
+											)));
 										update_fail_malformed_htlcs.push(msg)
-									},
+									}
 								}
-							},
+							}
 							PendingHTLCStatus::Forward(forward_info) => {
 								to_forward_infos.push((forward_info, htlc.htlc_id));
 								htlc.state = InboundHTLCState::Committed;
@@ -2233,13 +2707,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 			for htlc in pending_outbound_htlcs.iter_mut() {
 				if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", log_bytes!(htlc.payment_hash.0));
+					log_trace!(
+						logger,
+						" ...promoting outbound LocalAnnounced {} to Committed",
+						log_bytes!(htlc.payment_hash.0)
+					);
 					htlc.state = OutboundHTLCState::Committed;
 				}
-				if let Some(fail_reason) = if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
-					Some(fail_reason.take())
-				} else { None } {
-					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
+				if let Some(fail_reason) =
+					if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
+						Some(fail_reason.take())
+					} else {
+						None
+					} {
+					log_trace!(
+						logger,
+						" ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke",
+						log_bytes!(htlc.payment_hash.0)
+					);
 					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
 					require_commitment = true;
 				}
@@ -2281,7 +2766,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
-			return Ok((None, Vec::new(), Vec::new(), None, monitor_update))
+			return Ok((None, Vec::new(), Vec::new(), None, monitor_update));
 		}
 
 		match self.free_holding_cell_htlcs()? {
@@ -2301,7 +2786,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				monitor_update.updates.append(&mut additional_update.updates);
 
 				Ok((Some(commitment_update), to_forward_infos, revoked_htlcs, None, monitor_update))
-			},
+			}
 			None => {
 				if require_commitment {
 					let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check()?;
@@ -2311,20 +2796,31 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					self.latest_monitor_update_id = monitor_update.update_id;
 					monitor_update.updates.append(&mut additional_update.updates);
 
-					Ok((Some(msgs::CommitmentUpdate {
-						update_add_htlcs: Vec::new(),
-						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs,
-						update_fail_malformed_htlcs,
-						update_fee: None,
-						commitment_signed
-					}), to_forward_infos, revoked_htlcs, None, monitor_update))
+					Ok((
+						Some(msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs,
+							update_fail_malformed_htlcs,
+							update_fee: None,
+							commitment_signed,
+						}),
+						to_forward_infos,
+						revoked_htlcs,
+						None,
+						monitor_update,
+					))
 				} else {
-					Ok((None, to_forward_infos, revoked_htlcs, self.maybe_propose_first_closing_signed(fee_estimator), monitor_update))
+					Ok((
+						None,
+						to_forward_infos,
+						revoked_htlcs,
+						self.maybe_propose_first_closing_signed(fee_estimator),
+						monitor_update,
+					))
 				}
 			}
 		}
-
 	}
 
 	/// Adds a pending update to this channel. See the doc for send_htlc for
@@ -2341,7 +2837,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32))
+			== (ChannelState::AwaitingRemoteRevoke as u32)
+		{
 			self.holding_cell_update_fee = Some(feerate_per_kw);
 			return None;
 		}
@@ -2349,19 +2847,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		debug_assert!(self.pending_update_fee.is_none());
 		self.pending_update_fee = Some(feerate_per_kw);
 
-		Some(msgs::UpdateFee {
-			channel_id: self.channel_id,
-			feerate_per_kw: feerate_per_kw as u32,
-		})
+		Some(msgs::UpdateFee { channel_id: self.channel_id, feerate_per_kw: feerate_per_kw as u32 })
 	}
 
-	pub fn send_update_fee_and_commit(&mut self, feerate_per_kw: u64) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> {
+	pub fn send_update_fee_and_commit(
+		&mut self, feerate_per_kw: u64,
+	) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> {
 		match self.send_update_fee(feerate_per_kw) {
 			Some(update_fee) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check()?;
 				Ok(Some((update_fee, commitment_signed, monitor_update)))
-			},
-			None => Ok(None)
+			}
+			None => Ok(None),
 		}
 	}
 
@@ -2392,13 +2889,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					// this HTLC accordingly
 					inbound_drop_count += 1;
 					false
-				},
-				InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_)|InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => {
+				}
+				InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_)
+				| InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) => {
 					// We received a commitment_signed updating this HTLC and (at least hopefully)
 					// sent a revoke_and_ack (which we can re-transmit) and have heard nothing
 					// in response to it yet, so don't touch it.
 					true
-				},
+				}
 				InboundHTLCState::Committed => true,
 				InboundHTLCState::LocalRemoved(_) => {
 					// We (hopefully) sent a commitment_signed updating this HTLC (which we can
@@ -2406,7 +2904,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					// (that we missed). Keep this around for now and if they tell us they missed
 					// the commitment_signed we can re-transmit the update then.
 					true
-				},
+				}
 			}
 		});
 		self.next_remote_htlc_id -= inbound_drop_count;
@@ -2420,14 +2918,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		self.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
-					outbound_drops.push((source.clone(), payment_hash.clone()));
-					false
-				},
-				&HTLCUpdateAwaitingACK::ClaimHTLC {..} | &HTLCUpdateAwaitingACK::FailHTLC {..} => true,
+		self.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
+				outbound_drops.push((source.clone(), payment_hash.clone()));
+				false
 			}
+			&HTLCUpdateAwaitingACK::ClaimHTLC { .. } | &HTLCUpdateAwaitingACK::FailHTLC { .. } => true,
 		});
 		self.channel_state |= ChannelState::PeerDisconnected as u32;
 		log_debug!(self, "Peer disconnection resulted in {} remote-announced HTLC drops and {} waiting-to-locally-announced HTLC drops on channel {}", outbound_drops.len(), inbound_drop_count, log_bytes!(self.channel_id()));
@@ -2440,7 +2936,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// which failed. The messages which were generated from that call which generated the
 	/// monitor update failure must *not* have been sent to the remote end, and must instead
 	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
-	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
+	pub fn monitor_update_failed(
+		&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	) {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
 		self.monitor_pending_revoke_and_ack = resend_raa;
 		self.monitor_pending_commitment_signed = resend_commitment;
@@ -2454,11 +2953,25 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored(&mut self) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool, Option<msgs::FundingLocked>) {
-		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
+	pub fn monitor_updating_restored(
+		&mut self,
+	) -> (
+		Option<msgs::RevokeAndACK>,
+		Option<msgs::CommitmentUpdate>,
+		RAACommitmentOrder,
+		Vec<(PendingHTLCInfo, u64)>,
+		Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		bool,
+		Option<msgs::FundingLocked>,
+	) {
+		assert_eq!(
+			self.channel_state & ChannelState::MonitorUpdateFailed as u32,
+			ChannelState::MonitorUpdateFailed as u32
+		);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
-		let needs_broadcast_safe = self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.channel_outbound;
+		let needs_broadcast_safe =
+			self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.channel_outbound;
 
 		// Because we will never generate a FundingBroadcastSafe event when we're in
 		// MonitorUpdateFailed, if we assume the user only broadcast the funding transaction when
@@ -2469,13 +2982,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_locked = if self.monitor_pending_funding_locked {
 			assert!(!self.channel_outbound, "Funding transaction broadcast without FundingBroadcastSafe!");
 			self.monitor_pending_funding_locked = false;
-			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+			let next_per_commitment_secret =
+				self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-			Some(msgs::FundingLocked {
-				channel_id: self.channel_id(),
-				next_per_commitment_point: next_per_commitment_point,
-			})
-		} else { None };
+			Some(msgs::FundingLocked { channel_id: self.channel_id(), next_per_commitment_point })
+		} else {
+			None
+		};
 
 		let mut forwards = Vec::new();
 		mem::swap(&mut forwards, &mut self.monitor_pending_forwards);
@@ -2485,29 +2998,41 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, needs_broadcast_safe, funding_locked);
+			return (
+				None,
+				None,
+				RAACommitmentOrder::RevokeAndACKFirst,
+				forwards,
+				failures,
+				needs_broadcast_safe,
+				funding_locked,
+			);
 		}
 
-		let raa = if self.monitor_pending_revoke_and_ack {
-			Some(self.get_last_revoke_and_ack())
-		} else { None };
-		let commitment_update = if self.monitor_pending_commitment_signed {
-			Some(self.get_last_commitment_update())
-		} else { None };
+		let raa = if self.monitor_pending_revoke_and_ack { Some(self.get_last_revoke_and_ack()) } else { None };
+		let commitment_update =
+			if self.monitor_pending_commitment_signed { Some(self.get_last_commitment_update()) } else { None };
 
 		self.monitor_pending_revoke_and_ack = false;
 		self.monitor_pending_commitment_signed = false;
 		let order = self.resend_order.clone();
-		log_trace!(self, "Restored monitor updating resulting in {}{} commitment update and {} RAA, with {} first",
+		log_trace!(
+			self,
+			"Restored monitor updating resulting in {}{} commitment update and {} RAA, with {} first",
 			if needs_broadcast_safe { "a funding broadcast safe, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			if raa.is_some() { "an" } else { "no" },
-			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
+			match order {
+				RAACommitmentOrder::CommitmentFirst => "commitment",
+				RAACommitmentOrder::RevokeAndACKFirst => "RAA",
+			}
+		);
 		(raa, commitment_update, order, forwards, failures, needs_broadcast_safe, funding_locked)
 	}
 
 	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
-		where F::Target: FeeEstimator
+	where
+		F::Target: FeeEstimator,
 	{
 		if self.channel_outbound {
 			return Err(ChannelError::Close("Non-funding remote tried to update channel fee"));
@@ -2522,13 +3047,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
-		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), self.cur_local_commitment_transaction_number + 2);
-		msgs::RevokeAndACK {
-			channel_id: self.channel_id,
-			per_commitment_secret,
-			next_per_commitment_point,
-		}
+		let next_per_commitment_point = PublicKey::from_secret_key(
+			&self.secp_ctx,
+			&self.build_local_commitment_secret(self.cur_local_commitment_transaction_number),
+		);
+		let per_commitment_secret = chan_utils::build_commitment_secret(
+			self.local_keys.commitment_seed(),
+			self.cur_local_commitment_transaction_number + 2,
+		);
+		msgs::RevokeAndACK { channel_id: self.channel_id, per_commitment_secret, next_per_commitment_point }
 	}
 
 	fn get_last_commitment_update(&self) -> msgs::CommitmentUpdate {
@@ -2557,9 +3084,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						update_fail_htlcs.push(msgs::UpdateFailHTLC {
 							channel_id: self.channel_id(),
 							htlc_id: htlc.htlc_id,
-							reason: err_packet.clone()
+							reason: err_packet.clone(),
 						});
-					},
+					}
 					&InboundHTLCRemovalReason::FailMalformed((ref sha256_of_onion, ref failure_code)) => {
 						update_fail_malformed_htlcs.push(msgs::UpdateFailMalformedHTLC {
 							channel_id: self.channel_id(),
@@ -2567,14 +3094,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							sha256_of_onion: sha256_of_onion.clone(),
 							failure_code: failure_code.clone(),
 						});
-					},
+					}
 					&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
 						update_fulfill_htlcs.push(msgs::UpdateFulfillHTLC {
 							channel_id: self.channel_id(),
 							htlc_id: htlc.htlc_id,
 							payment_preimage: payment_preimage.clone(),
 						});
-					},
+					}
 				}
 			}
 		}
@@ -2582,15 +3109,33 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		log_trace!(self, "Regenerated latest commitment update with {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
-			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
+			update_add_htlcs,
+			update_fulfill_htlcs,
+			update_fail_htlcs,
+			update_fail_malformed_htlcs,
 			update_fee: None,
-			commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
+			commitment_signed: self
+				.send_commitment_no_state_update()
+				.expect("It looks like we failed to re-generate a commitment_signed we had previously sent?")
+				.0,
 		}
 	}
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish(&mut self, msg: &msgs::ChannelReestablish) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitorUpdate>, RAACommitmentOrder, Option<msgs::Shutdown>), ChannelError> {
+	pub fn channel_reestablish(
+		&mut self, msg: &msgs::ChannelReestablish,
+	) -> Result<
+		(
+			Option<msgs::FundingLocked>,
+			Option<msgs::RevokeAndACK>,
+			Option<msgs::CommitmentUpdate>,
+			Option<ChannelMonitorUpdate>,
+			RAACommitmentOrder,
+			Option<msgs::Shutdown>,
+		),
+		ChannelError,
+	> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -2598,24 +3143,32 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Peer sent a loose channel_reestablish not after reconnect"));
 		}
 
-		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
-			msg.next_local_commitment_number == 0 {
+		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER
+			|| msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER
+			|| msg.next_local_commitment_number == 0
+		{
 			return Err(ChannelError::Close("Peer sent a garbage channel_reestablish"));
 		}
 
 		if msg.next_remote_commitment_number > 0 {
 			match msg.data_loss_protect {
 				OptionalField::Present(ref data_loss) => {
-					if chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1) != data_loss.your_last_per_commitment_secret {
+					if chan_utils::build_commitment_secret(
+						self.local_keys.commitment_seed(),
+						INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1,
+					) != data_loss.your_last_per_commitment_secret
+					{
 						return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided"));
 					}
-					if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
+					if msg.next_remote_commitment_number
+						> INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number
+					{
 						self.latest_monitor_update_id += 1;
 						let monitor_update = ChannelMonitorUpdate {
 							update_id: self.latest_monitor_update_id,
 							updates: vec![ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo {
-								their_current_per_commitment_point: data_loss.my_current_per_commitment_point
-							}]
+								their_current_per_commitment_point: data_loss.my_current_per_commitment_point,
+							}],
 						};
 						self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone()).unwrap();
 						return Err(ChannelError::CloseDelayBroadcast {
@@ -2623,7 +3176,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							update: monitor_update
 						});
 					}
-				},
+				}
 				OptionalField::Absent => {}
 			}
 		}
@@ -2633,37 +3186,48 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
 
 		let shutdown_msg = if self.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
-			Some(msgs::Shutdown {
-				channel_id: self.channel_id,
-				scriptpubkey: self.get_closing_scriptpubkey(),
-			})
-		} else { None };
+			Some(msgs::Shutdown { channel_id: self.channel_id, scriptpubkey: self.get_closing_scriptpubkey() })
+		} else {
+			None
+		};
 
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
 			// If we're waiting on a monitor update, we shouldn't re-send any funding_locked's.
-			if self.channel_state & (ChannelState::OurFundingLocked as u32) == 0 ||
-					self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
+			if self.channel_state & (ChannelState::OurFundingLocked as u32) == 0
+				|| self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0
+			{
 				if msg.next_remote_commitment_number != 0 {
-					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet"));
+					return Err(ChannelError::Close(
+						"Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet",
+					));
 				}
 				// Short circuit the whole handler as there is nothing we can resend them
 				return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 			}
 
 			// We have OurFundingLocked set!
-			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+			let next_per_commitment_secret =
+				self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-			return Ok((Some(msgs::FundingLocked {
-				channel_id: self.channel_id(),
-				next_per_commitment_point: next_per_commitment_point,
-			}), None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
+			return Ok((
+				Some(msgs::FundingLocked { channel_id: self.channel_id(), next_per_commitment_point }),
+				None,
+				None,
+				None,
+				RAACommitmentOrder::CommitmentFirst,
+				shutdown_msg,
+			));
 		}
 
-		let required_revoke = if msg.next_remote_commitment_number + 1 == INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
+		let required_revoke = if msg.next_remote_commitment_number + 1
+			== INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number
+		{
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our FundingLocked we'll do that in the next if block.
 			None
-		} else if msg.next_remote_commitment_number + 1 == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_local_commitment_transaction_number {
+		} else if msg.next_remote_commitment_number + 1
+			== (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_local_commitment_transaction_number
+		{
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_revoke_and_ack = true;
 				None
@@ -2671,24 +3235,30 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				Some(self.get_last_revoke_and_ack())
 			}
 		} else {
-			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old local commitment transaction"));
+			return Err(ChannelError::Close(
+				"Peer attempted to reestablish channel with a very old local commitment transaction",
+			));
 		};
 
 		// We increment cur_remote_commitment_transaction_number only upon receipt of
 		// revoke_and_ack, not on sending commitment_signed, so we add one if have
 		// AwaitingRemoteRevoke set, which indicates we sent a commitment_signed but haven't gotten
 		// the corresponding revoke_and_ack back yet.
-		let our_next_remote_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number + if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
+		let our_next_remote_commitment_number = INITIAL_COMMITMENT_NUMBER
+			- self.cur_remote_commitment_transaction_number
+			+ if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
 
-		let resend_funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number == 1 {
+		let resend_funding_locked = if msg.next_local_commitment_number == 1
+			&& INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number == 1
+		{
 			// We should never have to worry about MonitorUpdateFailed resending FundingLocked
-			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+			let next_per_commitment_secret =
+				self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-			Some(msgs::FundingLocked {
-				channel_id: self.channel_id(),
-				next_per_commitment_point: next_per_commitment_point,
-			})
-		} else { None };
+			Some(msgs::FundingLocked { channel_id: self.channel_id(), next_per_commitment_point })
+		} else {
+			None
+		};
 
 		if msg.next_local_commitment_number == our_next_remote_commitment_number {
 			if required_revoke.is_some() {
@@ -2697,25 +3267,63 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				log_debug!(self, "Reconnected channel {} with no loss", log_bytes!(self.channel_id()));
 			}
 
-			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
+			if (self.channel_state
+				& (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32))
+				== 0
+			{
 				// We're up-to-date and not waiting on a remote revoke (if we are our
 				// channel_reestablish should result in them sending a revoke_and_ack), but we may
 				// have received some updates while we were disconnected. Free the holding cell
 				// now!
 				match self.free_holding_cell_htlcs() {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
-					Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast { .. }) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
-					Ok(Some((commitment_update, monitor_update))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), shutdown_msg)),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg)),
+					Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast { .. }) => {
+						panic!("Got non-channel-failing result from free_holding_cell_htlcs")
+					}
+					Ok(Some((commitment_update, monitor_update))) => {
+						return Ok((
+							resend_funding_locked,
+							required_revoke,
+							Some(commitment_update),
+							Some(monitor_update),
+							self.resend_order.clone(),
+							shutdown_msg,
+						))
+					}
+					Ok(None) => {
+						return Ok((
+							resend_funding_locked,
+							required_revoke,
+							None,
+							None,
+							self.resend_order.clone(),
+							shutdown_msg,
+						))
+					}
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg));
+				return Ok((
+					resend_funding_locked,
+					required_revoke,
+					None,
+					None,
+					self.resend_order.clone(),
+					shutdown_msg,
+				));
 			}
 		} else if msg.next_local_commitment_number == our_next_remote_commitment_number - 1 {
 			if required_revoke.is_some() {
-				log_debug!(self, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", log_bytes!(self.channel_id()));
+				log_debug!(
+					self,
+					"Reconnected channel {} with lost outbound RAA and lost remote commitment tx",
+					log_bytes!(self.channel_id())
+				);
 			} else {
-				log_debug!(self, "Reconnected channel {} with only lost remote commitment tx", log_bytes!(self.channel_id()));
+				log_debug!(
+					self,
+					"Reconnected channel {} with only lost remote commitment tx",
+					log_bytes!(self.channel_id())
+				);
 			}
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
@@ -2723,18 +3331,33 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				return Ok((resend_funding_locked, None, None, None, self.resend_order.clone(), shutdown_msg));
 			}
 
-			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update()), None, self.resend_order.clone(), shutdown_msg));
+			return Ok((
+				resend_funding_locked,
+				required_revoke,
+				Some(self.get_last_commitment_update()),
+				None,
+				self.resend_order.clone(),
+				shutdown_msg,
+			));
 		} else {
-			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction"));
+			return Err(ChannelError::Close(
+				"Peer attempted to reestablish channel with a very old remote commitment transaction",
+			));
 		}
 	}
 
 	fn maybe_propose_first_closing_signed<F: Deref>(&mut self, fee_estimator: &F) -> Option<msgs::ClosingSigned>
-		where F::Target: FeeEstimator
+	where
+		F::Target: FeeEstimator,
 	{
-		if !self.channel_outbound || !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
-				self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32) != BOTH_SIDES_SHUTDOWN_MASK ||
-				self.last_sent_closing_fee.is_some() || self.pending_update_fee.is_some() {
+		if !self.channel_outbound
+			|| !self.pending_inbound_htlcs.is_empty()
+			|| !self.pending_outbound_htlcs.is_empty()
+			|| self.channel_state & (BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32)
+				!= BOTH_SIDES_SHUTDOWN_MASK
+			|| self.last_sent_closing_fee.is_some()
+			|| self.pending_update_fee.is_some()
+		{
 			return None;
 		}
 
@@ -2742,14 +3365,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.feerate_per_kw > proposed_feerate {
 			proposed_feerate = self.feerate_per_kw;
 		}
-		let tx_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
+		let tx_weight = Self::get_closing_transaction_weight(
+			&self.get_closing_scriptpubkey(),
+			self.their_shutdown_scriptpubkey.as_ref().unwrap(),
+		);
 		let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
 
 		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
-		let our_sig = self.local_keys
-			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
-			.ok();
-		if our_sig.is_none() { return None; }
+		let our_sig = self.local_keys.sign_closing_transaction(&closing_tx, &self.secp_ctx).ok();
+		if our_sig.is_none() {
+			return None;
+		}
 
 		self.last_sent_closing_fee = Some((proposed_feerate, total_fee_satoshis, our_sig.clone().unwrap()));
 		Some(msgs::ClosingSigned {
@@ -2759,8 +3385,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		})
 	}
 
-	pub fn shutdown<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
-		where F::Target: FeeEstimator
+	pub fn shutdown<F: Deref>(
+		&mut self, fee_estimator: &F, msg: &msgs::Shutdown,
+	) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+	where
+		F::Target: FeeEstimator,
 	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish"));
@@ -2785,13 +3414,19 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		//Check shutdown_scriptpubkey form as BOLT says we must
-		if !msg.scriptpubkey.is_p2pkh() && !msg.scriptpubkey.is_p2sh() && !msg.scriptpubkey.is_v0_p2wpkh() && !msg.scriptpubkey.is_v0_p2wsh() {
+		if !msg.scriptpubkey.is_p2pkh()
+			&& !msg.scriptpubkey.is_p2sh()
+			&& !msg.scriptpubkey.is_v0_p2wpkh()
+			&& !msg.scriptpubkey.is_v0_p2wsh()
+		{
 			return Err(ChannelError::Close("Got a nonstandard scriptpubkey from remote peer"));
 		}
 
 		if self.their_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.their_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Close("Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey"));
+				return Err(ChannelError::Close(
+					"Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey",
+				));
 			}
 		} else {
 			self.their_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
@@ -2807,26 +3442,23 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// cell HTLCs and return them to fail the payment.
 		self.holding_cell_update_fee = None;
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
-		self.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
-					dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
-					false
-				},
-				_ => true
+		self.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
+				dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
+				false
 			}
+			_ => true,
 		});
 		// If we have any LocalAnnounced updates we'll probably just get back a update_fail_htlc
 		// immediately after the commitment dance, but we can send a Shutdown cause we won't send
 		// any further commitment updates after we set LocalShutdownSent.
 
-		let our_shutdown = if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
+		let our_shutdown = if (self.channel_state & ChannelState::LocalShutdownSent as u32)
+			== ChannelState::LocalShutdownSent as u32
+		{
 			None
 		} else {
-			Some(msgs::Shutdown {
-				channel_id: self.channel_id,
-				scriptpubkey: self.get_closing_scriptpubkey(),
-			})
+			Some(msgs::Shutdown { channel_id: self.channel_id, scriptpubkey: self.get_closing_scriptpubkey() })
 		};
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
@@ -2836,9 +3468,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	fn build_signed_closing_transaction(&self, tx: &mut Transaction, their_sig: &Signature, our_sig: &Signature) {
-		if tx.input.len() != 1 { panic!("Tried to sign closing transaction that had input count != 1!"); }
-		if tx.input[0].witness.len() != 0 { panic!("Tried to re-sign closing transaction"); }
-		if tx.output.len() > 2 { panic!("Tried to sign bogus closing transaction"); }
+		if tx.input.len() != 1 {
+			panic!("Tried to sign closing transaction that had input count != 1!");
+		}
+		if tx.input[0].witness.len() != 0 {
+			panic!("Tried to re-sign closing transaction");
+		}
+		if tx.output.len() > 2 {
+			panic!("Tried to sign bogus closing transaction");
+		}
 
 		tx.input[0].witness.push(Vec::new()); // First is the multisig dummy
 
@@ -2857,40 +3495,65 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		tx.input[0].witness.push(self.get_funding_redeemscript().into_bytes());
 	}
 
-	pub fn closing_signed<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::ClosingSigned) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
-		where F::Target: FeeEstimator
+	pub fn closing_signed<F: Deref>(
+		&mut self, fee_estimator: &F, msg: &msgs::ClosingSigned,
+	) -> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
+	where
+		F::Target: FeeEstimator,
 	{
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != BOTH_SIDES_SHUTDOWN_MASK {
-			return Err(ChannelError::Close("Remote end sent us a closing_signed before both sides provided a shutdown"));
+			return Err(ChannelError::Close(
+				"Remote end sent us a closing_signed before both sides provided a shutdown",
+			));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent closing_signed when we needed a channel_reestablish"));
 		}
 		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
-			return Err(ChannelError::Close("Remote end sent us a closing_signed while there were still pending HTLCs"));
+			return Err(ChannelError::Close(
+				"Remote end sent us a closing_signed while there were still pending HTLCs",
+			));
 		}
-		if msg.fee_satoshis > 21000000 * 10000000 { //this is required to stop potential overflow in build_closing_transaction
+		if msg.fee_satoshis > 21000000 * 10000000 {
+			//this is required to stop potential overflow in build_closing_transaction
 			return Err(ChannelError::Close("Remote tried to send us a closing tx with > 21 million BTC fee"));
 		}
 
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
 		if used_total_fee != msg.fee_satoshis {
-			return Err(ChannelError::Close("Remote sent us a closing_signed with a fee greater than the value they can claim"));
+			return Err(ChannelError::Close(
+				"Remote sent us a closing_signed with a fee greater than the value they can claim",
+			));
 		}
-		let mut sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
+		let mut sighash = hash_to_message!(
+			&bip143::SighashComponents::new(&closing_tx).sighash_all(
+				&closing_tx.input[0],
+				&funding_redeemscript,
+				self.channel_value_satoshis
+			)[..]
+		);
 
 		let their_funding_pubkey = &self.their_pubkeys.as_ref().unwrap().funding_pubkey;
 
 		match self.secp_ctx.verify(&sighash, &msg.signature, their_funding_pubkey) {
-			Ok(_) => {},
+			Ok(_) => {}
 			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
-				sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
-				secp_check!(self.secp_ctx.verify(&sighash, &msg.signature, self.their_funding_pubkey()), "Invalid closing tx signature from peer");
-			},
+				sighash = hash_to_message!(
+					&bip143::SighashComponents::new(&closing_tx).sighash_all(
+						&closing_tx.input[0],
+						&funding_redeemscript,
+						self.channel_value_satoshis
+					)[..]
+				);
+				secp_check!(
+					self.secp_ctx.verify(&sighash, &msg.signature, self.their_funding_pubkey()),
+					"Invalid closing tx signature from peer"
+				);
+			}
 		};
 
 		if let Some((_, last_fee, our_sig)) = self.last_sent_closing_fee {
@@ -2942,7 +3605,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		let our_sig = self.local_keys
+		let our_sig = self
+			.local_keys
 			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
 		self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &our_sig);
@@ -2950,11 +3614,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
 
-		Ok((Some(msgs::ClosingSigned {
-			channel_id: self.channel_id,
-			fee_satoshis: msg.fee_satoshis,
-			signature: our_sig,
-		}), Some(closing_tx)))
+		Ok((
+			Some(msgs::ClosingSigned {
+				channel_id: self.channel_id,
+				fee_satoshis: msg.fee_satoshis,
+				signature: our_sig,
+			}),
+			Some(closing_tx),
+		))
 	}
 
 	// Public utilities:
@@ -3023,7 +3690,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	pub fn get_cur_remote_commitment_transaction_number(&self) -> u64 {
-		self.cur_remote_commitment_transaction_number + 1 - if self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 }
+		self.cur_remote_commitment_transaction_number + 1
+			- if self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 }
 	}
 
 	pub fn get_revoked_remote_commitment_transaction_number(&self) -> u64 {
@@ -3041,13 +3709,21 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			value_to_self_msat: self.value_to_self_msat,
 			channel_value_msat: self.channel_value_satoshis * 1000,
 			channel_reserve_msat: self.their_channel_reserve_satoshis * 1000,
-			pending_outbound_htlcs_amount_msat: self.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
-			pending_inbound_htlcs_amount_msat: self.pending_inbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
+			pending_outbound_htlcs_amount_msat: self
+				.pending_outbound_htlcs
+				.iter()
+				.map(|ref h| h.amount_msat)
+				.sum::<u64>(),
+			pending_inbound_htlcs_amount_msat: self
+				.pending_inbound_htlcs
+				.iter()
+				.map(|ref h| h.amount_msat)
+				.sum::<u64>(),
 			holding_cell_outbound_amount_msat: {
 				let mut res = 0;
 				for h in self.holding_cell_htlc_updates.iter() {
 					match h {
-						&HTLCUpdateAwaitingACK::AddHTLC{amount_msat, .. } => {
+						&HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } => {
 							res += amount_msat;
 						}
 						_ => {}
@@ -3079,7 +3755,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
 	pub fn get_our_fee_base_msat<F: Deref>(&self, fee_estimator: &F) -> u32
-		where F::Target: FeeEstimator
+	where
+		F::Target: FeeEstimator,
 	{
 		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC
 		// output value back into a transaction with the regular channel output:
@@ -3093,7 +3770,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		// + the marginal cost of an input which spends the HTLC-Success/HTLC-Timeout output:
-		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
+		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal)
+			* SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT
+			/ 1000;
 
 		res as u32
 	}
@@ -3114,7 +3793,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// is_usable() and considers things like the channel being temporarily disabled.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_live(&self) -> bool {
-		self.is_usable() && (self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) == 0)
+		self.is_usable()
+			&& (self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)
+				== 0)
 	}
 
 	/// Returns true if this channel has been marked as awaiting a monitor update to move forward.
@@ -3132,10 +3813,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
 	/// will be handled appropriately by the chain monitor.
 	pub fn is_shutdown(&self) -> bool {
-		if (self.channel_state & ChannelState::ShutdownComplete as u32) == ChannelState::ShutdownComplete as u32  {
+		if (self.channel_state & ChannelState::ShutdownComplete as u32) == ChannelState::ShutdownComplete as u32 {
 			assert!(self.channel_state == ChannelState::ShutdownComplete as u32);
 			true
-		} else { false }
+		} else {
+			false
+		}
 	}
 
 	pub fn to_disabled_staged(&mut self) {
@@ -3172,18 +3855,20 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+	pub fn block_connected(
+		&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32],
+	) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
 		let mut timed_out_htlcs = Vec::new();
-		self.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
-					if *cltv_expiry <= height + HTLC_FAIL_BACK_BUFFER {
-						timed_out_htlcs.push((source.clone(), payment_hash.clone()));
-						false
-					} else { true }
-				},
-				_ => true
+		self.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
+				if *cltv_expiry <= height + HTLC_FAIL_BACK_BUFFER {
+					timed_out_htlcs.push((source.clone(), payment_hash.clone()));
+					false
+				} else {
+					true
+				}
 			}
+			_ => true,
 		});
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if header.bitcoin_hash() != self.last_block_connected {
@@ -3195,8 +3880,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			for (ref tx, index_in_block) in txn_matched.iter().zip(indexes_of_txn_matched) {
 				if tx.txid() == self.funding_txo.unwrap().txid {
 					let txo_idx = self.funding_txo.unwrap().index as usize;
-					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
-							tx.output[txo_idx].value != self.channel_value_satoshis {
+					if txo_idx >= tx.output.len()
+						|| tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh()
+						|| tx.output[txo_idx].value != self.channel_value_satoshis
+					{
 						if self.channel_outbound {
 							// If we generated the funding transaction and it doesn't match what it
 							// should, the client is really broken and we should just panic and
@@ -3204,13 +3891,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							// probability in fuzztarget mode, if we're fuzzing we just close the
 							// channel and move on.
 							#[cfg(not(feature = "fuzztarget"))]
-							panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+							panic!(
+								"Client called ChannelManager::funding_transaction_generated with bogus transaction!"
+							);
 						}
 						self.channel_state = ChannelState::ShutdownComplete as u32;
 						self.update_time_counter += 1;
 						return Err(msgs::ErrorMessage {
 							channel_id: self.channel_id(),
-							data: "funding tx had wrong script/value".to_owned()
+							data: "funding tx had wrong script/value".to_owned(),
 						});
 					} else {
 						if self.channel_outbound {
@@ -3224,9 +3913,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							}
 						}
 						self.funding_tx_confirmations = 1;
-						self.short_channel_id = Some(((height as u64)          << (5*8)) |
-						                             ((*index_in_block as u64) << (2*8)) |
-						                             ((txo_idx as u64)         << (0*8)));
+						self.short_channel_id = Some(
+							((height as u64) << (5 * 8))
+								| ((*index_in_block as u64) << (2 * 8))
+								| ((txo_idx as u64) << (0 * 8)),
+						);
 					}
 				}
 			}
@@ -3242,11 +3933,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 						self.channel_state |= ChannelState::OurFundingLocked as u32;
 						true
-					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+					} else if non_shutdown_state
+						== (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32)
+					{
+						self.channel_state =
+							ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 						self.update_time_counter += 1;
 						true
-					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+					} else if non_shutdown_state
+						== (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32)
+					{
 						// We got a reorg but not enough to trigger a force close, just update
 						// funding_tx_confirmed_in and return.
 						false
@@ -3265,12 +3961,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					//a protocol oversight, but I assume I'm just missing something.
 					if need_commitment_update {
 						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-							let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-							let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
-							return Ok((Some(msgs::FundingLocked {
-								channel_id: self.channel_id,
-								next_per_commitment_point: next_per_commitment_point,
-							}), timed_out_htlcs));
+							let next_per_commitment_secret =
+								self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+							let next_per_commitment_point =
+								PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+							return Ok((
+								Some(msgs::FundingLocked { channel_id: self.channel_id, next_per_commitment_point }),
+								timed_out_htlcs,
+							));
 						} else {
 							self.monitor_pending_funding_locked = true;
 							return Ok((None, timed_out_htlcs));
@@ -3306,7 +4004,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	// something in the handler for the message that prompted this message):
 
 	pub fn get_open_channel<F: Deref>(&self, chain_hash: BlockHash, fee_estimator: &F) -> msgs::OpenChannel
-		where F::Target: FeeEstimator
+	where
+		F::Target: FeeEstimator,
 	{
 		if !self.channel_outbound {
 			panic!("Tried to open a channel for an inbound channel?");
@@ -3322,13 +4021,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
 
 		msgs::OpenChannel {
-			chain_hash: chain_hash,
+			chain_hash,
 			temporary_channel_id: self.channel_id,
 			funding_satoshis: self.channel_value_satoshis,
 			push_msat: self.channel_value_satoshis * 1000 - self.value_to_self_msat,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
-			channel_reserve_satoshis: Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
+			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(
+				self.channel_value_satoshis,
+			),
+			channel_reserve_satoshis: Channel::<ChanSigner>::get_our_channel_reserve_satoshis(
+				self.channel_value_satoshis,
+			),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
 			feerate_per_kw: fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u32,
 			to_self_delay: self.our_to_self_delay,
@@ -3336,11 +4039,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()),
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
 			payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key()),
-			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
+			delayed_payment_basepoint: PublicKey::from_secret_key(
+				&self.secp_ctx,
+				self.local_keys.delayed_payment_base_key(),
+			),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
-			channel_flags: if self.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
+			channel_flags: if self.config.announced_channel { 1 } else { 0 },
+			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey {
+				self.get_closing_scriptpubkey()
+			} else {
+				Builder::new().into_script()
+			}),
 		}
 	}
 
@@ -3360,8 +4070,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		msgs::AcceptChannel {
 			temporary_channel_id: self.channel_id,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
-			channel_reserve_satoshis: Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
+			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(
+				self.channel_value_satoshis,
+			),
+			channel_reserve_satoshis: Channel::<ChanSigner>::get_our_channel_reserve_satoshis(
+				self.channel_value_satoshis,
+			),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
 			minimum_depth: self.minimum_depth,
 			to_self_delay: self.our_to_self_delay,
@@ -3369,19 +4083,44 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.funding_key()),
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
 			payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_base_key()),
-			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
+			delayed_payment_basepoint: PublicKey::from_secret_key(
+				&self.secp_ctx,
+				self.local_keys.delayed_payment_base_key(),
+			),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
-			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
+			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey {
+				self.get_closing_scriptpubkey()
+			} else {
+				Builder::new().into_script()
+			}),
 		}
 	}
 
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
 	fn get_outbound_funding_created_signature(&mut self) -> Result<Signature, ChannelError> {
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw).0;
-		Ok(self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
-				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?.0)
+		let remote_initial_commitment_tx = self
+			.build_commitment_transaction(
+				self.cur_remote_commitment_transaction_number,
+				&remote_keys,
+				false,
+				false,
+				self.feerate_per_kw,
+			)
+			.0;
+		Ok(self
+			.local_keys
+			.sign_remote_commitment(
+				self.feerate_per_kw,
+				&remote_initial_commitment_tx,
+				&remote_keys,
+				&Vec::new(),
+				self.our_to_self_delay,
+				&self.secp_ctx,
+			)
+			.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?
+			.0)
 	}
 
 	/// Updates channel state with knowledge of the funding transaction's txid/index, and generates
@@ -3391,16 +4130,19 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
-	pub fn get_outbound_funding_created(&mut self, funding_txo: OutPoint) -> Result<msgs::FundingCreated, ChannelError> {
+	pub fn get_outbound_funding_created(
+		&mut self, funding_txo: OutPoint,
+	) -> Result<msgs::FundingCreated, ChannelError> {
 		if !self.channel_outbound {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
 		if self.channel_state != (ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32) {
 			panic!("Tried to get a funding_created messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
 		}
-		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
-				self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
-				self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+		if self.commitment_secrets.get_min_seen_secret() != (1 << 48)
+			|| self.cur_remote_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+			|| self.cur_local_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER
+		{
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
@@ -3425,7 +4167,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			temporary_channel_id,
 			funding_txid: funding_txo.txid,
 			funding_output_index: funding_txo.index,
-			signature: our_signature
+			signature: our_signature,
 		})
 	}
 
@@ -3437,14 +4179,19 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// closing).
 	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
 	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
-	pub fn get_channel_announcement(&self, our_node_id: PublicKey, chain_hash: BlockHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
+	pub fn get_channel_announcement(
+		&self, our_node_id: PublicKey, chain_hash: BlockHash,
+	) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
 		if !self.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements"));
 		}
 		if self.channel_state & (ChannelState::ChannelFunded as u32) == 0 {
-			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement until the channel funding has been locked"));
+			return Err(ChannelError::Ignore(
+				"Cannot get a ChannelAnnouncement until the channel funding has been locked",
+			));
 		}
-		if (self.channel_state & (ChannelState::LocalShutdownSent as u32 | ChannelState::ShutdownComplete as u32)) != 0 {
+		if (self.channel_state & (ChannelState::LocalShutdownSent as u32 | ChannelState::ShutdownComplete as u32)) != 0
+		{
 			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement once the channel is closing"));
 		}
 
@@ -3453,7 +4200,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let msg = msgs::UnsignedChannelAnnouncement {
 			features: ChannelFeatures::known(),
-			chain_hash: chain_hash,
+			chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { our_node_id } else { self.get_their_node_id() },
 			node_id_2: if were_node_one { self.get_their_node_id() } else { our_node_id },
@@ -3462,7 +4209,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			excess_data: Vec::new(),
 		};
 
-		let sig = self.local_keys.sign_channel_announcement(&msg, &self.secp_ctx)
+		let sig = self
+			.local_keys
+			.sign_channel_announcement(&msg, &self.secp_ctx)
 			.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement"))?;
 
 		Ok((msg, sig))
@@ -3474,17 +4223,28 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		assert_eq!(self.channel_state & ChannelState::PeerDisconnected as u32, ChannelState::PeerDisconnected as u32);
 		assert_ne!(self.cur_remote_commitment_transaction_number, INITIAL_COMMITMENT_NUMBER);
 		let data_loss_protect = if self.cur_remote_commitment_transaction_number + 1 < INITIAL_COMMITMENT_NUMBER {
-			let remote_last_secret = self.commitment_secrets.get_secret(self.cur_remote_commitment_transaction_number + 2).unwrap();
-			log_trace!(self, "Enough info to generate a Data Loss Protect with per_commitment_secret {}", log_bytes!(remote_last_secret));
+			let remote_last_secret =
+				self.commitment_secrets.get_secret(self.cur_remote_commitment_transaction_number + 2).unwrap();
+			log_trace!(
+				self,
+				"Enough info to generate a Data Loss Protect with per_commitment_secret {}",
+				log_bytes!(remote_last_secret)
+			);
 			OptionalField::Present(DataLossProtect {
 				your_last_per_commitment_secret: remote_last_secret,
-				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
+				my_current_per_commitment_point: PublicKey::from_secret_key(
+					&self.secp_ctx,
+					&self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1),
+				),
 			})
 		} else {
 			log_info!(self, "Sending a data_loss_protect with no previous remote per_commitment_secret");
 			OptionalField::Present(DataLossProtect {
-				your_last_per_commitment_secret: [0;32],
-				my_current_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1))
+				your_last_per_commitment_secret: [0; 32],
+				my_current_per_commitment_point: PublicKey::from_secret_key(
+					&self.secp_ctx,
+					&self.build_local_commitment_secret(self.cur_local_commitment_transaction_number + 1),
+				),
 			})
 		};
 		msgs::ChannelReestablish {
@@ -3506,11 +4266,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			// cur_remote_commitment_transaction_number is INITIAL_COMMITMENT_NUMBER we will have
 			// dropped this channel on disconnect as it hasn't yet reached FundingSent so we can't
 			// overflow here.
-			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_remote_commitment_transaction_number - 1,
+			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER
+				- self.cur_remote_commitment_transaction_number
+				- 1,
 			data_loss_protect,
 		}
 	}
-
 
 	// Send stuff to our remote peers:
 
@@ -3521,9 +4282,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
 	/// You MUST call send_commitment prior to any other calls on this Channel
 	/// If an Err is returned, it's a ChannelError::Ignore!
-	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
-			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down"));
+	pub fn send_htlc(
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket,
+	) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> {
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK))
+			!= (ChannelState::ChannelFunded as u32)
+		{
+			return Err(ChannelError::Ignore(
+				"Cannot send HTLC until channel is fully established and we haven't started shutting down",
+			));
 		}
 
 		if amount_msat > self.channel_value_satoshis * 1000 {
@@ -3538,14 +4306,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Ignore("Cannot send less than their minimum HTLC value"));
 		}
 
-		if (self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32))
+			!= 0
+		{
 			// Note that this should never really happen, if we're !is_live() on receipt of an
 			// incoming HTLC for relay will result in us rejecting the HTLC and we won't allow
 			// the user to send directly into a !is_live() channel. However, if we
 			// disconnected during the time the previous hop was doing the commitment dance we may
 			// end up getting here after the forwarding delay. In any case, returning an
 			// IgnoreError will get ChannelManager to do the right thing and fail backwards now.
-			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected/frozen for channel monitor update"));
+			return Err(ChannelError::Ignore(
+				"Cannot send an HTLC while disconnected/frozen for channel monitor update",
+			));
 		}
 
 		let (outbound_htlc_count, htlc_outbound_value_msat) = self.get_outbound_pending_htlc_stats();
@@ -3554,32 +4326,37 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		// Check their_max_htlc_value_in_flight_msat
 		if htlc_outbound_value_msat + amount_msat > self.their_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Ignore("Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
+			return Err(ChannelError::Ignore(
+				"Cannot send value that would put us over the max HTLC value in flight our peer will accept",
+			));
 		}
 
 		// Check self.their_channel_reserve_satoshis (the amount we must keep as
 		// reserve for them to have something to claim if we misbehave)
-		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
+		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat
+		{
 			return Err(ChannelError::Ignore("Cannot send value that would put us over their reserve value"));
 		}
 
 		// Now update local state:
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32))
+			== (ChannelState::AwaitingRemoteRevoke as u32)
+		{
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
-				amount_msat: amount_msat,
-				payment_hash: payment_hash,
-				cltv_expiry: cltv_expiry,
+				amount_msat,
+				payment_hash,
+				cltv_expiry,
 				source,
-				onion_routing_packet: onion_routing_packet,
+				onion_routing_packet,
 			});
 			return Ok(None);
 		}
 
 		self.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.next_local_htlc_id,
-			amount_msat: amount_msat,
+			amount_msat,
 			payment_hash: payment_hash.clone(),
-			cltv_expiry: cltv_expiry,
+			cltv_expiry,
 			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
 		});
@@ -3587,10 +4364,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let res = msgs::UpdateAddHTLC {
 			channel_id: self.channel_id,
 			htlc_id: self.next_local_htlc_id,
-			amount_msat: amount_msat,
-			payment_hash: payment_hash,
-			cltv_expiry: cltv_expiry,
-			onion_routing_packet: onion_routing_packet,
+			amount_msat,
+			payment_hash,
+			cltv_expiry,
+			onion_routing_packet,
 		};
 		self.next_local_htlc_id += 1;
 
@@ -3605,13 +4382,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Cannot create commitment tx until channel is fully established");
 		}
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32))
+			== (ChannelState::AwaitingRemoteRevoke as u32)
+		{
 			panic!("Cannot create commitment tx until remote revokes their previous commitment");
 		}
 		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
 			panic!("Cannot create commitment tx while disconnected, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
-		if (self.channel_state & (ChannelState::MonitorUpdateFailed as u32)) == (ChannelState::MonitorUpdateFailed as u32) {
+		if (self.channel_state & (ChannelState::MonitorUpdateFailed as u32))
+			== (ChannelState::MonitorUpdateFailed as u32)
+		{
 			panic!("Cannot create commitment tx while awaiting monitor update unfreeze, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
 		let mut have_updates = self.pending_update_fee.is_some();
@@ -3619,13 +4400,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				have_updates = true;
 			}
-			if have_updates { break; }
+			if have_updates {
+				break;
+			}
 		}
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::LocalRemoved(_) = htlc.state {
 				have_updates = true;
 			}
-			if have_updates { break; }
+			if have_updates {
+				break;
+			}
 		}
 		if !have_updates {
 			panic!("Cannot create commitment tx until we have some updates to send");
@@ -3633,22 +4418,29 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.send_commitment_no_status_check()
 	}
 	/// Only fails in case of bad keys
-	fn send_commitment_no_status_check(&mut self) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> {
+	fn send_commitment_no_status_check(
+		&mut self,
+	) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> {
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_state = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref forward_info) = &htlc.state {
 				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
-			} else { None };
+			} else {
+				None
+			};
 			if let Some(state) = new_state {
 				htlc.state = state;
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if let Some(fail_reason) = if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
-				Some(fail_reason.take())
-			} else { None } {
+			if let Some(fail_reason) =
+				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
+					Some(fail_reason.take())
+				} else {
+					None
+				} {
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
 			}
 		}
@@ -3657,10 +4449,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let (res, remote_commitment_tx, htlcs) = match self.send_commitment_no_state_update() {
 			Ok((res, (remote_commitment_tx, mut htlcs))) => {
 				// Update state now that we've passed all the can-fail calls...
-				let htlcs_no_ref: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
-					htlcs.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
+				let htlcs_no_ref: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> = htlcs
+					.drain(..)
+					.map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone()))))
+					.collect();
 				(res, remote_commitment_tx, htlcs_no_ref)
-			},
+			}
 			Err(e) => return Err(e),
 		};
 
@@ -3671,8 +4465,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				unsigned_commitment_tx: remote_commitment_tx.clone(),
 				htlc_outputs: htlcs.clone(),
 				commitment_number: self.cur_remote_commitment_transaction_number,
-				their_revocation_point: self.their_cur_commitment_point.unwrap()
-			}]
+				their_revocation_point: self.their_cur_commitment_point.unwrap(),
+			}],
 		};
 		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone()).unwrap();
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
@@ -3681,7 +4475,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Only fails in case of bad keys. Used for channel_reestablish commitment_signed generation
 	/// when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update(&self) -> Result<(msgs::CommitmentSigned, (Transaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> {
+	fn send_commitment_no_state_update(
+		&self,
+	) -> Result<(msgs::CommitmentSigned, (Transaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError>
+	{
 		let mut feerate_per_kw = self.feerate_per_kw;
 		if let Some(feerate) = self.pending_update_fee {
 			if self.channel_outbound {
@@ -3690,7 +4487,13 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let remote_keys = self.build_remote_transaction_keys()?;
-		let remote_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, true, feerate_per_kw);
+		let remote_commitment_tx = self.build_commitment_transaction(
+			self.cur_remote_commitment_transaction_number,
+			&remote_keys,
+			false,
+			true,
+			feerate_per_kw,
+		);
 		let (signature, htlc_signatures);
 
 		{
@@ -3699,43 +4502,67 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
+			let res = self
+				.local_keys
+				.sign_remote_commitment(
+					feerate_per_kw,
+					&remote_commitment_tx.0,
+					&remote_keys,
+					&htlcs,
+					self.our_to_self_delay,
+					&self.secp_ctx,
+				)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed"))?;
 			signature = res.0;
 			htlc_signatures = res.1;
 
-			log_trace!(self, "Signed remote commitment tx {} with redeemscript {} -> {}",
+			log_trace!(
+				self,
+				"Signed remote commitment tx {} with redeemscript {} -> {}",
 				encode::serialize_hex(&remote_commitment_tx.0),
 				encode::serialize_hex(&self.get_funding_redeemscript()),
-				log_bytes!(signature.serialize_compact()[..]));
+				log_bytes!(signature.serialize_compact()[..])
+			);
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
-				log_trace!(self, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&remote_commitment_tx.0.txid(), feerate_per_kw, self.our_to_self_delay, htlc, &remote_keys.a_delayed_payment_key, &remote_keys.revocation_key)),
+				log_trace!(
+					self,
+					"Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(
+						&remote_commitment_tx.0.txid(),
+						feerate_per_kw,
+						self.our_to_self_delay,
+						htlc,
+						&remote_keys.a_delayed_payment_key,
+						&remote_keys.revocation_key
+					)),
 					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &remote_keys)),
 					log_bytes!(remote_keys.a_htlc_key.serialize()),
-					log_bytes!(htlc_sig.serialize_compact()[..]));
+					log_bytes!(htlc_sig.serialize_compact()[..])
+				);
 			}
 		}
 
-		Ok((msgs::CommitmentSigned {
-			channel_id: self.channel_id,
-			signature,
-			htlc_signatures,
-		}, (remote_commitment_tx.0, remote_commitment_tx.2)))
+		Ok((
+			msgs::CommitmentSigned { channel_id: self.channel_id, signature, htlc_signatures },
+			(remote_commitment_tx.0, remote_commitment_tx.2),
+		))
 	}
 
 	/// Adds a pending outbound HTLC to this channel, and creates a signed commitment transaction
 	/// to send to the remote peer in one go.
 	/// Shorthand for calling send_htlc() followed by send_commitment(), see docs on those for
 	/// more info.
-	pub fn send_htlc_and_commit(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> {
+	pub fn send_htlc_and_commit(
+		&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket,
+	) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> {
 		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet)? {
 			Some(update_add_htlc) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check()?;
 				Ok(Some((update_add_htlc, commitment_signed, monitor_update)))
-			},
-			None => Ok(None)
+			}
+			None => Ok(None),
 		}
 	}
 
@@ -3744,19 +4571,23 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, PaymentHash)>), APIError> {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first"});
+				return Err(APIError::APIMisuseError {
+					err: "Cannot begin shutdown with pending HTLCs. Process pending events first",
+				});
 			}
 		}
 		if self.channel_state & BOTH_SIDES_SHUTDOWN_MASK != 0 {
 			if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
-				return Err(APIError::APIMisuseError{err: "Shutdown already in progress"});
-			}
-			else if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
-				return Err(APIError::ChannelUnavailable{err: "Shutdown already in progress by remote"});
+				return Err(APIError::APIMisuseError { err: "Shutdown already in progress" });
+			} else if (self.channel_state & ChannelState::RemoteShutdownSent as u32)
+				== ChannelState::RemoteShutdownSent as u32
+			{
+				return Err(APIError::ChannelUnavailable { err: "Shutdown already in progress by remote" });
 			}
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
-		if self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) != 0 {
+		if self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) != 0
+		{
 			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected or we're waiting on a monitor update, maybe force-close instead?"});
 		}
 
@@ -3774,20 +4605,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// our shutdown until we've committed all of the pending changes.
 		self.holding_cell_update_fee = None;
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
-		self.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
-					dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
-					false
-				},
-				_ => true
+		self.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
+				dropped_outbound_htlcs.push((source.clone(), payment_hash.clone()));
+				false
 			}
+			_ => true,
 		});
 
-		Ok((msgs::Shutdown {
-			channel_id: self.channel_id,
-			scriptpubkey: our_closing_script,
-		}, dropped_outbound_htlcs))
+		Ok((msgs::Shutdown { channel_id: self.channel_id, scriptpubkey: our_closing_script }, dropped_outbound_htlcs))
 	}
 
 	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
@@ -3795,7 +4621,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(
+		&mut self, should_broadcast: bool,
+	) -> (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>) {
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
@@ -3805,7 +4633,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			match htlc_update {
 				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => {
 					dropped_outbound_htlcs.push((source, payment_hash));
-				},
+				}
 				_ => {}
 			}
 		}
@@ -3819,10 +4647,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
 		self.latest_monitor_update_id += 1;
-		(self.funding_txo.clone(), ChannelMonitorUpdate {
-			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
-		}, dropped_outbound_htlcs)
+		(
+			self.funding_txo.clone(),
+			ChannelMonitorUpdate {
+				update_id: self.latest_monitor_update_id,
+				updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+			},
+			dropped_outbound_htlcs,
+		)
 	}
 }
 
@@ -3835,16 +4667,16 @@ impl Writeable for InboundHTLCRemovalReason {
 			&InboundHTLCRemovalReason::FailRelay(ref error_packet) => {
 				0u8.write(writer)?;
 				error_packet.write(writer)?;
-			},
+			}
 			&InboundHTLCRemovalReason::FailMalformed((ref onion_hash, ref err_code)) => {
 				1u8.write(writer)?;
 				onion_hash.write(writer)?;
 				err_code.write(writer)?;
-			},
+			}
 			&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
 				2u8.write(writer)?;
 				payment_preimage.write(writer)?;
-			},
+			}
 		}
 		Ok(())
 	}
@@ -3907,18 +4739,18 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
 					1u8.write(writer)?;
 					htlc_state.write(writer)?;
-				},
+				}
 				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
 					2u8.write(writer)?;
 					htlc_state.write(writer)?;
-				},
+				}
 				&InboundHTLCState::Committed => {
 					3u8.write(writer)?;
-				},
+				}
 				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
 					4u8.write(writer)?;
 					removal_reason.write(writer)?;
-				},
+				}
 			}
 		}
 
@@ -3933,41 +4765,47 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 				&OutboundHTLCState::LocalAnnounced(ref onion_packet) => {
 					0u8.write(writer)?;
 					onion_packet.write(writer)?;
-				},
+				}
 				&OutboundHTLCState::Committed => {
 					1u8.write(writer)?;
-				},
+				}
 				&OutboundHTLCState::RemoteRemoved(ref fail_reason) => {
 					2u8.write(writer)?;
 					fail_reason.write(writer)?;
-				},
+				}
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref fail_reason) => {
 					3u8.write(writer)?;
 					fail_reason.write(writer)?;
-				},
+				}
 				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref fail_reason) => {
 					4u8.write(writer)?;
 					fail_reason.write(writer)?;
-				},
+				}
 			}
 		}
 
 		(self.holding_cell_htlc_updates.len() as u64).write(writer)?;
 		for update in self.holding_cell_htlc_updates.iter() {
 			match update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet } => {
+				&HTLCUpdateAwaitingACK::AddHTLC {
+					ref amount_msat,
+					ref cltv_expiry,
+					ref payment_hash,
+					ref source,
+					ref onion_routing_packet,
+				} => {
 					0u8.write(writer)?;
 					amount_msat.write(writer)?;
 					cltv_expiry.write(writer)?;
 					payment_hash.write(writer)?;
 					source.write(writer)?;
 					onion_routing_packet.write(writer)?;
-				},
+				}
 				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
 					1u8.write(writer)?;
 					payment_preimage.write(writer)?;
 					htlc_id.write(writer)?;
-				},
+				}
 				&HTLCUpdateAwaitingACK::FailHTLC { ref htlc_id, ref err_packet } => {
 					2u8.write(writer)?;
 					htlc_id.write(writer)?;
@@ -4012,7 +4850,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 				feerate.write(writer)?;
 				fee.write(writer)?;
 				sig.write(writer)?;
-			},
+			}
 			None => 0u8.write(writer)?,
 		}
 
@@ -4050,7 +4888,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 }
 
 impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<ChanSigner> {
-	fn read<R : ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -4076,7 +4914,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 		let value_to_self_msat = Readable::read(reader)?;
 
 		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
-		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
+		let mut pending_inbound_htlcs =
+			Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..pending_inbound_htlc_count {
 			pending_inbound_htlcs.push(InboundHTLCOutput {
 				htlc_id: Readable::read(reader)?,
@@ -4094,7 +4933,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 		}
 
 		let pending_outbound_htlc_count: u64 = Readable::read(reader)?;
-		let mut pending_outbound_htlcs = Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
+		let mut pending_outbound_htlcs =
+			Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..pending_outbound_htlc_count {
 			pending_outbound_htlcs.push(OutboundHTLCOutput {
 				htlc_id: Readable::read(reader)?,
@@ -4114,7 +4954,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 		}
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
-		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
+		let mut holding_cell_htlc_updates =
+			Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize * 2));
 		for _ in 0..holding_cell_htlc_update_count {
 			holding_cell_htlc_updates.push(match <u8 as Readable>::read(reader)? {
 				0 => HTLCUpdateAwaitingACK::AddHTLC {
@@ -4147,13 +4988,15 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
 		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
-		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, OUR_MAX_HTLCS as usize));
+		let mut monitor_pending_forwards =
+			Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..monitor_pending_forwards_count {
 			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?));
 		}
 
 		let monitor_pending_failures_count: u64 = Readable::read(reader)?;
-		let mut monitor_pending_failures = Vec::with_capacity(cmp::min(monitor_pending_failures_count as usize, OUR_MAX_HTLCS as usize));
+		let mut monitor_pending_failures =
+			Vec::with_capacity(cmp::min(monitor_pending_failures_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..monitor_pending_failures_count {
 			monitor_pending_failures.push((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?));
 		}
@@ -4289,40 +5132,43 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::BitcoinHash;
-	use bitcoin::util::bip143;
-	use bitcoin::consensus::encode::serialize;
-	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::network::constants::Network;
+	use bitcoin::blockdata::script::{Builder, Script};
+	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::consensus::encode::serialize;
+	use bitcoin::hash_types::{Txid, WPubkeyHash};
 	use bitcoin::hashes::hex::FromHex;
-	use hex;
-	use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
-	use ln::channel::MAX_FUNDING_SATOSHIS;
-	use ln::features::InitFeatures;
-	use ln::msgs::{OptionalField, DataLossProtect};
-	use ln::chan_utils;
-	use ln::chan_utils::{LocalCommitmentTransaction, ChannelPublicKeys};
-	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
-	use chain::transaction::OutPoint;
-	use util::config::UserConfig;
-	use util::enforcing_trait_impls::EnforcingChannelKeys;
-	use util::test_utils;
-	use util::logger::Logger;
-	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
-	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hash_types::{Txid, WPubkeyHash};
+	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+	use bitcoin::secp256k1::{All, Message, Secp256k1, Signature};
+	use bitcoin::util::bip143;
+	use bitcoin::BitcoinHash;
+	use chain::chaininterface::{ConfirmationTarget, FeeEstimator};
+	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
+	use chain::transaction::OutPoint;
+	use hex;
+	use ln::chan_utils;
+	use ln::chan_utils::{ChannelPublicKeys, LocalCommitmentTransaction};
+	use ln::channel::MAX_FUNDING_SATOSHIS;
+	use ln::channel::{
+		Channel, ChannelKeys, HTLCOutputInCommitment, InboundHTLCOutput, InboundHTLCState, OutboundHTLCOutput,
+		OutboundHTLCState, TxCreationKeys,
+	};
+	use ln::channelmanager::{HTLCSource, PaymentHash, PaymentPreimage};
+	use ln::features::InitFeatures;
+	use ln::msgs::{DataLossProtect, OptionalField};
+	use rand::{thread_rng, Rng};
 	use std::sync::Arc;
-	use rand::{thread_rng,Rng};
+	use util::config::UserConfig;
+	use util::enforcing_trait_impls::EnforcingChannelKeys;
+	use util::logger::Logger;
+	use util::test_utils;
 
 	struct TestFeeEstimator {
-		fee_est: u64
+		fee_est: u64,
 	}
 	impl FeeEstimator for TestFeeEstimator {
 		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
@@ -4332,8 +5178,10 @@ mod tests {
 
 	#[test]
 	fn test_max_funding_satoshis() {
-		assert!(MAX_FUNDING_SATOSHIS <= 21_000_000 * 100_000_000,
-		        "MAX_FUNDING_SATOSHIS is greater than all satoshis in existence");
+		assert!(
+			MAX_FUNDING_SATOSHIS <= 21_000_000 * 100_000_000,
+			"MAX_FUNDING_SATOSHIS is greater than all satoshis in existence"
+		);
 	}
 
 	struct Keys {
@@ -4342,25 +5190,41 @@ mod tests {
 	impl KeysInterface for Keys {
 		type ChanKeySigner = InMemoryChannelKeys;
 
-		fn get_node_secret(&self) -> SecretKey { panic!(); }
+		fn get_node_secret(&self) -> SecretKey {
+			panic!();
+		}
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
-			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-			let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-			Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+			let channel_monitor_claim_key = SecretKey::from_slice(
+				&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..],
+			)
+			.unwrap();
+			let our_channel_monitor_claim_key_hash =
+				WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+			Builder::new()
+				.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+				.push_slice(&our_channel_monitor_claim_key_hash[..])
+				.into_script()
 		}
 
 		fn get_shutdown_pubkey(&self) -> PublicKey {
 			let secp_ctx = Secp256k1::signing_only();
-			let channel_close_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
+			let channel_close_key = SecretKey::from_slice(
+				&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..],
+			)
+			.unwrap();
 			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
 		}
 
 		fn get_channel_keys(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemoryChannelKeys {
 			self.chan_keys.clone()
 		}
-		fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) { panic!(); }
-		fn get_channel_id(&self) -> [u8; 32] { [0; 32] }
+		fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
+			panic!();
+		}
+		fn get_channel_id(&self) -> [u8; 32] {
+			[0; 32]
+		}
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
@@ -4369,8 +5233,8 @@ mod tests {
 
 	#[test]
 	fn channel_reestablish_no_updates() {
-		let feeest = TestFeeEstimator{fee_est: 15000};
-		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let feeest = TestFeeEstimator { fee_est: 15000 };
+		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 		let mut seed = [0; 32];
 		let mut rng = thread_rng();
@@ -4383,12 +5247,32 @@ mod tests {
 		// Create Node A's channel
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, Arc::clone(&logger), &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(
+			&&feeest,
+			&&keys_provider,
+			node_a_node_id,
+			10000000,
+			100000,
+			42,
+			Arc::clone(&logger),
+			&config,
+		)
+		.unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&feeest);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, logger, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(
+			&&feeest,
+			&&keys_provider,
+			node_b_node_id,
+			InitFeatures::known(),
+			&open_channel_msg,
+			7,
+			logger,
+			&config,
+		)
+		.unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
@@ -4396,9 +5280,12 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
-			value: 10000000, script_pubkey: output_script.clone(),
-		}]};
+		let tx = Transaction {
+			version: 1,
+			lock_time: 0,
+			input: Vec::new(),
+			output: vec![TxOut { value: 10000000, script_pubkey: output_script.clone() }],
+		};
 		let funding_outpoint = OutPoint::new(tx.txid(), 0);
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint).unwrap();
 		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg).unwrap();
@@ -4409,88 +5296,159 @@ mod tests {
 		// Now disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.
 		node_b_chan.remove_uncommitted_htlcs_and_mark_paused();
-		let expected_commitment_point = PublicKey::from_secret_key(&secp_ctx, &node_b_chan.build_local_commitment_secret(node_b_chan.cur_local_commitment_transaction_number + 1));
+		let expected_commitment_point = PublicKey::from_secret_key(
+			&secp_ctx,
+			&node_b_chan.build_local_commitment_secret(node_b_chan.cur_local_commitment_transaction_number + 1),
+		);
 		let msg = node_b_chan.get_channel_reestablish();
 		match msg.data_loss_protect {
 			OptionalField::Present(DataLossProtect { my_current_per_commitment_point, .. }) => {
 				assert_eq!(expected_commitment_point, my_current_per_commitment_point);
-			},
-			_ => panic!()
+			}
+			_ => panic!(),
 		}
 
 		// Check that the commitment point in Node A's channel_reestablish message
 		// is sane.
 		node_a_chan.remove_uncommitted_htlcs_and_mark_paused();
-		let expected_commitment_point = PublicKey::from_secret_key(&secp_ctx, &node_a_chan.build_local_commitment_secret(node_a_chan.cur_local_commitment_transaction_number + 1));
+		let expected_commitment_point = PublicKey::from_secret_key(
+			&secp_ctx,
+			&node_a_chan.build_local_commitment_secret(node_a_chan.cur_local_commitment_transaction_number + 1),
+		);
 		let msg = node_a_chan.get_channel_reestablish();
 		match msg.data_loss_protect {
 			OptionalField::Present(DataLossProtect { my_current_per_commitment_point, .. }) => {
 				assert_eq!(expected_commitment_point, my_current_per_commitment_point);
-			},
-			_ => panic!()
+			}
+			_ => panic!(),
 		}
 	}
 
 	#[test]
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendix C:
-		let feeest = TestFeeEstimator{fee_est: 15000};
-		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let feeest = TestFeeEstimator { fee_est: 15000 };
+		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
 		let mut chan_keys = InMemoryChannelKeys::new(
 			&secp_ctx,
-			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&hex::decode("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap(),
-			SecretKey::from_slice(&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
-
+			SecretKey::from_slice(
+				&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..],
+			)
+			.unwrap(),
+			SecretKey::from_slice(
+				&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..],
+			)
+			.unwrap(),
+			SecretKey::from_slice(
+				&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..],
+			)
+			.unwrap(),
+			SecretKey::from_slice(
+				&hex::decode("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..],
+			)
+			.unwrap(),
+			SecretKey::from_slice(
+				&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..],
+			)
+			.unwrap(),
 			// These aren't set in the test vectors:
-			[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+			[
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+			],
 			10_000_000,
 		);
 
-		assert_eq!(PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
-				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
+		assert_eq!(
+			PublicKey::from_secret_key(&secp_ctx, chan_keys.funding_key()).serialize()[..],
+			hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]
+		);
 		let keys_provider = Keys { chan_keys: chan_keys.clone() };
 
 		let their_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&&feeest, &&keys_provider, their_node_id, 10_000_000, 100000, 42, Arc::clone(&logger), &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(
+			&&feeest,
+			&&keys_provider,
+			their_node_id,
+			10_000_000,
+			100000,
+			42,
+			Arc::clone(&logger),
+			&config,
+		)
+		.unwrap(); // Nothing uses their network key in this test
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
-		let funding_info = OutPoint::new(Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
+		let funding_info = OutPoint::new(
+			Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
+			0,
+		);
 		chan.funding_txo = Some(funding_info);
 
 		let their_pubkeys = ChannelPublicKeys {
-			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
-			revocation_basepoint: PublicKey::from_slice(&hex::decode("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..]).unwrap(),
-			payment_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444"),
-			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
-			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
+			funding_pubkey: public_from_secret_hex(
+				&secp_ctx,
+				"1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13",
+			),
+			revocation_basepoint: PublicKey::from_slice(
+				&hex::decode("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").unwrap()[..],
+			)
+			.unwrap(),
+			payment_basepoint: public_from_secret_hex(
+				&secp_ctx,
+				"4444444444444444444444444444444444444444444444444444444444444444",
+			),
+			delayed_payment_basepoint: public_from_secret_hex(
+				&secp_ctx,
+				"1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13",
+			),
+			htlc_basepoint: public_from_secret_hex(
+				&secp_ctx,
+				"4444444444444444444444444444444444444444444444444444444444444444",
+			),
 		};
 		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
 
-		assert_eq!(their_pubkeys.payment_basepoint.serialize()[..],
-		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
+		assert_eq!(
+			their_pubkeys.payment_basepoint.serialize()[..],
+			hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]
+		);
 
-		assert_eq!(their_pubkeys.funding_pubkey.serialize()[..],
-		           hex::decode("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]);
+		assert_eq!(
+			their_pubkeys.funding_pubkey.serialize()[..],
+			hex::decode("030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c1").unwrap()[..]
+		);
 
-		assert_eq!(their_pubkeys.htlc_basepoint.serialize()[..],
-		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
+		assert_eq!(
+			their_pubkeys.htlc_basepoint.serialize()[..],
+			hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]
+		);
 
 		// We can't just use build_local_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
 		// build_commitment_transaction.
 		let delayed_payment_base = PublicKey::from_secret_key(&secp_ctx, chan.local_keys.delayed_payment_base_key());
-		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
+		let per_commitment_secret = SecretKey::from_slice(
+			&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..],
+		)
+		.unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 		let htlc_basepoint = PublicKey::from_secret_key(&secp_ctx, chan.local_keys.htlc_base_key());
-		let keys = TxCreationKeys::new(&secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.payment_basepoint, &their_pubkeys.htlc_basepoint).unwrap();
+		let keys = TxCreationKeys::new(
+			&secp_ctx,
+			&per_commitment_point,
+			&delayed_payment_base,
+			&htlc_basepoint,
+			&their_pubkeys.revocation_basepoint,
+			&their_pubkeys.payment_basepoint,
+			&their_pubkeys.htlc_basepoint,
+		)
+		.unwrap();
 
 		chan.their_pubkeys = Some(their_pubkeys);
 
@@ -4577,29 +5535,33 @@ mod tests {
 		}
 
 		chan.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
+			let mut out = InboundHTLCOutput {
 				htlc_id: 0,
 				amount_msat: 1000000,
 				cltv_expiry: 500,
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap()).into_inner();
+			out.payment_hash.0 =
+				Sha256::hash(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap())
+					.into_inner();
 			out
 		});
 		chan.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
+			let mut out = InboundHTLCOutput {
 				htlc_id: 1,
 				amount_msat: 2000000,
 				cltv_expiry: 501,
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).into_inner();
+			out.payment_hash.0 =
+				Sha256::hash(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap())
+					.into_inner();
 			out
 		});
 		chan.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
+			let mut out = OutboundHTLCOutput {
 				htlc_id: 2,
 				amount_msat: 2000000,
 				cltv_expiry: 502,
@@ -4607,11 +5569,13 @@ mod tests {
 				state: OutboundHTLCState::Committed,
 				source: HTLCSource::dummy(),
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()).into_inner();
+			out.payment_hash.0 =
+				Sha256::hash(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap())
+					.into_inner();
 			out
 		});
 		chan.pending_outbound_htlcs.push({
-			let mut out = OutboundHTLCOutput{
+			let mut out = OutboundHTLCOutput {
 				htlc_id: 3,
 				amount_msat: 3000000,
 				cltv_expiry: 503,
@@ -4619,18 +5583,22 @@ mod tests {
 				state: OutboundHTLCState::Committed,
 				source: HTLCSource::dummy(),
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()).into_inner();
+			out.payment_hash.0 =
+				Sha256::hash(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap())
+					.into_inner();
 			out
 		});
 		chan.pending_inbound_htlcs.push({
-			let mut out = InboundHTLCOutput{
+			let mut out = InboundHTLCOutput {
 				htlc_id: 4,
 				amount_msat: 4000000,
 				cltv_expiry: 504,
 				payment_hash: PaymentHash([0; 32]),
 				state: InboundHTLCState::Committed,
 			};
-			out.payment_hash.0 = Sha256::hash(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()).into_inner();
+			out.payment_hash.0 =
+				Sha256::hash(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap())
+					.into_inner();
 			out
 		});
 
@@ -4673,33 +5641,33 @@ mod tests {
 		chan.feerate_per_kw = 647;
 
 		test_commitment!("3045022100a5c01383d3ec646d97e40f44318d49def817fcd61a0ef18008a665b3e151785502203e648efddd5838981ef55ec954be69c4a652d021e6081a100d034de366815e9b",
-		                 "304502210094bfd8f5572ac0157ec76a9551b6c5216a4538c07cd13a51af4a54cb26fa14320220768efce8ce6f4a5efac875142ff19237c011343670adf9c7ac69704a120d1163",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8007e80300000000000022002052bfef0479d7b293c27e0f1eb294bea154c63a3294ef092c19af51409bce0e2ad007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110e09c6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040048304502210094bfd8f5572ac0157ec76a9551b6c5216a4538c07cd13a51af4a54cb26fa14320220768efce8ce6f4a5efac875142ff19237c011343670adf9c7ac69704a120d116301483045022100a5c01383d3ec646d97e40f44318d49def817fcd61a0ef18008a665b3e151785502203e648efddd5838981ef55ec954be69c4a652d021e6081a100d034de366815e9b01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "304502210094bfd8f5572ac0157ec76a9551b6c5216a4538c07cd13a51af4a54cb26fa14320220768efce8ce6f4a5efac875142ff19237c011343670adf9c7ac69704a120d1163",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8007e80300000000000022002052bfef0479d7b293c27e0f1eb294bea154c63a3294ef092c19af51409bce0e2ad007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110e09c6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040048304502210094bfd8f5572ac0157ec76a9551b6c5216a4538c07cd13a51af4a54cb26fa14320220768efce8ce6f4a5efac875142ff19237c011343670adf9c7ac69704a120d116301483045022100a5c01383d3ec646d97e40f44318d49def817fcd61a0ef18008a665b3e151785502203e648efddd5838981ef55ec954be69c4a652d021e6081a100d034de366815e9b01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "30440220385a5afe75632f50128cbb029ee95c80156b5b4744beddc729ad339c9ca432c802202ba5f48550cad3379ac75b9b4fedb86a35baa6947f16ba5037fb8b11ab343740",
-		                  "304402205999590b8a79fa346e003a68fd40366397119b2b0cdf37b149968d6bc6fbcc4702202b1e1fb5ab7864931caed4e732c359e0fe3d86a548b557be2246efb1708d579a",
-		                  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb60000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220385a5afe75632f50128cbb029ee95c80156b5b4744beddc729ad339c9ca432c802202ba5f48550cad3379ac75b9b4fedb86a35baa6947f16ba5037fb8b11ab3437400147304402205999590b8a79fa346e003a68fd40366397119b2b0cdf37b149968d6bc6fbcc4702202b1e1fb5ab7864931caed4e732c359e0fe3d86a548b557be2246efb1708d579a012000000000000000000000000000000000000000000000000000000000000000008a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac686800000000"},
+						 { 0,
+						  "30440220385a5afe75632f50128cbb029ee95c80156b5b4744beddc729ad339c9ca432c802202ba5f48550cad3379ac75b9b4fedb86a35baa6947f16ba5037fb8b11ab343740",
+						  "304402205999590b8a79fa346e003a68fd40366397119b2b0cdf37b149968d6bc6fbcc4702202b1e1fb5ab7864931caed4e732c359e0fe3d86a548b557be2246efb1708d579a",
+						  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb60000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220385a5afe75632f50128cbb029ee95c80156b5b4744beddc729ad339c9ca432c802202ba5f48550cad3379ac75b9b4fedb86a35baa6947f16ba5037fb8b11ab3437400147304402205999590b8a79fa346e003a68fd40366397119b2b0cdf37b149968d6bc6fbcc4702202b1e1fb5ab7864931caed4e732c359e0fe3d86a548b557be2246efb1708d579a012000000000000000000000000000000000000000000000000000000000000000008a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac686800000000"},
 
-		                 { 1,
-		                  "304402207ceb6678d4db33d2401fdc409959e57c16a6cb97a30261d9c61f29b8c58d34b90220084b4a17b4ca0e86f2d798b3698ca52de5621f2ce86f80bed79afa66874511b0",
-		                  "304402207ff03eb0127fc7c6cae49cc29e2a586b98d1e8969cf4a17dfa50b9c2647720b902205e2ecfda2252956c0ca32f175080e75e4e390e433feb1f8ce9f2ba55648a1dac",
-		                  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb60100000000000000000124060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207ceb6678d4db33d2401fdc409959e57c16a6cb97a30261d9c61f29b8c58d34b90220084b4a17b4ca0e86f2d798b3698ca52de5621f2ce86f80bed79afa66874511b00147304402207ff03eb0127fc7c6cae49cc29e2a586b98d1e8969cf4a17dfa50b9c2647720b902205e2ecfda2252956c0ca32f175080e75e4e390e433feb1f8ce9f2ba55648a1dac01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
+						 { 1,
+						  "304402207ceb6678d4db33d2401fdc409959e57c16a6cb97a30261d9c61f29b8c58d34b90220084b4a17b4ca0e86f2d798b3698ca52de5621f2ce86f80bed79afa66874511b0",
+						  "304402207ff03eb0127fc7c6cae49cc29e2a586b98d1e8969cf4a17dfa50b9c2647720b902205e2ecfda2252956c0ca32f175080e75e4e390e433feb1f8ce9f2ba55648a1dac",
+						  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb60100000000000000000124060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207ceb6678d4db33d2401fdc409959e57c16a6cb97a30261d9c61f29b8c58d34b90220084b4a17b4ca0e86f2d798b3698ca52de5621f2ce86f80bed79afa66874511b00147304402207ff03eb0127fc7c6cae49cc29e2a586b98d1e8969cf4a17dfa50b9c2647720b902205e2ecfda2252956c0ca32f175080e75e4e390e433feb1f8ce9f2ba55648a1dac01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
 
-		                 { 2,
-		                  "304402206a401b29a0dff0d18ec903502c13d83e7ec019450113f4a7655a4ce40d1f65ba0220217723a084e727b6ca0cc8b6c69c014a7e4a01fcdcba3e3993f462a3c574d833",
-		                  "3045022100d50d067ca625d54e62df533a8f9291736678d0b86c28a61bb2a80cf42e702d6e02202373dde7e00218eacdafb9415fe0e1071beec1857d1af3c6a201a44cbc47c877",
-		                  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb6020000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206a401b29a0dff0d18ec903502c13d83e7ec019450113f4a7655a4ce40d1f65ba0220217723a084e727b6ca0cc8b6c69c014a7e4a01fcdcba3e3993f462a3c574d83301483045022100d50d067ca625d54e62df533a8f9291736678d0b86c28a61bb2a80cf42e702d6e02202373dde7e00218eacdafb9415fe0e1071beec1857d1af3c6a201a44cbc47c877012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000"},
+						 { 2,
+						  "304402206a401b29a0dff0d18ec903502c13d83e7ec019450113f4a7655a4ce40d1f65ba0220217723a084e727b6ca0cc8b6c69c014a7e4a01fcdcba3e3993f462a3c574d833",
+						  "3045022100d50d067ca625d54e62df533a8f9291736678d0b86c28a61bb2a80cf42e702d6e02202373dde7e00218eacdafb9415fe0e1071beec1857d1af3c6a201a44cbc47c877",
+						  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb6020000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206a401b29a0dff0d18ec903502c13d83e7ec019450113f4a7655a4ce40d1f65ba0220217723a084e727b6ca0cc8b6c69c014a7e4a01fcdcba3e3993f462a3c574d83301483045022100d50d067ca625d54e62df533a8f9291736678d0b86c28a61bb2a80cf42e702d6e02202373dde7e00218eacdafb9415fe0e1071beec1857d1af3c6a201a44cbc47c877012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000"},
 
-		                 { 3,
-		                  "30450221009b1c987ba599ee3bde1dbca776b85481d70a78b681a8d84206723e2795c7cac002207aac84ad910f8598c4d1c0ea2e3399cf6627a4e3e90131315bc9f038451ce39d",
-		                  "3045022100db9dc65291077a52728c622987e9895b7241d4394d6dcb916d7600a3e8728c22022036ee3ee717ba0bb5c45ee84bc7bbf85c0f90f26ae4e4a25a6b4241afa8a3f1cb",
-		                  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb6030000000000000000010c0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009b1c987ba599ee3bde1dbca776b85481d70a78b681a8d84206723e2795c7cac002207aac84ad910f8598c4d1c0ea2e3399cf6627a4e3e90131315bc9f038451ce39d01483045022100db9dc65291077a52728c622987e9895b7241d4394d6dcb916d7600a3e8728c22022036ee3ee717ba0bb5c45ee84bc7bbf85c0f90f26ae4e4a25a6b4241afa8a3f1cb01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 3,
+						  "30450221009b1c987ba599ee3bde1dbca776b85481d70a78b681a8d84206723e2795c7cac002207aac84ad910f8598c4d1c0ea2e3399cf6627a4e3e90131315bc9f038451ce39d",
+						  "3045022100db9dc65291077a52728c622987e9895b7241d4394d6dcb916d7600a3e8728c22022036ee3ee717ba0bb5c45ee84bc7bbf85c0f90f26ae4e4a25a6b4241afa8a3f1cb",
+						  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb6030000000000000000010c0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009b1c987ba599ee3bde1dbca776b85481d70a78b681a8d84206723e2795c7cac002207aac84ad910f8598c4d1c0ea2e3399cf6627a4e3e90131315bc9f038451ce39d01483045022100db9dc65291077a52728c622987e9895b7241d4394d6dcb916d7600a3e8728c22022036ee3ee717ba0bb5c45ee84bc7bbf85c0f90f26ae4e4a25a6b4241afa8a3f1cb01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 4,
-		                  "3045022100cc28030b59f0914f45b84caa983b6f8effa900c952310708c2b5b00781117022022027ba2ccdf94d03c6d48b327f183f6e28c8a214d089b9227f94ac4f85315274f0",
-		                  "304402202d1a3c0d31200265d2a2def2753ead4959ae20b4083e19553acfffa5dfab60bf022020ede134149504e15b88ab261a066de49848411e15e70f9e6a5462aec2949f8f",
-		                  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb604000000000000000001da0d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100cc28030b59f0914f45b84caa983b6f8effa900c952310708c2b5b00781117022022027ba2ccdf94d03c6d48b327f183f6e28c8a214d089b9227f94ac4f85315274f00147304402202d1a3c0d31200265d2a2def2753ead4959ae20b4083e19553acfffa5dfab60bf022020ede134149504e15b88ab261a066de49848411e15e70f9e6a5462aec2949f8f012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 4,
+						  "3045022100cc28030b59f0914f45b84caa983b6f8effa900c952310708c2b5b00781117022022027ba2ccdf94d03c6d48b327f183f6e28c8a214d089b9227f94ac4f85315274f0",
+						  "304402202d1a3c0d31200265d2a2def2753ead4959ae20b4083e19553acfffa5dfab60bf022020ede134149504e15b88ab261a066de49848411e15e70f9e6a5462aec2949f8f",
+						  "020000000001018323148ce2419f21ca3d6780053747715832e18ac780931a514b187768882bb604000000000000000001da0d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100cc28030b59f0914f45b84caa983b6f8effa900c952310708c2b5b00781117022022027ba2ccdf94d03c6d48b327f183f6e28c8a214d089b9227f94ac4f85315274f00147304402202d1a3c0d31200265d2a2def2753ead4959ae20b4083e19553acfffa5dfab60bf022020ede134149504e15b88ab261a066de49848411e15e70f9e6a5462aec2949f8f012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with six outputs untrimmed (minimum feerate)
@@ -4707,28 +5675,28 @@ mod tests {
 		chan.feerate_per_kw = 648;
 
 		test_commitment!("3044022072714e2fbb93cdd1c42eb0828b4f2eff143f717d8f26e79d6ada4f0dcb681bbe02200911be4e5161dd6ebe59ff1c58e1997c4aea804f81db6b698821db6093d7b057",
-		                 "3045022100a2270d5950c89ae0841233f6efea9c951898b301b2e89e0adbd2c687b9f32efa02207943d90f95b9610458e7c65a576e149750ff3accaacad004cd85e70b235e27de",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8006d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de8431104e9d6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100a2270d5950c89ae0841233f6efea9c951898b301b2e89e0adbd2c687b9f32efa02207943d90f95b9610458e7c65a576e149750ff3accaacad004cd85e70b235e27de01473044022072714e2fbb93cdd1c42eb0828b4f2eff143f717d8f26e79d6ada4f0dcb681bbe02200911be4e5161dd6ebe59ff1c58e1997c4aea804f81db6b698821db6093d7b05701475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "3045022100a2270d5950c89ae0841233f6efea9c951898b301b2e89e0adbd2c687b9f32efa02207943d90f95b9610458e7c65a576e149750ff3accaacad004cd85e70b235e27de",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8006d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de8431104e9d6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100a2270d5950c89ae0841233f6efea9c951898b301b2e89e0adbd2c687b9f32efa02207943d90f95b9610458e7c65a576e149750ff3accaacad004cd85e70b235e27de01473044022072714e2fbb93cdd1c42eb0828b4f2eff143f717d8f26e79d6ada4f0dcb681bbe02200911be4e5161dd6ebe59ff1c58e1997c4aea804f81db6b698821db6093d7b05701475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3044022062ef2e77591409d60d7817d9bb1e71d3c4a2931d1a6c7c8307422c84f001a251022022dad9726b0ae3fe92bda745a06f2c00f92342a186d84518588cf65f4dfaada8",
-		                  "3045022100a4c574f00411dd2f978ca5cdc1b848c311cd7849c087ad2f21a5bce5e8cc5ae90220090ae39a9bce2fb8bc879d7e9f9022df249f41e25e51f1a9bf6447a9eeffc098",
-		                  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd10000000000000000000123060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022062ef2e77591409d60d7817d9bb1e71d3c4a2931d1a6c7c8307422c84f001a251022022dad9726b0ae3fe92bda745a06f2c00f92342a186d84518588cf65f4dfaada801483045022100a4c574f00411dd2f978ca5cdc1b848c311cd7849c087ad2f21a5bce5e8cc5ae90220090ae39a9bce2fb8bc879d7e9f9022df249f41e25e51f1a9bf6447a9eeffc09801008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
+						 { 0,
+						  "3044022062ef2e77591409d60d7817d9bb1e71d3c4a2931d1a6c7c8307422c84f001a251022022dad9726b0ae3fe92bda745a06f2c00f92342a186d84518588cf65f4dfaada8",
+						  "3045022100a4c574f00411dd2f978ca5cdc1b848c311cd7849c087ad2f21a5bce5e8cc5ae90220090ae39a9bce2fb8bc879d7e9f9022df249f41e25e51f1a9bf6447a9eeffc098",
+						  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd10000000000000000000123060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022062ef2e77591409d60d7817d9bb1e71d3c4a2931d1a6c7c8307422c84f001a251022022dad9726b0ae3fe92bda745a06f2c00f92342a186d84518588cf65f4dfaada801483045022100a4c574f00411dd2f978ca5cdc1b848c311cd7849c087ad2f21a5bce5e8cc5ae90220090ae39a9bce2fb8bc879d7e9f9022df249f41e25e51f1a9bf6447a9eeffc09801008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
 
-		                 { 1,
-		                  "3045022100e968cbbb5f402ed389fdc7f6cd2a80ed650bb42c79aeb2a5678444af94f6c78502204b47a1cb24ab5b0b6fe69fe9cfc7dba07b9dd0d8b95f372c1d9435146a88f8d4",
-		                  "304402207679cf19790bea76a733d2fa0672bd43ab455687a068f815a3d237581f57139a0220683a1a799e102071c206b207735ca80f627ab83d6616b4bcd017c5d79ef3e7d0",
-		                  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd10100000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e968cbbb5f402ed389fdc7f6cd2a80ed650bb42c79aeb2a5678444af94f6c78502204b47a1cb24ab5b0b6fe69fe9cfc7dba07b9dd0d8b95f372c1d9435146a88f8d40147304402207679cf19790bea76a733d2fa0672bd43ab455687a068f815a3d237581f57139a0220683a1a799e102071c206b207735ca80f627ab83d6616b4bcd017c5d79ef3e7d0012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000"},
+						 { 1,
+						  "3045022100e968cbbb5f402ed389fdc7f6cd2a80ed650bb42c79aeb2a5678444af94f6c78502204b47a1cb24ab5b0b6fe69fe9cfc7dba07b9dd0d8b95f372c1d9435146a88f8d4",
+						  "304402207679cf19790bea76a733d2fa0672bd43ab455687a068f815a3d237581f57139a0220683a1a799e102071c206b207735ca80f627ab83d6616b4bcd017c5d79ef3e7d0",
+						  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd10100000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e968cbbb5f402ed389fdc7f6cd2a80ed650bb42c79aeb2a5678444af94f6c78502204b47a1cb24ab5b0b6fe69fe9cfc7dba07b9dd0d8b95f372c1d9435146a88f8d40147304402207679cf19790bea76a733d2fa0672bd43ab455687a068f815a3d237581f57139a0220683a1a799e102071c206b207735ca80f627ab83d6616b4bcd017c5d79ef3e7d0012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000"},
 
-		                 { 2,
-		                  "3045022100aa91932e305292cf9969cc23502bbf6cef83a5df39c95ad04a707c4f4fed5c7702207099fc0f3a9bfe1e7683c0e9aa5e76c5432eb20693bf4cb182f04d383dc9c8c2",
-		                  "304402200df76fea718745f3c529bac7fd37923e7309ce38b25c0781e4cf514dd9ef8dc802204172295739dbae9fe0474dcee3608e3433b4b2af3a2e6787108b02f894dcdda3",
-		                  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd1020000000000000000010b0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100aa91932e305292cf9969cc23502bbf6cef83a5df39c95ad04a707c4f4fed5c7702207099fc0f3a9bfe1e7683c0e9aa5e76c5432eb20693bf4cb182f04d383dc9c8c20147304402200df76fea718745f3c529bac7fd37923e7309ce38b25c0781e4cf514dd9ef8dc802204172295739dbae9fe0474dcee3608e3433b4b2af3a2e6787108b02f894dcdda301008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 2,
+						  "3045022100aa91932e305292cf9969cc23502bbf6cef83a5df39c95ad04a707c4f4fed5c7702207099fc0f3a9bfe1e7683c0e9aa5e76c5432eb20693bf4cb182f04d383dc9c8c2",
+						  "304402200df76fea718745f3c529bac7fd37923e7309ce38b25c0781e4cf514dd9ef8dc802204172295739dbae9fe0474dcee3608e3433b4b2af3a2e6787108b02f894dcdda3",
+						  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd1020000000000000000010b0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100aa91932e305292cf9969cc23502bbf6cef83a5df39c95ad04a707c4f4fed5c7702207099fc0f3a9bfe1e7683c0e9aa5e76c5432eb20693bf4cb182f04d383dc9c8c20147304402200df76fea718745f3c529bac7fd37923e7309ce38b25c0781e4cf514dd9ef8dc802204172295739dbae9fe0474dcee3608e3433b4b2af3a2e6787108b02f894dcdda301008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 3,
-		                  "3044022035cac88040a5bba420b1c4257235d5015309113460bc33f2853cd81ca36e632402202fc94fd3e81e9d34a9d01782a0284f3044370d03d60f3fc041e2da088d2de58f",
-		                  "304402200daf2eb7afd355b4caf6fb08387b5f031940ea29d1a9f35071288a839c9039e4022067201b562456e7948616c13acb876b386b511599b58ac1d94d127f91c50463a6",
-		                  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd103000000000000000001d90d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022035cac88040a5bba420b1c4257235d5015309113460bc33f2853cd81ca36e632402202fc94fd3e81e9d34a9d01782a0284f3044370d03d60f3fc041e2da088d2de58f0147304402200daf2eb7afd355b4caf6fb08387b5f031940ea29d1a9f35071288a839c9039e4022067201b562456e7948616c13acb876b386b511599b58ac1d94d127f91c50463a6012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 3,
+						  "3044022035cac88040a5bba420b1c4257235d5015309113460bc33f2853cd81ca36e632402202fc94fd3e81e9d34a9d01782a0284f3044370d03d60f3fc041e2da088d2de58f",
+						  "304402200daf2eb7afd355b4caf6fb08387b5f031940ea29d1a9f35071288a839c9039e4022067201b562456e7948616c13acb876b386b511599b58ac1d94d127f91c50463a6",
+						  "02000000000101579c183eca9e8236a5d7f5dcd79cfec32c497fdc0ec61533cde99ecd436cadd103000000000000000001d90d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022035cac88040a5bba420b1c4257235d5015309113460bc33f2853cd81ca36e632402202fc94fd3e81e9d34a9d01782a0284f3044370d03d60f3fc041e2da088d2de58f0147304402200daf2eb7afd355b4caf6fb08387b5f031940ea29d1a9f35071288a839c9039e4022067201b562456e7948616c13acb876b386b511599b58ac1d94d127f91c50463a6012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with six outputs untrimmed (maximum feerate)
@@ -4736,28 +5704,28 @@ mod tests {
 		chan.feerate_per_kw = 2069;
 
 		test_commitment!("3044022001d55e488b8b035b2dd29d50b65b530923a416d47f377284145bc8767b1b6a75022019bb53ddfe1cefaf156f924777eaaf8fdca1810695a7d0a247ad2afba8232eb4",
-		                 "304402203ca8f31c6a47519f83255dc69f1894d9a6d7476a19f498d31eaf0cd3a85eeb63022026fd92dc752b33905c4c838c528b692a8ad4ced959990b5d5ee2ff940fa90eea",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8006d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de84311077956a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402203ca8f31c6a47519f83255dc69f1894d9a6d7476a19f498d31eaf0cd3a85eeb63022026fd92dc752b33905c4c838c528b692a8ad4ced959990b5d5ee2ff940fa90eea01473044022001d55e488b8b035b2dd29d50b65b530923a416d47f377284145bc8767b1b6a75022019bb53ddfe1cefaf156f924777eaaf8fdca1810695a7d0a247ad2afba8232eb401475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "304402203ca8f31c6a47519f83255dc69f1894d9a6d7476a19f498d31eaf0cd3a85eeb63022026fd92dc752b33905c4c838c528b692a8ad4ced959990b5d5ee2ff940fa90eea",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8006d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de84311077956a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402203ca8f31c6a47519f83255dc69f1894d9a6d7476a19f498d31eaf0cd3a85eeb63022026fd92dc752b33905c4c838c528b692a8ad4ced959990b5d5ee2ff940fa90eea01473044022001d55e488b8b035b2dd29d50b65b530923a416d47f377284145bc8767b1b6a75022019bb53ddfe1cefaf156f924777eaaf8fdca1810695a7d0a247ad2afba8232eb401475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3045022100d1cf354de41c1369336cf85b225ed033f1f8982a01be503668df756a7e668b66022001254144fb4d0eecc61908fccc3388891ba17c5d7a1a8c62bdd307e5a513f992",
-		                  "3044022056eb1af429660e45a1b0b66568cb8c4a3aa7e4c9c292d5d6c47f86ebf2c8838f022065c3ac4ebe980ca7a41148569be4ad8751b0a724a41405697ec55035dae66402",
-		                  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a0000000000000000000175020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d1cf354de41c1369336cf85b225ed033f1f8982a01be503668df756a7e668b66022001254144fb4d0eecc61908fccc3388891ba17c5d7a1a8c62bdd307e5a513f99201473044022056eb1af429660e45a1b0b66568cb8c4a3aa7e4c9c292d5d6c47f86ebf2c8838f022065c3ac4ebe980ca7a41148569be4ad8751b0a724a41405697ec55035dae6640201008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
+						 { 0,
+						  "3045022100d1cf354de41c1369336cf85b225ed033f1f8982a01be503668df756a7e668b66022001254144fb4d0eecc61908fccc3388891ba17c5d7a1a8c62bdd307e5a513f992",
+						  "3044022056eb1af429660e45a1b0b66568cb8c4a3aa7e4c9c292d5d6c47f86ebf2c8838f022065c3ac4ebe980ca7a41148569be4ad8751b0a724a41405697ec55035dae66402",
+						  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a0000000000000000000175020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d1cf354de41c1369336cf85b225ed033f1f8982a01be503668df756a7e668b66022001254144fb4d0eecc61908fccc3388891ba17c5d7a1a8c62bdd307e5a513f99201473044022056eb1af429660e45a1b0b66568cb8c4a3aa7e4c9c292d5d6c47f86ebf2c8838f022065c3ac4ebe980ca7a41148569be4ad8751b0a724a41405697ec55035dae6640201008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
 
-		                 { 1,
-		                  "3045022100d065569dcb94f090345402736385efeb8ea265131804beac06dd84d15dd2d6880220664feb0b4b2eb985fadb6ec7dc58c9334ea88ce599a9be760554a2d4b3b5d9f4",
-		                  "3045022100914bb232cd4b2690ee3d6cb8c3713c4ac9c4fb925323068d8b07f67c8541f8d9022057152f5f1615b793d2d45aac7518989ae4fe970f28b9b5c77504799d25433f7f",
-		                  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a0100000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d065569dcb94f090345402736385efeb8ea265131804beac06dd84d15dd2d6880220664feb0b4b2eb985fadb6ec7dc58c9334ea88ce599a9be760554a2d4b3b5d9f401483045022100914bb232cd4b2690ee3d6cb8c3713c4ac9c4fb925323068d8b07f67c8541f8d9022057152f5f1615b793d2d45aac7518989ae4fe970f28b9b5c77504799d25433f7f012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000"},
+						 { 1,
+						  "3045022100d065569dcb94f090345402736385efeb8ea265131804beac06dd84d15dd2d6880220664feb0b4b2eb985fadb6ec7dc58c9334ea88ce599a9be760554a2d4b3b5d9f4",
+						  "3045022100914bb232cd4b2690ee3d6cb8c3713c4ac9c4fb925323068d8b07f67c8541f8d9022057152f5f1615b793d2d45aac7518989ae4fe970f28b9b5c77504799d25433f7f",
+						  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a0100000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d065569dcb94f090345402736385efeb8ea265131804beac06dd84d15dd2d6880220664feb0b4b2eb985fadb6ec7dc58c9334ea88ce599a9be760554a2d4b3b5d9f401483045022100914bb232cd4b2690ee3d6cb8c3713c4ac9c4fb925323068d8b07f67c8541f8d9022057152f5f1615b793d2d45aac7518989ae4fe970f28b9b5c77504799d25433f7f012001010101010101010101010101010101010101010101010101010101010101018a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac686800000000"},
 
-		                 { 2,
-		                  "3045022100d4e69d363de993684eae7b37853c40722a4c1b4a7b588ad7b5d8a9b5006137a102207a069c628170ee34be5612747051bdcc087466dbaa68d5756ea81c10155aef18",
-		                  "304402200e362443f7af830b419771e8e1614fc391db3a4eb799989abfc5ab26d6fcd032022039ab0cad1c14dfbe9446bf847965e56fe016e0cbcf719fd18c1bfbf53ecbd9f9",
-		                  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a020000000000000000015d060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d4e69d363de993684eae7b37853c40722a4c1b4a7b588ad7b5d8a9b5006137a102207a069c628170ee34be5612747051bdcc087466dbaa68d5756ea81c10155aef180147304402200e362443f7af830b419771e8e1614fc391db3a4eb799989abfc5ab26d6fcd032022039ab0cad1c14dfbe9446bf847965e56fe016e0cbcf719fd18c1bfbf53ecbd9f901008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 2,
+						  "3045022100d4e69d363de993684eae7b37853c40722a4c1b4a7b588ad7b5d8a9b5006137a102207a069c628170ee34be5612747051bdcc087466dbaa68d5756ea81c10155aef18",
+						  "304402200e362443f7af830b419771e8e1614fc391db3a4eb799989abfc5ab26d6fcd032022039ab0cad1c14dfbe9446bf847965e56fe016e0cbcf719fd18c1bfbf53ecbd9f9",
+						  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a020000000000000000015d060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d4e69d363de993684eae7b37853c40722a4c1b4a7b588ad7b5d8a9b5006137a102207a069c628170ee34be5612747051bdcc087466dbaa68d5756ea81c10155aef180147304402200e362443f7af830b419771e8e1614fc391db3a4eb799989abfc5ab26d6fcd032022039ab0cad1c14dfbe9446bf847965e56fe016e0cbcf719fd18c1bfbf53ecbd9f901008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 3,
-		                  "30450221008ec888e36e4a4b3dc2ed6b823319855b2ae03006ca6ae0d9aa7e24bfc1d6f07102203b0f78885472a67ff4fe5916c0bb669487d659527509516fc3a08e87a2cc0a7c",
-		                  "304402202c3e14282b84b02705dfd00a6da396c9fe8a8bcb1d3fdb4b20a4feba09440e8b02202b058b39aa9b0c865b22095edcd9ff1f71bbfe20aa4993755e54d042755ed0d5",
-		                  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a03000000000000000001f2090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221008ec888e36e4a4b3dc2ed6b823319855b2ae03006ca6ae0d9aa7e24bfc1d6f07102203b0f78885472a67ff4fe5916c0bb669487d659527509516fc3a08e87a2cc0a7c0147304402202c3e14282b84b02705dfd00a6da396c9fe8a8bcb1d3fdb4b20a4feba09440e8b02202b058b39aa9b0c865b22095edcd9ff1f71bbfe20aa4993755e54d042755ed0d5012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
+						 { 3,
+						  "30450221008ec888e36e4a4b3dc2ed6b823319855b2ae03006ca6ae0d9aa7e24bfc1d6f07102203b0f78885472a67ff4fe5916c0bb669487d659527509516fc3a08e87a2cc0a7c",
+						  "304402202c3e14282b84b02705dfd00a6da396c9fe8a8bcb1d3fdb4b20a4feba09440e8b02202b058b39aa9b0c865b22095edcd9ff1f71bbfe20aa4993755e54d042755ed0d5",
+						  "02000000000101ca94a9ad516ebc0c4bdd7b6254871babfa978d5accafb554214137d398bfcf6a03000000000000000001f2090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221008ec888e36e4a4b3dc2ed6b823319855b2ae03006ca6ae0d9aa7e24bfc1d6f07102203b0f78885472a67ff4fe5916c0bb669487d659527509516fc3a08e87a2cc0a7c0147304402202c3e14282b84b02705dfd00a6da396c9fe8a8bcb1d3fdb4b20a4feba09440e8b02202b058b39aa9b0c865b22095edcd9ff1f71bbfe20aa4993755e54d042755ed0d5012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		});
 
 		// commitment tx with five outputs untrimmed (minimum feerate)
@@ -4765,23 +5733,23 @@ mod tests {
 		chan.feerate_per_kw = 2070;
 
 		test_commitment!("3045022100f2377f7a67b7fc7f4e2c0c9e3a7de935c32417f5668eda31ea1db401b7dc53030220415fdbc8e91d0f735e70c21952342742e25249b0d062d43efbfc564499f37526",
-		                 "30440220443cb07f650aebbba14b8bc8d81e096712590f524c5991ac0ed3bbc8fd3bd0c7022028a635f548e3ca64b19b69b1ea00f05b22752f91daf0b6dab78e62ba52eb7fd0",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8005d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110da966a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220443cb07f650aebbba14b8bc8d81e096712590f524c5991ac0ed3bbc8fd3bd0c7022028a635f548e3ca64b19b69b1ea00f05b22752f91daf0b6dab78e62ba52eb7fd001483045022100f2377f7a67b7fc7f4e2c0c9e3a7de935c32417f5668eda31ea1db401b7dc53030220415fdbc8e91d0f735e70c21952342742e25249b0d062d43efbfc564499f3752601475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "30440220443cb07f650aebbba14b8bc8d81e096712590f524c5991ac0ed3bbc8fd3bd0c7022028a635f548e3ca64b19b69b1ea00f05b22752f91daf0b6dab78e62ba52eb7fd0",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8005d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110da966a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220443cb07f650aebbba14b8bc8d81e096712590f524c5991ac0ed3bbc8fd3bd0c7022028a635f548e3ca64b19b69b1ea00f05b22752f91daf0b6dab78e62ba52eb7fd001483045022100f2377f7a67b7fc7f4e2c0c9e3a7de935c32417f5668eda31ea1db401b7dc53030220415fdbc8e91d0f735e70c21952342742e25249b0d062d43efbfc564499f3752601475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3045022100eed143b1ee4bed5dc3cde40afa5db3e7354cbf9c44054b5f713f729356f08cf7022077161d171c2bbd9badf3c9934de65a4918de03bbac1450f715275f75b103f891",
-		                  "3045022100a0d043ed533e7fb1911e0553d31a8e2f3e6de19dbc035257f29d747c5e02f1f5022030cd38d8e84282175d49c1ebe0470db3ebd59768cf40780a784e248a43904fb8",
-		                  "0200000000010140a83ce364747ff277f4d7595d8d15f708418798922c40bc2b056aca5485a2180000000000000000000174020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100eed143b1ee4bed5dc3cde40afa5db3e7354cbf9c44054b5f713f729356f08cf7022077161d171c2bbd9badf3c9934de65a4918de03bbac1450f715275f75b103f89101483045022100a0d043ed533e7fb1911e0553d31a8e2f3e6de19dbc035257f29d747c5e02f1f5022030cd38d8e84282175d49c1ebe0470db3ebd59768cf40780a784e248a43904fb801008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
+						 { 0,
+						  "3045022100eed143b1ee4bed5dc3cde40afa5db3e7354cbf9c44054b5f713f729356f08cf7022077161d171c2bbd9badf3c9934de65a4918de03bbac1450f715275f75b103f891",
+						  "3045022100a0d043ed533e7fb1911e0553d31a8e2f3e6de19dbc035257f29d747c5e02f1f5022030cd38d8e84282175d49c1ebe0470db3ebd59768cf40780a784e248a43904fb8",
+						  "0200000000010140a83ce364747ff277f4d7595d8d15f708418798922c40bc2b056aca5485a2180000000000000000000174020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100eed143b1ee4bed5dc3cde40afa5db3e7354cbf9c44054b5f713f729356f08cf7022077161d171c2bbd9badf3c9934de65a4918de03bbac1450f715275f75b103f89101483045022100a0d043ed533e7fb1911e0553d31a8e2f3e6de19dbc035257f29d747c5e02f1f5022030cd38d8e84282175d49c1ebe0470db3ebd59768cf40780a784e248a43904fb801008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
 
-		                 { 1,
-		                  "3044022071e9357619fd8d29a411dc053b326a5224c5d11268070e88ecb981b174747c7a02202b763ae29a9d0732fa8836dd8597439460b50472183f420021b768981b4f7cf6",
-		                  "3045022100adb1d679f65f96178b59f23ed37d3b70443118f345224a07ecb043eee2acc157022034d24524fe857144a3bcfff3065a9994d0a6ec5f11c681e49431d573e242612d",
-		                  "0200000000010140a83ce364747ff277f4d7595d8d15f708418798922c40bc2b056aca5485a218010000000000000000015c060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022071e9357619fd8d29a411dc053b326a5224c5d11268070e88ecb981b174747c7a02202b763ae29a9d0732fa8836dd8597439460b50472183f420021b768981b4f7cf601483045022100adb1d679f65f96178b59f23ed37d3b70443118f345224a07ecb043eee2acc157022034d24524fe857144a3bcfff3065a9994d0a6ec5f11c681e49431d573e242612d01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 1,
+						  "3044022071e9357619fd8d29a411dc053b326a5224c5d11268070e88ecb981b174747c7a02202b763ae29a9d0732fa8836dd8597439460b50472183f420021b768981b4f7cf6",
+						  "3045022100adb1d679f65f96178b59f23ed37d3b70443118f345224a07ecb043eee2acc157022034d24524fe857144a3bcfff3065a9994d0a6ec5f11c681e49431d573e242612d",
+						  "0200000000010140a83ce364747ff277f4d7595d8d15f708418798922c40bc2b056aca5485a218010000000000000000015c060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022071e9357619fd8d29a411dc053b326a5224c5d11268070e88ecb981b174747c7a02202b763ae29a9d0732fa8836dd8597439460b50472183f420021b768981b4f7cf601483045022100adb1d679f65f96178b59f23ed37d3b70443118f345224a07ecb043eee2acc157022034d24524fe857144a3bcfff3065a9994d0a6ec5f11c681e49431d573e242612d01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 2,
-		                  "3045022100c9458a4d2cbb741705577deb0a890e5cb90ee141be0400d3162e533727c9cb2102206edcf765c5dc5e5f9b976ea8149bf8607b5a0efb30691138e1231302b640d2a4",
-		                  "304402200831422aa4e1ee6d55e0b894201770a8f8817a189356f2d70be76633ffa6a6f602200dd1b84a4855dc6727dd46c98daae43dfc70889d1ba7ef0087529a57c06e5e04",
-		                  "0200000000010140a83ce364747ff277f4d7595d8d15f708418798922c40bc2b056aca5485a21802000000000000000001f1090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c9458a4d2cbb741705577deb0a890e5cb90ee141be0400d3162e533727c9cb2102206edcf765c5dc5e5f9b976ea8149bf8607b5a0efb30691138e1231302b640d2a40147304402200831422aa4e1ee6d55e0b894201770a8f8817a189356f2d70be76633ffa6a6f602200dd1b84a4855dc6727dd46c98daae43dfc70889d1ba7ef0087529a57c06e5e04012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 2,
+						  "3045022100c9458a4d2cbb741705577deb0a890e5cb90ee141be0400d3162e533727c9cb2102206edcf765c5dc5e5f9b976ea8149bf8607b5a0efb30691138e1231302b640d2a4",
+						  "304402200831422aa4e1ee6d55e0b894201770a8f8817a189356f2d70be76633ffa6a6f602200dd1b84a4855dc6727dd46c98daae43dfc70889d1ba7ef0087529a57c06e5e04",
+						  "0200000000010140a83ce364747ff277f4d7595d8d15f708418798922c40bc2b056aca5485a21802000000000000000001f1090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c9458a4d2cbb741705577deb0a890e5cb90ee141be0400d3162e533727c9cb2102206edcf765c5dc5e5f9b976ea8149bf8607b5a0efb30691138e1231302b640d2a40147304402200831422aa4e1ee6d55e0b894201770a8f8817a189356f2d70be76633ffa6a6f602200dd1b84a4855dc6727dd46c98daae43dfc70889d1ba7ef0087529a57c06e5e04012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with five outputs untrimmed (maximum feerate)
@@ -4789,23 +5757,23 @@ mod tests {
 		chan.feerate_per_kw = 2194;
 
 		test_commitment!("3045022100d33c4e541aa1d255d41ea9a3b443b3b822ad8f7f86862638aac1f69f8f760577022007e2a18e6931ce3d3a804b1c78eda1de17dbe1fb7a95488c9a4ec86203953348",
-		                 "304402203b1b010c109c2ecbe7feb2d259b9c4126bd5dc99ee693c422ec0a5781fe161ba0220571fe4e2c649dea9c7aaf7e49b382962f6a3494963c97d80fef9a430ca3f7061",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8005d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de84311040966a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402203b1b010c109c2ecbe7feb2d259b9c4126bd5dc99ee693c422ec0a5781fe161ba0220571fe4e2c649dea9c7aaf7e49b382962f6a3494963c97d80fef9a430ca3f706101483045022100d33c4e541aa1d255d41ea9a3b443b3b822ad8f7f86862638aac1f69f8f760577022007e2a18e6931ce3d3a804b1c78eda1de17dbe1fb7a95488c9a4ec8620395334801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "304402203b1b010c109c2ecbe7feb2d259b9c4126bd5dc99ee693c422ec0a5781fe161ba0220571fe4e2c649dea9c7aaf7e49b382962f6a3494963c97d80fef9a430ca3f7061",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8005d007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de84311040966a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402203b1b010c109c2ecbe7feb2d259b9c4126bd5dc99ee693c422ec0a5781fe161ba0220571fe4e2c649dea9c7aaf7e49b382962f6a3494963c97d80fef9a430ca3f706101483045022100d33c4e541aa1d255d41ea9a3b443b3b822ad8f7f86862638aac1f69f8f760577022007e2a18e6931ce3d3a804b1c78eda1de17dbe1fb7a95488c9a4ec8620395334801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "30450221009ed2f0a67f99e29c3c8cf45c08207b765980697781bb727fe0b1416de0e7622902206052684229bc171419ed290f4b615c943f819c0262414e43c5b91dcf72ddcf44",
-		                  "3044022004ad5f04ae69c71b3b141d4db9d0d4c38d84009fb3cfeeae6efdad414487a9a0022042d3fe1388c1ff517d1da7fb4025663d372c14728ed52dc88608363450ff6a2f",
-		                  "02000000000101fb824d4e4dafc0f567789dee3a6bce8d411fe80f5563d8cdfdcc7d7e4447d43a0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009ed2f0a67f99e29c3c8cf45c08207b765980697781bb727fe0b1416de0e7622902206052684229bc171419ed290f4b615c943f819c0262414e43c5b91dcf72ddcf4401473044022004ad5f04ae69c71b3b141d4db9d0d4c38d84009fb3cfeeae6efdad414487a9a0022042d3fe1388c1ff517d1da7fb4025663d372c14728ed52dc88608363450ff6a2f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
+						 { 0,
+						  "30450221009ed2f0a67f99e29c3c8cf45c08207b765980697781bb727fe0b1416de0e7622902206052684229bc171419ed290f4b615c943f819c0262414e43c5b91dcf72ddcf44",
+						  "3044022004ad5f04ae69c71b3b141d4db9d0d4c38d84009fb3cfeeae6efdad414487a9a0022042d3fe1388c1ff517d1da7fb4025663d372c14728ed52dc88608363450ff6a2f",
+						  "02000000000101fb824d4e4dafc0f567789dee3a6bce8d411fe80f5563d8cdfdcc7d7e4447d43a0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009ed2f0a67f99e29c3c8cf45c08207b765980697781bb727fe0b1416de0e7622902206052684229bc171419ed290f4b615c943f819c0262414e43c5b91dcf72ddcf4401473044022004ad5f04ae69c71b3b141d4db9d0d4c38d84009fb3cfeeae6efdad414487a9a0022042d3fe1388c1ff517d1da7fb4025663d372c14728ed52dc88608363450ff6a2f01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6868f6010000"},
 
-		                 { 1,
-		                  "30440220155d3b90c67c33a8321996a9be5b82431b0c126613be751d400669da9d5c696702204318448bcd48824439d2c6a70be6e5747446be47ff45977cf41672bdc9b6b12d",
-		                  "304402201707050c870c1f77cc3ed58d6d71bf281de239e9eabd8ef0955bad0d7fe38dcc02204d36d80d0019b3a71e646a08fa4a5607761d341ae8be371946ebe437c289c915",
-		                  "02000000000101fb824d4e4dafc0f567789dee3a6bce8d411fe80f5563d8cdfdcc7d7e4447d43a010000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220155d3b90c67c33a8321996a9be5b82431b0c126613be751d400669da9d5c696702204318448bcd48824439d2c6a70be6e5747446be47ff45977cf41672bdc9b6b12d0147304402201707050c870c1f77cc3ed58d6d71bf281de239e9eabd8ef0955bad0d7fe38dcc02204d36d80d0019b3a71e646a08fa4a5607761d341ae8be371946ebe437c289c91501008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 1,
+						  "30440220155d3b90c67c33a8321996a9be5b82431b0c126613be751d400669da9d5c696702204318448bcd48824439d2c6a70be6e5747446be47ff45977cf41672bdc9b6b12d",
+						  "304402201707050c870c1f77cc3ed58d6d71bf281de239e9eabd8ef0955bad0d7fe38dcc02204d36d80d0019b3a71e646a08fa4a5607761d341ae8be371946ebe437c289c915",
+						  "02000000000101fb824d4e4dafc0f567789dee3a6bce8d411fe80f5563d8cdfdcc7d7e4447d43a010000000000000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220155d3b90c67c33a8321996a9be5b82431b0c126613be751d400669da9d5c696702204318448bcd48824439d2c6a70be6e5747446be47ff45977cf41672bdc9b6b12d0147304402201707050c870c1f77cc3ed58d6d71bf281de239e9eabd8ef0955bad0d7fe38dcc02204d36d80d0019b3a71e646a08fa4a5607761d341ae8be371946ebe437c289c91501008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 2,
-		                  "3045022100a12a9a473ece548584aabdd051779025a5ed4077c4b7aa376ec7a0b1645e5a48022039490b333f53b5b3e2ddde1d809e492cba2b3e5fc3a436cd3ffb4cd3d500fa5a",
-		                  "3045022100ff200bc934ab26ce9a559e998ceb0aee53bc40368e114ab9d3054d9960546e2802202496856ca163ac12c143110b6b3ac9d598df7254f2e17b3b94c3ab5301f4c3b0",
-		                  "02000000000101fb824d4e4dafc0f567789dee3a6bce8d411fe80f5563d8cdfdcc7d7e4447d43a020000000000000000019a090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100a12a9a473ece548584aabdd051779025a5ed4077c4b7aa376ec7a0b1645e5a48022039490b333f53b5b3e2ddde1d809e492cba2b3e5fc3a436cd3ffb4cd3d500fa5a01483045022100ff200bc934ab26ce9a559e998ceb0aee53bc40368e114ab9d3054d9960546e2802202496856ca163ac12c143110b6b3ac9d598df7254f2e17b3b94c3ab5301f4c3b0012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 2,
+						  "3045022100a12a9a473ece548584aabdd051779025a5ed4077c4b7aa376ec7a0b1645e5a48022039490b333f53b5b3e2ddde1d809e492cba2b3e5fc3a436cd3ffb4cd3d500fa5a",
+						  "3045022100ff200bc934ab26ce9a559e998ceb0aee53bc40368e114ab9d3054d9960546e2802202496856ca163ac12c143110b6b3ac9d598df7254f2e17b3b94c3ab5301f4c3b0",
+						  "02000000000101fb824d4e4dafc0f567789dee3a6bce8d411fe80f5563d8cdfdcc7d7e4447d43a020000000000000000019a090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100a12a9a473ece548584aabdd051779025a5ed4077c4b7aa376ec7a0b1645e5a48022039490b333f53b5b3e2ddde1d809e492cba2b3e5fc3a436cd3ffb4cd3d500fa5a01483045022100ff200bc934ab26ce9a559e998ceb0aee53bc40368e114ab9d3054d9960546e2802202496856ca163ac12c143110b6b3ac9d598df7254f2e17b3b94c3ab5301f4c3b0012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with four outputs untrimmed (minimum feerate)
@@ -4813,18 +5781,18 @@ mod tests {
 		chan.feerate_per_kw = 2195;
 
 		test_commitment!("304402205e2f76d4657fb732c0dfc820a18a7301e368f5799e06b7828007633741bda6df0220458009ae59d0c6246065c419359e05eb2a4b4ef4a1b310cc912db44eb7924298",
-		                 "304402203b12d44254244b8ff3bb4129b0920fd45120ab42f553d9976394b099d500c99e02205e95bb7a3164852ef0c48f9e0eaf145218f8e2c41251b231f03cbdc4f29a5429",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8004b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110b8976a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402203b12d44254244b8ff3bb4129b0920fd45120ab42f553d9976394b099d500c99e02205e95bb7a3164852ef0c48f9e0eaf145218f8e2c41251b231f03cbdc4f29a54290147304402205e2f76d4657fb732c0dfc820a18a7301e368f5799e06b7828007633741bda6df0220458009ae59d0c6246065c419359e05eb2a4b4ef4a1b310cc912db44eb792429801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "304402203b12d44254244b8ff3bb4129b0920fd45120ab42f553d9976394b099d500c99e02205e95bb7a3164852ef0c48f9e0eaf145218f8e2c41251b231f03cbdc4f29a5429",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8004b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110b8976a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402203b12d44254244b8ff3bb4129b0920fd45120ab42f553d9976394b099d500c99e02205e95bb7a3164852ef0c48f9e0eaf145218f8e2c41251b231f03cbdc4f29a54290147304402205e2f76d4657fb732c0dfc820a18a7301e368f5799e06b7828007633741bda6df0220458009ae59d0c6246065c419359e05eb2a4b4ef4a1b310cc912db44eb792429801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3045022100a8a78fa1016a5c5c3704f2e8908715a3cef66723fb95f3132ec4d2d05cd84fb4022025ac49287b0861ec21932405f5600cbce94313dbde0e6c5d5af1b3366d8afbfc",
-		                  "3045022100be6ae1977fd7b630a53623f3f25c542317ccfc2b971782802a4f1ef538eb22b402207edc4d0408f8f38fd3c7365d1cfc26511b7cd2d4fecd8b005fba3cd5bc704390",
-		                  "020000000001014e16c488fa158431c1a82e8f661240ec0a71ba0ce92f2721a6538c510226ad5c0000000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100a8a78fa1016a5c5c3704f2e8908715a3cef66723fb95f3132ec4d2d05cd84fb4022025ac49287b0861ec21932405f5600cbce94313dbde0e6c5d5af1b3366d8afbfc01483045022100be6ae1977fd7b630a53623f3f25c542317ccfc2b971782802a4f1ef538eb22b402207edc4d0408f8f38fd3c7365d1cfc26511b7cd2d4fecd8b005fba3cd5bc70439001008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 0,
+						  "3045022100a8a78fa1016a5c5c3704f2e8908715a3cef66723fb95f3132ec4d2d05cd84fb4022025ac49287b0861ec21932405f5600cbce94313dbde0e6c5d5af1b3366d8afbfc",
+						  "3045022100be6ae1977fd7b630a53623f3f25c542317ccfc2b971782802a4f1ef538eb22b402207edc4d0408f8f38fd3c7365d1cfc26511b7cd2d4fecd8b005fba3cd5bc704390",
+						  "020000000001014e16c488fa158431c1a82e8f661240ec0a71ba0ce92f2721a6538c510226ad5c0000000000000000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100a8a78fa1016a5c5c3704f2e8908715a3cef66723fb95f3132ec4d2d05cd84fb4022025ac49287b0861ec21932405f5600cbce94313dbde0e6c5d5af1b3366d8afbfc01483045022100be6ae1977fd7b630a53623f3f25c542317ccfc2b971782802a4f1ef538eb22b402207edc4d0408f8f38fd3c7365d1cfc26511b7cd2d4fecd8b005fba3cd5bc70439001008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 1,
-		                  "3045022100e769cb156aa2f7515d126cef7a69968629620ce82afcaa9e210969de6850df4602200b16b3f3486a229a48aadde520dbee31ae340dbadaffae74fbb56681fef27b92",
-		                  "30440220665b9cb4a978c09d1ca8977a534999bc8a49da624d0c5439451dd69cde1a003d022070eae0620f01f3c1bd029cc1488da13fb40fdab76f396ccd335479a11c5276d8",
-		                  "020000000001014e16c488fa158431c1a82e8f661240ec0a71ba0ce92f2721a6538c510226ad5c0100000000000000000199090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e769cb156aa2f7515d126cef7a69968629620ce82afcaa9e210969de6850df4602200b16b3f3486a229a48aadde520dbee31ae340dbadaffae74fbb56681fef27b92014730440220665b9cb4a978c09d1ca8977a534999bc8a49da624d0c5439451dd69cde1a003d022070eae0620f01f3c1bd029cc1488da13fb40fdab76f396ccd335479a11c5276d8012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 1,
+						  "3045022100e769cb156aa2f7515d126cef7a69968629620ce82afcaa9e210969de6850df4602200b16b3f3486a229a48aadde520dbee31ae340dbadaffae74fbb56681fef27b92",
+						  "30440220665b9cb4a978c09d1ca8977a534999bc8a49da624d0c5439451dd69cde1a003d022070eae0620f01f3c1bd029cc1488da13fb40fdab76f396ccd335479a11c5276d8",
+						  "020000000001014e16c488fa158431c1a82e8f661240ec0a71ba0ce92f2721a6538c510226ad5c0100000000000000000199090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e769cb156aa2f7515d126cef7a69968629620ce82afcaa9e210969de6850df4602200b16b3f3486a229a48aadde520dbee31ae340dbadaffae74fbb56681fef27b92014730440220665b9cb4a978c09d1ca8977a534999bc8a49da624d0c5439451dd69cde1a003d022070eae0620f01f3c1bd029cc1488da13fb40fdab76f396ccd335479a11c5276d8012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with four outputs untrimmed (maximum feerate)
@@ -4832,18 +5800,18 @@ mod tests {
 		chan.feerate_per_kw = 3702;
 
 		test_commitment!("3045022100c1a3b0b60ca092ed5080121f26a74a20cec6bdee3f8e47bae973fcdceb3eda5502207d467a9873c939bf3aa758014ae67295fedbca52412633f7e5b2670fc7c381c1",
-		                 "304402200e930a43c7951162dc15a2b7344f48091c74c70f7024e7116e900d8bcfba861c022066fa6cbda3929e21daa2e7e16a4b948db7e8919ef978402360d1095ffdaff7b0",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8004b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de8431106f916a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402200e930a43c7951162dc15a2b7344f48091c74c70f7024e7116e900d8bcfba861c022066fa6cbda3929e21daa2e7e16a4b948db7e8919ef978402360d1095ffdaff7b001483045022100c1a3b0b60ca092ed5080121f26a74a20cec6bdee3f8e47bae973fcdceb3eda5502207d467a9873c939bf3aa758014ae67295fedbca52412633f7e5b2670fc7c381c101475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "304402200e930a43c7951162dc15a2b7344f48091c74c70f7024e7116e900d8bcfba861c022066fa6cbda3929e21daa2e7e16a4b948db7e8919ef978402360d1095ffdaff7b0",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8004b80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de8431106f916a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402200e930a43c7951162dc15a2b7344f48091c74c70f7024e7116e900d8bcfba861c022066fa6cbda3929e21daa2e7e16a4b948db7e8919ef978402360d1095ffdaff7b001483045022100c1a3b0b60ca092ed5080121f26a74a20cec6bdee3f8e47bae973fcdceb3eda5502207d467a9873c939bf3aa758014ae67295fedbca52412633f7e5b2670fc7c381c101475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3045022100dfb73b4fe961b31a859b2bb1f4f15cabab9265016dd0272323dc6a9e85885c54022059a7b87c02861ee70662907f25ce11597d7b68d3399443a831ae40e777b76bdb",
-		                  "304402202765b9c9ece4f127fa5407faf66da4c5ce2719cdbe47cd3175fc7d48b482e43d02205605125925e07bad1e41c618a4b434d72c88a164981c4b8af5eaf4ee9142ec3a",
-		                  "02000000000101b8de11eb51c22498fe39722c7227b6e55ff1a94146cf638458cb9bc6a060d3a30000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100dfb73b4fe961b31a859b2bb1f4f15cabab9265016dd0272323dc6a9e85885c54022059a7b87c02861ee70662907f25ce11597d7b68d3399443a831ae40e777b76bdb0147304402202765b9c9ece4f127fa5407faf66da4c5ce2719cdbe47cd3175fc7d48b482e43d02205605125925e07bad1e41c618a4b434d72c88a164981c4b8af5eaf4ee9142ec3a01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
+						 { 0,
+						  "3045022100dfb73b4fe961b31a859b2bb1f4f15cabab9265016dd0272323dc6a9e85885c54022059a7b87c02861ee70662907f25ce11597d7b68d3399443a831ae40e777b76bdb",
+						  "304402202765b9c9ece4f127fa5407faf66da4c5ce2719cdbe47cd3175fc7d48b482e43d02205605125925e07bad1e41c618a4b434d72c88a164981c4b8af5eaf4ee9142ec3a",
+						  "02000000000101b8de11eb51c22498fe39722c7227b6e55ff1a94146cf638458cb9bc6a060d3a30000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100dfb73b4fe961b31a859b2bb1f4f15cabab9265016dd0272323dc6a9e85885c54022059a7b87c02861ee70662907f25ce11597d7b68d3399443a831ae40e777b76bdb0147304402202765b9c9ece4f127fa5407faf66da4c5ce2719cdbe47cd3175fc7d48b482e43d02205605125925e07bad1e41c618a4b434d72c88a164981c4b8af5eaf4ee9142ec3a01008576a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6868f7010000"},
 
-		                 { 1,
-		                  "3045022100ea9dc2a7c3c3640334dab733bb4e036e32a3106dc707b24227874fa4f7da746802204d672f7ac0fe765931a8df10b81e53a3242dd32bd9dc9331eb4a596da87954e9",
-		                  "30440220048a41c660c4841693de037d00a407810389f4574b3286afb7bc392a438fa3f802200401d71fa87c64fe621b49ac07e3bf85157ac680acb977124da28652cc7f1a5c",
-		                  "02000000000101b8de11eb51c22498fe39722c7227b6e55ff1a94146cf638458cb9bc6a060d3a30100000000000000000176050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ea9dc2a7c3c3640334dab733bb4e036e32a3106dc707b24227874fa4f7da746802204d672f7ac0fe765931a8df10b81e53a3242dd32bd9dc9331eb4a596da87954e9014730440220048a41c660c4841693de037d00a407810389f4574b3286afb7bc392a438fa3f802200401d71fa87c64fe621b49ac07e3bf85157ac680acb977124da28652cc7f1a5c012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 1,
+						  "3045022100ea9dc2a7c3c3640334dab733bb4e036e32a3106dc707b24227874fa4f7da746802204d672f7ac0fe765931a8df10b81e53a3242dd32bd9dc9331eb4a596da87954e9",
+						  "30440220048a41c660c4841693de037d00a407810389f4574b3286afb7bc392a438fa3f802200401d71fa87c64fe621b49ac07e3bf85157ac680acb977124da28652cc7f1a5c",
+						  "02000000000101b8de11eb51c22498fe39722c7227b6e55ff1a94146cf638458cb9bc6a060d3a30100000000000000000176050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ea9dc2a7c3c3640334dab733bb4e036e32a3106dc707b24227874fa4f7da746802204d672f7ac0fe765931a8df10b81e53a3242dd32bd9dc9331eb4a596da87954e9014730440220048a41c660c4841693de037d00a407810389f4574b3286afb7bc392a438fa3f802200401d71fa87c64fe621b49ac07e3bf85157ac680acb977124da28652cc7f1a5c012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with three outputs untrimmed (minimum feerate)
@@ -4851,13 +5819,13 @@ mod tests {
 		chan.feerate_per_kw = 3703;
 
 		test_commitment!("30450221008b7c191dd46893b67b628e618d2dc8e81169d38bade310181ab77d7c94c6675e02203b4dd131fd7c9deb299560983dcdc485545c98f989f7ae8180c28289f9e6bdb0",
-		                 "3044022047305531dd44391dce03ae20f8735005c615eb077a974edb0059ea1a311857d602202e0ed6972fbdd1e8cb542b06e0929bc41b2ddf236e04cb75edd56151f4197506",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8003a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110eb936a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400473044022047305531dd44391dce03ae20f8735005c615eb077a974edb0059ea1a311857d602202e0ed6972fbdd1e8cb542b06e0929bc41b2ddf236e04cb75edd56151f4197506014830450221008b7c191dd46893b67b628e618d2dc8e81169d38bade310181ab77d7c94c6675e02203b4dd131fd7c9deb299560983dcdc485545c98f989f7ae8180c28289f9e6bdb001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "3044022047305531dd44391dce03ae20f8735005c615eb077a974edb0059ea1a311857d602202e0ed6972fbdd1e8cb542b06e0929bc41b2ddf236e04cb75edd56151f4197506",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8003a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110eb936a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400473044022047305531dd44391dce03ae20f8735005c615eb077a974edb0059ea1a311857d602202e0ed6972fbdd1e8cb542b06e0929bc41b2ddf236e04cb75edd56151f4197506014830450221008b7c191dd46893b67b628e618d2dc8e81169d38bade310181ab77d7c94c6675e02203b4dd131fd7c9deb299560983dcdc485545c98f989f7ae8180c28289f9e6bdb001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3044022044f65cf833afdcb9d18795ca93f7230005777662539815b8a601eeb3e57129a902206a4bf3e53392affbba52640627defa8dc8af61c958c9e827b2798ab45828abdd",
-		                  "3045022100b94d931a811b32eeb885c28ddcf999ae1981893b21dd1329929543fe87ce793002206370107fdd151c5f2384f9ceb71b3107c69c74c8ed5a28a94a4ab2d27d3b0724",
-		                  "020000000001011c076aa7fb3d7460d10df69432c904227ea84bbf3134d4ceee5fb0f135ef206d0000000000000000000175050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022044f65cf833afdcb9d18795ca93f7230005777662539815b8a601eeb3e57129a902206a4bf3e53392affbba52640627defa8dc8af61c958c9e827b2798ab45828abdd01483045022100b94d931a811b32eeb885c28ddcf999ae1981893b21dd1329929543fe87ce793002206370107fdd151c5f2384f9ceb71b3107c69c74c8ed5a28a94a4ab2d27d3b0724012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 0,
+						  "3044022044f65cf833afdcb9d18795ca93f7230005777662539815b8a601eeb3e57129a902206a4bf3e53392affbba52640627defa8dc8af61c958c9e827b2798ab45828abdd",
+						  "3045022100b94d931a811b32eeb885c28ddcf999ae1981893b21dd1329929543fe87ce793002206370107fdd151c5f2384f9ceb71b3107c69c74c8ed5a28a94a4ab2d27d3b0724",
+						  "020000000001011c076aa7fb3d7460d10df69432c904227ea84bbf3134d4ceee5fb0f135ef206d0000000000000000000175050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022044f65cf833afdcb9d18795ca93f7230005777662539815b8a601eeb3e57129a902206a4bf3e53392affbba52640627defa8dc8af61c958c9e827b2798ab45828abdd01483045022100b94d931a811b32eeb885c28ddcf999ae1981893b21dd1329929543fe87ce793002206370107fdd151c5f2384f9ceb71b3107c69c74c8ed5a28a94a4ab2d27d3b0724012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with three outputs untrimmed (maximum feerate)
@@ -4865,13 +5833,13 @@ mod tests {
 		chan.feerate_per_kw = 4914;
 
 		test_commitment!("304402206d6cb93969d39177a09d5d45b583f34966195b77c7e585cf47ac5cce0c90cefb022031d71ae4e33a4e80df7f981d696fbdee517337806a3c7138b7491e2cbb077a0e",
-		                 "304402206a2679efa3c7aaffd2a447fd0df7aba8792858b589750f6a1203f9259173198a022008d52a0e77a99ab533c36206cb15ad7aeb2aa72b93d4b571e728cb5ec2f6fe26",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8003a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110ae8f6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402206a2679efa3c7aaffd2a447fd0df7aba8792858b589750f6a1203f9259173198a022008d52a0e77a99ab533c36206cb15ad7aeb2aa72b93d4b571e728cb5ec2f6fe260147304402206d6cb93969d39177a09d5d45b583f34966195b77c7e585cf47ac5cce0c90cefb022031d71ae4e33a4e80df7f981d696fbdee517337806a3c7138b7491e2cbb077a0e01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
+						 "304402206a2679efa3c7aaffd2a447fd0df7aba8792858b589750f6a1203f9259173198a022008d52a0e77a99ab533c36206cb15ad7aeb2aa72b93d4b571e728cb5ec2f6fe26",
+						 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8003a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110ae8f6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402206a2679efa3c7aaffd2a447fd0df7aba8792858b589750f6a1203f9259173198a022008d52a0e77a99ab533c36206cb15ad7aeb2aa72b93d4b571e728cb5ec2f6fe260147304402206d6cb93969d39177a09d5d45b583f34966195b77c7e585cf47ac5cce0c90cefb022031d71ae4e33a4e80df7f981d696fbdee517337806a3c7138b7491e2cbb077a0e01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
-		                 { 0,
-		                  "3045022100fcb38506bfa11c02874092a843d0cc0a8613c23b639832564a5f69020cb0f6ba02206508b9e91eaa001425c190c68ee5f887e1ad5b1b314002e74db9dbd9e42dbecf",
-		                  "304502210086e76b460ddd3cea10525fba298405d3fe11383e56966a5091811368362f689a02200f72ee75657915e0ede89c28709acd113ede9e1b7be520e3bc5cda425ecd6e68",
-		                  "0200000000010110a3fdcbcd5db477cd3ad465e7f501ffa8c437e8301f00a6061138590add757f0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100fcb38506bfa11c02874092a843d0cc0a8613c23b639832564a5f69020cb0f6ba02206508b9e91eaa001425c190c68ee5f887e1ad5b1b314002e74db9dbd9e42dbecf0148304502210086e76b460ddd3cea10525fba298405d3fe11383e56966a5091811368362f689a02200f72ee75657915e0ede89c28709acd113ede9e1b7be520e3bc5cda425ecd6e68012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
+						 { 0,
+						  "3045022100fcb38506bfa11c02874092a843d0cc0a8613c23b639832564a5f69020cb0f6ba02206508b9e91eaa001425c190c68ee5f887e1ad5b1b314002e74db9dbd9e42dbecf",
+						  "304502210086e76b460ddd3cea10525fba298405d3fe11383e56966a5091811368362f689a02200f72ee75657915e0ede89c28709acd113ede9e1b7be520e3bc5cda425ecd6e68",
+						  "0200000000010110a3fdcbcd5db477cd3ad465e7f501ffa8c437e8301f00a6061138590add757f0000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100fcb38506bfa11c02874092a843d0cc0a8613c23b639832564a5f69020cb0f6ba02206508b9e91eaa001425c190c68ee5f887e1ad5b1b314002e74db9dbd9e42dbecf0148304502210086e76b460ddd3cea10525fba298405d3fe11383e56966a5091811368362f689a02200f72ee75657915e0ede89c28709acd113ede9e1b7be520e3bc5cda425ecd6e68012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000"}
 		});
 
 		// commitment tx with two outputs untrimmed (minimum feerate)
@@ -4912,23 +5880,39 @@ mod tests {
 		// Test vectors from BOLT 3 Appendix D:
 
 		let mut seed = [0; 32];
-		seed[0..32].clone_from_slice(&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap());
-		assert_eq!(chan_utils::build_commitment_secret(&seed, 281474976710655),
-		           hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap()[..]);
+		seed[0..32].clone_from_slice(
+			&hex::decode("0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+		);
+		assert_eq!(
+			chan_utils::build_commitment_secret(&seed, 281474976710655),
+			hex::decode("02a40c85b6f28da08dfdbe0926c53fab2de6d28c10301f8f7c4073d5e42e3148").unwrap()[..]
+		);
 
-		seed[0..32].clone_from_slice(&hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF").unwrap());
-		assert_eq!(chan_utils::build_commitment_secret(&seed, 281474976710655),
-		           hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap()[..]);
+		seed[0..32].clone_from_slice(
+			&hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF").unwrap(),
+		);
+		assert_eq!(
+			chan_utils::build_commitment_secret(&seed, 281474976710655),
+			hex::decode("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap()[..]
+		);
 
-		assert_eq!(chan_utils::build_commitment_secret(&seed, 0xaaaaaaaaaaa),
-		           hex::decode("56f4008fb007ca9acf0e15b054d5c9fd12ee06cea347914ddbaed70d1c13a528").unwrap()[..]);
+		assert_eq!(
+			chan_utils::build_commitment_secret(&seed, 0xaaaaaaaaaaa),
+			hex::decode("56f4008fb007ca9acf0e15b054d5c9fd12ee06cea347914ddbaed70d1c13a528").unwrap()[..]
+		);
 
-		assert_eq!(chan_utils::build_commitment_secret(&seed, 0x555555555555),
-		           hex::decode("9015daaeb06dba4ccc05b91b2f73bd54405f2be9f217fbacd3c5ac2e62327d31").unwrap()[..]);
+		assert_eq!(
+			chan_utils::build_commitment_secret(&seed, 0x555555555555),
+			hex::decode("9015daaeb06dba4ccc05b91b2f73bd54405f2be9f217fbacd3c5ac2e62327d31").unwrap()[..]
+		);
 
-		seed[0..32].clone_from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap());
-		assert_eq!(chan_utils::build_commitment_secret(&seed, 1),
-		           hex::decode("915c75942a26bb3a433a8ce2cb0427c29ec6c1775cfc78328b57f6ba7bfeaa9c").unwrap()[..]);
+		seed[0..32].clone_from_slice(
+			&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap(),
+		);
+		assert_eq!(
+			chan_utils::build_commitment_secret(&seed, 1),
+			hex::decode("915c75942a26bb3a433a8ce2cb0427c29ec6c1775cfc78328b57f6ba7bfeaa9c").unwrap()[..]
+		);
 	}
 
 	#[test]
@@ -4936,25 +5920,53 @@ mod tests {
 		// Test vectors from BOLT 3 Appendix E:
 		let secp_ctx = Secp256k1::new();
 
-		let base_secret = SecretKey::from_slice(&hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap()[..]).unwrap();
-		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
+		let base_secret = SecretKey::from_slice(
+			&hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap()[..],
+		)
+		.unwrap();
+		let per_commitment_secret = SecretKey::from_slice(
+			&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..],
+		)
+		.unwrap();
 
 		let base_point = PublicKey::from_secret_key(&secp_ctx, &base_secret);
-		assert_eq!(base_point.serialize()[..], hex::decode("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2").unwrap()[..]);
+		assert_eq!(
+			base_point.serialize()[..],
+			hex::decode("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2").unwrap()[..]
+		);
 
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-		assert_eq!(per_commitment_point.serialize()[..], hex::decode("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486").unwrap()[..]);
+		assert_eq!(
+			per_commitment_point.serialize()[..],
+			hex::decode("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486").unwrap()[..]
+		);
 
-		assert_eq!(chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &base_point).unwrap().serialize()[..],
-				hex::decode("0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5").unwrap()[..]);
+		assert_eq!(
+			chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &base_point).unwrap().serialize()[..],
+			hex::decode("0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5").unwrap()[..]
+		);
 
-		assert_eq!(chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &base_secret).unwrap(),
-				SecretKey::from_slice(&hex::decode("cbced912d3b21bf196a766651e436aff192362621ce317704ea2f75d87e7be0f").unwrap()[..]).unwrap());
+		assert_eq!(
+			chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &base_secret).unwrap(),
+			SecretKey::from_slice(
+				&hex::decode("cbced912d3b21bf196a766651e436aff192362621ce317704ea2f75d87e7be0f").unwrap()[..]
+			)
+			.unwrap()
+		);
 
-		assert_eq!(chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &base_point).unwrap().serialize()[..],
-				hex::decode("02916e326636d19c33f13e8c0c3a03dd157f332f3e99c317c141dd865eb01f8ff0").unwrap()[..]);
+		assert_eq!(
+			chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &base_point)
+				.unwrap()
+				.serialize()[..],
+			hex::decode("02916e326636d19c33f13e8c0c3a03dd157f332f3e99c317c141dd865eb01f8ff0").unwrap()[..]
+		);
 
-		assert_eq!(chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_secret, &base_secret).unwrap(),
-				SecretKey::from_slice(&hex::decode("d09ffff62ddb2297ab000cc85bcb4283fdeb6aa052affbc9dddcf33b61078110").unwrap()[..]).unwrap());
+		assert_eq!(
+			chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_secret, &base_secret).unwrap(),
+			SecretKey::from_slice(
+				&hex::decode("d09ffff62ddb2297ab000cc85bcb4283fdeb6aa052affbc9dddcf33b61078110").unwrap()[..]
+			)
+			.unwrap()
+		);
 	}
 }

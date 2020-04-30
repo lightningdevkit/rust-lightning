@@ -11,7 +11,6 @@
 
 #![cfg_attr(not(feature = "fuzztarget"), deny(missing_docs))]
 #![forbid(unsafe_code)]
-
 // In general, rust is absolutely horrid at supporting users doing things like,
 // for example, compiling Rust code for real environments. Disable useless lints
 // that don't do anything but annoy us and cant actually ever be resolved.
@@ -19,8 +18,10 @@
 #![allow(ellipsis_inclusive_range_patterns)]
 
 extern crate bitcoin;
-#[cfg(test)] extern crate rand;
-#[cfg(test)] extern crate hex;
+#[cfg(test)]
+extern crate hex;
+#[cfg(test)]
+extern crate rand;
 
 #[macro_use]
 pub mod util;

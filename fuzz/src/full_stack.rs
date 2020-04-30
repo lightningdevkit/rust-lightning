@@ -5,40 +5,42 @@
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
 use bitcoin::util::hash::BitcoinHash;
 
+use bitcoin::hash_types::{BlockHash, Txid, WPubkeyHash};
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::HashEngine as TraitImportEngine;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
-use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
-use lightning::chain::transaction::OutPoint;
+use lightning::chain::chaininterface::{
+	BroadcasterInterface, ChainListener, ChainWatchInterfaceUtil, ConfirmationTarget, FeeEstimator,
+};
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
-use lightning::ln::channelmonitor;
+use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
+use lightning::ln::channelmonitor;
+use lightning::ln::peer_handler::{MessageHandler, PeerManager, SocketDescriptor};
 use lightning::ln::router::Router;
-use lightning::util::events::{EventsProvider,Event};
-use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
-use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
+use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
+use lightning::util::events::{Event, EventsProvider};
+use lightning::util::logger::Logger;
 
 use utils::test_logger;
 
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, hash_map};
 use std::cmp;
+use std::collections::{hash_map, HashMap};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
 
 #[inline]
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -67,14 +69,14 @@ pub fn slice_to_be32(v: &[u8]) -> u32 {
 #[inline]
 pub fn be64_to_array(u: u64) -> [u8; 8] {
 	let mut v = [0; 8];
-	v[0] = ((u >> 8*7) & 0xff) as u8;
-	v[1] = ((u >> 8*6) & 0xff) as u8;
-	v[2] = ((u >> 8*5) & 0xff) as u8;
-	v[3] = ((u >> 8*4) & 0xff) as u8;
-	v[4] = ((u >> 8*3) & 0xff) as u8;
-	v[5] = ((u >> 8*2) & 0xff) as u8;
-	v[6] = ((u >> 8*1) & 0xff) as u8;
-	v[7] = ((u >> 8*0) & 0xff) as u8;
+	v[0] = ((u >> 8 * 7) & 0xff) as u8;
+	v[1] = ((u >> 8 * 6) & 0xff) as u8;
+	v[2] = ((u >> 8 * 5) & 0xff) as u8;
+	v[3] = ((u >> 8 * 4) & 0xff) as u8;
+	v[4] = ((u >> 8 * 3) & 0xff) as u8;
+	v[5] = ((u >> 8 * 2) & 0xff) as u8;
+	v[6] = ((u >> 8 * 1) & 0xff) as u8;
+	v[7] = ((u >> 8 * 0) & 0xff) as u8;
 	v
 }
 
@@ -100,7 +102,7 @@ impl FeeEstimator for FuzzEstimator {
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
 			Some(slice) => cmp::max(slice_to_be16(slice) as u64, 253),
-			None => 253
+			None => 253,
 		}
 	}
 }
@@ -131,15 +133,55 @@ impl<'a> PartialEq for Peer<'a> {
 }
 impl<'a> Eq for Peer<'a> {}
 impl<'a> std::hash::Hash for Peer<'a> {
-	fn hash<H : std::hash::Hasher>(&self, h: &mut H) {
+	fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
 		self.id.hash(h)
 	}
 }
 
 struct MoneyLossDetector<'a> {
-	manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>,
-	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>,
-	handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>>,
+	manager: Arc<
+		ChannelManager<
+			EnforcingChannelKeys,
+			Arc<
+				channelmonitor::SimpleManyChannelMonitor<
+					OutPoint,
+					EnforcingChannelKeys,
+					Arc<TestBroadcaster>,
+					Arc<FuzzEstimator>,
+				>,
+			>,
+			Arc<TestBroadcaster>,
+			Arc<KeyProvider>,
+			Arc<FuzzEstimator>,
+		>,
+	>,
+	monitor: Arc<
+		channelmonitor::SimpleManyChannelMonitor<
+			OutPoint,
+			EnforcingChannelKeys,
+			Arc<TestBroadcaster>,
+			Arc<FuzzEstimator>,
+		>,
+	>,
+	handler: PeerManager<
+		Peer<'a>,
+		Arc<
+			ChannelManager<
+				EnforcingChannelKeys,
+				Arc<
+					channelmonitor::SimpleManyChannelMonitor<
+						OutPoint,
+						EnforcingChannelKeys,
+						Arc<TestBroadcaster>,
+						Arc<FuzzEstimator>,
+					>,
+				>,
+				Arc<TestBroadcaster>,
+				Arc<KeyProvider>,
+				Arc<FuzzEstimator>,
+			>,
+		>,
+	>,
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
@@ -150,10 +192,52 @@ struct MoneyLossDetector<'a> {
 	blocks_connected: u32,
 }
 impl<'a> MoneyLossDetector<'a> {
-	pub fn new(peers: &'a RefCell<[bool; 256]>,
-	           manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>,
-	           monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>,
-	           handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>>>>) -> Self {
+	pub fn new(
+		peers: &'a RefCell<[bool; 256]>,
+		manager: Arc<
+			ChannelManager<
+				EnforcingChannelKeys,
+				Arc<
+					channelmonitor::SimpleManyChannelMonitor<
+						OutPoint,
+						EnforcingChannelKeys,
+						Arc<TestBroadcaster>,
+						Arc<FuzzEstimator>,
+					>,
+				>,
+				Arc<TestBroadcaster>,
+				Arc<KeyProvider>,
+				Arc<FuzzEstimator>,
+			>,
+		>,
+		monitor: Arc<
+			channelmonitor::SimpleManyChannelMonitor<
+				OutPoint,
+				EnforcingChannelKeys,
+				Arc<TestBroadcaster>,
+				Arc<FuzzEstimator>,
+			>,
+		>,
+		handler: PeerManager<
+			Peer<'a>,
+			Arc<
+				ChannelManager<
+					EnforcingChannelKeys,
+					Arc<
+						channelmonitor::SimpleManyChannelMonitor<
+							OutPoint,
+							EnforcingChannelKeys,
+							Arc<TestBroadcaster>,
+							Arc<FuzzEstimator>,
+						>,
+					>,
+					Arc<TestBroadcaster>,
+					Arc<KeyProvider>,
+					Arc<FuzzEstimator>,
+				>,
+			>,
+		>,
+	) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -179,12 +263,19 @@ impl<'a> MoneyLossDetector<'a> {
 					e.insert(self.height);
 					txn.push(tx);
 					txn_idxs.push(idx as u32 + 1);
-				},
-				_ => {},
+				}
+				_ => {}
 			}
 		}
 
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
+		let header = BlockHeader {
+			version: 0x20000000,
+			prev_blockhash: self.header_hashes[self.height],
+			merkle_root: Default::default(),
+			time: self.blocks_connected,
+			bits: 42,
+			nonce: 42,
+		};
 		self.height += 1;
 		self.blocks_connected += 1;
 		self.manager.block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
@@ -200,14 +291,19 @@ impl<'a> MoneyLossDetector<'a> {
 
 	fn disconnect_block(&mut self) {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
-			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			let header = BlockHeader {
+				version: 0x20000000,
+				prev_blockhash: self.header_hashes[self.height],
+				merkle_root: Default::default(),
+				time: 42,
+				bits: 42,
+				nonce: 42,
+			};
 			self.manager.block_disconnected(&header, self.height as u32);
 			self.monitor.block_disconnected(&header, self.height as u32);
 			self.height -= 1;
 			let removal_height = self.height;
-			self.txids_confirmed.retain(|_, height| {
-				removal_height != *height
-			});
+			self.txids_confirmed.retain(|_, height| removal_height != *height);
 		}
 	}
 }
@@ -218,7 +314,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 			// Disconnect all peers
 			for (idx, peer) in self.peers.borrow().iter().enumerate() {
 				if *peer {
-					self.handler.socket_disconnected(&Peer{id: idx as u8, peers_connected: &self.peers});
+					self.handler.socket_disconnected(&Peer { id: idx as u8, peers_connected: &self.peers });
 				}
 			}
 
@@ -241,14 +337,27 @@ impl KeysInterface for KeyProvider {
 
 	fn get_destination_script(&self) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
-		let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+		let channel_monitor_claim_key = SecretKey::from_slice(
+			&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..],
+		)
+		.unwrap();
+		let our_channel_monitor_claim_key_hash =
+			WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		Builder::new()
+			.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+			.push_slice(&our_channel_monitor_claim_key_hash[..])
+			.into_script()
 	}
 
 	fn get_shutdown_pubkey(&self) -> PublicKey {
 		let secp_ctx = Secp256k1::signing_only();
-		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap())
+		PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(&[
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			])
+			.unwrap(),
+		)
 	}
 
 	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
@@ -257,22 +366,52 @@ impl KeysInterface for KeyProvider {
 		EnforcingChannelKeys::new(if inbound {
 			InMemoryChannelKeys::new(
 				&secp_ctx,
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, ctr]).unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, ctr,
+				])
+				.unwrap(),
 				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, ctr],
 				channel_value_satoshis,
 			)
 		} else {
 			InMemoryChannelKeys::new(
 				&secp_ctx,
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, ctr]).unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, ctr,
+				])
+				.unwrap(),
+				SecretKey::from_slice(&[
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, ctr,
+				])
+				.unwrap(),
 				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, ctr],
 				channel_value_satoshis,
 			)
@@ -281,8 +420,13 @@ impl KeysInterface for KeyProvider {
 
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
-		(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, ctr]).unwrap(),
-		[0; 32])
+		(
+			SecretKey::from_slice(&[
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, ctr,
+			])
+			.unwrap(),
+			[0; 32],
+		)
 	}
 
 	#[cfg_attr(rustfmt, rustfmt_skip)]
@@ -295,13 +439,8 @@ impl KeysInterface for KeyProvider {
 
 #[inline]
 pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
-	let input = Arc::new(InputData {
-		data: data.to_vec(),
-		read_pos: AtomicUsize::new(0),
-	});
-	let fee_est = Arc::new(FuzzEstimator {
-		input: input.clone(),
-	});
+	let input = Arc::new(InputData { data: data.to_vec(), read_pos: AtomicUsize::new(0) });
+	let fee_est = Arc::new(FuzzEstimator { input: input.clone() });
 
 	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice {
@@ -329,22 +468,50 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 
 	let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin, Arc::clone(&logger)));
-	let broadcast = Arc::new(TestBroadcaster{});
-	let monitor = Arc::new(channelmonitor::SimpleManyChannelMonitor::new(watch.clone(), broadcast.clone(), Arc::clone(&logger), fee_est.clone()));
+	let broadcast = Arc::new(TestBroadcaster {});
+	let monitor = Arc::new(channelmonitor::SimpleManyChannelMonitor::new(
+		watch.clone(),
+		broadcast.clone(),
+		Arc::clone(&logger),
+		fee_est.clone(),
+	));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();
-	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
+	config.channel_options.fee_proportional_millionths = slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
-	let router = Arc::new(Router::new(PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
+	let channelmanager = Arc::new(
+		ChannelManager::new(
+			Network::Bitcoin,
+			fee_est.clone(),
+			monitor.clone(),
+			broadcast.clone(),
+			Arc::clone(&logger),
+			keys_manager.clone(),
+			config,
+			0,
+		)
+		.unwrap(),
+	);
+	let router = Arc::new(Router::new(
+		PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret()),
+		watch.clone(),
+		Arc::clone(&logger),
+	));
 
 	let peers = RefCell::new([false; 256]);
-	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
-		chan_handler: channelmanager.clone(),
-		route_handler: router.clone(),
-	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger)));
+	let mut loss_detector = MoneyLossDetector::new(
+		&peers,
+		channelmanager.clone(),
+		monitor.clone(),
+		PeerManager::new(
+			MessageHandler { chan_handler: channelmanager.clone(), route_handler: router.clone() },
+			our_network_key,
+			&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0],
+			Arc::clone(&logger),
+		),
+	);
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<(PaymentHash, Option<PaymentSecret>, u64)> = Vec::new();
@@ -358,41 +525,60 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			0 => {
 				let mut new_id = 0;
 				for i in 1..256 {
-					if !peers.borrow()[i-1] {
+					if !peers.borrow()[i - 1] {
 						new_id = i;
 						break;
 					}
 				}
-				if new_id == 0 { return; }
-				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
+				if new_id == 0 {
+					return;
+				}
+				loss_detector
+					.handler
+					.new_outbound_connection(get_pubkey!(), Peer { id: (new_id - 1) as u8, peers_connected: &peers })
+					.unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
-			},
+			}
 			1 => {
 				let mut new_id = 0;
 				for i in 1..256 {
-					if !peers.borrow()[i-1] {
+					if !peers.borrow()[i - 1] {
 						new_id = i;
 						break;
 					}
 				}
-				if new_id == 0 { return; }
-				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
+				if new_id == 0 {
+					return;
+				}
+				loss_detector
+					.handler
+					.new_inbound_connection(Peer { id: (new_id - 1) as u8, peers_connected: &peers })
+					.unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
-			},
+			}
 			2 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers.borrow()[peer_id as usize] { return; }
-				loss_detector.handler.socket_disconnected(&Peer{id: peer_id, peers_connected: &peers});
+				if !peers.borrow()[peer_id as usize] {
+					return;
+				}
+				loss_detector.handler.socket_disconnected(&Peer { id: peer_id, peers_connected: &peers });
 				peers.borrow_mut()[peer_id as usize] = false;
-			},
+			}
 			3 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers.borrow()[peer_id as usize] { return; }
-				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0])) {
-					Ok(res) => assert!(!res),
-					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
+				if !peers.borrow()[peer_id as usize] {
+					return;
 				}
-			},
+				match loss_detector
+					.handler
+					.read_event(&mut Peer { id: peer_id, peers_connected: &peers }, get_slice!(get_slice!(1)[0]))
+				{
+					Ok(res) => assert!(!res),
+					Err(_) => {
+						peers.borrow_mut()[peer_id as usize] = false;
+					}
+				}
+			}
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
 				let route = match router.get_route(&get_pubkey!(), None, &Vec::new(), value, 42) {
@@ -406,10 +592,10 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				payment_hash.0 = Sha256::from_engine(sha).into_inner();
 				payments_sent += 1;
 				match channelmanager.send_payment(&route, payment_hash, &None) {
-					Ok(_) => {},
+					Ok(_) => {}
 					Err(_) => return,
 				}
-			},
+			}
 			15 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
 				let mut route = match router.get_route(&get_pubkey!(), None, &Vec::new(), value, 42) {
@@ -427,31 +613,39 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				payment_secret.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				payments_sent += 1;
 				match channelmanager.send_payment(&route, payment_hash, &Some(payment_secret)) {
-					Ok(_) => {},
+					Ok(_) => {}
 					Err(_) => return,
 				}
-			},
+			}
 			5 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers.borrow()[peer_id as usize] { return; }
+				if !peers.borrow()[peer_id as usize] {
+					return;
+				}
 				let their_key = get_pubkey!();
 				let chan_value = slice_to_be24(get_slice!(3)) as u64;
 				let push_msat_value = slice_to_be24(get_slice!(3)) as u64;
-				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0, None).is_err() { return; }
-			},
+				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0, None).is_err() {
+					return;
+				}
+			}
 			6 => {
 				let mut channels = channelmanager.list_channels();
 				let channel_id = get_slice!(1)[0] as usize;
-				if channel_id >= channels.len() { return; }
-				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				if channelmanager.close_channel(&channels[channel_id].channel_id).is_err() { return; }
-			},
+				if channel_id >= channels.len() {
+					return;
+				}
+				channels.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+				if channelmanager.close_channel(&channels[channel_id].channel_id).is_err() {
+					return;
+				}
+			}
 			7 => {
 				if should_forward {
 					channelmanager.process_pending_htlc_forwards();
 					should_forward = false;
 				}
-			},
+			}
 			8 => {
 				for (payment, payment_secret, amt) in payments_received.drain(..) {
 					// SHA256 is defined as XOR of all input bytes placed in the first byte, and 0s
@@ -466,17 +660,20 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 						channelmanager.claim_funds(payment_preimage, &payment_secret, amt);
 					}
 				}
-			},
+			}
 			9 => {
 				for (payment, payment_secret, _) in payments_received.drain(..) {
 					channelmanager.fail_htlc_backwards(&payment, &payment_secret);
 				}
-			},
+			}
 			10 => {
 				'outer_loop: for funding_generation in pending_funding_generation.drain(..) {
-					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
-							value: funding_generation.1, script_pubkey: funding_generation.2,
-						}] };
+					let mut tx = Transaction {
+						version: 0,
+						lock_time: 0,
+						input: Vec::new(),
+						output: vec![TxOut { value: funding_generation.1, script_pubkey: funding_generation.2 }],
+					};
 					let funding_output = 'search_loop: loop {
 						let funding_txid = tx.txid();
 						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
@@ -497,7 +694,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
 					pending_funding_signatures.insert(funding_output, tx);
 				}
-			},
+			}
 			11 => {
 				if !pending_funding_relay.is_empty() {
 					loss_detector.connect_block(&pending_funding_relay[..]);
@@ -508,7 +705,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				for tx in pending_funding_relay.drain(..) {
 					loss_detector.funding_txn.push(tx);
 				}
-			},
+			}
 			12 => {
 				let txlen = slice_to_be16(get_slice!(2));
 				if txlen == 0 {
@@ -518,48 +715,56 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					if let Ok(tx) = txres {
 						let mut output_val = 0;
 						for out in tx.output.iter() {
-							if out.value > 21_000_000_0000_0000 { return; }
+							if out.value > 21_000_000_0000_0000 {
+								return;
+							}
 							output_val += out.value;
-							if output_val > 21_000_000_0000_0000 { return; }
+							if output_val > 21_000_000_0000_0000 {
+								return;
+							}
 						}
 						loss_detector.connect_block(&[tx]);
 					} else {
 						return;
 					}
 				}
-			},
+			}
 			13 => {
 				loss_detector.disconnect_block();
-			},
+			}
 			14 => {
 				let mut channels = channelmanager.list_channels();
 				let channel_id = get_slice!(1)[0] as usize;
-				if channel_id >= channels.len() { return; }
-				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
+				if channel_id >= channels.len() {
+					return;
+				}
+				channels.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
 				channelmanager.force_close_channel(&channels[channel_id].channel_id);
-			},
+			}
 			// 15 is above
 			_ => return,
 		}
 		loss_detector.handler.process_events();
 		for event in loss_detector.manager.get_and_clear_pending_events() {
 			match event {
-				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
+				Event::FundingGenerationReady {
+					temporary_channel_id, channel_value_satoshis, output_script, ..
+				} => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
-				},
+				}
 				Event::FundingBroadcastSafe { funding_txo, .. } => {
 					pending_funding_relay.push(pending_funding_signatures.remove(&funding_txo).unwrap());
-				},
+				}
 				Event::PaymentReceived { payment_hash, payment_secret, amt } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push((payment_hash, payment_secret, amt));
-				},
-				Event::PaymentSent {..} => {},
-				Event::PaymentFailed {..} => {},
-				Event::PendingHTLCsForwardable {..} => {
+				}
+				Event::PaymentSent { .. } => {}
+				Event::PaymentFailed { .. } => {}
+				Event::PendingHTLCsForwardable { .. } => {
 					should_forward = true;
-				},
-				Event::SpendableOutputs {..} => {},
+				}
+				Event::SpendableOutputs { .. } => {}
 			}
 		}
 	}
@@ -588,8 +793,20 @@ mod tests {
 	}
 	impl Logger for TrackingLogger {
 		fn log(&self, record: &Record) {
-			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
-			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+			*self
+				.lines
+				.lock()
+				.unwrap()
+				.entry((record.module_path.to_string(), format!("{}", record.args)))
+				.or_insert(0) += 1;
+			println!(
+				"{:<5} [{} : {}, {}] {}",
+				record.level.to_string(),
+				record.module_path,
+				record.file,
+				record.line,
+				record.args
+			);
 		}
 	}
 
@@ -604,7 +821,7 @@ mod tests {
 		// What each byte represents is broken down below, and then everything is concatenated into
 		// one large test at the end (you want %s/ -.*//g %s/\n\| \|\t\|\///g).
 
-		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length + 
+		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length +
 		// 16-byte MAC of the encrypted message length + encrypted Lightning message + 16-byte MAC
 		// of the Lightning message
 		// I.e 2nd inbound read, len 18 : 0006 (encrypted message length) + 03000000000000000000000000000000 (MAC of the encrypted message length)
@@ -887,25 +1104,25 @@ mod tests {
 		super::do_test(&::hex::decode("00000000000000000000000000000000000000000000000000000000000000000000000001000300000000000000000000000000000000000000000000000000000000000000000300320003000000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000030012000603000000000000000000000000000000030016001000000000030000000000000000000000000000000300120141030000000000000000000000000000000300fe00207500000000000000000000000000000000000000000000000000000000000000ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679000000000000c35000000000000000000000000000000222ffffffffffffffff00000000000002220000000000000000000000fd000601e3030000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000000000000000000000000000000000002030000000000000000000000000000000000000000000000000000000000000003030000000000000000000000000000000000000000000000000000000000000004030053030000000000000000000000000000000000000000000000000000000000000005030000000000000000000000000000000000000000000000000000000000000000010300000000000000000000000000000000fd00fd00fd0300120084030000000000000000000000000000000300940022ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb1819096793d0000000000000000000000000000000000000000000000000000000000000000005c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001030000000000000000000000000000000c005e020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae00000000000000000000000000000000000000000000000000000000000000000000000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c00000c000003001200430300000000000000000000000000000003005300243d000000000000000000000000000000000000000000000000000000000000000301000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000001030132000300000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003014200030200000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000300000000000000000000000000000003011200060100000000000000000000000000000003011600100000000001000000000000000000000000000000050103020000000000000000000000000000000000000000000000000000000000000000c3500003e800fd00fd00fd0301120110010000000000000000000000000000000301ff00210000000000000000000000000000000000000000000000000000000000000e02000000000000001a00000000004c4b4000000000000003e800000000000003e80000000203f00005030000000000000000000000000000000000000000000000000000000000000100030000000000000000000000000000000000000000000000000000000000000200030000000000000000000000000000000000000000000000000000000000000300030000000000000000000000000000000000000000000000000000000000000400030000000000000000000000000000000000000000000000000000000000000500030000000000000000000000000000000301210000000000000000000000000000000000010000000000000000000000000000000a03011200620100000000000000000000000000000003017200233900000000000000000000000000000000000000000000000000000000000000f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100010000000000000000000000000000000b030112004301000000000000000000000000000000030153002439000000000000000000000000000000000000000000000000000000000000000301000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003e80ff0000000000000000000000000000000000000000000000000000000000000000000121000300000000000000000000000000000000000000000000000000000000000005550000000e000001000000000000000003e80000007b0000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff95000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000fd03001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000004d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030200000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000703011200640100000000000000000000000000000003017400843900000000000000000000000000000000000000000000000000000000000000f100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003020000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112004a0100000000000000000000000000000003015a008239000000000000000000000000000000000000000000000000000000000000000000000000000000ff008888888888888888888888888888888888888888888888888888888888880100000000000000000000000000000003011200640100000000000000000000000000000003017400843900000000000000000000000000000000000000000000000000000000000000fd0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000010000000000000000000000000000000301120063010000000000000000000000000000000301730085390000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000303000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d0000000000000000000000000000000000000000000000000000000000000000000000000000010000000000003e80ff0000000000000000000000000000000000000000000000000000000000000000000121000300000000000000000000000000000000000000000000000000000000000005550000000e000001000000000000000003e80000007b0000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff95000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000fd03001200630300000000000000000000000000000003007300853d0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000303000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d00000000000000000000000000000000000000000000000000000000000000be00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000030400000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000703011200640100000000000000000000000000000003017400843900000000000000000000000000000000000000000000000000000000000000fc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000003011200630100000000000000000000000000000003017300853900000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003040000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000030112002c0100000000000000000000000000000003013c00833900000000000000000000000000000000000000000000000000000000000000000000000000000100000100000000000000000000000000000003011200640100000000000000000000000000000003017400843900000000000000000000000000000000000000000000000000000000000000fb000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000001000000000000000000000000000000030112006301000000000000000000000000000000030173008539000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000030500000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000703001200630300000000000000000000000000000003007300853d0000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000305000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000003001200640300000000000000000000000000000003007400843d000000000000000000000000000000000000000000000000000000000000004f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000300000000000000000000000000000003001205ac030000000000000000000000000000000300ff00803d00000000000000000000000000000000000000000000000000000000000000000000000000000200000000000b0838ff0000000000000000000000000000000000000000000000000000000000000000000121000300000000000000000000000000000000000000000000000000000000000005550000000e0000010000000000000003e8000000007b0000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0300c1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff95000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000fd03001200a4030000000000000000000000000000000300b400843d00000000000000000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010001c8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007f000000000000000300000000000000000000000000000003001200630300000000000000000000000000000003007300853d00000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000003060000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000070c007d02000000013900000000000000000000000000000000000000000000000000000000000000000000000000000080020001000000000000220020bb000000000000000000000000000000000000000000000000000000000000006cc10000000000001600145c000000000000000000000000000000000000000500002000fd00fd0c005e0200000001d600000000000000000000000000000000000000000000000000000000000000000000000000000000014f00000000000000220020f600000000000000000000000000000000000000000000000000000000000000000000000c00000c000000fd0c00000c00000c000007").unwrap(), &(Arc::clone(&logger) as Arc<dyn Logger>));
 
 		let log_entries = logger.lines.lock().unwrap();
-    // 1
+		// 1
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1));
-    // 2
+		// 2
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
-    // 3
+		// 3
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
-    // 4
+		// 4
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingLocked event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3900000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
-    // 5
+		// 5
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4));
-    // 6
+		// 6
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 with 0 adds, 0 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
-    // 7
+		// 7
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails for channel 3900000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
-    // 8
+		// 8
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 with 0 adds, 1 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
-    // 9
+		// 9
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000000 with 0 adds, 0 fulfills, 1 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2));
-    // 10
+		// 10
 		assert_eq!(log_entries.get(&("lightning::ln::channelmonitor".to_string(), "Input spending remote commitment tx (00000000000000000000000000000000000000000000000000000000000000d6:0) in 000000000000000000000000000000000000000000000000000000000000006f resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1));
 	}
 }

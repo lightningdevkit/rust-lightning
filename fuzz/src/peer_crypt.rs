@@ -1,6 +1,6 @@
 use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
 
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use utils::test_logger;
 
@@ -45,7 +45,7 @@ pub fn do_test(data: &[u8]) {
 		let mut crypter = PeerChannelEncryptor::new_outbound(their_pubkey, ephemeral_key);
 		crypter.get_act_one();
 		match crypter.process_act_two(get_slice!(50), &our_network_key) {
-			Ok(_) => {},
+			Ok(_) => {}
 			Err(_) => return,
 		}
 		assert!(crypter.is_ready_for_encryption());
@@ -53,11 +53,11 @@ pub fn do_test(data: &[u8]) {
 	} else {
 		let mut crypter = PeerChannelEncryptor::new_inbound(&our_network_key);
 		match crypter.process_act_one_with_keys(get_slice!(50), &our_network_key, ephemeral_key) {
-			Ok(_) => {},
+			Ok(_) => {}
 			Err(_) => return,
 		}
 		match crypter.process_act_three(get_slice!(66)) {
-			Ok(_) => {},
+			Ok(_) => {}
 			Err(_) => return,
 		}
 		assert!(crypter.is_ready_for_encryption());
@@ -67,12 +67,12 @@ pub fn do_test(data: &[u8]) {
 		if get_slice!(1)[0] == 0 {
 			crypter.encrypt_message(get_slice!(slice_to_be16(get_slice!(2))));
 		} else {
-			let len = match crypter.decrypt_length_header(get_slice!(16+2)) {
+			let len = match crypter.decrypt_length_header(get_slice!(16 + 2)) {
 				Ok(len) => len,
 				Err(_) => return,
 			};
 			match crypter.decrypt_message(get_slice!(len as usize + 16)) {
-				Ok(_) => {},
+				Ok(_) => {}
 				Err(_) => return,
 			}
 		}

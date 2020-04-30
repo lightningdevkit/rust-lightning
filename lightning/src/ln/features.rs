@@ -16,9 +16,9 @@
 //! [`Features`]: struct.Features.html
 //! [`Context`]: sealed/trait.Context.html
 
-use std::{cmp, fmt};
-use std::result::Result;
 use std::marker::PhantomData;
+use std::result::Result;
+use std::{cmp, fmt};
 
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
@@ -230,19 +230,18 @@ mod sealed {
 		}
 	}
 
-	define_feature!(1, DataLossProtect, [InitContext, NodeContext],
-		"Feature flags for `option_data_loss_protect`.");
+	define_feature!(1, DataLossProtect, [InitContext, NodeContext], "Feature flags for `option_data_loss_protect`.");
 	// NOTE: Per Bolt #9, initial_routing_sync has no even bit.
-	define_feature!(3, InitialRoutingSync, [InitContext],
-		"Feature flags for `initial_routing_sync`.");
-	define_feature!(5, UpfrontShutdownScript, [InitContext, NodeContext],
-		"Feature flags for `option_upfront_shutdown_script`.");
-	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext],
-		"Feature flags for `var_onion_optin`.");
-	define_feature!(15, PaymentSecret, [InitContext, NodeContext],
-		"Feature flags for `payment_secret`.");
-	define_feature!(17, BasicMPP, [InitContext, NodeContext],
-		"Feature flags for `basic_mpp`.");
+	define_feature!(3, InitialRoutingSync, [InitContext], "Feature flags for `initial_routing_sync`.");
+	define_feature!(
+		5,
+		UpfrontShutdownScript,
+		[InitContext, NodeContext],
+		"Feature flags for `option_upfront_shutdown_script`."
+	);
+	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext], "Feature flags for `var_onion_optin`.");
+	define_feature!(15, PaymentSecret, [InitContext, NodeContext], "Feature flags for `payment_secret`.");
+	define_feature!(17, BasicMPP, [InitContext, NodeContext], "Feature flags for `basic_mpp`.");
 
 	#[cfg(test)]
 	define_context!(TestingContext {
@@ -265,8 +264,7 @@ mod sealed {
 	});
 
 	#[cfg(test)]
-	define_feature!(23, UnknownFeature, [TestingContext],
-		"Feature flags for an unknown feature used in testing.");
+	define_feature!(23, UnknownFeature, [TestingContext], "Feature flags for an unknown feature used in testing.");
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -279,10 +277,7 @@ pub struct Features<T: sealed::Context> {
 
 impl<T: sealed::Context> Clone for Features<T> {
 	fn clone(&self) -> Self {
-		Self {
-			flags: self.flags.clone(),
-			mark: PhantomData,
-		}
+		Self { flags: self.flags.clone(), mark: PhantomData }
 	}
 }
 impl<T: sealed::Context> PartialEq for Features<T> {
@@ -341,20 +336,14 @@ impl InitFeatures {
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
 	pub fn empty() -> Features<T> {
-		Features {
-			flags: Vec::new(),
-			mark: PhantomData,
-		}
+		Features { flags: Vec::new(), mark: PhantomData }
 	}
 
 	/// Creates features known by the implementation as defined by [`T::KNOWN_FEATURE_FLAGS`].
 	///
 	/// [`T::KNOWN_FEATURE_FLAGS`]: sealed/trait.Context.html#associatedconstant.KNOWN_FEATURE_FLAGS
 	pub fn known() -> Features<T> {
-		Self {
-			flags: T::KNOWN_FEATURE_FLAGS.to_vec(),
-			mark: PhantomData,
-		}
+		Self { flags: T::KNOWN_FEATURE_FLAGS.to_vec(), mark: PhantomData }
 	}
 
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
@@ -369,16 +358,13 @@ impl<T: sealed::Context> Features<T> {
 				flags.push(byte & known_source_features & known_target_features);
 			}
 		}
-		Features::<C> { flags, mark: PhantomData, }
+		Features::<C> { flags, mark: PhantomData }
 	}
 
 	#[cfg(test)]
 	/// Create a Features given a set of flags, in LE.
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
-		Features {
-			flags,
-			mark: PhantomData,
-		}
+		Features { flags, mark: PhantomData }
 	}
 
 	#[cfg(test)]
@@ -393,11 +379,7 @@ impl<T: sealed::Context> Features<T> {
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
 			let required_features = 0b01_01_01_01;
-			let unknown_features = if i < byte_count {
-				!T::KNOWN_FEATURE_MASK[i]
-			} else {
-				0b11_11_11_11
-			};
+			let unknown_features = if i < byte_count { !T::KNOWN_FEATURE_MASK[i] } else { 0b11_11_11_11 };
 			(byte & (required_features & unknown_features)) != 0
 		})
 	}
@@ -407,11 +389,7 @@ impl<T: sealed::Context> Features<T> {
 		// both required and optional unknown features.
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
-			let unknown_features = if i < byte_count {
-				!T::KNOWN_FEATURE_MASK[i]
-			} else {
-				0b11_11_11_11
-			};
+			let unknown_features = if i < byte_count { !T::KNOWN_FEATURE_MASK[i] } else { 0b11_11_11_11 };
 			(byte & unknown_features) != 0
 		})
 	}
@@ -512,7 +490,8 @@ impl<T: sealed::Context> Writeable for Features<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(self.flags.len() + 2);
 		(self.flags.len() as u16).write(w)?;
-		for f in self.flags.iter().rev() { // Swap back to big-endian
+		for f in self.flags.iter().rev() {
+			// Swap back to big-endian
 			f.write(w)?;
 		}
 		Ok(())
@@ -523,10 +502,7 @@ impl<T: sealed::Context> Readable for Features<T> {
 	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut flags: Vec<u8> = Readable::read(r)?;
 		flags.reverse(); // Swap to little-endian
-		Ok(Self {
-			flags,
-			mark: PhantomData,
-		})
+		Ok(Self { flags, mark: PhantomData })
 	}
 }
 

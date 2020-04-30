@@ -3,30 +3,30 @@
 //! You probably want to create a Router and use that as your RoutingMessageHandler and then
 //! interrogate it to get routes for your own payments.
 
+use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::PublicKey;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1;
 
+use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::Builder;
+use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::hash_types::BlockHash;
-use bitcoin::blockdata::script::Builder;
-use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::channelmanager;
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
-use util::ser::{Writeable, Readable, Writer, ReadableArgs};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, NetAddress, RoutingMessageHandler};
 use util::logger::Logger;
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
-use std::cmp;
-use std::sync::{RwLock,Arc};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::{HashMap,BinaryHeap,BTreeMap};
-use std::collections::btree_map::Entry as BtreeEntry;
 use std;
+use std::cmp;
+use std::collections::btree_map::Entry as BtreeEntry;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 
 /// A hop in a route
 #[derive(Clone, PartialEq)]
@@ -157,7 +157,13 @@ struct ChannelInfo {
 
 impl std::fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "features: {}, one_to_two: {}, two_to_one: {}", log_bytes!(self.features.encode()), self.one_to_two, self.two_to_one)?;
+		write!(
+			f,
+			"features: {}, one_to_two: {}, two_to_one: {}",
+			log_bytes!(self.features.encode()),
+			self.one_to_two,
+			self.two_to_one
+		)?;
 		Ok(())
 	}
 }
@@ -220,7 +226,7 @@ impl Writeable for NodeInfo {
 	}
 }
 
-const MAX_ALLOC_SIZE: u64 = 64*1024;
+const MAX_ALLOC_SIZE: u64 = 64 * 1024;
 
 impl Readable for NodeInfo {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
@@ -239,7 +245,9 @@ impl Readable for NodeInfo {
 		let mut addresses = Vec::with_capacity(cmp::min(addresses_count, MAX_ALLOC_SIZE / 40) as usize);
 		for _ in 0..addresses_count {
 			match Readable::read(reader) {
-				Ok(Ok(addr)) => { addresses.push(addr); },
+				Ok(Ok(addr)) => {
+					addresses.push(addr);
+				}
 				Ok(Err(_)) => return Err(DecodeError::InvalidValue),
 				Err(DecodeError::ShortRead) => return Err(DecodeError::BadLengthDescriptor),
 				_ => unreachable!(),
@@ -255,7 +263,7 @@ impl Readable for NodeInfo {
 			rgb,
 			alias,
 			addresses,
-			announcement_message
+			announcement_message,
 		})
 	}
 }
@@ -305,11 +313,7 @@ impl Readable for NetworkMap {
 			let node_info = Readable::read(reader)?;
 			nodes.insert(node_id, node_info);
 		}
-		Ok(NetworkMap {
-			channels,
-			our_node_id,
-			nodes,
-		})
+		Ok(NetworkMap { channels, our_node_id, nodes })
 	}
 }
 
@@ -437,20 +441,27 @@ macro_rules! secp_verify_sig {
 }
 
 impl RoutingMessageHandler for Router {
-
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 
 		let mut network = self.network_map.write().unwrap();
 		match network.nodes.get_mut(&msg.contents.node_id) {
-			None => Err(LightningError{err: "No existing channels for node_announcement", action: ErrorAction::IgnoreError}),
+			None => Err(LightningError {
+				err: "No existing channels for node_announcement",
+				action: ErrorAction::IgnoreError,
+			}),
 			Some(node) => {
 				match node.last_update {
-					Some(last_update) => if last_update >= msg.contents.timestamp {
-						return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
-					},
-					None => {},
+					Some(last_update) => {
+						if last_update >= msg.contents.timestamp {
+							return Err(LightningError {
+								err: "Update older than last processed update",
+								action: ErrorAction::IgnoreError,
+							});
+						}
+					}
+					None => {}
 				}
 
 				node.features = msg.contents.features.clone();
@@ -467,8 +478,12 @@ impl RoutingMessageHandler for Router {
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		if msg.contents.node_id_1 == msg.contents.node_id_2 || msg.contents.bitcoin_key_1 == msg.contents.bitcoin_key_2 {
-			return Err(LightningError{err: "Channel announcement node had a channel with itself", action: ErrorAction::IgnoreError});
+		if msg.contents.node_id_1 == msg.contents.node_id_2 || msg.contents.bitcoin_key_1 == msg.contents.bitcoin_key_2
+		{
+			return Err(LightningError {
+				err: "Channel announcement node had a channel with itself",
+				action: ErrorAction::IgnoreError,
+			});
 		}
 
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
@@ -477,31 +492,44 @@ impl RoutingMessageHandler for Router {
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
 
-		let checked_utxo = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
-			Ok((script_pubkey, _value)) => {
-				let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
-				                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
-				                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
-				                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
-				if script_pubkey != expected_script {
-					return Err(LightningError{err: "Channel announcement keys didn't match on-chain script", action: ErrorAction::IgnoreError});
+		let checked_utxo =
+			match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
+				Ok((script_pubkey, _value)) => {
+					let expected_script = Builder::new()
+						.push_opcode(opcodes::all::OP_PUSHNUM_2)
+						.push_slice(&msg.contents.bitcoin_key_1.serialize())
+						.push_slice(&msg.contents.bitcoin_key_2.serialize())
+						.push_opcode(opcodes::all::OP_PUSHNUM_2)
+						.push_opcode(opcodes::all::OP_CHECKMULTISIG)
+						.into_script()
+						.to_v0_p2wsh();
+					if script_pubkey != expected_script {
+						return Err(LightningError {
+							err: "Channel announcement keys didn't match on-chain script",
+							action: ErrorAction::IgnoreError,
+						});
+					}
+					//TODO: Check if value is worth storing, use it to inform routing, and compare it
+					//to the new HTLC max field in channel_update
+					true
 				}
-				//TODO: Check if value is worth storing, use it to inform routing, and compare it
-				//to the new HTLC max field in channel_update
-				true
-			},
-			Err(ChainError::NotSupported) => {
-				// Tentatively accept, potentially exposing us to DoS attacks
-				false
-			},
-			Err(ChainError::NotWatched) => {
-				return Err(LightningError{err: "Channel announced on an unknown chain", action: ErrorAction::IgnoreError});
-			},
-			Err(ChainError::UnknownTx) => {
-				return Err(LightningError{err: "Channel announced without corresponding UTXO entry", action: ErrorAction::IgnoreError});
-			},
-		};
+				Err(ChainError::NotSupported) => {
+					// Tentatively accept, potentially exposing us to DoS attacks
+					false
+				}
+				Err(ChainError::NotWatched) => {
+					return Err(LightningError {
+						err: "Channel announced on an unknown chain",
+						action: ErrorAction::IgnoreError,
+					});
+				}
+				Err(ChainError::UnknownTx) => {
+					return Err(LightningError {
+						err: "Channel announced without corresponding UTXO entry",
+						action: ErrorAction::IgnoreError,
+					});
+				}
+			};
 
 		let mut network_lock = self.network_map.write().unwrap();
 		let network = &mut *network_lock;
@@ -509,29 +537,29 @@ impl RoutingMessageHandler for Router {
 		let should_relay = msg.contents.excess_data.is_empty();
 
 		let chan_info = ChannelInfo {
-				features: msg.contents.features.clone(),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: msg.contents.node_id_1.clone(),
-					last_update: 0,
-					enabled: false,
-					cltv_expiry_delta: u16::max_value(),
-					htlc_minimum_msat: u64::max_value(),
-					fee_base_msat: u32::max_value(),
-					fee_proportional_millionths: u32::max_value(),
-					last_update_message: None,
-				},
-				two_to_one: DirectionalChannelInfo {
-					src_node_id: msg.contents.node_id_2.clone(),
-					last_update: 0,
-					enabled: false,
-					cltv_expiry_delta: u16::max_value(),
-					htlc_minimum_msat: u64::max_value(),
-					fee_base_msat: u32::max_value(),
-					fee_proportional_millionths: u32::max_value(),
-					last_update_message: None,
-				},
-				announcement_message: if should_relay { Some(msg.clone()) } else { None },
-			};
+			features: msg.contents.features.clone(),
+			one_to_two: DirectionalChannelInfo {
+				src_node_id: msg.contents.node_id_1.clone(),
+				last_update: 0,
+				enabled: false,
+				cltv_expiry_delta: u16::max_value(),
+				htlc_minimum_msat: u64::max_value(),
+				fee_base_msat: u32::max_value(),
+				fee_proportional_millionths: u32::max_value(),
+				last_update_message: None,
+			},
+			two_to_one: DirectionalChannelInfo {
+				src_node_id: msg.contents.node_id_2.clone(),
+				last_update: 0,
+				enabled: false,
+				cltv_expiry_delta: u16::max_value(),
+				htlc_minimum_msat: u64::max_value(),
+				fee_base_msat: u32::max_value(),
+				fee_proportional_millionths: u32::max_value(),
+				last_update_message: None,
+			},
+			announcement_message: if should_relay { Some(msg.clone()) } else { None },
+		};
 
 		match network.channels.entry(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
 			BtreeEntry::Occupied(mut entry) => {
@@ -550,9 +578,12 @@ impl RoutingMessageHandler for Router {
 					Self::remove_channel_in_nodes(&mut network.nodes, &entry.get(), msg.contents.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(LightningError{err: "Already have knowledge of channel", action: ErrorAction::IgnoreError})
+					return Err(LightningError {
+						err: "Already have knowledge of channel",
+						action: ErrorAction::IgnoreError,
+					});
 				}
-			},
+			}
 			BtreeEntry::Vacant(entry) => {
 				entry.insert(chan_info);
 			}
@@ -585,7 +616,12 @@ impl RoutingMessageHandler for Router {
 		add_channel_to_node!(msg.contents.node_id_1);
 		add_channel_to_node!(msg.contents.node_id_2);
 
-		log_trace!(self, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !should_relay { " with excess uninterpreted data!" } else { "" });
+		log_trace!(
+			self,
+			"Added channel_announcement for {}{}",
+			msg.contents.short_channel_id,
+			if !should_relay { " with excess uninterpreted data!" } else { "" }
+		);
 		Ok(should_relay)
 	}
 
@@ -593,7 +629,7 @@ impl RoutingMessageHandler for Router {
 		match update {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
 				let _ = self.handle_channel_update(msg);
-			},
+			}
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id, ref is_permanent } => {
 				let mut network = self.network_map.write().unwrap();
 				if *is_permanent {
@@ -606,14 +642,14 @@ impl RoutingMessageHandler for Router {
 						chan.two_to_one.enabled = false;
 					}
 				}
-			},
+			}
 			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, ref is_permanent } => {
 				if *is_permanent {
 					//TODO: Wholly remove the node
 				} else {
 					self.mark_node_bad(node_id, false);
 				}
-			},
+			}
 		}
 	}
 
@@ -624,7 +660,12 @@ impl RoutingMessageHandler for Router {
 		let chan_was_enabled;
 
 		match network.channels.get_mut(&NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
-			None => return Err(LightningError{err: "Couldn't find channel for update", action: ErrorAction::IgnoreError}),
+			None => {
+				return Err(LightningError {
+					err: "Couldn't find channel for update",
+					action: ErrorAction::IgnoreError,
+				})
+			}
 			Some(channel) => {
 				#[cfg_attr(rustfmt, rustfmt_skip)]
 				macro_rules! maybe_update_channel_info {
@@ -661,8 +702,12 @@ impl RoutingMessageHandler for Router {
 
 		if chan_enabled {
 			let node = network.nodes.get_mut(&dest_node_id).unwrap();
-			node.lowest_inbound_channel_fee_base_msat = cmp::min(node.lowest_inbound_channel_fee_base_msat, msg.contents.fee_base_msat);
-			node.lowest_inbound_channel_fee_proportional_millionths = cmp::min(node.lowest_inbound_channel_fee_proportional_millionths, msg.contents.fee_proportional_millionths);
+			node.lowest_inbound_channel_fee_base_msat =
+				cmp::min(node.lowest_inbound_channel_fee_base_msat, msg.contents.fee_base_msat);
+			node.lowest_inbound_channel_fee_proportional_millionths = cmp::min(
+				node.lowest_inbound_channel_fee_proportional_millionths,
+				msg.contents.fee_proportional_millionths,
+			);
 		} else if chan_was_enabled {
 			let mut lowest_inbound_channel_fee_base_msat = u32::max_value();
 			let mut lowest_inbound_channel_fee_proportional_millionths = u32::max_value();
@@ -673,11 +718,19 @@ impl RoutingMessageHandler for Router {
 				for chan_id in node.channels.iter() {
 					let chan = network.channels.get(chan_id).unwrap();
 					if chan.one_to_two.src_node_id == dest_node_id {
-						lowest_inbound_channel_fee_base_msat = cmp::min(lowest_inbound_channel_fee_base_msat, chan.two_to_one.fee_base_msat);
-						lowest_inbound_channel_fee_proportional_millionths = cmp::min(lowest_inbound_channel_fee_proportional_millionths, chan.two_to_one.fee_proportional_millionths);
+						lowest_inbound_channel_fee_base_msat =
+							cmp::min(lowest_inbound_channel_fee_base_msat, chan.two_to_one.fee_base_msat);
+						lowest_inbound_channel_fee_proportional_millionths = cmp::min(
+							lowest_inbound_channel_fee_proportional_millionths,
+							chan.two_to_one.fee_proportional_millionths,
+						);
 					} else {
-						lowest_inbound_channel_fee_base_msat = cmp::min(lowest_inbound_channel_fee_base_msat, chan.one_to_two.fee_base_msat);
-						lowest_inbound_channel_fee_proportional_millionths = cmp::min(lowest_inbound_channel_fee_proportional_millionths, chan.one_to_two.fee_proportional_millionths);
+						lowest_inbound_channel_fee_base_msat =
+							cmp::min(lowest_inbound_channel_fee_base_msat, chan.one_to_two.fee_base_msat);
+						lowest_inbound_channel_fee_proportional_millionths = cmp::min(
+							lowest_inbound_channel_fee_proportional_millionths,
+							chan.one_to_two.fee_proportional_millionths,
+						);
 					}
 				}
 			}
@@ -685,22 +738,27 @@ impl RoutingMessageHandler for Router {
 			//TODO: satisfy the borrow-checker without a double-map-lookup :(
 			let mut_node = network.nodes.get_mut(&dest_node_id).unwrap();
 			mut_node.lowest_inbound_channel_fee_base_msat = lowest_inbound_channel_fee_base_msat;
-			mut_node.lowest_inbound_channel_fee_proportional_millionths = lowest_inbound_channel_fee_proportional_millionths;
+			mut_node.lowest_inbound_channel_fee_proportional_millionths =
+				lowest_inbound_channel_fee_proportional_millionths;
 		}
 
 		Ok(msg.contents.excess_data.is_empty())
 	}
 
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+	fn get_next_channel_announcements(
+		&self, starting_point: u64, batch_amount: u8,
+	) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let network = self.network_map.read().unwrap();
 		let mut iter = network.channels.range(starting_point..);
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref chan)) = iter.next() {
 				if chan.announcement_message.is_some() {
-					result.push((chan.announcement_message.clone().unwrap(),
+					result.push((
+						chan.announcement_message.clone().unwrap(),
 						chan.one_to_two.last_update_message.clone(),
-						chan.two_to_one.last_update_message.clone()));
+						chan.two_to_one.last_update_message.clone(),
+					));
 				} else {
 					// TODO: We may end up sending un-announced channel_updates if we are sending
 					// initial sync data while receiving announce/updates for this channel.
@@ -712,16 +770,18 @@ impl RoutingMessageHandler for Router {
 		result
 	}
 
-	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
+	fn get_next_node_announcements(
+		&self, starting_point: Option<&PublicKey>, batch_amount: u8,
+	) -> Vec<msgs::NodeAnnouncement> {
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let network = self.network_map.read().unwrap();
 		let mut iter = if let Some(pubkey) = starting_point {
-				let mut iter = network.nodes.range((*pubkey)..);
-				iter.next();
-				iter
-			} else {
-				network.nodes.range(..)
-			};
+			let mut iter = network.nodes.range((*pubkey)..);
+			iter.next();
+			iter
+		} else {
+			network.nodes.range(..)
+		};
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref node)) = iter.next() {
 				if node.announcement_message.is_some() {
@@ -755,7 +815,9 @@ struct RouteGraphNode {
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		other.lowest_fee_to_peer_through_node.cmp(&self.lowest_fee_to_peer_through_node)
+		other
+			.lowest_fee_to_peer_through_node
+			.cmp(&self.lowest_fee_to_peer_through_node)
 			.then_with(|| other.pubkey.serialize().cmp(&self.pubkey.serialize()))
 	}
 }
@@ -778,24 +840,23 @@ impl Router {
 	/// Creates a new router with the given node_id to be used as the source for get_route()
 	pub fn new(our_pubkey: PublicKey, chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Router {
 		let mut nodes = BTreeMap::new();
-		nodes.insert(our_pubkey.clone(), NodeInfo {
-			channels: Vec::new(),
-			lowest_inbound_channel_fee_base_msat: u32::max_value(),
-			lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
-			features: NodeFeatures::empty(),
-			last_update: None,
-			rgb: [0; 3],
-			alias: [0; 32],
-			addresses: Vec::new(),
-			announcement_message: None,
-		});
+		nodes.insert(
+			our_pubkey.clone(),
+			NodeInfo {
+				channels: Vec::new(),
+				lowest_inbound_channel_fee_base_msat: u32::max_value(),
+				lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
+				features: NodeFeatures::empty(),
+				last_update: None,
+				rgb: [0; 3],
+				alias: [0; 32],
+				addresses: Vec::new(),
+				announcement_message: None,
+			},
+		);
 		Router {
 			secp_ctx: Secp256k1::verification_only(),
-			network_map: RwLock::new(NetworkMap {
-				channels: BTreeMap::new(),
-				our_node_id: our_pubkey,
-				nodes: nodes,
-			}),
+			network_map: RwLock::new(NetworkMap { channels: BTreeMap::new(), our_node_id: our_pubkey, nodes }),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
 			logger,
@@ -860,17 +921,26 @@ impl Router {
 	/// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 	/// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 	/// *is* checked as they may change based on the receiving node.
-	pub fn get_route(&self, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>, last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32) -> Result<Route, LightningError> {
+	pub fn get_route(
+		&self, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>, last_hops: &[RouteHint],
+		final_value_msat: u64, final_cltv: u32,
+	) -> Result<Route, LightningError> {
 		// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 		// uptime/success in using a node in the past.
 		let network = self.network_map.read().unwrap();
 
 		if *target == network.our_node_id {
-			return Err(LightningError{err: "Cannot generate a route to ourselves", action: ErrorAction::IgnoreError});
+			return Err(LightningError {
+				err: "Cannot generate a route to ourselves",
+				action: ErrorAction::IgnoreError,
+			});
 		}
 
 		if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
-			return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis", action: ErrorAction::IgnoreError});
+			return Err(LightningError {
+				err: "Cannot generate a route of more value than all existing satoshis",
+				action: ErrorAction::IgnoreError,
+			});
 		}
 
 		// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
@@ -879,7 +949,8 @@ impl Router {
 		// to use as the A* heuristic beyond just the cost to get one node further than the current
 		// one.
 
-		let dummy_directional_info = DummyDirectionalChannelInfo { // used for first_hops routes
+		let dummy_directional_info = DummyDirectionalChannelInfo {
+			// used for first_hops routes
 			src_node_id: network.our_node_id.clone(),
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
@@ -890,10 +961,13 @@ impl Router {
 		let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
 		let mut dist = HashMap::with_capacity(network.nodes.len());
 
-		let mut first_hop_targets = HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
+		let mut first_hop_targets =
+			HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 		if let Some(hops) = first_hops {
 			for chan in hops {
-				let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
+				let short_channel_id = chan
+					.short_channel_id
+					.expect("first_hops should be filled in with usable channels, not pending ones");
 				if chan.remote_network_id == *target {
 					return Ok(Route {
 						paths: vec![vec![RouteHop {
@@ -906,10 +980,14 @@ impl Router {
 						}]],
 					});
 				}
-				first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone()));
+				first_hop_targets
+					.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone()));
 			}
 			if first_hop_targets.is_empty() {
-				return Err(LightningError{err: "Cannot route when there are no outbound routes away from us", action: ErrorAction::IgnoreError});
+				return Err(LightningError {
+					err: "Cannot route when there are no outbound routes away from us",
+					action: ErrorAction::IgnoreError,
+				});
 			}
 		}
 
@@ -1008,14 +1086,15 @@ impl Router {
 		}
 
 		match network.nodes.get(target) {
-			None => {},
+			None => {}
 			Some(node) => {
 				add_entries_to_cheapest_to_target_node!(node, target, 0);
-			},
+			}
 		}
 
 		for hop in last_hops.iter() {
-			if first_hops.is_none() || hop.src_node_id != network.our_node_id { // first_hop overrules last_hops
+			if first_hops.is_none() || hop.src_node_id != network.our_node_id {
+				// first_hop overrules last_hops
 				if network.nodes.get(&hop.src_node_id).is_some() {
 					if first_hops.is_some() {
 						if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&hop.src_node_id) {
@@ -1035,7 +1114,7 @@ impl Router {
 
 		while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, .. }) = targets.pop() {
 			if pubkey == network.our_node_id {
-				let mut res = vec!(dist.remove(&network.our_node_id).unwrap().3);
+				let mut res = vec![dist.remove(&network.our_node_id).unwrap().3];
 				loop {
 					if let Some(&(_, ref features)) = first_hop_targets.get(&res.last().unwrap().pubkey) {
 						res.last_mut().unwrap().node_features = features.to_context();
@@ -1054,7 +1133,12 @@ impl Router {
 
 					let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
 						Some(hop) => hop.3,
-						None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination", action: ErrorAction::IgnoreError}),
+						None => {
+							return Err(LightningError {
+								err: "Failed to find a non-fee-overflowing path to the given destination",
+								action: ErrorAction::IgnoreError,
+							})
+						}
 					};
 					res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
 					res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
@@ -1068,14 +1152,14 @@ impl Router {
 			}
 
 			match network.nodes.get(&pubkey) {
-				None => {},
+				None => {}
 				Some(node) => {
 					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node);
-				},
+				}
 			}
 		}
 
-		Err(LightningError{err: "Failed to find a path to the given destination", action: ErrorAction::IgnoreError})
+		Err(LightningError { err: "Failed to find a path to the given destination", action: ErrorAction::IgnoreError })
 	}
 }
 
@@ -1083,38 +1167,47 @@ impl Router {
 mod tests {
 	use chain::chaininterface;
 	use ln::channelmanager;
-	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-	   UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
+	use ln::msgs::{
+		ChannelAnnouncement, ChannelUpdate, ErrorAction, HTLCFailChannelUpdate, LightningError, NodeAnnouncement,
+		RoutingMessageHandler, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement,
+	};
+	use ln::router::{ChannelInfo, DirectionalChannelInfo, NetworkMap, NodeInfo, RouteHint, Router};
+	use util::logger::Logger;
+	use util::ser::{Readable, Writeable};
 	use util::test_utils;
 	use util::test_utils::TestVecWriter;
-	use util::logger::Logger;
-	use util::ser::{Writeable, Readable};
 
+	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::opcodes;
+	use bitcoin::blockdata::script::Builder;
+	use bitcoin::hash_types::BlockHash;
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hash_types::BlockHash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::blockdata::constants::genesis_block;
-	use bitcoin::blockdata::script::Builder;
-	use bitcoin::blockdata::opcodes;
 	use bitcoin::util::hash::BitcoinHash;
 
 	use hex;
 
-	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::All;
 	use bitcoin::secp256k1::Secp256k1;
 
-	use std::sync::Arc;
 	use std::collections::btree_map::Entry as BtreeEntry;
+	use std::sync::Arc;
 
 	fn create_router() -> (Secp256k1<All>, PublicKey, Router) {
 		let secp_ctx = Secp256k1::new();
-		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
+		let our_id = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..],
+			)
+			.unwrap(),
+		);
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
+		let chain_monitor =
+			Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&logger)));
 		let router = Router::new(our_id, chain_monitor, Arc::clone(&logger));
 		(secp_ctx, our_id, router)
 	}
@@ -1180,14 +1273,62 @@ mod tests {
 		// chan11 1-to-2: enabled, 0 fee
 		// chan11 2-to-1: enabled, 0 fee
 
-		let node1 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
-		let node2 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..]).unwrap());
-		let node3 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..]).unwrap());
-		let node4 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..]).unwrap());
-		let node5 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap());
-		let node6 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap());
-		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap());
-		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap());
+		let node1 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node2 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node3 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node4 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node5 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node6 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node7 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..],
+			)
+			.unwrap(),
+		);
+		let node8 = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..],
+			)
+			.unwrap(),
+		);
 
 		let zero_hash = BlockHash::hash(&[0; 32]);
 
@@ -1212,322 +1353,400 @@ mod tests {
 		{
 			let mut network = router.network_map.write().unwrap();
 
-			network.nodes.insert(node1.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(1, zero_hash.clone()), NetworkMap::get_key(3, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 100,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(1)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(1, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(1)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: our_id.clone(),
-					last_update: 0,
-					enabled: false,
-					cltv_expiry_delta: u16::max_value(), // This value should be ignored
-					htlc_minimum_msat: 0,
-					fee_base_msat: u32::max_value(), // This value should be ignored
-					fee_proportional_millionths: u32::max_value(), // This value should be ignored
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node1.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: 0,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			network.nodes.insert(
+				node1.clone(),
+				NodeInfo {
+					channels: vec![
+						NetworkMap::get_key(1, zero_hash.clone()),
+						NetworkMap::get_key(3, zero_hash.clone()),
+					],
+					lowest_inbound_channel_fee_base_msat: 100,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(1)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.nodes.insert(node2.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(2, zero_hash.clone()), NetworkMap::get_key(4, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 0,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(2)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(2, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(2)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: our_id.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: u16::max_value(), // This value should be ignored
-					htlc_minimum_msat: 0,
-					fee_base_msat: u32::max_value(), // This value should be ignored
-					fee_proportional_millionths: u32::max_value(), // This value should be ignored
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node2.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: 0,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.channels.insert(
+				NetworkMap::get_key(1, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(1)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: our_id.clone(),
+						last_update: 0,
+						enabled: false,
+						cltv_expiry_delta: u16::max_value(), // This value should be ignored
+						htlc_minimum_msat: 0,
+						fee_base_msat: u32::max_value(),               // This value should be ignored
+						fee_proportional_millionths: u32::max_value(), // This value should be ignored
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node1.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: 0,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.nodes.insert(node8.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 0,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(8)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(12)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: our_id.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: u16::max_value(), // This value should be ignored
-					htlc_minimum_msat: 0,
-					fee_base_msat: u32::max_value(), // This value should be ignored
-					fee_proportional_millionths: u32::max_value(), // This value should be ignored
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node8.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: 0,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.nodes.insert(
+				node2.clone(),
+				NodeInfo {
+					channels: vec![
+						NetworkMap::get_key(2, zero_hash.clone()),
+						NetworkMap::get_key(4, zero_hash.clone()),
+					],
+					lowest_inbound_channel_fee_base_msat: 0,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(2)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.nodes.insert(node3.clone(), NodeInfo {
-				channels: vec!(
-					NetworkMap::get_key(3, zero_hash.clone()),
-					NetworkMap::get_key(4, zero_hash.clone()),
-					NetworkMap::get_key(13, zero_hash.clone()),
-					NetworkMap::get_key(5, zero_hash.clone()),
-					NetworkMap::get_key(6, zero_hash.clone()),
-					NetworkMap::get_key(7, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 0,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(3)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(3, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(3)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node1.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (3 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node3.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (3 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 100,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.channels.insert(
+				NetworkMap::get_key(2, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(2)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: our_id.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: u16::max_value(), // This value should be ignored
+						htlc_minimum_msat: 0,
+						fee_base_msat: u32::max_value(),               // This value should be ignored
+						fee_proportional_millionths: u32::max_value(), // This value should be ignored
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node2.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: 0,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(4, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(4)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node2.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (4 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 1000000,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node3.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (4 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.nodes.insert(
+				node8.clone(),
+				NodeInfo {
+					channels: vec![
+						NetworkMap::get_key(12, zero_hash.clone()),
+						NetworkMap::get_key(13, zero_hash.clone()),
+					],
+					lowest_inbound_channel_fee_base_msat: 0,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(8)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(13)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node8.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (13 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 2000000,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node3.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (13 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.channels.insert(
+				NetworkMap::get_key(12, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(12)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: our_id.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: u16::max_value(), // This value should be ignored
+						htlc_minimum_msat: 0,
+						fee_base_msat: u32::max_value(),               // This value should be ignored
+						fee_proportional_millionths: u32::max_value(), // This value should be ignored
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node8.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: 0,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.nodes.insert(node4.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(5, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 0,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(4)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(5, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(5)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node3.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (5 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 100,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node4.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (5 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.nodes.insert(
+				node3.clone(),
+				NodeInfo {
+					channels: vec![
+						NetworkMap::get_key(3, zero_hash.clone()),
+						NetworkMap::get_key(4, zero_hash.clone()),
+						NetworkMap::get_key(13, zero_hash.clone()),
+						NetworkMap::get_key(5, zero_hash.clone()),
+						NetworkMap::get_key(6, zero_hash.clone()),
+						NetworkMap::get_key(7, zero_hash.clone()),
+					],
+					lowest_inbound_channel_fee_base_msat: 0,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(3)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.nodes.insert(node5.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(6, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 0,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(5)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(6, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(6)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node3.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (6 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node5.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (6 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.channels.insert(
+				NetworkMap::get_key(3, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(3)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node1.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (3 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node3.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (3 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 100,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(11, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(11)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node5.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (11 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node4.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (11 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.channels.insert(
+				NetworkMap::get_key(4, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(4)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node2.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (4 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 1000000,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node3.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (4 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
-			network.nodes.insert(node6.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(7, zero_hash.clone())),
-				lowest_inbound_channel_fee_base_msat: 0,
-				lowest_inbound_channel_fee_proportional_millionths: 0,
-				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(6)),
-				last_update: Some(1),
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				announcement_message: None,
-			});
-			network.channels.insert(NetworkMap::get_key(7, zero_hash.clone()), ChannelInfo {
-				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(7)),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: node3.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (7 << 8) | 1,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 1000000,
-					last_update_message: None,
-				}, two_to_one: DirectionalChannelInfo {
-					src_node_id: node6.clone(),
-					last_update: 0,
-					enabled: true,
-					cltv_expiry_delta: (7 << 8) | 2,
-					htlc_minimum_msat: 0,
-					fee_base_msat: 0,
-					fee_proportional_millionths: 0,
-					last_update_message: None,
+			);
+			network.channels.insert(
+				NetworkMap::get_key(13, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(13)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node8.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (13 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 2000000,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node3.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (13 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
 				},
-				announcement_message: None,
-			});
+			);
+			network.nodes.insert(
+				node4.clone(),
+				NodeInfo {
+					channels: vec![
+						NetworkMap::get_key(5, zero_hash.clone()),
+						NetworkMap::get_key(11, zero_hash.clone()),
+					],
+					lowest_inbound_channel_fee_base_msat: 0,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(4)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
+				},
+			);
+			network.channels.insert(
+				NetworkMap::get_key(5, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(5)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node3.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (5 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 100,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node4.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (5 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
+				},
+			);
+			network.nodes.insert(
+				node5.clone(),
+				NodeInfo {
+					channels: vec![
+						NetworkMap::get_key(6, zero_hash.clone()),
+						NetworkMap::get_key(11, zero_hash.clone()),
+					],
+					lowest_inbound_channel_fee_base_msat: 0,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(5)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
+				},
+			);
+			network.channels.insert(
+				NetworkMap::get_key(6, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(6)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node3.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (6 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node5.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (6 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
+				},
+			);
+			network.channels.insert(
+				NetworkMap::get_key(11, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(11)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node5.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (11 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node4.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (11 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
+				},
+			);
+			network.nodes.insert(
+				node6.clone(),
+				NodeInfo {
+					channels: vec![NetworkMap::get_key(7, zero_hash.clone())],
+					lowest_inbound_channel_fee_base_msat: 0,
+					lowest_inbound_channel_fee_proportional_millionths: 0,
+					features: NodeFeatures::from_le_bytes(id_to_feature_flags!(6)),
+					last_update: Some(1),
+					rgb: [0; 3],
+					alias: [0; 32],
+					addresses: Vec::new(),
+					announcement_message: None,
+				},
+			);
+			network.channels.insert(
+				NetworkMap::get_key(7, zero_hash.clone()),
+				ChannelInfo {
+					features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(7)),
+					one_to_two: DirectionalChannelInfo {
+						src_node_id: node3.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (7 << 8) | 1,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 1000000,
+						last_update_message: None,
+					},
+					two_to_one: DirectionalChannelInfo {
+						src_node_id: node6.clone(),
+						last_update: 0,
+						enabled: true,
+						cltv_expiry_delta: (7 << 8) | 2,
+						htlc_minimum_msat: 0,
+						fee_base_msat: 0,
+						fee_proportional_millionths: 0,
+						last_update_message: None,
+					},
+					announcement_message: None,
+				},
+			);
 		}
 
-		{ // Simple route to 3 via 2
+		{
+			// Simple route to 3 via 2
 			let route = router.get_route(&node3, None, &Vec::new(), 100, 42).unwrap();
 			assert_eq!(route.paths[0].len(), 2);
 
@@ -1546,19 +1765,36 @@ mod tests {
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(4));
 		}
 
-		{ // Disable channels 4 and 12 by requiring unknown feature bits
+		{
+			// Disable channels 4 and 12 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
+			network
+				.channels
+				.get_mut(&NetworkMap::get_key(4, zero_hash.clone()))
+				.unwrap()
+				.features
+				.set_required_unknown_bits();
+			network
+				.channels
+				.get_mut(&NetworkMap::get_key(12, zero_hash.clone()))
+				.unwrap()
+				.features
+				.set_required_unknown_bits();
 		}
 
-		{ // If all the channels require some features we don't understand, route should fail
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = router.get_route(&node3, None, &Vec::new(), 100, 42) {
+		{
+			// If all the channels require some features we don't understand, route should fail
+			if let Err(LightningError { err, action: ErrorAction::IgnoreError }) =
+				router.get_route(&node3, None, &Vec::new(), 100, 42)
+			{
 				assert_eq!(err, "Failed to find a path to the given destination");
-			} else { panic!(); }
+			} else {
+				panic!();
+			}
 		}
 
-		{ // If we specify a channel to node8, that overrides our local channel view and that gets used
+		{
+			// If we specify a channel to node8, that overrides our local channel view and that gets used
 			let our_chans = vec![channelmanager::ChannelDetails {
 				channel_id: [0; 32],
 				short_channel_id: Some(42),
@@ -1588,26 +1824,39 @@ mod tests {
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(13));
 		}
 
-		{ // Re-enable channels 4 and 12 by wiping the unknown feature bits
+		{
+			// Re-enable channels 4 and 12 by wiping the unknown feature bits
 			let mut network = router.network_map.write().unwrap();
 			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_unknown_bits();
+			network
+				.channels
+				.get_mut(&NetworkMap::get_key(12, zero_hash.clone()))
+				.unwrap()
+				.features
+				.clear_unknown_bits();
 		}
 
-		{ // Disable nodes 1, 2, and 8 by requiring unknown feature bits
+		{
+			// Disable nodes 1, 2, and 8 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
 			network.nodes.get_mut(&node1).unwrap().features.set_required_unknown_bits();
 			network.nodes.get_mut(&node2).unwrap().features.set_required_unknown_bits();
 			network.nodes.get_mut(&node8).unwrap().features.set_required_unknown_bits();
 		}
 
-		{ // If all nodes require some features we don't understand, route should fail
-			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = router.get_route(&node3, None, &Vec::new(), 100, 42) {
+		{
+			// If all nodes require some features we don't understand, route should fail
+			if let Err(LightningError { err, action: ErrorAction::IgnoreError }) =
+				router.get_route(&node3, None, &Vec::new(), 100, 42)
+			{
 				assert_eq!(err, "Failed to find a path to the given destination");
-			} else { panic!(); }
+			} else {
+				panic!();
+			}
 		}
 
-		{ // If we specify a channel to node8, that overrides our local channel view and that gets used
+		{
+			// If we specify a channel to node8, that overrides our local channel view and that gets used
 			let our_chans = vec![channelmanager::ChannelDetails {
 				channel_id: [0; 32],
 				short_channel_id: Some(42),
@@ -1637,7 +1886,8 @@ mod tests {
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(13));
 		}
 
-		{ // Re-enable nodes 1, 2, and 8
+		{
+			// Re-enable nodes 1, 2, and 8
 			let mut network = router.network_map.write().unwrap();
 			network.nodes.get_mut(&node1).unwrap().features.clear_unknown_bits();
 			network.nodes.get_mut(&node2).unwrap().features.clear_unknown_bits();
@@ -1648,7 +1898,8 @@ mod tests {
 		// naively) assume that the user checked the feature bits on the invoice, which override
 		// the node_announcement.
 
-		{ // Route to 1 via 2 and 3 because our channel to 1 is disabled
+		{
+			// Route to 1 via 2 and 3 because our channel to 1 is disabled
 			let route = router.get_route(&node1, None, &Vec::new(), 100, 42).unwrap();
 			assert_eq!(route.paths[0].len(), 3);
 
@@ -1674,7 +1925,8 @@ mod tests {
 			assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags!(3));
 		}
 
-		{ // If we specify a channel to node8, that overrides our local channel view and that gets used
+		{
+			// If we specify a channel to node8, that overrides our local channel view and that gets used
 			let our_chans = vec![channelmanager::ChannelDetails {
 				channel_id: [0; 32],
 				short_channel_id: Some(42),
@@ -1704,30 +1956,35 @@ mod tests {
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(13));
 		}
 
-		let mut last_hops = vec!(RouteHint {
+		let mut last_hops = vec![
+			RouteHint {
 				src_node_id: node4.clone(),
 				short_channel_id: 8,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				cltv_expiry_delta: (8 << 8) | 1,
 				htlc_minimum_msat: 0,
-			}, RouteHint {
+			},
+			RouteHint {
 				src_node_id: node5.clone(),
 				short_channel_id: 9,
 				fee_base_msat: 1001,
 				fee_proportional_millionths: 0,
 				cltv_expiry_delta: (9 << 8) | 1,
 				htlc_minimum_msat: 0,
-			}, RouteHint {
+			},
+			RouteHint {
 				src_node_id: node6.clone(),
 				short_channel_id: 10,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				cltv_expiry_delta: (10 << 8) | 1,
 				htlc_minimum_msat: 0,
-			});
+			},
+		];
 
-		{ // Simple test across 2, 3, 5, and 4 via a last_hop channel
+		{
+			// Simple test across 2, 3, 5, and 4 via a last_hop channel
 			let route = router.get_route(&node7, None, &last_hops, 100, 42).unwrap();
 			assert_eq!(route.paths[0].len(), 5);
 
@@ -1769,7 +2026,8 @@ mod tests {
 			assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
 		}
 
-		{ // Simple test with outbound channel to 4 to test that last_hops and first_hops connect
+		{
+			// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 			let our_chans = vec![channelmanager::ChannelDetails {
 				channel_id: [0; 32],
 				short_channel_id: Some(42),
@@ -1801,7 +2059,8 @@ mod tests {
 
 		last_hops[0].fee_base_msat = 1000;
 
-		{ // Revert to via 6 as the fee on 8 goes up
+		{
+			// Revert to via 6 as the fee on 8 goes up
 			let route = router.get_route(&node7, None, &last_hops, 100, 42).unwrap();
 			assert_eq!(route.paths[0].len(), 4);
 
@@ -1836,7 +2095,8 @@ mod tests {
 			assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
 		}
 
-		{ // ...but still use 8 for larger payments as 6 has a variable feerate
+		{
+			// ...but still use 8 for larger payments as 6 has a variable feerate
 			let route = router.get_route(&node7, None, &last_hops, 2000, 42).unwrap();
 			assert_eq!(route.paths[0].len(), 5);
 
@@ -1878,7 +2138,8 @@ mod tests {
 			assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
 		}
 
-		{ // Test Router serialization/deserialization
+		{
+			// Test Router serialization/deserialization
 			let mut w = TestVecWriter(Vec::new());
 			let network = router.network_map.read().unwrap();
 			assert!(!network.channels.is_empty());
@@ -1891,7 +2152,13 @@ mod tests {
 	#[test]
 	fn request_full_sync_finite_times() {
 		let (secp_ctx, _, router) = create_router();
-		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
+		let node_id = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..],
+			)
+			.unwrap(),
+		);
 
 		assert!(router.should_request_full_sync(&node_id));
 		assert!(router.should_request_full_sync(&node_id));
@@ -1927,19 +2194,19 @@ mod tests {
 		let mut msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = NodeAnnouncement {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
+			contents: unsigned_announcement.clone(),
 		};
 
 		match router.handle_node_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!("No existing channels for node_announcement", e.err)
+			Err(e) => assert_eq!("No existing channels for node_announcement", e.err),
 		};
 
 		{
 			// Announce a channel to add a corresponding node.
 			let unsigned_announcement = UnsignedChannelAnnouncement {
 				features: ChannelFeatures::known(),
-		 		chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+				chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 				short_channel_id: 0,
 				node_id_1,
 				node_id_2,
@@ -1958,23 +2225,22 @@ mod tests {
 			};
 			match router.handle_channel_announcement(&valid_announcement) {
 				Ok(res) => assert!(res),
-				_ => panic!()
+				_ => panic!(),
 			};
 		}
 
 		match router.handle_node_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
-			Err(_) => panic!()
+			Err(_) => panic!(),
 		};
 
 		let fake_msghash = hash_to_message!(&zero_hash);
-		match router.handle_node_announcement(
-			&NodeAnnouncement {
-				signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
-				contents: unsigned_announcement.clone()
+		match router.handle_node_announcement(&NodeAnnouncement {
+			signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
+			contents: unsigned_announcement.clone(),
 		}) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+			Err(e) => assert_eq!(e.err, "Invalid signature from remote node"),
 		};
 
 		unsigned_announcement.timestamp += 1000;
@@ -1982,12 +2248,12 @@ mod tests {
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let announcement_with_data = NodeAnnouncement {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
+			contents: unsigned_announcement.clone(),
 		};
 		// Return false because contains excess data.
 		match router.handle_node_announcement(&announcement_with_data) {
 			Ok(res) => assert!(!res),
-			Err(_) => panic!()
+			Err(_) => panic!(),
 		};
 		unsigned_announcement.excess_data = Vec::new();
 
@@ -1997,19 +2263,24 @@ mod tests {
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let outdated_announcement = NodeAnnouncement {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
+			contents: unsigned_announcement.clone(),
 		};
 		match router.handle_node_announcement(&outdated_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Update older than last processed update")
+			Err(e) => assert_eq!(e.err, "Update older than last processed update"),
 		};
 	}
 
 	#[test]
 	fn handling_channel_announcements() {
 		let secp_ctx = Secp256k1::new();
-		let our_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(
-		   &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap());
+		let our_id = PublicKey::from_secret_key(
+			&secp_ctx,
+			&SecretKey::from_slice(
+				&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..],
+			)
+			.unwrap(),
+		);
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(test_utils::TestChainWatcher::new());
 		let router = Router::new(our_id, chain_monitor.clone(), Arc::clone(&logger));
@@ -2021,12 +2292,14 @@ mod tests {
 		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
-		let good_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-		   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
-		   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
-		   .push_opcode(opcodes::all::OP_PUSHNUM_2)
-		   .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
-
+		let good_script = Builder::new()
+			.push_opcode(opcodes::all::OP_PUSHNUM_2)
+			.push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
+			.push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
+			.push_opcode(opcodes::all::OP_PUSHNUM_2)
+			.push_opcode(opcodes::all::OP_CHECKMULTISIG)
+			.into_script()
+			.to_v0_p2wsh();
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
 			features: ChannelFeatures::known(),
@@ -2039,8 +2312,7 @@ mod tests {
 			excess_data: Vec::new(),
 		};
 
-		let channel_key = NetworkMap::get_key(unsigned_announcement.short_channel_id,
-						    unsigned_announcement.chain_hash);
+		let channel_key = NetworkMap::get_key(unsigned_announcement.short_channel_id, unsigned_announcement.chain_hash);
 
 		let mut msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
@@ -2056,13 +2328,13 @@ mod tests {
 
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
-			_ => panic!()
+			_ => panic!(),
 		};
 		{
 			let network = router.network_map.write().unwrap();
 			match network.channels.get(&channel_key) {
 				None => panic!(),
-				Some(_) => ()
+				Some(_) => (),
 			}
 		}
 
@@ -2070,9 +2342,8 @@ mod tests {
 		// drop new one on the floor, since we can't see any changes.
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Already have knowledge of channel")
+			Err(e) => assert_eq!(e.err, "Already have knowledge of channel"),
 		};
-
 
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		*chain_monitor.utxo_ret.lock().unwrap() = Err(chaininterface::ChainError::UnknownTx);
@@ -2089,15 +2360,13 @@ mod tests {
 
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
+			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry"),
 		};
-
 
 		// Now test if the transaction is found in the UTXO set and the script is correct.
 		unsigned_announcement.short_channel_id += 1;
 		*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script.clone(), 0));
-		let channel_key = NetworkMap::get_key(unsigned_announcement.short_channel_id,
-						   unsigned_announcement.chain_hash);
+		let channel_key = NetworkMap::get_key(unsigned_announcement.short_channel_id, unsigned_announcement.chain_hash);
 
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
@@ -2109,13 +2378,13 @@ mod tests {
 		};
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
-			_ => panic!()
+			_ => panic!(),
 		};
 		{
 			let network = router.network_map.write().unwrap();
 			match network.channels.get(&channel_key) {
 				None => panic!(),
-				Some(_) => ()
+				Some(_) => (),
 			}
 		}
 
@@ -2124,7 +2393,7 @@ mod tests {
 		*chain_monitor.utxo_ret.lock().unwrap() = Err(chaininterface::ChainError::UnknownTx);
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
+			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry"),
 		};
 
 		// But if it is confirmed, replace the channel
@@ -2140,15 +2409,15 @@ mod tests {
 		};
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
-			_ => panic!()
+			_ => panic!(),
 		};
 		{
 			let mut network = router.network_map.write().unwrap();
 			match network.channels.entry(channel_key) {
 				BtreeEntry::Occupied(channel_entry) => {
 					assert_eq!(channel_entry.get().features, ChannelFeatures::empty());
-				},
-				_ => panic!()
+				}
+				_ => panic!(),
 			}
 		}
 
@@ -2165,7 +2434,7 @@ mod tests {
 		};
 		match router.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(!res),
-			_ => panic!()
+			_ => panic!(),
 		};
 
 		unsigned_announcement.excess_data = Vec::new();
@@ -2178,7 +2447,7 @@ mod tests {
 		};
 		match router.handle_channel_announcement(&invalid_sig_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+			Err(e) => assert_eq!(e.err, "Invalid signature from remote node"),
 		};
 
 		unsigned_announcement.node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
@@ -2192,7 +2461,7 @@ mod tests {
 		};
 		match router.handle_channel_announcement(&channel_to_itself_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself")
+			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself"),
 		};
 	}
 
@@ -2210,7 +2479,6 @@ mod tests {
 		let short_channel_id = 0;
 		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
 		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
-
 
 		{
 			// Announce a channel we will update
@@ -2235,9 +2503,8 @@ mod tests {
 			};
 			match router.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
-
 		}
 
 		let mut unsigned_channel_update = UnsignedChannelUpdate {
@@ -2249,17 +2516,17 @@ mod tests {
 			htlc_minimum_msat: 1000000,
 			fee_base_msat: 10000,
 			fee_proportional_millionths: 20,
-			excess_data: Vec::new()
+			excess_data: Vec::new(),
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
+			contents: unsigned_channel_update.clone(),
 		};
 
 		match router.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
-			_ => panic!()
+			_ => panic!(),
 		};
 
 		{
@@ -2278,27 +2545,26 @@ mod tests {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
+			contents: unsigned_channel_update.clone(),
 		};
 		// Return false because contains excess data
 		match router.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(!res),
-			_ => panic!()
+			_ => panic!(),
 		};
 
 		unsigned_channel_update.short_channel_id += 1;
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
+			contents: unsigned_channel_update.clone(),
 		};
 
 		match router.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Couldn't find channel for update")
+			Err(e) => assert_eq!(e.err, "Couldn't find channel for update"),
 		};
 		unsigned_channel_update.short_channel_id = short_channel_id;
-
 
 		// Even though previous update was not relayed further, we still accepted it,
 		// so we now won't accept update before the previous one.
@@ -2306,26 +2572,25 @@ mod tests {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
+			contents: unsigned_channel_update.clone(),
 		};
 
 		match router.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Update older than last processed update")
+			Err(e) => assert_eq!(e.err, "Update older than last processed update"),
 		};
 		unsigned_channel_update.timestamp += 500;
 
 		let fake_msghash = hash_to_message!(&zero_hash);
 		let invalid_sig_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
+			contents: unsigned_channel_update.clone(),
 		};
 
 		match router.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+			Err(e) => assert_eq!(e.err, "Invalid signature from remote node"),
 		};
-
 	}
 
 	#[test]
@@ -2372,15 +2637,11 @@ mod tests {
 			};
 			match router.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
-
 		}
 
-		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
-			short_channel_id,
-			is_permanent: false
-		};
+		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent: false };
 
 		router.handle_htlc_fail_channel_update(&channel_close_msg);
 
@@ -2396,10 +2657,7 @@ mod tests {
 			}
 		}
 
-		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
-			short_channel_id,
-			is_permanent: true
-		};
+		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent: true };
 
 		router.handle_htlc_fail_channel_update(&channel_close_msg);
 
@@ -2457,7 +2715,7 @@ mod tests {
 			};
 			match router.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 		}
 
@@ -2472,7 +2730,6 @@ mod tests {
 			panic!();
 		}
 
-
 		{
 			// Valid channel update
 			let unsigned_channel_update = UnsignedChannelUpdate {
@@ -2484,16 +2741,16 @@ mod tests {
 				htlc_minimum_msat: 1000000,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
-				excess_data: Vec::new()
+				excess_data: Vec::new(),
 			};
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 			let valid_channel_update = ChannelUpdate {
 				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_channel_update.clone()
+				contents: unsigned_channel_update.clone(),
 			};
 			match router.handle_channel_update(&valid_channel_update) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 		}
 
@@ -2508,7 +2765,6 @@ mod tests {
 			panic!();
 		}
 
-
 		{
 			// Channel update with excess data.
 			let unsigned_channel_update = UnsignedChannelUpdate {
@@ -2520,16 +2776,16 @@ mod tests {
 				htlc_minimum_msat: 1000000,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
-				excess_data: [1; 3].to_vec()
+				excess_data: [1; 3].to_vec(),
 			};
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 			let valid_channel_update = ChannelUpdate {
 				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_channel_update.clone()
+				contents: unsigned_channel_update.clone(),
 			};
 			match router.handle_channel_update(&valid_channel_update) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 		}
 
@@ -2589,10 +2845,9 @@ mod tests {
 			};
 			match router.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 		}
-
 
 		// Nodes were never announced
 		let next_announcements = router.get_next_node_announcements(None, 3);
@@ -2612,23 +2867,23 @@ mod tests {
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 			let valid_announcement = NodeAnnouncement {
 				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_announcement.clone()
+				contents: unsigned_announcement.clone(),
 			};
 			match router.handle_node_announcement(&valid_announcement) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 
 			unsigned_announcement.node_id = node_id_2;
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 			let valid_announcement = NodeAnnouncement {
 				signature: secp_ctx.sign(&msghash, node_2_privkey),
-				contents: unsigned_announcement.clone()
+				contents: unsigned_announcement.clone(),
 			};
 
 			match router.handle_node_announcement(&valid_announcement) {
 				Ok(_) => (),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 		}
 
@@ -2654,16 +2909,15 @@ mod tests {
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 			let valid_announcement = NodeAnnouncement {
 				signature: secp_ctx.sign(&msghash, node_2_privkey),
-				contents: unsigned_announcement.clone()
+				contents: unsigned_announcement.clone(),
 			};
 			match router.handle_node_announcement(&valid_announcement) {
 				Ok(res) => assert!(!res),
-				Err(_) => panic!()
+				Err(_) => panic!(),
 			};
 		}
 
 		let next_announcements = router.get_next_node_announcements(Some(&node_id_1), 2);
 		assert_eq!(next_announcements.len(), 0);
-
 	}
 }

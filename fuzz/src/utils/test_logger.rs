@@ -1,8 +1,8 @@
 use lightning::util::logger::{Logger, Record};
-use std::sync::{Arc, Mutex};
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 
-pub trait Output : Clone + Sync + Send + 'static {
+pub trait Output: Clone + Sync + Send + 'static {
 	fn locked_write(&self, data: &[u8]);
 }
 
@@ -27,7 +27,7 @@ impl StringBuffer {
 	}
 }
 
-pub struct TestLogger<Out : Output> {
+pub struct TestLogger<Out: Output> {
 	id: String,
 	out: Out,
 }
@@ -43,13 +43,23 @@ impl<'a, Out: Output> Write for LockedWriteAdapter<'a, Out> {
 		self.0.locked_write(data);
 		Ok(data.len())
 	}
-	fn flush(&mut self) -> Result<(), std::io::Error> { Ok(()) }
+	fn flush(&mut self) -> Result<(), std::io::Error> {
+		Ok(())
+	}
 }
 
 impl<Out: Output> Logger for TestLogger<Out> {
 	fn log(&self, record: &Record) {
-		write!(LockedWriteAdapter(&self.out),
-			"{:<5} {} [{} : {}, {}] {}\n", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args)
-			.unwrap();
+		write!(
+			LockedWriteAdapter(&self.out),
+			"{:<5} {} [{} : {}, {}] {}\n",
+			record.level.to_string(),
+			self.id,
+			record.module_path,
+			record.file,
+			record.line,
+			record.args
+		)
+		.unwrap();
 	}
 }

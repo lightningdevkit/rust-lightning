@@ -1,30 +1,30 @@
 use chain::chaininterface;
-use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface};
-use chain::transaction::OutPoint;
+use chain::chaininterface::{ChainError, ChainWatchInterface, ConfirmationTarget};
 use chain::keysinterface;
+use chain::transaction::OutPoint;
 use ln::channelmonitor;
+use ln::channelmonitor::HTLCUpdate;
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::LightningError;
-use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
-use util::logger::{Logger, Level, Record};
-use util::ser::{Readable, ReadableArgs, Writer, Writeable};
+use util::logger::{Level, Logger, Record};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
-use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
-use bitcoin::hash_types::{Txid, BlockHash};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::{Arc,Mutex};
-use std::{mem};
 use std::collections::HashMap;
+use std::mem;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -49,33 +49,55 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestChannelMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<
+		OutPoint,
+		EnforcingChannelKeys,
+		&'a chaininterface::BroadcasterInterface,
+		&'a TestFeeEstimator,
+	>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChannelMonitor<'a> {
-	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: &'a TestFeeEstimator) -> Self {
+	pub fn new(
+		chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface,
+		logger: Arc<Logger>, fee_estimator: &'a TestFeeEstimator,
+	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
+			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(
+				chain_monitor,
+				broadcaster,
+				logger,
+				fee_estimator,
+			),
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 		}
 	}
 }
 impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor<'a> {
-	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn add_monitor(
+		&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>,
+	) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0),
+			Arc::new(TestLogger::new()),
+		)
+		.unwrap()
+		.1;
 		assert!(new_monitor == monitor);
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
+		self.latest_monitor_update_id
+			.lock()
+			.unwrap()
+			.insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
 
@@ -86,14 +108,18 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		ret
 	}
 
-	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_monitor(
+		&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate,
+	) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
-		assert!(channelmonitor::ChannelMonitorUpdate::read(
-				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
+		assert!(channelmonitor::ChannelMonitorUpdate::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
 
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
+		self.latest_monitor_update_id
+			.lock()
+			.unwrap()
+			.insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
 		assert!(self.simple_monitor.update_monitor(funding_txo, update).is_ok());
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
@@ -102,7 +128,11 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0),
+			Arc::new(TestLogger::new()),
+		)
+		.unwrap()
+		.1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 
@@ -133,15 +163,17 @@ pub struct TestChannelMessageHandler {
 
 impl TestChannelMessageHandler {
 	pub fn new() -> Self {
-		TestChannelMessageHandler {
-			pending_events: Mutex::new(Vec::new()),
-		}
+		TestChannelMessageHandler { pending_events: Mutex::new(Vec::new()) }
 	}
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &msgs::OpenChannel) {}
-	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &msgs::AcceptChannel) {}
+	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &msgs::OpenChannel) {
+	}
+	fn handle_accept_channel(
+		&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &msgs::AcceptChannel,
+	) {
+	}
 	fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingCreated) {}
 	fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingSigned) {}
 	fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &msgs::FundingLocked) {}
@@ -176,9 +208,7 @@ pub struct TestRoutingMessageHandler {
 
 impl TestRoutingMessageHandler {
 	pub fn new() -> Self {
-		TestRoutingMessageHandler {
-			request_full_sync: false,
-		}
+		TestRoutingMessageHandler { request_full_sync: false }
 	}
 
 	pub fn set_request_full_sync(mut self) -> Self {
@@ -197,10 +227,14 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
-	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+	fn get_next_channel_announcements(
+		&self, _starting_point: u64, _batch_amount: u8,
+	) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		Vec::new()
 	}
-	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
+	fn get_next_node_announcements(
+		&self, _starting_point: Option<&PublicKey>, _batch_amount: u8,
+	) -> Vec<msgs::NodeAnnouncement> {
 		Vec::new()
 	}
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
@@ -219,11 +253,7 @@ impl TestLogger {
 		Self::with_id("".to_owned())
 	}
 	pub fn with_id(id: String) -> TestLogger {
-		TestLogger {
-			level: Level::Trace,
-			id,
-			lines: Mutex::new(HashMap::new())
-		}
+		TestLogger { level: Level::Trace, id, lines: Mutex::new(HashMap::new()) }
 	}
 	pub fn enable(&mut self, level: Level) {
 		self.level = level;
@@ -236,9 +266,18 @@ impl TestLogger {
 
 impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
-		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
+		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) +=
+			1;
 		if self.level >= record.level {
-			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
+			println!(
+				"{:<5} {} [{} : {}, {}] {}",
+				record.level.to_string(),
+				self.id,
+				record.module_path,
+				record.file,
+				record.line,
+				record.args
+			);
 		}
 	}
 }
@@ -252,9 +291,15 @@ pub struct TestKeysInterface {
 impl keysinterface::KeysInterface for TestKeysInterface {
 	type ChanKeySigner = EnforcingChannelKeys;
 
-	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
-	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
-	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
+	fn get_node_secret(&self) -> SecretKey {
+		self.backing.get_node_secret()
+	}
+	fn get_destination_script(&self) -> Script {
+		self.backing.get_destination_script()
+	}
+	fn get_shutdown_pubkey(&self) -> PublicKey {
+		self.backing.get_shutdown_pubkey()
+	}
 	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
 		EnforcingChannelKeys::new(self.backing.get_channel_keys(inbound, channel_value_satoshis))
 	}
@@ -262,14 +307,14 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
 		match *self.override_session_priv.lock().unwrap() {
 			Some(key) => (key.clone(), [0; 32]),
-			None => self.backing.get_onion_rand()
+			None => self.backing.get_onion_rand(),
 		}
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
 		match *self.override_channel_id_priv.lock().unwrap() {
 			Some(key) => key.clone(),
-			None => self.backing.get_channel_id()
+			None => self.backing.get_channel_id(),
 		}
 	}
 }
@@ -297,15 +342,19 @@ impl TestChainWatcher {
 }
 
 impl ChainWatchInterface for TestChainWatcher {
-	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
-	fn watch_all_txn(&self) { }
+	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) {}
+	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) {}
+	fn watch_all_txn(&self) {}
 	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
 		(Vec::new(), Vec::new())
 	}
-	fn reentered(&self) -> usize { 0 }
+	fn reentered(&self) -> usize {
+		0
+	}
 
-	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(
+		&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64,
+	) -> Result<(Script, u64), ChainError> {
 		self.utxo_ret.lock().unwrap().clone()
 	}
 }

@@ -2,13 +2,11 @@ use bitcoin::blockdata::transaction::TxOut;
 
 use std::cmp::Ordering;
 
-pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
+pub fn sort_outputs<T, C: Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
 	outputs.sort_unstable_by(|a, b| {
-		a.0.value.cmp(&b.0.value).then_with(|| {
-			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| {
-				tie_breaker(&a.1, &b.1)
-			})
-		})
+		a.0.value
+			.cmp(&b.0.value)
+			.then_with(|| a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| tie_breaker(&a.1, &b.1)))
 	});
 }
 
@@ -16,55 +14,41 @@ pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>
 mod tests {
 	use super::*;
 
-	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::script::{Builder, Script};
 	use bitcoin::blockdata::transaction::TxOut;
 
 	use hex::decode;
 
 	#[test]
 	fn sort_output_by_value() {
-		let txout1 = TxOut {
-			value:  100,
-			script_pubkey: Builder::new().push_int(0).into_script()
-		};
+		let txout1 = TxOut { value: 100, script_pubkey: Builder::new().push_int(0).into_script() };
 		let txout1_ = txout1.clone();
 
-		let txout2 = TxOut {
-			value: 99,
-			script_pubkey: Builder::new().push_int(0).into_script()
-		};
+		let txout2 = TxOut { value: 99, script_pubkey: Builder::new().push_int(0).into_script() };
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		sort_outputs(&mut outputs, |_, _| {
+			unreachable!();
+		});
 
-		assert_eq!(
-			&outputs,
-			&vec![(txout2_, "ignore"), (txout1_, "ignore")]
-			);
+		assert_eq!(&outputs, &vec![(txout2_, "ignore"), (txout1_, "ignore")]);
 	}
 
 	#[test]
 	fn sort_output_by_script_pubkey() {
-		let txout1 = TxOut {
-			value:  100,
-			script_pubkey: Builder::new().push_int(3).into_script(),
-		};
+		let txout1 = TxOut { value: 100, script_pubkey: Builder::new().push_int(3).into_script() };
 		let txout1_ = txout1.clone();
 
-		let txout2 = TxOut {
-			value: 100,
-			script_pubkey: Builder::new().push_int(1).push_int(2).into_script()
-		};
+		let txout2 = TxOut { value: 100, script_pubkey: Builder::new().push_int(1).push_int(2).into_script() };
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		sort_outputs(&mut outputs, |_, _| {
+			unreachable!();
+		});
 
-		assert_eq!(
-			&outputs,
-			&vec![(txout2_, "ignore"), (txout1_, "ignore")]
-			);
+		assert_eq!(&outputs, &vec![(txout2_, "ignore"), (txout1_, "ignore")]);
 	}
 
 	#[test]
@@ -83,29 +67,25 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		sort_outputs(&mut outputs, |_, _| {
+			unreachable!();
+		});
 
 		assert_eq!(&outputs, &vec![(txout1_, "ignore"), (txout2_, "ignore")]);
 	}
 
 	#[test]
 	fn sort_output_tie_breaker_test() {
-		let txout1 = TxOut {
-			value:  100,
-			script_pubkey: Builder::new().push_int(1).push_int(2).into_script()
-		};
+		let txout1 = TxOut { value: 100, script_pubkey: Builder::new().push_int(1).push_int(2).into_script() };
 		let txout1_ = txout1.clone();
 
 		let txout2 = txout1.clone();
 		let txout2_ = txout1.clone();
 
 		let mut outputs = vec![(txout1, 420), (txout2, 69)];
-		sort_outputs(&mut outputs, |a, b| { a.cmp(b) });
+		sort_outputs(&mut outputs, |a, b| a.cmp(b));
 
-		assert_eq!(
-			&outputs,
-			&vec![(txout2_, 69), (txout1_, 420)]
-		);
+		assert_eq!(&outputs, &vec![(txout2_, 69), (txout1_, 420)]);
 	}
 
 	fn script_from_hex(hex_str: &str) -> Script {

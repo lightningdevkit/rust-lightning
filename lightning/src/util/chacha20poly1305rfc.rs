@@ -12,9 +12,9 @@
 
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chachapoly {
+	use bitcoin::hashes::cmp::fixed_time_eq;
 	use util::chacha20::ChaCha20;
 	use util::poly1305::Poly1305;
-	use bitcoin::hashes::cmp::fixed_time_eq;
 
 	use util::byte_utils;
 
@@ -50,13 +50,7 @@ mod real_chachapoly {
 			mac.input(aad);
 			ChaCha20Poly1305RFC::pad_mac_16(&mut mac, aad.len());
 
-			ChaCha20Poly1305RFC {
-				cipher: cipher,
-				mac: mac,
-				finished: false,
-				data_len: 0,
-				aad_len: aad.len() as u64,
-			}
+			ChaCha20Poly1305RFC { cipher, mac, finished: false, data_len: 0, aad_len: aad.len() as u64 }
 		}
 
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
@@ -85,7 +79,7 @@ mod real_chachapoly {
 			self.mac.input(&byte_utils::le64_to_array(self.aad_len));
 			self.mac.input(&byte_utils::le64_to_array(self.data_len as u64));
 
-			let mut calc_tag =  [0u8; 16];
+			let mut calc_tag = [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
 				self.cipher.process(input, output);
@@ -117,10 +111,7 @@ mod fuzzy_chachapoly {
 			let mut tag = [0; 16];
 			tag.copy_from_slice(&key[0..16]);
 
-			ChaCha20Poly1305RFC {
-				tag,
-				finished: false,
-			}
+			ChaCha20Poly1305RFC { tag, finished: false }
 		}
 
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
@@ -136,7 +127,9 @@ mod fuzzy_chachapoly {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 
-			if tag[..] != self.tag[..] { return false; }
+			if tag[..] != self.tag[..] {
+				return false;
+			}
 			output.copy_from_slice(input);
 			self.finished = true;
 			true

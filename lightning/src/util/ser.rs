@@ -1,27 +1,30 @@
 //! A very simple serialization framework which is used to serialize/deserialize messages as well
 //! as ChannelsManagers and ChannelMonitors.
 
-use std::result::Result;
-use std::io::{Read, Write};
+use std::cmp;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::io::{Read, Write};
+use std::result::Result;
 use std::sync::Mutex;
-use std::cmp;
 
-use bitcoin::secp256k1::Signature;
-use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hash_types::{Txid, BlockHash};
-use std::marker::Sized;
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::Signature;
+use ln::channelmanager::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::msgs::DecodeError;
-use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
+use std::marker::Sized;
 use util::byte_utils;
 
-use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
+use util::byte_utils::{
+	be16_to_array, be32_to_array, be48_to_array, be64_to_array, slice_to_be16, slice_to_be32, slice_to_be48,
+	slice_to_be64,
+};
 
 const MAX_BUF_SIZE: usize = 64 * 1024;
 
@@ -43,7 +46,7 @@ impl<W: Write> Writer for W {
 		<Self as ::std::io::Write>::write_all(self, buf)
 	}
 	#[inline]
-	fn size_hint(&mut self, _size: usize) { }
+	fn size_hint(&mut self, _size: usize) {}
 }
 
 pub(crate) struct WriterWriteAdaptor<'a, W: Writer + 'a>(pub &'a mut W);
@@ -119,7 +122,7 @@ impl<R: Read> Read for FixedLengthReader<R> {
 				Ok(v) => {
 					self.bytes_read += v as u64;
 					Ok(v)
-				},
+				}
 				Err(e) => Err(e),
 			}
 		}
@@ -144,7 +147,7 @@ impl<R: Read> Read for ReadTrackingReader<R> {
 			Ok(len) => {
 				self.have_read = true;
 				Ok(len)
-			},
+			}
 			Err(e) => Err(e),
 		}
 	}
@@ -174,12 +177,15 @@ pub trait Writeable {
 }
 
 impl<'a, T: Writeable> Writeable for &'a T {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> { (*self).write(writer) }
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		(*self).write(writer)
+	}
 }
 
 /// A trait that various rust-lightning types implement allowing them to be read in from a Read
 pub trait Readable
-	where Self: Sized
+where
+	Self: Sized,
 {
 	/// Reads a Self in from the given Read
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError>;
@@ -188,7 +194,8 @@ pub trait Readable
 /// A trait that various higher-level rust-lightning types implement allowing them to be read in
 /// from a Read given some additional set of arguments which is required to deserialize.
 pub trait ReadableArgs<P>
-	where Self: Sized
+where
+	Self: Sized,
 {
 	/// Reads a Self in from the given Read
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
@@ -196,7 +203,8 @@ pub trait ReadableArgs<P>
 
 /// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
 pub trait MaybeReadable
-	where Self: Sized
+where
+	Self: Sized,
 {
 	/// Reads a Self in from the given Read
 	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError>;
@@ -230,21 +238,19 @@ impl Writeable for BigSize {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self.0 {
-			0...0xFC => {
-				(self.0 as u8).write(writer)
-			},
+			0...0xFC => (self.0 as u8).write(writer),
 			0xFD...0xFFFF => {
 				0xFDu8.write(writer)?;
 				(self.0 as u16).write(writer)
-			},
+			}
 			0x10000...0xFFFFFFFF => {
 				0xFEu8.write(writer)?;
 				(self.0 as u32).write(writer)
-			},
+			}
 			_ => {
 				0xFFu8.write(writer)?;
 				(self.0 as u64).write(writer)
-			},
+			}
 		}
 	}
 }
@@ -277,7 +283,7 @@ impl Readable for BigSize {
 					Ok(BigSize(x as u64))
 				}
 			}
-			n => Ok(BigSize(n as u64))
+			n => Ok(BigSize(n as u64)),
 		}
 	}
 }
@@ -361,7 +367,7 @@ impl Readable for u8 {
 impl Writeable for bool {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		writer.write_all(&[if *self {1} else {0}])
+		writer.write_all(&[if *self { 1 } else { 0 }])
 	}
 }
 impl Readable for bool {
@@ -412,12 +418,13 @@ impl_array!(1300); // for OnionPacket.hop_data
 
 // HashMap
 impl<K, V> Writeable for HashMap<K, V>
-	where K: Writeable + Eq + Hash,
-	      V: Writeable
+where
+	K: Writeable + Eq + Hash,
+	V: Writeable,
 {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-	(self.len() as u16).write(w)?;
+		(self.len() as u16).write(w)?;
 		for (key, value) in self.iter() {
 			key.write(w)?;
 			value.write(w)?;
@@ -427,8 +434,9 @@ impl<K, V> Writeable for HashMap<K, V>
 }
 
 impl<K, V> Readable for HashMap<K, V>
-	where K: Readable + Eq + Hash,
-	      V: Readable
+where
+	K: Readable + Eq + Hash,
+	V: Readable,
 {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
@@ -475,14 +483,14 @@ impl Readable for Vec<Signature> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
-		let byte_size = (len as usize)
-		                .checked_mul(33)
-		                .ok_or(DecodeError::BadLengthDescriptor)?;
+		let byte_size = (len as usize).checked_mul(33).ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
 			return Err(DecodeError::BadLengthDescriptor);
 		}
 		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(Signature::read(r)?); }
+		for _ in 0..len {
+			ret.push(Signature::read(r)?);
+		}
 		Ok(ret)
 	}
 }
@@ -622,8 +630,7 @@ impl<T: Writeable> Writeable for Option<T> {
 	}
 }
 
-impl<T: Readable> Readable for Option<T>
-{
+impl<T: Readable> Readable for Option<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		match BigSize::read(r)?.0 {
 			0 => Ok(None),
@@ -677,10 +684,7 @@ impl Readable for OutPoint {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let txid = Readable::read(r)?;
 		let vout = Readable::read(r)?;
-		Ok(OutPoint {
-			txid,
-			vout,
-		})
+		Ok(OutPoint { txid, vout })
 	}
 }
 

@@ -1,14 +1,14 @@
-use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::block::Block;
+use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::{BlockHash, Txid};
 
-use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
+use lightning::chain::chaininterface::{ChainError, ChainWatchInterface};
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
 use lightning::ln::msgs::RoutingMessageHandler;
-use lightning::ln::router::{Router, RouteHint};
+use lightning::ln::router::{RouteHint, Router};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
@@ -16,8 +16,8 @@ use bitcoin::secp256k1::key::PublicKey;
 
 use utils::test_logger;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[inline]
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -48,7 +48,6 @@ pub fn slice_to_be64(v: &[u8]) -> u64 {
 	((v[7] as u64) << 8 * 0)
 }
 
-
 struct InputData {
 	data: Vec<u8>,
 	read_pos: AtomicUsize,
@@ -75,15 +74,19 @@ struct DummyChainWatcher {
 }
 
 impl ChainWatchInterface for DummyChainWatcher {
-	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
-	fn watch_all_txn(&self) { }
+	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) {}
+	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) {}
+	fn watch_all_txn(&self) {}
 	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
 		(Vec::new(), Vec::new())
 	}
-	fn reentered(&self) -> usize { 0 }
+	fn reentered(&self) -> usize {
+		0
+	}
 
-	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(
+		&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64,
+	) -> Result<(Script, u64), ChainError> {
 		match self.input.get_slice(2) {
 			Some(&[0, _]) => Err(ChainError::NotSupported),
 			Some(&[1, _]) => Err(ChainError::NotWatched),
@@ -97,10 +100,7 @@ impl ChainWatchInterface for DummyChainWatcher {
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let input = Arc::new(InputData {
-		data: data.to_vec(),
-		read_pos: AtomicUsize::new(0),
-	});
+	let input = Arc::new(InputData { data: data.to_vec(), read_pos: AtomicUsize::new(0) });
 	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! get_slice_nonadvancing {
 		($len: expr) => {
@@ -159,9 +159,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
-	let chain_monitor = Arc::new(DummyChainWatcher {
-		input: Arc::clone(&input),
-	});
+	let chain_monitor = Arc::new(DummyChainWatcher { input: Arc::clone(&input) });
 
 	let our_pubkey = get_pubkey!();
 	let router = Router::new(our_pubkey.clone(), chain_monitor, Arc::clone(&logger));
@@ -170,29 +168,38 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		match get_slice!(1)[0] {
 			0 => {
 				let start_len = slice_to_be16(&get_slice_nonadvancing!(64 + 2)[64..64 + 2]) as usize;
-				let addr_len = slice_to_be16(&get_slice_nonadvancing!(64+start_len+2 + 74)[64+start_len+2 + 72..64+start_len+2 + 74]);
-				if addr_len > (37+1)*4 {
+				let addr_len = slice_to_be16(
+					&get_slice_nonadvancing!(64 + start_len + 2 + 74)[64 + start_len + 2 + 72..64 + start_len + 2 + 74],
+				);
+				if addr_len > (37 + 1) * 4 {
 					return;
 				}
 				let _ = router.handle_node_announcement(&decode_msg_with_len16!(msgs::NodeAnnouncement, 64, 288));
-			},
+			}
 			1 => {
-				let _ = router.handle_channel_announcement(&decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4));
-			},
+				let _ = router.handle_channel_announcement(&decode_msg_with_len16!(
+					msgs::ChannelAnnouncement,
+					64 * 4,
+					32 + 8 + 33 * 4
+				));
+			}
 			2 => {
 				let _ = router.handle_channel_update(&decode_msg!(msgs::ChannelUpdate, 128));
-			},
-			3 => {
-				match get_slice!(1)[0] {
-					0 => {
-						router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {msg: decode_msg!(msgs::ChannelUpdate, 128)});
-					},
-					1 => {
-						let short_channel_id = slice_to_be64(get_slice!(8));
-						router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {short_channel_id, is_permanent: false});
-					},
-					_ => return,
+			}
+			3 => match get_slice!(1)[0] {
+				0 => {
+					router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {
+						msg: decode_msg!(msgs::ChannelUpdate, 128),
+					});
 				}
+				1 => {
+					let short_channel_id = slice_to_be64(get_slice!(8));
+					router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {
+						short_channel_id,
+						is_permanent: false,
+					});
+				}
+				_ => return,
 			},
 			4 => {
 				let target = get_pubkey!();
@@ -215,7 +222,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							});
 						}
 						Some(&first_hops_vec[..])
-					},
+					}
 					_ => return,
 				};
 				let mut last_hops_vec = Vec::new();
@@ -233,8 +240,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					}
 					&last_hops_vec[..]
 				};
-				let _ = router.get_route(&target, first_hops, last_hops, slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)));
-			},
+				let _ = router.get_route(
+					&target,
+					first_hops,
+					last_hops,
+					slice_to_be64(get_slice!(8)),
+					slice_to_be32(get_slice!(4)),
+				);
+			}
 			_ => return,
 		}
 	}

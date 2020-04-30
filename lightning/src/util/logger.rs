@@ -87,7 +87,7 @@ impl Level {
 
 /// A Record, unit of logging output with Metadata to enable filtering
 /// Module_path, file, line to inform on log's source
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct Record<'a> {
 	/// The verbosity level of the message.
 	pub level: Level,
@@ -105,13 +105,7 @@ impl<'a> Record<'a> {
 	/// Returns a new Record.
 	#[inline]
 	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'a str, file: &'a str, line: u32) -> Record<'a> {
-		Record {
-			level,
-			args,
-			module_path,
-			file,
-			line
-		}
+		Record { level, args, module_path, file, line }
 	}
 }
 
@@ -121,13 +115,15 @@ pub trait Logger: Sync + Send {
 	fn log(&self, record: &Record);
 }
 
-pub(crate) struct LogHolder<'a> { pub(crate) logger: &'a Arc<Logger> }
+pub(crate) struct LogHolder<'a> {
+	pub(crate) logger: &'a Arc<Logger>,
+}
 
 #[cfg(test)]
 mod tests {
-	use util::logger::{Logger, Level};
+	use std::sync::Arc;
+	use util::logger::{Level, Logger};
 	use util::test_utils::TestLogger;
-	use std::sync::{Arc};
 
 	#[test]
 	fn test_level_show() {
@@ -137,14 +133,12 @@ mod tests {
 	}
 
 	struct WrapperLog {
-		logger: Arc<Logger>
+		logger: Arc<Logger>,
 	}
 
 	impl WrapperLog {
 		fn new(logger: Arc<Logger>) -> WrapperLog {
-			WrapperLog {
-				logger,
-			}
+			WrapperLog { logger }
 		}
 
 		fn call_macros(&self) {
@@ -160,7 +154,7 @@ mod tests {
 	fn test_logging_macros() {
 		let mut logger = TestLogger::new();
 		logger.enable(Level::Trace);
-		let logger : Arc<Logger> = Arc::new(logger);
+		let logger: Arc<Logger> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();
 	}

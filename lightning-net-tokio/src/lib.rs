@@ -61,21 +61,21 @@
 
 use bitcoin::secp256k1::key::PublicKey;
 
-use tokio::net::TcpStream;
-use tokio::{io, time};
-use tokio::sync::mpsc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use tokio::{io, time};
 
+use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
-use lightning::ln::msgs::ChannelMessageHandler;
 
-use std::{task, thread};
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 use std::hash::Hash;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+use std::{task, thread};
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -113,15 +113,19 @@ struct Connection {
 impl Connection {
 	fn event_trigger(us: &mut MutexGuard<Self>) {
 		match us.event_notify.try_send(()) {
-			Ok(_) => {},
+			Ok(_) => {}
 			Err(mpsc::error::TrySendError::Full(_)) => {
 				// Ignore full errors as we just need the user to poll after this point, so if they
 				// haven't received the last send yet, it doesn't matter.
-			},
-			_ => panic!()
+			}
+			_ => panic!(),
 		}
 	}
-	async fn schedule_read<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) {
+	async fn schedule_read<CMH: ChannelMessageHandler + 'static>(
+		peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, us: Arc<Mutex<Self>>,
+		mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>,
+		mut write_avail_receiver: mpsc::Receiver<()>,
+	) {
 		let peer_manager_ref = peer_manager.clone();
 		// 8KB is nice and big but also should never cause any issues with stack overflowing.
 		let mut buf = [0; 8192];
@@ -138,7 +142,7 @@ impl Connection {
 			// closed.
 			// In this case, we do need to call peer_manager.socket_disconnected() to inform
 			// Rust-Lightning that the socket is gone.
-			PeerDisconnected
+			PeerDisconnected,
 		};
 		let disconnect_type = loop {
 			#[cfg_attr(rustfmt, rustfmt_skip)]
@@ -203,7 +207,9 @@ impl Connection {
 		}
 	}
 
-	fn new(event_notify: mpsc::Sender<()>, stream: TcpStream) -> (io::ReadHalf<TcpStream>, mpsc::Receiver<()>, mpsc::Receiver<()>, Arc<Mutex<Self>>) {
+	fn new(
+		event_notify: mpsc::Sender<()>, stream: TcpStream,
+	) -> (io::ReadHalf<TcpStream>, mpsc::Receiver<()>, mpsc::Receiver<()>, Arc<Mutex<Self>>) {
 		// We only ever need a channel of depth 1 here: if we returned a non-full write to the
 		// PeerManager, we will eventually get notified that there is room in the socket to write
 		// new bytes, which will generate an event. That event will be popped off the queue before
@@ -216,12 +222,21 @@ impl Connection {
 		let (read_waker, read_receiver) = mpsc::channel(1);
 		let (reader, writer) = io::split(stream);
 
-		(reader, write_receiver, read_receiver,
-		Arc::new(Mutex::new(Self {
-			writer: Some(writer), event_notify, write_avail, read_waker, read_paused: false,
-			block_disconnect_socket: false, rl_requested_disconnect: false,
-			id: ID_COUNTER.fetch_add(1, Ordering::AcqRel)
-		})))
+		(
+			reader,
+			write_receiver,
+			read_receiver,
+			Arc::new(Mutex::new(Self {
+				writer: Some(writer),
+				event_notify,
+				write_avail,
+				read_waker,
+				read_paused: false,
+				block_disconnect_socket: false,
+				rl_requested_disconnect: false,
+				id: ID_COUNTER.fetch_add(1, Ordering::AcqRel),
+			})),
+		)
 	}
 }
 
@@ -233,7 +248,10 @@ impl Connection {
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_inbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> {
+pub fn setup_inbound<CMH: ChannelMessageHandler + 'static>(
+	peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>,
+	stream: TcpStream,
+) -> impl std::future::Future<Output = ()> {
 	let (reader, write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -272,12 +290,17 @@ pub fn setup_inbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<pee
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> {
+pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(
+	peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>,
+	their_node_id: PublicKey, stream: TcpStream,
+) -> impl std::future::Future<Output = ()> {
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
 
-	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone())) {
+	let handle_opt = if let Ok(initial_send) =
+		peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()))
+	{
 		Some(tokio::spawn(async move {
 			// We should essentially always have enough room in a TCP socket buffer to send the
 			// initial 10s of bytes. However, tokio running in single-threaded mode will always
@@ -293,7 +316,7 @@ pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<pe
 							// In theory we could check for if we've been instructed to disconnect
 							// the peer here, but its OK to just skip it - we'll check for it in
 							// schedule_read prior to any relevant calls into RL.
-						},
+						}
 						_ => {
 							eprintln!("Failed to write first full message to socket!");
 							peer_manager.socket_disconnected(&SocketDescriptor::new(Arc::clone(&us)));
@@ -301,7 +324,9 @@ pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<pe
 						}
 					}
 				}
-			}).await {
+			})
+			.await
+			{
 				Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver).await;
 			}
 		}))
@@ -341,10 +366,15 @@ pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<pe
 /// make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub async fn connect_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> {
+pub async fn connect_outbound<CMH: ChannelMessageHandler + 'static>(
+	peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>,
+	their_node_id: PublicKey, addr: SocketAddr,
+) -> Option<impl std::future::Future<Output = ()>> {
 	if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await {
 		Some(setup_outbound(peer_manager, event_notify, their_node_id, stream))
-	} else { None }
+	} else {
+		None
+	}
 }
 
 const SOCK_WAKER_VTABLE: task::RawWakerVTable =
@@ -408,7 +438,9 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 			us.read_paused = false;
 			let _ = us.read_waker.try_send(());
 		}
-		if data.is_empty() { return 0; }
+		if data.is_empty() {
+			return 0;
+		}
 		let waker = unsafe { task::Waker::from_raw(write_avail_to_waker(&us.write_avail)) };
 		let mut ctx = task::Context::from_waker(&waker);
 		let mut written_len = 0;
@@ -420,8 +452,10 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 					// instead):
 					assert_ne!(res, 0);
 					written_len += res;
-					if written_len == data.len() { return written_len; }
-				},
+					if written_len == data.len() {
+						return written_len;
+					}
+				}
 				task::Poll::Ready(Err(e)) => {
 					// The tokio docs *seem* to indicate this can't happen, and I certainly don't
 					// know how to handle it if it does (cause it should be a Poll::Pending
@@ -430,14 +464,14 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 					// Probably we've already been closed, just return what we have and let the
 					// read thread handle closing logic.
 					return written_len;
-				},
+				}
 				task::Poll::Pending => {
 					// We're queued up for a write event now, but we need to make sure we also
 					// pause read given we're now waiting on the remote end to ACK (and in
 					// accordance with the send_data() docs).
 					us.read_paused = true;
 					return written_len;
-				},
+				}
 			}
 		}
 	}
@@ -450,7 +484,9 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 			// Wake up the sending thread, assuming it is still alive
 			let _ = us.write_avail.try_send(());
 			// Happy-path return:
-			if !us.block_disconnect_socket { return; }
+			if !us.block_disconnect_socket {
+				return;
+			}
 		}
 		while self.conn.lock().unwrap().block_disconnect_socket {
 			thread::yield_now();
@@ -459,10 +495,7 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 }
 impl Clone for SocketDescriptor {
 	fn clone(&self) -> Self {
-		Self {
-			conn: Arc::clone(&self.conn),
-			id: self.id,
-		}
+		Self { conn: Arc::clone(&self.conn), id: self.id }
 	}
 }
 impl Eq for SocketDescriptor {}
@@ -479,11 +512,11 @@ impl Hash for SocketDescriptor {
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
 	use lightning::util::events::*;
-	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
 	use tokio::sync::mpsc;
 
@@ -494,28 +527,54 @@ mod tests {
 	pub struct TestLogger();
 	impl lightning::util::logger::Logger for TestLogger {
 		fn log(&self, record: &lightning::util::logger::Record) {
-			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+			println!(
+				"{:<5} [{} : {}, {}] {}",
+				record.level.to_string(),
+				record.module_path,
+				record.file,
+				record.line,
+				record.args
+			);
 		}
 	}
 
-	struct MsgHandler{
+	struct MsgHandler {
 		expected_pubkey: PublicKey,
 		pubkey_connected: mpsc::Sender<()>,
 		pubkey_disconnected: mpsc::Sender<()>,
 		msg_events: Mutex<Vec<MessageSendEvent>>,
 	}
 	impl RoutingMessageHandler for MsgHandler {
-		fn handle_node_announcement(&self, _msg: &NodeAnnouncement) -> Result<bool, LightningError> { Ok(false) }
-		fn handle_channel_announcement(&self, _msg: &ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
-		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
-		fn handle_htlc_fail_channel_update(&self, _update: &HTLCFailChannelUpdate) { }
-		fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> { Vec::new() }
-		fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<NodeAnnouncement> { Vec::new() }
-		fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool { false }
+		fn handle_node_announcement(&self, _msg: &NodeAnnouncement) -> Result<bool, LightningError> {
+			Ok(false)
+		}
+		fn handle_channel_announcement(&self, _msg: &ChannelAnnouncement) -> Result<bool, LightningError> {
+			Ok(false)
+		}
+		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> {
+			Ok(false)
+		}
+		fn handle_htlc_fail_channel_update(&self, _update: &HTLCFailChannelUpdate) {}
+		fn get_next_channel_announcements(
+			&self, _starting_point: u64, _batch_amount: u8,
+		) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
+			Vec::new()
+		}
+		fn get_next_node_announcements(
+			&self, _starting_point: Option<&PublicKey>, _batch_amount: u8,
+		) -> Vec<NodeAnnouncement> {
+			Vec::new()
+		}
+		fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
+			false
+		}
 	}
 	impl ChannelMessageHandler for MsgHandler {
 		fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &OpenChannel) {}
-		fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &AcceptChannel) {}
+		fn handle_accept_channel(
+			&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &AcceptChannel,
+		) {
+		}
 		fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &FundingCreated) {}
 		fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &FundingSigned) {}
 		fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &FundingLocked) {}
@@ -565,10 +624,15 @@ mod tests {
 			pubkey_disconnected: a_disconnected_sender,
 			msg_events: Mutex::new(Vec::new()),
 		});
-		let a_manager = Arc::new(PeerManager::new(MessageHandler {
-			chan_handler: Arc::clone(&a_handler),
-			route_handler: Arc::clone(&a_handler) as Arc<dyn RoutingMessageHandler>,
-		}, a_key.clone(), &[1; 32], Arc::new(TestLogger())));
+		let a_manager = Arc::new(PeerManager::new(
+			MessageHandler {
+				chan_handler: Arc::clone(&a_handler),
+				route_handler: Arc::clone(&a_handler) as Arc<dyn RoutingMessageHandler>,
+			},
+			a_key.clone(),
+			&[1; 32],
+			Arc::new(TestLogger()),
+		));
 
 		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
 		let (b_disconnected_sender, mut b_disconnected) = mpsc::channel(1);
@@ -578,10 +642,15 @@ mod tests {
 			pubkey_disconnected: b_disconnected_sender,
 			msg_events: Mutex::new(Vec::new()),
 		});
-		let b_manager = Arc::new(PeerManager::new(MessageHandler {
-			chan_handler: Arc::clone(&b_handler),
-			route_handler: Arc::clone(&b_handler) as Arc<dyn RoutingMessageHandler>,
-		}, b_key.clone(), &[2; 32], Arc::new(TestLogger())));
+		let b_manager = Arc::new(PeerManager::new(
+			MessageHandler {
+				chan_handler: Arc::clone(&b_handler),
+				route_handler: Arc::clone(&b_handler) as Arc<dyn RoutingMessageHandler>,
+			},
+			b_key.clone(),
+			&[2; 32],
+			Arc::new(TestLogger()),
+		));
 
 		// We bind on localhost, hoping the environment is properly configured with a local
 		// address. This may not always be the case in containers and the like, so if this test is
@@ -593,18 +662,27 @@ mod tests {
 			(std::net::TcpStream::connect("127.0.0.1:9999").unwrap(), listener.accept().unwrap().0)
 		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:46926") {
 			(std::net::TcpStream::connect("127.0.0.1:46926").unwrap(), listener.accept().unwrap().0)
-		} else { panic!("Failed to bind to v4 localhost on common ports"); };
+		} else {
+			panic!("Failed to bind to v4 localhost on common ports");
+		};
 
 		let (sender, _receiver) = mpsc::channel(2);
-		let fut_a = super::setup_outbound(Arc::clone(&a_manager), sender.clone(), b_pub, tokio::net::TcpStream::from_std(conn_a).unwrap());
+		let fut_a = super::setup_outbound(
+			Arc::clone(&a_manager),
+			sender.clone(),
+			b_pub,
+			tokio::net::TcpStream::from_std(conn_a).unwrap(),
+		);
 		let fut_b = super::setup_inbound(b_manager, sender, tokio::net::TcpStream::from_std(conn_b).unwrap());
 
 		tokio::time::timeout(Duration::from_secs(10), a_connected.recv()).await.unwrap();
 		tokio::time::timeout(Duration::from_secs(1), b_connected.recv()).await.unwrap();
 
-		a_handler.msg_events.lock().unwrap().push(MessageSendEvent::HandleError {
-			node_id: b_pub, action: ErrorAction::DisconnectPeer { msg: None }
-		});
+		a_handler
+			.msg_events
+			.lock()
+			.unwrap()
+			.push(MessageSendEvent::HandleError { node_id: b_pub, action: ErrorAction::DisconnectPeer { msg: None } });
 		assert!(a_disconnected.try_recv().is_err());
 		assert!(b_disconnected.try_recv().is_err());
 

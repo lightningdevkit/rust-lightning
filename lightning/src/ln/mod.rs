@@ -9,14 +9,14 @@
 //! you want to learn things about the network topology (eg get a route for sending a payment),
 //! call into your Router.
 
+pub mod chan_utils;
 pub mod channelmanager;
 pub mod channelmonitor;
-pub mod msgs;
-pub mod router;
-pub mod peer_handler;
-pub mod chan_utils;
 pub mod features;
+pub mod msgs;
 pub(crate) mod onchaintx;
+pub mod peer_handler;
+pub mod router;
 
 #[cfg(feature = "fuzztarget")]
 pub mod peer_channel_encryptor;
@@ -31,8 +31,8 @@ mod wire;
 #[macro_use]
 pub(crate) mod functional_test_utils;
 #[cfg(test)]
-mod functional_tests;
-#[cfg(test)]
 mod chanmon_update_fail_tests;
+#[cfg(test)]
+mod functional_tests;
 #[cfg(test)]
 mod reorg_tests;

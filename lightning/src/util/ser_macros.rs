@@ -154,10 +154,10 @@ macro_rules! impl_writeable_len_match {
 
 #[cfg(test)]
 mod tests {
-	use std::io::{Cursor, Read};
-	use ln::msgs::DecodeError;
-	use util::ser::{Readable, Writeable, HighZeroBytesDroppedVarInt, VecWriter};
 	use bitcoin::secp256k1::PublicKey;
+	use ln::msgs::DecodeError;
+	use std::io::{Cursor, Read};
+	use util::ser::{HighZeroBytesDroppedVarInt, Readable, VecWriter, Writeable};
 
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since
 	// the encoding layer in the BOLTs has no such concept, though it makes our macros easier to
@@ -174,54 +174,66 @@ mod tests {
 	#[test]
 	fn tlv_v_short_read() {
 		// We only expect a u32 for type 3 (which we are given), but the L says its 8 bytes.
-		if let Err(DecodeError::ShortRead) = tlv_reader(&::hex::decode(
-				concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")
-				).unwrap()[..]) {
-		} else { panic!(); }
+		if let Err(DecodeError::ShortRead) =
+			tlv_reader(&::hex::decode(concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")).unwrap()[..])
+		{
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn tlv_types_out_of_order() {
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
-				concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")
-				).unwrap()[..]) {
-		} else { panic!(); }
+		if let Err(DecodeError::InvalidValue) =
+			tlv_reader(&::hex::decode(concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")).unwrap()[..])
+		{
+		} else {
+			panic!();
+		}
 		// ...even if its some field we don't understand
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
-				concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")
-				).unwrap()[..]) {
-		} else { panic!(); }
+		if let Err(DecodeError::InvalidValue) =
+			tlv_reader(&::hex::decode(concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")).unwrap()[..])
+		{
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn tlv_req_type_missing_or_extra() {
 		// It's also bad if they included even fields we don't understand
-		if let Err(DecodeError::UnknownRequiredFeature) = tlv_reader(&::hex::decode(
-				concat!("0100", "0208deadbeef1badbeef", "0304deadbeef", "0600")
-				).unwrap()[..]) {
-		} else { panic!(); }
+		if let Err(DecodeError::UnknownRequiredFeature) =
+			tlv_reader(&::hex::decode(concat!("0100", "0208deadbeef1badbeef", "0304deadbeef", "0600")).unwrap()[..])
+		{
+		} else {
+			panic!();
+		}
 		// ... or if they're missing fields we need
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
-				concat!("0100", "0208deadbeef1badbeef")
-				).unwrap()[..]) {
-		} else { panic!(); }
+		if let Err(DecodeError::InvalidValue) =
+			tlv_reader(&::hex::decode(concat!("0100", "0208deadbeef1badbeef")).unwrap()[..])
+		{
+		} else {
+			panic!();
+		}
 		// ... even if that field is even
-		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(
-				concat!("0304deadbeef", "0500")
-				).unwrap()[..]) {
-		} else { panic!(); }
+		if let Err(DecodeError::InvalidValue) = tlv_reader(&::hex::decode(concat!("0304deadbeef", "0500")).unwrap()[..])
+		{
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn tlv_simple_good_cases() {
-		assert_eq!(tlv_reader(&::hex::decode(
-				concat!("0208deadbeef1badbeef", "03041bad1dea")
-				).unwrap()[..]).unwrap(),
-			(0xdeadbeef1badbeef, 0x1bad1dea, None));
-		assert_eq!(tlv_reader(&::hex::decode(
-				concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
-				).unwrap()[..]).unwrap(),
-			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
+		assert_eq!(
+			tlv_reader(&::hex::decode(concat!("0208deadbeef1badbeef", "03041bad1dea")).unwrap()[..]).unwrap(),
+			(0xdeadbeef1badbeef, 0x1bad1dea, None)
+		);
+		assert_eq!(
+			tlv_reader(&::hex::decode(concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")).unwrap()[..])
+				.unwrap(),
+			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304))
+		);
 	}
 
 	impl Readable for (PublicKey, u64, u64) {
@@ -232,7 +244,12 @@ mod tests {
 	}
 
 	// BOLT TLV test cases
-	fn tlv_reader_n1(s: &[u8]) -> Result<(Option<HighZeroBytesDroppedVarInt<u64>>, Option<u64>, Option<(PublicKey, u64, u64)>, Option<u16>), DecodeError> {
+	fn tlv_reader_n1(
+		s: &[u8],
+	) -> Result<
+		(Option<HighZeroBytesDroppedVarInt<u64>>, Option<u64>, Option<(PublicKey, u64, u64)>, Option<u16>),
+		DecodeError,
+	> {
 		let mut s = Cursor::new(s);
 		let mut tlv1: Option<HighZeroBytesDroppedVarInt<u64>> = None;
 		let mut tlv2: Option<u64> = None;
@@ -291,10 +308,34 @@ mod tests {
 		do_test!(concat!("02", "07", "01010101010101"), ShortRead);
 		do_test!(concat!("02", "09", "010101010101010101"), InvalidValue);
 		do_test!(concat!("03", "21", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"), ShortRead);
-		do_test!(concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"), ShortRead);
-		do_test!(concat!("03", "30", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"), ShortRead);
-		do_test!(concat!("03", "31", "043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"), InvalidValue);
-		do_test!(concat!("03", "32", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"), InvalidValue);
+		do_test!(
+			concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"),
+			ShortRead
+		);
+		do_test!(
+			concat!(
+				"03",
+				"30",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"
+			),
+			ShortRead
+		);
+		do_test!(
+			concat!(
+				"03",
+				"31",
+				"043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"
+			),
+			InvalidValue
+		);
+		do_test!(
+			concat!(
+				"03",
+				"32",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"
+			),
+			InvalidValue
+		);
 		do_test!(concat!("fd00fe", "00"), ShortRead);
 		do_test!(concat!("fd00fe", "01", "01"), ShortRead);
 		do_test!(concat!("fd00fe", "03", "010101"), InvalidValue);
@@ -341,10 +382,24 @@ mod tests {
 		do_test!(concat!("01", "07", "01000000000000"), Some(281474976710656), None, None, None);
 		do_test!(concat!("01", "08", "0100000000000000"), Some(72057594037927936), None, None, None);
 		do_test!(concat!("02", "08", "0000000000000226"), None, Some((0 << 30) | (0 << 5) | (550 << 0)), None, None);
-		do_test!(concat!("03", "31", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
-			None, None, Some((
-				PublicKey::from_slice(&::hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]).unwrap(), 1, 2)),
-			None);
+		do_test!(
+			concat!(
+				"03",
+				"31",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"
+			),
+			None,
+			None,
+			Some((
+				PublicKey::from_slice(
+					&::hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]
+				)
+				.unwrap(),
+				1,
+				2
+			)),
+			None
+		);
 		do_test!(concat!("fd00fe", "02", "0226"), None, None, None, Some(550));
 	}
 

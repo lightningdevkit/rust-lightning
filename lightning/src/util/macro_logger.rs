@@ -1,12 +1,12 @@
-use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
+use chain::transaction::OutPoint;
 
-use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::key::PublicKey;
 
-use ln::router::Route;
 use ln::chan_utils::HTLCType;
+use ln::router::Route;
 
 use std;
 
@@ -77,7 +77,14 @@ impl<'a> std::fmt::Display for DebugRoute<'a> {
 		for (idx, p) in self.0.paths.iter().enumerate() {
 			write!(f, "path {}:\n", idx)?;
 			for h in p.iter() {
-				write!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+				write!(
+					f,
+					" node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n",
+					log_pubkey!(h.pubkey),
+					h.short_channel_id,
+					h.fee_msat,
+					h.cltv_expiry_delta
+				)?;
 			}
 		}
 		Ok(())
@@ -94,22 +101,39 @@ pub(crate) struct DebugTx<'a>(pub &'a Transaction);
 impl<'a> std::fmt::Display for DebugTx<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
-			if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 &&
-					(self.0.input[0].sequence >> 8*3) as u8 == 0x80 {
+			if self.0.input.len() == 1
+				&& self.0.input[0].witness.last().unwrap().len() == 71
+				&& (self.0.input[0].sequence >> 8 * 3) as u8 == 0x80
+			{
 				write!(f, "commitment tx")?;
 			} else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 {
 				write!(f, "closing tx")?;
-			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) &&
-					self.0.input[0].witness.len() == 5 {
+			} else if self.0.input.len() == 1
+				&& HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len())
+					== Some(HTLCType::OfferedHTLC)
+				&& self.0.input[0].witness.len() == 5
+			{
 				write!(f, "HTLC-timeout tx")?;
-			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) &&
-					self.0.input[0].witness.len() == 5 {
+			} else if self.0.input.len() == 1
+				&& HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len())
+					== Some(HTLCType::AcceptedHTLC)
+				&& self.0.input[0].witness.len() == 5
+			{
 				write!(f, "HTLC-success tx")?;
 			} else {
 				for inp in &self.0.input {
 					if !inp.witness.is_empty() {
-						if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) { write!(f, "preimage-")?; break }
-						else if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) { write!(f, "timeout-")?; break }
+						if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len())
+							== Some(HTLCType::OfferedHTLC)
+						{
+							write!(f, "preimage-")?;
+							break;
+						} else if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len())
+							== Some(HTLCType::AcceptedHTLC)
+						{
+							write!(f, "timeout-")?;
+							break;
+						}
 					}
 				}
 				write!(f, "tx")?;

@@ -7,7 +7,8 @@ extern crate lightning_fuzz;
 use lightning_fuzz::msg_targets::msg_closing_signed::*;
 
 #[cfg(feature = "afl")]
-#[macro_use] extern crate afl;
+#[macro_use]
+extern crate afl;
 #[cfg(feature = "afl")]
 fn main() {
 	fuzz!(|data| {
@@ -16,7 +17,8 @@ fn main() {
 }
 
 #[cfg(feature = "honggfuzz")]
-#[macro_use] extern crate honggfuzz;
+#[macro_use]
+extern crate honggfuzz;
 #[cfg(feature = "honggfuzz")]
 fn main() {
 	loop {
@@ -27,7 +29,8 @@ fn main() {
 }
 
 #[cfg(feature = "libfuzzer_fuzz")]
-#[macro_use] extern crate libfuzzer_sys;
+#[macro_use]
+extern crate libfuzzer_sys;
 #[cfg(feature = "libfuzzer_fuzz")]
 fuzz_target!(|data: &[u8]| {
 	msg_closing_signed_run(data.as_ptr(), data.len());
@@ -44,9 +47,9 @@ fn main() {
 
 #[test]
 fn run_test_cases() {
+	use lightning_fuzz::utils::test_logger::StringBuffer;
 	use std::fs;
 	use std::io::Read;
-	use lightning_fuzz::utils::test_logger::StringBuffer;
 
 	use std::sync::{atomic, Arc};
 	{
@@ -64,20 +67,25 @@ fn run_test_cases() {
 
 			let thread_count_ref = Arc::clone(&threads_running);
 			let main_thread_ref = std::thread::current();
-			threads.push((path.file_name().unwrap().to_str().unwrap().to_string(),
+			threads.push((
+				path.file_name().unwrap().to_str().unwrap().to_string(),
 				std::thread::spawn(move || {
 					let string_logger = StringBuffer::new();
 
 					let panic_logger = string_logger.clone();
 					let res = if ::std::panic::catch_unwind(move || {
 						msg_closing_signed_test(&data, panic_logger);
-					}).is_err() {
+					})
+					.is_err()
+					{
 						Some(string_logger.into_string())
-					} else { None };
+					} else {
+						None
+					};
 					thread_count_ref.fetch_sub(1, atomic::Ordering::AcqRel);
 					main_thread_ref.unpark();
 					res
-				})
+				}),
 			));
 			while threads_running.load(atomic::Ordering::Acquire) > 32 {
 				std::thread::park();

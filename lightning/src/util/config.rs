@@ -63,11 +63,7 @@ pub struct ChannelHandshakeConfig {
 
 impl Default for ChannelHandshakeConfig {
 	fn default() -> ChannelHandshakeConfig {
-		ChannelHandshakeConfig {
-			minimum_depth: 6,
-			our_to_self_delay: BREAKDOWN_TIMEOUT,
-			our_htlc_minimum_msat: 1,
-		}
+		ChannelHandshakeConfig { minimum_depth: 6, our_to_self_delay: BREAKDOWN_TIMEOUT, our_htlc_minimum_msat: 1 }
 	}
 }
 
@@ -146,7 +142,7 @@ pub struct ChannelHandshakeLimits {
 	///
 	/// Default value: MAX_LOCAL_BREAKDOWN_TIMEOUT (1008), which we also enforce as a maximum value
 	/// so you can tweak config to reduce the loss of having useless locked funds (if your peer accepts)
-	pub their_to_self_delay: u16
+	pub their_to_self_delay: u16,
 }
 
 impl Default for ChannelHandshakeLimits {
@@ -199,17 +195,13 @@ pub struct ChannelConfig {
 	/// This cannot be changed after a channel has been initialized.
 	///
 	/// Default value: true.
-	pub commit_upfront_shutdown_pubkey: bool
+	pub commit_upfront_shutdown_pubkey: bool,
 }
 
 impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
 	fn default() -> Self {
-		ChannelConfig {
-			fee_proportional_millionths: 0,
-			announced_channel: false,
-			commit_upfront_shutdown_pubkey: true,
-		}
+		ChannelConfig { fee_proportional_millionths: 0, announced_channel: false, commit_upfront_shutdown_pubkey: true }
 	}
 }
 

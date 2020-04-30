@@ -9,45 +9,49 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
-use bitcoin::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
+use bitcoin::BitcoinHash;
 
-use bitcoin::hashes::Hash as TraitImport;
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash as TraitImport;
 
 use lightning::chain::chaininterface;
+use lightning::chain::chaininterface::{
+	BroadcasterInterface, ChainListener, ChainWatchInterfaceUtil, ConfirmationTarget, FeeEstimator,
+};
+use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
-use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
+use lightning::ln::channelmanager::{
+	ChannelManager, ChannelManagerReadArgs, PaymentHash, PaymentPreimage, PaymentSecret,
+};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
-use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
-use lightning::ln::router::{Route, RouteHop};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
+use lightning::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, ErrorAction, Init, UpdateAddHTLC};
+use lightning::ln::router::{Route, RouteHop};
+use lightning::util::config::UserConfig;
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::events;
-use lightning::util::logger::Logger;
-use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider, MessageSendEventsProvider};
+use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
 use utils::test_logger;
 
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::secp256k1::Secp256k1;
 
-use std::mem;
 use std::cmp::Ordering;
-use std::collections::{HashSet, hash_map, HashMap};
-use std::sync::{Arc,Mutex};
-use std::sync::atomic;
+use std::collections::{hash_map, HashMap, HashSet};
 use std::io::Cursor;
+use std::mem;
+use std::sync::atomic;
+use std::sync::{Arc, Mutex};
 
 struct FuzzEstimator {}
 impl FeeEstimator for FuzzEstimator {
@@ -58,7 +62,7 @@ impl FeeEstimator for FuzzEstimator {
 
 pub struct TestBroadcaster {}
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, _tx: &Transaction) { }
+	fn broadcast_transaction(&self, _tx: &Transaction) {}
 }
 
 pub struct VecWriter(pub Vec<u8>);
@@ -74,7 +78,14 @@ impl Writer for VecWriter {
 
 struct TestChannelMonitor {
 	pub logger: Arc<dyn Logger>,
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>>>,
+	pub simple_monitor: Arc<
+		channelmonitor::SimpleManyChannelMonitor<
+			OutPoint,
+			EnforcingChannelKeys,
+			Arc<TestBroadcaster>,
+			Arc<FuzzEstimator>,
+		>,
+	>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
@@ -85,9 +96,17 @@ struct TestChannelMonitor {
 	pub should_update_manager: atomic::AtomicBool,
 }
 impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<dyn chaininterface::ChainWatchInterface>, broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>) -> Self {
+	pub fn new(
+		chain_monitor: Arc<dyn chaininterface::ChainWatchInterface>, broadcaster: Arc<TestBroadcaster>,
+		logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>,
+	) -> Self {
 		Self {
-			simple_monitor: Arc::new(channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger.clone(), feeest)),
+			simple_monitor: Arc::new(channelmonitor::SimpleManyChannelMonitor::new(
+				chain_monitor,
+				broadcaster,
+				logger.clone(),
+				feeest,
+			)),
 			logger,
 			update_ret: Mutex::new(Ok(())),
 			latest_monitors: Mutex::new(HashMap::new()),
@@ -96,10 +115,14 @@ impl TestChannelMonitor {
 	}
 }
 impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
-	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn add_monitor(
+		&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>,
+	) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut ser).unwrap();
-		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
+		if let Some(_) =
+			self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0))
+		{
 			panic!("Already had monitor pre-add_monitor");
 		}
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
@@ -107,14 +130,20 @@ impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMon
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_monitor(
+		&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate,
+	) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let mut map_entry = match map_lock.entry(funding_txo) {
 			hash_map::Entry::Occupied(entry) => entry,
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
-		let mut deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
-			read(&mut Cursor::new(&map_entry.get().1), Arc::clone(&self.logger)).unwrap().1;
+		let mut deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+			&mut Cursor::new(&map_entry.get().1),
+			Arc::clone(&self.logger),
+		)
+		.unwrap()
+		.1;
 		deserialized_monitor.update_monitor(update.clone(), &&TestBroadcaster {}).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write_for_disk(&mut ser).unwrap();
@@ -146,8 +175,12 @@ impl KeysInterface for KeyProvider {
 
 		#[cfg_attr(rustfmt, rustfmt_skip)]
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_id]).unwrap();
-		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+		let our_channel_monitor_claim_key_hash =
+			WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		Builder::new()
+			.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+			.push_slice(&our_channel_monitor_claim_key_hash[..])
+			.into_script()
 	}
 
 	#[cfg_attr(rustfmt, rustfmt_skip)]
@@ -187,8 +220,8 @@ impl KeysInterface for KeyProvider {
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let fee_est = Arc::new(FuzzEstimator{});
-	let broadcast = Arc::new(TestBroadcaster{});
+	let fee_est = Arc::new(FuzzEstimator {});
+	let broadcast = Arc::new(TestBroadcaster {});
 
 	#[cfg_attr(rustfmt, rustfmt_skip)]
 	macro_rules! make_node {
@@ -690,22 +723,22 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
 				}
-			},
+			}
 			0x07 => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
 				}
-			},
+			}
 			0x24 => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
 					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
 				}
-			},
+			}
 			0x08 => {
 				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
 					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
 				}
-			},
+			}
 			0x09 => send_payment!(nodes[0], (&nodes[1], chan_a)),
 			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a)),
 			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b)),
@@ -719,7 +752,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
-			},
+			}
 			0x10 => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
@@ -727,21 +760,21 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
-			},
+			}
 			0x11 => {
 				if chan_a_disconnected {
 					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					chan_a_disconnected = false;
 				}
-			},
+			}
 			0x12 => {
 				if chan_b_disconnected {
 					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					chan_b_disconnected = false;
 				}
-			},
+			}
 			0x13 => process_msg_events!(0, true),
 			0x14 => process_msg_events!(0, false),
 			0x15 => process_events!(0, true),
@@ -764,7 +797,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				node_a = Arc::new(new_node_a);
 				nodes[0] = node_a.clone();
 				monitor_a = new_monitor_a;
-			},
+			}
 			0x20 => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
@@ -782,7 +815,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				node_b = Arc::new(new_node_b);
 				nodes[1] = node_b.clone();
 				monitor_b = new_monitor_b;
-			},
+			}
 			0x21 => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
@@ -793,7 +826,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				node_c = Arc::new(new_node_c);
 				nodes[2] = node_c.clone();
 				monitor_c = new_monitor_c;
-			},
+			}
 			0x22 => send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
 			0x23 => send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
 			// 0x24 defined above
@@ -818,5 +851,5 @@ pub fn chanmon_consistency_test<Out: test_logger::Output>(data: &[u8], out: Out)
 
 #[no_mangle]
 pub extern "C" fn chanmon_consistency_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{});
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

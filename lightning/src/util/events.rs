@@ -5,11 +5,11 @@
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
 
-use ln::msgs;
-use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
-use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
-use util::ser::{Writeable, Writer, MaybeReadable, Readable};
+use chain::transaction::OutPoint;
+use ln::channelmanager::{PaymentHash, PaymentPreimage, PaymentSecret};
+use ln::msgs;
+use util::ser::{MaybeReadable, Readable, Writeable, Writer};
 
 use bitcoin::blockdata::script::Script;
 
@@ -98,9 +98,9 @@ pub enum Event {
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
 		rejected_by_dest: bool,
-#[cfg(test)]
+		#[cfg(test)]
 		error_code: Option<u16>,
-#[cfg(test)]
+		#[cfg(test)]
 		error_data: Option<Vec<u8>>,
 	},
 	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
@@ -129,23 +129,25 @@ impl Writeable for Event {
 				0u8.write(writer)?;
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
-			},
+			}
 			&Event::FundingBroadcastSafe { ref funding_txo, ref user_channel_id } => {
 				1u8.write(writer)?;
 				funding_txo.write(writer)?;
 				user_channel_id.write(writer)?;
-			},
+			}
 			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt } => {
 				2u8.write(writer)?;
 				payment_hash.write(writer)?;
 				payment_secret.write(writer)?;
 				amt.write(writer)?;
-			},
+			}
 			&Event::PaymentSent { ref payment_preimage } => {
 				3u8.write(writer)?;
 				payment_preimage.write(writer)?;
-			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
+			}
+			&Event::PaymentFailed {
+				ref payment_hash,
+				ref rejected_by_dest,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -158,19 +160,19 @@ impl Writeable for Event {
 				error_code.write(writer)?;
 				#[cfg(test)]
 				error_data.write(writer)?;
-			},
+			}
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
 				5u8.write(writer)?;
 				// We don't write the time_fordwardable out at all, as we presume when the user
 				// deserializes us at least that much time has elapsed.
-			},
+			}
 			&Event::SpendableOutputs { ref outputs } => {
 				6u8.write(writer)?;
 				(outputs.len() as u64).write(writer)?;
 				for output in outputs.iter() {
 					output.write(writer)?;
 				}
-			},
+			}
 		}
 		Ok(())
 	}
@@ -180,28 +182,24 @@ impl MaybeReadable for Event {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
 			1u8 => Ok(Some(Event::FundingBroadcastSafe {
-					funding_txo: Readable::read(reader)?,
-					user_channel_id: Readable::read(reader)?,
-				})),
+				funding_txo: Readable::read(reader)?,
+				user_channel_id: Readable::read(reader)?,
+			})),
 			2u8 => Ok(Some(Event::PaymentReceived {
-					payment_hash: Readable::read(reader)?,
-					payment_secret: Readable::read(reader)?,
-					amt: Readable::read(reader)?,
-				})),
-			3u8 => Ok(Some(Event::PaymentSent {
-					payment_preimage: Readable::read(reader)?,
-				})),
+				payment_hash: Readable::read(reader)?,
+				payment_secret: Readable::read(reader)?,
+				amt: Readable::read(reader)?,
+			})),
+			3u8 => Ok(Some(Event::PaymentSent { payment_preimage: Readable::read(reader)? })),
 			4u8 => Ok(Some(Event::PaymentFailed {
-					payment_hash: Readable::read(reader)?,
-					rejected_by_dest: Readable::read(reader)?,
-					#[cfg(test)]
-					error_code: Readable::read(reader)?,
-					#[cfg(test)]
-					error_data: Readable::read(reader)?,
-				})),
-			5u8 => Ok(Some(Event::PendingHTLCsForwardable {
-					time_forwardable: Duration::from_secs(0)
-				})),
+				payment_hash: Readable::read(reader)?,
+				rejected_by_dest: Readable::read(reader)?,
+				#[cfg(test)]
+				error_code: Readable::read(reader)?,
+				#[cfg(test)]
+				error_data: Readable::read(reader)?,
+			})),
+			5u8 => Ok(Some(Event::PendingHTLCsForwardable { time_forwardable: Duration::from_secs(0) })),
 			6u8 => {
 				let outputs_len: u64 = Readable::read(reader)?;
 				let mut outputs = Vec::new();
@@ -209,8 +207,8 @@ impl MaybeReadable for Event {
 					outputs.push(Readable::read(reader)?);
 				}
 				Ok(Some(Event::SpendableOutputs { outputs }))
-			},
-			_ => Err(msgs::DecodeError::InvalidValue)
+			}
+			_ => Err(msgs::DecodeError::InvalidValue),
 		}
 	}
 }
@@ -329,14 +327,14 @@ pub enum MessageSendEvent {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
 		/// The action which should be taken.
-		action: msgs::ErrorAction
+		action: msgs::ErrorAction,
 	},
 	/// When a payment fails we may receive updates back from the hop where it failed. In such
 	/// cases this event is generated so that we can inform the router of this information.
 	PaymentFailureNetworkUpdate {
 		/// The channel/node update which should be sent to router
 		update: msgs::HTLCFailChannelUpdate,
-	}
+	},
 }
 
 /// A trait indicating an object may generate message send events

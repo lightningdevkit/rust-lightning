@@ -1,19 +1,19 @@
-use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction};
-use ln::{chan_utils, msgs};
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
+use ln::chan_utils::{ChannelPublicKeys, HTLCOutputInCommitment, LocalCommitmentTransaction, TxCreationKeys};
+use ln::{chan_utils, msgs};
 
 use std::cmp;
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex};
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::util::bip143;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 use bitcoin::secp256k1::{Secp256k1, Signature};
-use util::ser::{Writeable, Writer, Readable};
-use std::io::Error;
 use ln::msgs::DecodeError;
+use std::io::Error;
+use util::ser::{Readable, Writeable, Writer};
 
 /// Enforces some rules on ChannelKeys calls. Eventually we will probably want to expose a variant
 /// of this which would essentially be what you'd want to run on a hardware wallet.
@@ -25,46 +25,69 @@ pub struct EnforcingChannelKeys {
 
 impl EnforcingChannelKeys {
 	pub fn new(inner: InMemoryChannelKeys) -> Self {
-		Self {
-			inner,
-			commitment_number_obscure_and_last: Arc::new(Mutex::new((None, 0))),
-		}
+		Self { inner, commitment_number_obscure_and_last: Arc::new(Mutex::new((None, 0))) }
 	}
 }
 
 impl EnforcingChannelKeys {
-	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
-	                                                               keys: &TxCreationKeys) {
+	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, secp_ctx: &Secp256k1<T>, keys: &TxCreationKeys,
+	) {
 		let revocation_base = PublicKey::from_secret_key(secp_ctx, &self.inner.revocation_base_key());
 		let payment_base = PublicKey::from_secret_key(secp_ctx, &self.inner.payment_base_key());
 		let htlc_base = PublicKey::from_secret_key(secp_ctx, &self.inner.htlc_base_key());
 
 		let remote_points = self.inner.remote_channel_pubkeys.as_ref().unwrap();
 
-		let keys_expected = TxCreationKeys::new(secp_ctx,
-		                                        &keys.per_commitment_point,
-		                                        &remote_points.delayed_payment_basepoint,
-		                                        &remote_points.htlc_basepoint,
-		                                        &revocation_base,
-		                                        &payment_base,
-		                                        &htlc_base).unwrap();
-		if keys != &keys_expected { panic!("derived different per-tx keys") }
+		let keys_expected = TxCreationKeys::new(
+			secp_ctx,
+			&keys.per_commitment_point,
+			&remote_points.delayed_payment_basepoint,
+			&remote_points.htlc_basepoint,
+			&revocation_base,
+			&payment_base,
+			&htlc_base,
+		)
+		.unwrap();
+		if keys != &keys_expected {
+			panic!("derived different per-tx keys")
+		}
 	}
 }
 
 impl ChannelKeys for EnforcingChannelKeys {
-	fn funding_key(&self) -> &SecretKey { self.inner.funding_key() }
-	fn revocation_base_key(&self) -> &SecretKey { self.inner.revocation_base_key() }
-	fn payment_base_key(&self) -> &SecretKey { self.inner.payment_base_key() }
-	fn delayed_payment_base_key(&self) -> &SecretKey { self.inner.delayed_payment_base_key() }
-	fn htlc_base_key(&self) -> &SecretKey { self.inner.htlc_base_key() }
-	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }
-	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { self.inner.pubkeys() }
+	fn funding_key(&self) -> &SecretKey {
+		self.inner.funding_key()
+	}
+	fn revocation_base_key(&self) -> &SecretKey {
+		self.inner.revocation_base_key()
+	}
+	fn payment_base_key(&self) -> &SecretKey {
+		self.inner.payment_base_key()
+	}
+	fn delayed_payment_base_key(&self) -> &SecretKey {
+		self.inner.delayed_payment_base_key()
+	}
+	fn htlc_base_key(&self) -> &SecretKey {
+		self.inner.htlc_base_key()
+	}
+	fn commitment_seed(&self) -> &[u8; 32] {
+		self.inner.commitment_seed()
+	}
+	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys {
+		self.inner.pubkeys()
+	}
 
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
-		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys,
+		htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>,
+	) -> Result<(Signature, Vec<Signature>), ()> {
+		if commitment_tx.input.len() != 1 {
+			panic!("lightning commitment transactions have a single input");
+		}
 		self.check_keys(secp_ctx, keys);
-		let obscured_commitment_transaction_number = (commitment_tx.lock_time & 0xffffff) as u64 | ((commitment_tx.input[0].sequence as u64 & 0xffffff) << 3*8);
+		let obscured_commitment_transaction_number = (commitment_tx.lock_time & 0xffffff) as u64
+			| ((commitment_tx.input[0].sequence as u64 & 0xffffff) << 3 * 8);
 
 		{
 			let mut commitment_data = self.commitment_number_obscure_and_last.lock().unwrap();
@@ -76,40 +99,69 @@ impl ChannelKeys for EnforcingChannelKeys {
 			commitment_data.1 = cmp::max(commitment_number, commitment_data.1)
 		}
 
-		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx).unwrap())
+		Ok(self
+			.inner
+			.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx)
+			.unwrap())
 	}
 
-	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>,
+	) -> Result<Signature, ()> {
 		Ok(self.inner.sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(test)]
-	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>,
+	) -> Result<Signature, ()> {
 		Ok(self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<Option<Signature>>, ()> {
 		let commitment_txid = local_commitment_tx.txid();
 
 		for this_htlc in local_commitment_tx.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, local_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &local_commitment_tx.local_keys.a_delayed_payment_key, &local_commitment_tx.local_keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(
+					&commitment_txid,
+					local_commitment_tx.feerate_per_kw,
+					local_csv,
+					&this_htlc.0,
+					&local_commitment_tx.local_keys.a_delayed_payment_key,
+					&local_commitment_tx.local_keys.revocation_key,
+				);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &local_commitment_tx.local_keys);
+				let htlc_redeemscript =
+					chan_utils::get_htlc_redeemscript(&this_htlc.0, &local_commitment_tx.local_keys);
 
-				let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, this_htlc.0.amount_msat / 1000)[..]);
-				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &local_commitment_tx.local_keys.b_htlc_key).unwrap();
+				let sighash = hash_to_message!(
+					&bip143::SighashComponents::new(&htlc_tx).sighash_all(
+						&htlc_tx.input[0],
+						&htlc_redeemscript,
+						this_htlc.0.amount_msat / 1000
+					)[..]
+				);
+				secp_ctx
+					.verify(&sighash, this_htlc.1.as_ref().unwrap(), &local_commitment_tx.local_keys.b_htlc_key)
+					.unwrap();
 			}
 		}
 
 		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, local_csv, secp_ctx).unwrap())
 	}
 
-	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_closing_transaction<T: secp256k1::Signing>(
+		&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>,
+	) -> Result<Signature, ()> {
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_channel_announcement<T: secp256k1::Signing>(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>,
+	) -> Result<Signature, ()> {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
@@ -132,9 +184,6 @@ impl Readable for EnforcingChannelKeys {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inner = Readable::read(reader)?;
 		let obscure_and_last = Readable::read(reader)?;
-		Ok(EnforcingChannelKeys {
-			inner: inner,
-			commitment_number_obscure_and_last: Arc::new(Mutex::new(obscure_and_last))
-		})
+		Ok(EnforcingChannelKeys { inner, commitment_number_obscure_and_last: Arc::new(Mutex::new(obscure_and_last)) })
 	}
 }

@@ -5,21 +5,21 @@
 //! disconnections, transaction broadcasting, and feerate information requests.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::util::hash::BitcoinHash;
+use bitcoin::blockdata::script::Script;
+use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::util::hash::BitcoinHash;
 
 use util::logger::Logger;
 
-use std::sync::{Mutex, MutexGuard, Arc};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
-use std::ops::Deref;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Used to give chain error details upstream
 #[derive(Clone)]
@@ -53,7 +53,9 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// short_channel_id (aka unspent_tx_output_identier). For BTC/tBTC channels the top three
 	/// bytes are the block height, the next 3 the transaction index within the block, and the
 	/// final two the output within the transaction.
-	fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
+	fn get_chain_utxo(
+		&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64,
+	) -> Result<(Script, u64), ChainError>;
 
 	/// Gets the list of transactions and transaction indices that the ChainWatchInterface is
 	/// watching for.
@@ -88,7 +90,9 @@ pub trait ChainListener: Sync + Send {
 	///
 	/// This also means those counting confirmations using block_connected callbacks should watch
 	/// for duplicate headers and not count them towards confirmations!
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
+	fn block_connected(
+		&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32],
+	);
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
 	/// Height must be the one of the block which was disconnected (not new height of the best chain)
@@ -145,17 +149,15 @@ pub struct ChainWatchedUtil {
 impl ChainWatchedUtil {
 	/// Constructs an empty (watches nothing) ChainWatchedUtil
 	pub fn new() -> Self {
-		Self {
-			watch_all: false,
-			watched_txn: HashSet::new(),
-			watched_outpoints: HashSet::new(),
-		}
+		Self { watch_all: false, watched_txn: HashSet::new(), watched_outpoints: HashSet::new() }
 	}
 
 	/// Registers a tx for monitoring, returning true if it was a new tx and false if we'd already
 	/// been watching for it.
 	pub fn register_tx(&mut self, txid: &Txid, script_pub_key: &Script) -> bool {
-		if self.watch_all { return false; }
+		if self.watch_all {
+			return false;
+		}
 		#[cfg(test)]
 		{
 			self.watched_txn.insert((txid.clone(), script_pub_key.clone()))
@@ -170,14 +172,18 @@ impl ChainWatchedUtil {
 	/// Registers an outpoint for monitoring, returning true if it was a new outpoint and false if
 	/// we'd already been watching for it
 	pub fn register_outpoint(&mut self, outpoint: (Txid, u32), _script_pub_key: &Script) -> bool {
-		if self.watch_all { return false; }
+		if self.watch_all {
+			return false;
+		}
 		self.watched_outpoints.insert(outpoint)
 	}
 
 	/// Sets us to match all transactions, returning true if this is a new setting and false if
 	/// we'd already been set to match everything.
 	pub fn watch_all(&mut self) -> bool {
-		if self.watch_all { return false; }
+		if self.watch_all {
+			return false;
+		}
 		self.watch_all = true;
 		true
 	}
@@ -247,11 +253,7 @@ pub struct BlockNotifier<'a, CL: Deref<Target = ChainListener + 'a> + 'a> {
 impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 	/// Constructs a new BlockNotifier without any listeners.
 	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier<'a, CL> {
-		BlockNotifier {
-			listeners: Mutex::new(Vec::new()),
-			chain_monitor,
-			phantom: PhantomData,
-		}
+		BlockNotifier { listeners: Mutex::new(Vec::new()), chain_monitor, phantom: PhantomData }
 	}
 
 	/// Register the given listener to receive events.
@@ -269,7 +271,7 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 		let mut vec = self.listeners.lock().unwrap();
 		// item is a ref to an abstract thing that dereferences to a ChainListener,
 		// so dereference it twice to get the ChainListener itself
-		vec.retain(|item | !ptr::eq(&(**item), &(*listener)));
+		vec.retain(|item| !ptr::eq(&(**item), &(*listener)));
 	}
 
 	/// Notify listeners that a block was connected given a full, unfiltered block.
@@ -280,7 +282,8 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 		let mut reentered = true;
 		while reentered {
 			let (matched, matched_index) = self.chain_monitor.filter_block(block);
-			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
+			reentered =
+				self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
 		}
 	}
 
@@ -290,7 +293,9 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
 	/// Returns true if notified listeners registered additional watch data (implying that the
 	/// block must be re-scanned and this function called again prior to further block_connected
 	/// calls, see ChainListener::block_connected for more info).
-	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
+	pub fn block_connected_checked(
+		&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32],
+	) -> bool {
 		let last_seen = self.chain_monitor.reentered();
 
 		let listeners = self.listeners.lock().unwrap();
@@ -325,8 +330,7 @@ pub struct ChainWatchInterfaceUtil {
 #[cfg(test)]
 impl PartialEq for ChainWatchInterfaceUtil {
 	fn eq(&self, o: &Self) -> bool {
-		self.network == o.network &&
-		*self.watched.lock().unwrap() == *o.watched.lock().unwrap()
+		self.network == o.network && *self.watched.lock().unwrap() == *o.watched.lock().unwrap()
 	}
 }
 
@@ -353,7 +357,9 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		}
 	}
 
-	fn get_chain_utxo(&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(
+		&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64,
+	) -> Result<(Script, u64), ChainError> {
 		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
 			return Err(ChainError::NotWatched);
 		}
@@ -384,17 +390,17 @@ impl ChainWatchInterfaceUtil {
 	/// Creates a new ChainWatchInterfaceUtil for the given network
 	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
-			network: network,
+			network,
 			watched: Mutex::new(ChainWatchedUtil::new()),
 			reentered: AtomicUsize::new(1),
-			logger: logger,
+			logger,
 		}
 	}
 
 	/// Checks if a given transaction matches the current filter.
 	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
 		let watched = self.watched.lock().unwrap();
-		self.does_match_tx_unguarded (tx, &watched)
+		self.does_match_tx_unguarded(tx, &watched)
 	}
 
 	fn does_match_tx_unguarded(&self, tx: &Transaction, watched: &MutexGuard<ChainWatchedUtil>) -> bool {
@@ -404,8 +410,8 @@ impl ChainWatchInterfaceUtil {
 
 #[cfg(test)]
 mod tests {
-	use ln::functional_test_utils::{create_chanmon_cfgs, create_node_cfgs};
 	use super::{BlockNotifier, ChainListener};
+	use ln::functional_test_utils::{create_chanmon_cfgs, create_node_cfgs};
 	use std::ptr;
 
 	#[test]

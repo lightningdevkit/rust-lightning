@@ -9,7 +9,7 @@ pub enum APIError {
 	/// are documented, but generally indicates some precondition of a function was violated.
 	APIMisuseError {
 		/// A human-readable error message
-		err: &'static str
+		err: &'static str,
 	},
 	/// Due to a high feerate, we were unable to complete the request.
 	/// For example, this may be returned if the feerate implies we cannot open a channel at the
@@ -18,20 +18,20 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String,
 		/// The feerate which was too high.
-		feerate: u64
+		feerate: u64,
 	},
 	/// A malformed Route was provided (eg overflowed value, node id mismatch, overly-looped route,
 	/// too-many-hops, etc).
 	RouteError {
 		/// A human-readable error message
-		err: &'static str
+		err: &'static str,
 	},
 	/// We were unable to complete the request as the Channel required to do so is unable to
 	/// complete the request (or was not found). This can take many forms, including disconnected
 	/// peer, channel at capacity, channel shutting down, etc.
 	ChannelUnavailable {
 		/// A human-readable error message
-		err: &'static str
+		err: &'static str,
 	},
 	/// An attempt to call add/update_monitor returned an Err (ie you did this!), causing the
 	/// attempted action to fail.
@@ -41,10 +41,10 @@ pub enum APIError {
 impl fmt::Debug for APIError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			APIError::APIMisuseError {ref err} => f.write_str(err),
-			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
-			APIError::RouteError {ref err} => f.write_str(err),
-			APIError::ChannelUnavailable {ref err} => f.write_str(err),
+			APIError::APIMisuseError { ref err } => f.write_str(err),
+			APIError::FeeRateTooHigh { ref err, ref feerate } => write!(f, "{} feerate: {}", err, feerate),
+			APIError::RouteError { ref err } => f.write_str(err),
+			APIError::ChannelUnavailable { ref err } => f.write_str(err),
 			APIError::MonitorUpdateFailed => f.write_str("Client indicated a channel monitor update failed"),
 		}
 	}
@@ -53,9 +53,9 @@ impl fmt::Debug for APIError {
 #[inline]
 pub(crate) fn get_onion_debug_field(error_code: u16) -> (&'static str, usize) {
 	match error_code & 0xff {
-		4|5|6 => ("sha256_of_onion", 32),
-		11|12 => ("htlc_msat", 8),
-		13|18 => ("cltv_expiry", 4),
+		4 | 5 | 6 => ("sha256_of_onion", 32),
+		11 | 12 => ("htlc_msat", 8),
+		13 | 18 => ("cltv_expiry", 4),
 		19 => ("incoming_htlc_msat", 8),
 		20 => ("flags", 2),
 		_ => ("", 0),
