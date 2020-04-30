@@ -26,7 +26,7 @@
 //! type FeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator;
 //! type ChannelMonitor = lightning::ln::channelmonitor::SimpleManyChannelMonitor<lightning::chain::transaction::OutPoint, lightning::chain::keysinterface::InMemoryChannelKeys, Arc<TxBroadcaster>, Arc<FeeEstimator>>;
 //! type ChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<ChannelMonitor, TxBroadcaster, FeeEstimator>;
-//! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator>;
+//! type PeerManager = lightning::ln::peers::handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator>;
 //!
 //! // Connect to node with pubkey their_node_id at addr:
 //! async fn connect_to_node(peer_manager: PeerManager, channel_monitor: Arc<ChannelMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
@@ -66,7 +66,7 @@ use tokio::{io, time};
 use tokio::sync::mpsc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use lightning::ln::peers::handler;
+use lightning::ln::peers::handler as peer_handler;
 use lightning::ln::peers::handler::SocketDescriptor as LnSocketTrait;
 use lightning::ln::msgs::ChannelMessageHandler;
 
@@ -479,7 +479,7 @@ impl Hash for SocketDescriptor {
 mod tests {
 	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
-	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
+	use lightning::ln::peers::handler::{MessageHandler, PeerManager};
 	use lightning::util::events::*;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
