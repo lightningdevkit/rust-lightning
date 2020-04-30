@@ -240,7 +240,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	local_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
-	local_csv: u16,
+	on_local_tx_csv: u16,
 
 	key_storage: ChanSigner,
 
@@ -284,7 +284,7 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.prev_local_commitment.write(writer)?;
 		self.prev_local_htlc_sigs.write(writer)?;
 
-		self.local_csv.write(writer)?;
+		self.on_local_tx_csv.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -332,7 +332,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 		let prev_local_commitment = Readable::read(reader)?;
 		let prev_local_htlc_sigs = Readable::read(reader)?;
 
-		let local_csv = Readable::read(reader)?;
+		let on_local_tx_csv = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -385,7 +385,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 			local_htlc_sigs,
 			prev_local_commitment,
 			prev_local_htlc_sigs,
-			local_csv,
+			on_local_tx_csv,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -396,7 +396,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, on_local_tx_csv: u16) -> Self {
 
 		let key_storage = keys;
 
@@ -406,7 +406,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			local_htlc_sigs: None,
 			prev_local_commitment: None,
 			prev_local_htlc_sigs: None,
-			local_csv,
+			on_local_tx_csv,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
@@ -884,7 +884,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	fn sign_latest_local_htlcs(&mut self) {
 		if let Some(ref local_commitment) = self.local_commitment {
-			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.local_csv, &self.secp_ctx) {
+			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.on_local_tx_csv, &self.secp_ctx) {
 				self.local_htlc_sigs = Some(Vec::new());
 				let ret = self.local_htlc_sigs.as_mut().unwrap();
 				for (htlc_idx, (local_sig, &(ref htlc, _))) in sigs.iter().zip(local_commitment.per_htlc.iter()).enumerate() {
@@ -900,7 +900,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 	fn sign_prev_local_htlcs(&mut self) {
 		if let Some(ref local_commitment) = self.prev_local_commitment {
-			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.local_csv, &self.secp_ctx) {
+			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.on_local_tx_csv, &self.secp_ctx) {
 				self.prev_local_htlc_sigs = Some(Vec::new());
 				let ret = self.prev_local_htlc_sigs.as_mut().unwrap();
 				for (htlc_idx, (local_sig, &(ref htlc, _))) in sigs.iter().zip(local_commitment.per_htlc.iter()).enumerate() {
@@ -952,7 +952,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				if let &Some(ref htlc_sigs) = &self.local_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
 					htlc_tx = Some(self.local_commitment.as_ref().unwrap()
-						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.local_csv));
+						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.on_local_tx_csv));
 				}
 			}
 		}
@@ -963,7 +963,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				if let &Some(ref htlc_sigs) = &self.prev_local_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
 					htlc_tx = Some(self.prev_local_commitment.as_ref().unwrap()
-						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.local_csv));
+						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.on_local_tx_csv));
 				}
 			}
 		}
