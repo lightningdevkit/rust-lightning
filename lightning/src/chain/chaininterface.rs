@@ -9,8 +9,8 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::util::hash::BitcoinHash;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use util::logger::Logger;
 
@@ -40,11 +40,11 @@ pub enum ChainError {
 /// events).
 pub trait ChainWatchInterface: Sync + Send {
 	/// Provides a txid/random-scriptPubKey-in-the-tx which much be watched for.
-	fn install_watch_tx(&self, txid: &Sha256dHash, script_pub_key: &Script);
+	fn install_watch_tx(&self, txid: &Txid, script_pub_key: &Script);
 
 	/// Provides an outpoint which must be watched for, providing any transactions which spend the
 	/// given outpoint.
-	fn install_watch_outpoint(&self, outpoint: (Sha256dHash, u32), out_script: &Script);
+	fn install_watch_outpoint(&self, outpoint: (Txid, u32), out_script: &Script);
 
 	/// Indicates that a listener needs to see all transactions.
 	fn watch_all_txn(&self);
@@ -53,7 +53,7 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// short_channel_id (aka unspent_tx_output_identier). For BTC/tBTC channels the top three
 	/// bytes are the block height, the next 3 the transaction index within the block, and the
 	/// final two the output within the transaction.
-	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
+	fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
 
 	/// Gets the list of transactions and transaction indices that the ChainWatchInterface is
 	/// watching for.
@@ -135,11 +135,11 @@ pub struct ChainWatchedUtil {
 	// We are more conservative in matching during testing to ensure everything matches *exactly*,
 	// even though during normal runtime we take more optimized match approaches...
 	#[cfg(test)]
-	watched_txn: HashSet<(Sha256dHash, Script)>,
+	watched_txn: HashSet<(Txid, Script)>,
 	#[cfg(not(test))]
 	watched_txn: HashSet<Script>,
 
-	watched_outpoints: HashSet<(Sha256dHash, u32)>,
+	watched_outpoints: HashSet<(Txid, u32)>,
 }
 
 impl ChainWatchedUtil {
@@ -154,7 +154,7 @@ impl ChainWatchedUtil {
 
 	/// Registers a tx for monitoring, returning true if it was a new tx and false if we'd already
 	/// been watching for it.
-	pub fn register_tx(&mut self, txid: &Sha256dHash, script_pub_key: &Script) -> bool {
+	pub fn register_tx(&mut self, txid: &Txid, script_pub_key: &Script) -> bool {
 		if self.watch_all { return false; }
 		#[cfg(test)]
 		{
@@ -169,7 +169,7 @@ impl ChainWatchedUtil {
 
 	/// Registers an outpoint for monitoring, returning true if it was a new outpoint and false if
 	/// we'd already been watching for it
-	pub fn register_outpoint(&mut self, outpoint: (Sha256dHash, u32), _script_pub_key: &Script) -> bool {
+	pub fn register_outpoint(&mut self, outpoint: (Txid, u32), _script_pub_key: &Script) -> bool {
 		if self.watch_all { return false; }
 		self.watched_outpoints.insert(outpoint)
 	}
@@ -332,14 +332,14 @@ impl PartialEq for ChainWatchInterfaceUtil {
 
 /// Register listener
 impl ChainWatchInterface for ChainWatchInterfaceUtil {
-	fn install_watch_tx(&self, txid: &Sha256dHash, script_pub_key: &Script) {
+	fn install_watch_tx(&self, txid: &Txid, script_pub_key: &Script) {
 		let mut watched = self.watched.lock().unwrap();
 		if watched.register_tx(txid, script_pub_key) {
 			self.reentered.fetch_add(1, Ordering::Relaxed);
 		}
 	}
 
-	fn install_watch_outpoint(&self, outpoint: (Sha256dHash, u32), out_script: &Script) {
+	fn install_watch_outpoint(&self, outpoint: (Txid, u32), out_script: &Script) {
 		let mut watched = self.watched.lock().unwrap();
 		if watched.register_outpoint(outpoint, out_script) {
 			self.reentered.fetch_add(1, Ordering::Relaxed);
@@ -353,7 +353,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		}
 	}
 
-	fn get_chain_utxo(&self, genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
 			return Err(ChainError::NotWatched);
 		}

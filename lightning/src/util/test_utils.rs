@@ -16,10 +16,10 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::opcodes;
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
+use bitcoin::hash_types::{Txid, BlockHash};
 
-use secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc,Mutex};
@@ -51,6 +51,9 @@ pub struct TestChannelMonitor<'a> {
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
 	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
+	// If this is set to Some(), after the next return, we'll always return this until update_ret
+	// is changed:
+	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChannelMonitor<'a> {
 	pub fn new(chain_monitor: Arc<chaininterface::ChainWatchInterface>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: Arc<Logger>, fee_estimator: &'a TestFeeEstimator) -> Self {
@@ -59,6 +62,7 @@ impl<'a> TestChannelMonitor<'a> {
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
+			next_update_ret: Mutex::new(None),
 		}
 	}
 }
@@ -68,15 +72,18 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == monitor);
-		w.0.clear();
-		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
-		self.update_ret.lock().unwrap().clone()
+
+		let ret = self.update_ret.lock().unwrap().clone();
+		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
+			*self.update_ret.lock().unwrap() = next_ret;
+		}
+		ret
 	}
 
 	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
@@ -94,13 +101,16 @@ impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChanne
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(Sha256dHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), Arc::new(TestLogger::new())).unwrap().1;
 		assert!(new_monitor == *monitor);
-		w.0.clear();
-		monitor.write_for_watchtower(&mut w).unwrap(); // This at least shouldn't crash...
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
-		self.update_ret.lock().unwrap().clone()
+
+		let ret = self.update_ret.lock().unwrap().clone();
+		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
+			*self.update_ret.lock().unwrap() = next_ret;
+		}
+		ret
 	}
 
 	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
@@ -160,11 +170,20 @@ impl events::MessageSendEventsProvider for TestChannelMessageHandler {
 	}
 }
 
-pub struct TestRoutingMessageHandler {}
+pub struct TestRoutingMessageHandler {
+	request_full_sync: bool,
+}
 
 impl TestRoutingMessageHandler {
 	pub fn new() -> Self {
-		TestRoutingMessageHandler {}
+		TestRoutingMessageHandler {
+			request_full_sync: false,
+		}
+	}
+
+	pub fn set_request_full_sync(mut self) -> Self {
+		self.request_full_sync = true;
+		self
 	}
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
@@ -185,7 +204,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Vec::new()
 	}
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		true
+		self.request_full_sync
 	}
 }
 
@@ -278,15 +297,15 @@ impl TestChainWatcher {
 }
 
 impl ChainWatchInterface for TestChainWatcher {
-	fn install_watch_tx(&self, _txid: &Sha256dHash, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Sha256dHash, u32), _out_script: &Script) { }
+	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
+	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
 	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
 		(Vec::new(), Vec::new())
 	}
 	fn reentered(&self) -> usize { 0 }
 
-	fn get_chain_utxo(&self, _genesis_hash: Sha256dHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		self.utxo_ret.lock().unwrap().clone()
 	}
 }

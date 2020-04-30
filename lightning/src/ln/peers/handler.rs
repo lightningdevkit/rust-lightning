@@ -6,7 +6,7 @@
 //! call into the provided message handlers (probably a ChannelManager and Router) with messages
 //! they should handle, and encoding/sending response messages.
 
-use secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -25,9 +25,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
 use std::ops::Deref;
 
-use bitcoin_hashes::sha256::Hash as Sha256;
-use bitcoin_hashes::sha256::HashEngine as Sha256Engine;
-use bitcoin_hashes::{HashEngine, Hash};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
+use bitcoin::hashes::{HashEngine, Hash};
 use ln::peers::handshake::PeerHandshake;
 use ln::peers::conduit::Conduit;
 use ln::peers::handshake::acts::Act;
@@ -598,9 +598,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 						}
 
 						if send_init_message {
-							let mut features = InitFeatures::supported();
-							if self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-								features.set_initial_routing_sync();
+							let mut features = InitFeatures::known();
+							if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
+								features.clear_initial_routing_sync();
 							}
 
 							let resp = msgs::Init { features };
@@ -669,11 +669,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 										peers.peers_needing_send.insert(peer_descriptor.clone());
 									}
 
-									if !peer.outbound {
-										let mut features = InitFeatures::supported();
-										if self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-											features.set_initial_routing_sync();
-										}
+												if !peer.outbound {
+													let mut features = InitFeatures::known();
+													if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
+														features.clear_initial_routing_sync();
+													}
 
 										let resp = msgs::Init { features };
 										encode_and_send_msg!(resp);
@@ -1212,7 +1212,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 
 #[cfg(test)]
 mod tests {
-	use secp256k1::Signature;
+	use bitcoin::secp256k1::Signature;
 	use bitcoin::BitcoinHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
@@ -1223,8 +1223,8 @@ mod tests {
 	use util::test_utils;
 	use util::logger::Logger;
 
-	use secp256k1::Secp256k1;
-	use secp256k1::key::{SecretKey, PublicKey};
+	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
 	use rand::{thread_rng, Rng};
 
@@ -1301,6 +1301,13 @@ mod tests {
 		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone()).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone()).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		(fd_a.clone(), fd_b.clone())
+	}
+
+	fn establish_connection_and_read_events<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler>) -> (FileDescriptor, FileDescriptor) {
+		let (mut fd_a, mut fd_b) = establish_connection(peer_a, peer_b);
 		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		(fd_a.clone(), fd_b.clone())
@@ -1402,7 +1409,7 @@ mod tests {
 	}
 
 	fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnouncement {
-		use secp256k1::ffi::Signature as FFISignature;
+		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		let secp_ctx = Secp256k1::new();
 		let network = Network::Testnet;
 		let node_1_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1410,7 +1417,7 @@ mod tests {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		let unsigned_ann = msgs::UnsignedChannelAnnouncement {
-			features: ChannelFeatures::supported(),
+			features: ChannelFeatures::known(),
 			chain_hash: genesis_block(network).header.bitcoin_hash(),
 			short_channel_id: short_chan_id,
 			node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
@@ -1430,7 +1437,7 @@ mod tests {
 	}
 
 	fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
-		use secp256k1::ffi::Signature as FFISignature;
+		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		let network = Network::Testnet;
 		msgs::ChannelUpdate {
 			signature: Signature::from(FFISignature::new()),
@@ -1479,5 +1486,48 @@ mod tests {
 		assert_eq!(routing_handlers_concrete[0].clone().chan_anns_recvd.load(Ordering::Acquire), 50);
 		assert_eq!(routing_handlers_concrete[1].clone().chan_upds_recvd.load(Ordering::Acquire), 100);
 		assert_eq!(routing_handlers_concrete[1].clone().chan_anns_recvd.load(Ordering::Acquire), 50);
+	}
+
+	#[test]
+	fn limit_initial_routing_sync_requests() {
+		// Inbound peer 0 requests initial_routing_sync, but outbound peer 1 does not.
+		{
+			let chan_handlers = create_chan_handlers(2);
+			let routing_handlers: Vec<Arc<msgs::RoutingMessageHandler>> = vec![
+				Arc::new(test_utils::TestRoutingMessageHandler::new().set_request_full_sync()),
+				Arc::new(test_utils::TestRoutingMessageHandler::new()),
+			];
+			let peers = create_network(2, &chan_handlers, Some(&routing_handlers));
+			let (fd_0_to_1, fd_1_to_0) = establish_connection_and_read_events(&peers[0], &peers[1]);
+
+			let peer_0 = peers[0].peers.lock().unwrap();
+			let peer_1 = peers[1].peers.lock().unwrap();
+
+			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
+			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
+
+			assert!(peer_0_features.unwrap().initial_routing_sync());
+			assert!(!peer_1_features.unwrap().initial_routing_sync());
+		}
+
+		// Outbound peer 1 requests initial_routing_sync, but inbound peer 0 does not.
+		{
+			let chan_handlers = create_chan_handlers(2);
+			let routing_handlers: Vec<Arc<msgs::RoutingMessageHandler>> = vec![
+				Arc::new(test_utils::TestRoutingMessageHandler::new()),
+				Arc::new(test_utils::TestRoutingMessageHandler::new().set_request_full_sync()),
+			];
+			let peers = create_network(2, &chan_handlers, Some(&routing_handlers));
+			let (fd_0_to_1, fd_1_to_0) = establish_connection_and_read_events(&peers[0], &peers[1]);
+
+			let peer_0 = peers[0].peers.lock().unwrap();
+			let peer_1 = peers[1].peers.lock().unwrap();
+
+			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
+			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
+
+			assert!(!peer_0_features.unwrap().initial_routing_sync());
+			assert!(peer_1_features.unwrap().initial_routing_sync());
+		}
 	}
 }

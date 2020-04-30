@@ -1,9 +1,9 @@
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 
-use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use ln::router::Route;
 use ln::chan_utils::HTLCType;
@@ -40,7 +40,7 @@ macro_rules! log_bytes {
 	}
 }
 
-pub(crate) struct DebugFundingChannelId<'a>(pub &'a Sha256dHash, pub u16);
+pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
 impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		for i in OutPoint::new(self.0.clone(), self.1).to_channel_id().iter() {
@@ -55,13 +55,10 @@ macro_rules! log_funding_channel_id {
 	}
 }
 
-pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a Option<(OutPoint, T)>);
+pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a (OutPoint, T));
 impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		match self.0.as_ref() {
-			Some(&(ref funding_output, _)) => DebugBytes(&funding_output.to_channel_id()[..]).fmt(f),
-			None => write!(f, "without funding output set"),
-		}
+		DebugBytes(&(self.0).0.to_channel_id()[..]).fmt(f)
 	}
 }
 macro_rules! log_funding_info {
@@ -73,8 +70,11 @@ macro_rules! log_funding_info {
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
 impl<'a> std::fmt::Display for DebugRoute<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		for h in self.0.hops.iter() {
-			write!(f, "node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+		for (idx, p) in self.0.paths.iter().enumerate() {
+			write!(f, "path {}:\n", idx)?;
+			for h in p.iter() {
+				write!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}\n", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+			}
 		}
 		Ok(())
 	}

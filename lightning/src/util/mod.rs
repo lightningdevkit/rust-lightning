@@ -1,5 +1,8 @@
 //! Some utility modules live here. See individual sub-modules for more info.
 
+#[macro_use]
+pub(crate) mod fuzz_wrappers;
+
 pub mod events;
 pub mod errors;
 pub mod ser;
@@ -27,6 +30,3 @@ pub(crate) mod test_utils;
 /// machine errors and used in fuzz targets and tests.
 #[cfg(any(test, feature = "fuzztarget"))]
 pub mod enforcing_trait_impls;
-
-#[macro_use]
-pub(crate) mod fuzz_wrappers;

@@ -16,7 +16,7 @@
 //! ```
 //! use tokio::sync::mpsc;
 //! use tokio::net::TcpStream;
-//! use secp256k1::key::PublicKey;
+//! use bitcoin::secp256k1::key::PublicKey;
 //! use lightning::util::events::EventsProvider;
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
@@ -59,7 +59,7 @@
 //! }
 //! ```
 
-use secp256k1::key::PublicKey;
+use bitcoin::secp256k1::key::PublicKey;
 
 use tokio::net::TcpStream;
 use tokio::{io, time};
@@ -481,7 +481,7 @@ mod tests {
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
 	use lightning::util::events::*;
-	use secp256k1::{Secp256k1, SecretKey, PublicKey};
+	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
 	use tokio::sync::mpsc;
 

@@ -33,13 +33,13 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::supported(), InitFeatures::supported());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::supported(), InitFeatures::supported());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (our_payment_preimage, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Provide preimage to node 2 by claiming payment
-	nodes[2].node.claim_funds(our_payment_preimage, 1000000);
+	nodes[2].node.claim_funds(our_payment_preimage, &None, 1000000);
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
