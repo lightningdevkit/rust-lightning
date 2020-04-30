@@ -1,5 +1,5 @@
 use ln::peers::handshake::hash::HandshakeHash;
-use secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 pub enum HandshakeState {
 	Uninitiated,

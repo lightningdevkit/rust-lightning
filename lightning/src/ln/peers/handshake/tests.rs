@@ -1,9 +1,9 @@
 #![cfg(test)]
 
 use hex;
-use secp256k1;
+use bitcoin::secp256k1;
 
-use secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use ln::peers::handshake::PeerHandshake;
 

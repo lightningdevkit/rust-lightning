@@ -2,11 +2,11 @@
 //! Handshake states can be advanced automatically, or by manually calling the appropriate step.
 //! Once complete, returns an instance of Conduit.
 
-use secp256k1;
+use bitcoin::secp256k1;
 
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
-use secp256k1::{PublicKey, SecretKey};
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};

@@ -1,5 +1,5 @@
-use bitcoin_hashes::{Hash, HashEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 pub(crate) struct HandshakeHash {
 	pub(super) value: [u8; 32]

@@ -1,5 +1,5 @@
-use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
-use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 pub fn derive(salt: &[u8], master: &[u8]) -> ([u8; 32], [u8; 32]) {
 	let mut hmac = HmacEngine::<Sha256>::new(salt);
