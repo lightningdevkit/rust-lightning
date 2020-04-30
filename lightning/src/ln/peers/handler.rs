@@ -129,6 +129,9 @@ impl PeerState {
 	}
 
 	fn process_peer_data(&mut self, data: &[u8], mutable_response_buffer: &mut LinkedList<Vec<u8>>) -> PeerDataProcessingDecision {
+		let mut conduit_option = None;
+		let mut decision_option = None;
+
 		match self {
 			&mut PeerState::Authenticating(ref mut handshake) => {
 				let (next_act, conduit) = match handshake.process_act(data) {
@@ -145,8 +148,8 @@ impl PeerState {
 
 				let remote_pubkey_option = handshake.get_remote_pubkey();
 				if let Some(conduit) = conduit {
-					*self = PeerState::Connected(conduit);
-					return PeerDataProcessingDecision::CompleteHandshake(requires_response, remote_pubkey_option);
+					conduit_option = Some(conduit);
+					decision_option = Some(PeerDataProcessingDecision::CompleteHandshake(requires_response, remote_pubkey_option));
 				}
 			}
 
@@ -154,6 +157,11 @@ impl PeerState {
 				conduit.read(data);
 			}
 		};
+
+		if let (Some(conduit), Some(decision)) = (conduit_option, decision_option) {
+			*self = PeerState::Connected(conduit);
+			return decision;
+		}
 
 		PeerDataProcessingDecision::Continue
 	}
@@ -168,8 +176,6 @@ struct Peer {
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
 	awaiting_write_event: bool,
-
-	pending_read_buffer: Vec<u8>,
 
 	sync_status: InitSyncTracker,
 
@@ -338,8 +344,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			pending_outbound_buffer_first_msg_offset: 0,
 			awaiting_write_event: false,
 
-			pending_read_buffer: Vec::new(),
-
 			sync_status: InitSyncTracker::NoSyncRequested,
 
 			awaiting_pong: false,
@@ -371,8 +375,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
 			awaiting_write_event: false,
-
-			pending_read_buffer: Vec::new(),
 
 			sync_status: InitSyncTracker::NoSyncRequested,
 
@@ -516,7 +518,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 				Some(peer) => {
 
 					let mut send_init_message = false;
-					let mut conduit_option = None;
 
 					let data_processing_decision = peer.encryptor.process_peer_data(data, &mut peer.pending_outbound_buffer);
 					match data_processing_decision {
@@ -543,19 +544,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 									entry.insert(peer_descriptor.clone())
 								}
 							};
-
-							if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
-								conduit_option = Some(conduit);
-							}
 						}
-						PeerDataProcessingDecision::Continue => {
-							if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
-								conduit_option = Some(conduit);
-							}
-						}
+						_ => {}
 					};
 
-					if let Some(conduit) = conduit_option {
+					if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
 
 						let encryptor = &mut conduit.encryptor;
 						let decryptor = &mut conduit.decryptor;
