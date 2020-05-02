@@ -9,7 +9,6 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 
@@ -171,9 +170,6 @@ impl_writeable!(ChannelInfo, 0, {
 
 #[derive(PartialEq)]
 struct NodeInfo {
-	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	channels: Vec<(u64, Sha256dHash)>,
-	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
 	channels: Vec<u64>,
 
 	lowest_inbound_channel_fee_base_msat: u32,
@@ -262,11 +258,7 @@ impl Readable for NodeInfo {
 
 #[derive(PartialEq)]
 struct NetworkMap {
-	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	channels: BTreeMap<(u64, Sha256dHash), ChannelInfo>,
-	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
 	channels: BTreeMap<u64, ChannelInfo>,
-
 	our_node_id: PublicKey,
 	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
@@ -324,32 +316,6 @@ impl std::fmt::Display for NetworkMap {
 			write!(f, " {}: {}\n", log_pubkey!(key), val)?;
 		}
 		Ok(())
-	}
-}
-
-impl NetworkMap {
-	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	#[inline]
-	fn get_key(short_channel_id: u64, chain_hash: BlockHash) -> (u64, BlockHash) {
-		(short_channel_id, chain_hash)
-	}
-
-	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	#[inline]
-	fn get_key(short_channel_id: u64, _: BlockHash) -> u64 {
-		short_channel_id
-	}
-
-	#[cfg(feature = "non_bitcoin_chain_hash_routing")]
-	#[inline]
-	fn get_short_id(id: &(u64, BlockHash)) -> &u64 {
-		&id.0
-	}
-
-	#[cfg(not(feature = "non_bitcoin_chain_hash_routing"))]
-	#[inline]
-	fn get_short_id(id: &u64) -> &u64 {
-		id
 	}
 }
 
@@ -532,7 +498,7 @@ impl RoutingMessageHandler for Router {
 				announcement_message: if should_relay { Some(msg.clone()) } else { None },
 			};
 
-		match network.channels.entry(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
+		match network.channels.entry(msg.contents.short_channel_id) {
 			BtreeEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
@@ -561,11 +527,11 @@ impl RoutingMessageHandler for Router {
 			( $node_id: expr ) => {
 				match network.nodes.entry($node_id) {
 					BtreeEntry::Occupied(node_entry) => {
-						node_entry.into_mut().channels.push(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash));
+						node_entry.into_mut().channels.push(msg.contents.short_channel_id);
 					},
 					BtreeEntry::Vacant(node_entry) => {
 						node_entry.insert(NodeInfo {
-							channels: vec!(NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)),
+							channels: vec!(msg.contents.short_channel_id),
 							lowest_inbound_channel_fee_base_msat: u32::max_value(),
 							lowest_inbound_channel_fee_proportional_millionths: u32::max_value(),
 							features: NodeFeatures::empty(),
@@ -621,7 +587,7 @@ impl RoutingMessageHandler for Router {
 		let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
 
-		match network.channels.get_mut(&NetworkMap::get_key(msg.contents.short_channel_id, msg.contents.chain_hash)) {
+		match network.channels.get_mut(&msg.contents.short_channel_id) {
 			None => return Err(LightningError{err: "Couldn't find channel for update", action: ErrorAction::IgnoreError}),
 			Some(channel) => {
 				macro_rules! maybe_update_channel_info {
@@ -826,7 +792,7 @@ impl Router {
 			($node_id: expr) => {
 				if let BtreeEntry::Occupied(mut entry) = nodes.entry($node_id) {
 					entry.get_mut().channels.retain(|chan_id| {
-						short_channel_id != *NetworkMap::get_short_id(chan_id)
+						short_channel_id != *chan_id
 					});
 					if entry.get().channels.is_empty() {
 						entry.remove_entry();
@@ -1088,7 +1054,6 @@ mod tests {
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hash_types::BlockHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;
@@ -1183,8 +1148,6 @@ mod tests {
 		let node7 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap());
 		let node8 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap());
 
-		let zero_hash = BlockHash::hash(&[0; 32]);
-
 		macro_rules! id_to_feature_flags {
 			// Set the feature flags to the id'th odd (ie non-required) feature bit so that we can
 			// test for it later.
@@ -1206,7 +1169,7 @@ mod tests {
 			let mut network = router.network_map.write().unwrap();
 
 			network.nodes.insert(node1.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(1, zero_hash.clone()), NetworkMap::get_key(3, zero_hash.clone())),
+				channels: vec!(1, 3),
 				lowest_inbound_channel_fee_base_msat: 100,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(1)),
@@ -1216,7 +1179,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(1, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(1, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(1)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
@@ -1240,7 +1203,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node2.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(2, zero_hash.clone()), NetworkMap::get_key(4, zero_hash.clone())),
+				channels: vec!(2, 4),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(2)),
@@ -1250,7 +1213,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(2, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(2, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(2)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
@@ -1274,7 +1237,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node8.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(12, zero_hash.clone()), NetworkMap::get_key(13, zero_hash.clone())),
+				channels: vec!(12, 13),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(8)),
@@ -1284,7 +1247,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(12, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(12, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(12)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: our_id.clone(),
@@ -1309,12 +1272,12 @@ mod tests {
 			});
 			network.nodes.insert(node3.clone(), NodeInfo {
 				channels: vec!(
-					NetworkMap::get_key(3, zero_hash.clone()),
-					NetworkMap::get_key(4, zero_hash.clone()),
-					NetworkMap::get_key(13, zero_hash.clone()),
-					NetworkMap::get_key(5, zero_hash.clone()),
-					NetworkMap::get_key(6, zero_hash.clone()),
-					NetworkMap::get_key(7, zero_hash.clone())),
+					3,
+					4,
+					13,
+					5,
+					6,
+					7),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(3)),
@@ -1324,7 +1287,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(3, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(3, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(3)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node1.clone(),
@@ -1347,7 +1310,7 @@ mod tests {
 				},
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(4, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(4, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(4)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node2.clone(),
@@ -1370,7 +1333,7 @@ mod tests {
 				},
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(13, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(13, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(13)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node8.clone(),
@@ -1394,7 +1357,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node4.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(5, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
+				channels: vec!(5, 11),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(4)),
@@ -1404,7 +1367,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(5, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(5, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(5)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
@@ -1428,7 +1391,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node5.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(6, zero_hash.clone()), NetworkMap::get_key(11, zero_hash.clone())),
+				channels: vec!(6, 11),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(5)),
@@ -1438,7 +1401,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(6, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(6, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(6)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
@@ -1461,7 +1424,7 @@ mod tests {
 				},
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(11, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(11, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(11)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node5.clone(),
@@ -1485,7 +1448,7 @@ mod tests {
 				announcement_message: None,
 			});
 			network.nodes.insert(node6.clone(), NodeInfo {
-				channels: vec!(NetworkMap::get_key(7, zero_hash.clone())),
+				channels: vec!(7),
 				lowest_inbound_channel_fee_base_msat: 0,
 				lowest_inbound_channel_fee_proportional_millionths: 0,
 				features: NodeFeatures::from_le_bytes(id_to_feature_flags!(6)),
@@ -1495,7 +1458,7 @@ mod tests {
 				addresses: Vec::new(),
 				announcement_message: None,
 			});
-			network.channels.insert(NetworkMap::get_key(7, zero_hash.clone()), ChannelInfo {
+			network.channels.insert(7, ChannelInfo {
 				features: ChannelFeatures::from_le_bytes(id_to_feature_flags!(7)),
 				one_to_two: DirectionalChannelInfo {
 					src_node_id: node3.clone(),
@@ -1541,8 +1504,8 @@ mod tests {
 
 		{ // Disable channels 4 and 12 by requiring unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.set_required_unknown_bits();
+			network.channels.get_mut(&4).unwrap().features.set_required_unknown_bits();
+			network.channels.get_mut(&12).unwrap().features.set_required_unknown_bits();
 		}
 
 		{ // If all the channels require some features we don't understand, route should fail
@@ -1583,8 +1546,8 @@ mod tests {
 
 		{ // Re-enable channels 4 and 12 by wiping the unknown feature bits
 			let mut network = router.network_map.write().unwrap();
-			network.channels.get_mut(&NetworkMap::get_key(4, zero_hash.clone())).unwrap().features.clear_unknown_bits();
-			network.channels.get_mut(&NetworkMap::get_key(12, zero_hash.clone())).unwrap().features.clear_unknown_bits();
+			network.channels.get_mut(&4).unwrap().features.clear_unknown_bits();
+			network.channels.get_mut(&12).unwrap().features.clear_unknown_bits();
 		}
 
 		{ // Disable nodes 1, 2, and 8 by requiring unknown feature bits
@@ -2032,8 +1995,7 @@ mod tests {
 			excess_data: Vec::new(),
 		};
 
-		let channel_key = NetworkMap::get_key(unsigned_announcement.short_channel_id,
-						    unsigned_announcement.chain_hash);
+		let channel_key = unsigned_announcement.short_channel_id;
 
 		let mut msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
@@ -2089,8 +2051,7 @@ mod tests {
 		// Now test if the transaction is found in the UTXO set and the script is correct.
 		unsigned_announcement.short_channel_id += 1;
 		*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script.clone(), 0));
-		let channel_key = NetworkMap::get_key(unsigned_announcement.short_channel_id,
-						   unsigned_announcement.chain_hash);
+		let channel_key = unsigned_announcement.short_channel_id;
 
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
@@ -2202,7 +2163,7 @@ mod tests {
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let short_channel_id = 0;
 		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
-		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
+		let channel_key = short_channel_id;
 
 
 		{
@@ -2333,7 +2294,7 @@ mod tests {
 
 		let short_channel_id = 0;
 		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
-		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
+		let channel_key = short_channel_id;
 
 		{
 			// There is only local node in the table at the beginning.
@@ -2421,7 +2382,7 @@ mod tests {
 
 		let short_channel_id = 1;
 		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
-		let channel_key = NetworkMap::get_key(short_channel_id, chain_hash);
+		let channel_key = short_channel_id;
 
 		// Channels were not announced yet.
 		let channels_with_announcements = router.get_next_channel_announcements(0, 1);

@@ -11,8 +11,6 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 """
 
 [features]
-# Supports tracking channels with a non-bitcoin chain hashes. Currently enables all kinds of fun DoS attacks.
-non_bitcoin_chain_hash_routing = []
 fuzztarget = ["bitcoin/fuzztarget"]
 # Unlog messages superior at targeted level.
 max_level_off = []
