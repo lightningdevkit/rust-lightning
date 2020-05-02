@@ -23,7 +23,7 @@ use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
-use lightning::ln::router::Router;
+use lightning::routing::router::Router;
 use lightning::util::events::{EventsProvider,Event};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::logger::Logger;

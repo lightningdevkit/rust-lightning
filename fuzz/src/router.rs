@@ -8,7 +8,7 @@ use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
 use lightning::ln::msgs::RoutingMessageHandler;
-use lightning::ln::router::{Router, RouteHint};
+use lightning::routing::router::{Router, RouteHint};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 

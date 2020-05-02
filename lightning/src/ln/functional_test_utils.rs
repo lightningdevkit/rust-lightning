@@ -6,7 +6,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
-use ln::router::{Route, Router, RouterReadArgs};
+use routing::router::{Route, Router, RouterReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};

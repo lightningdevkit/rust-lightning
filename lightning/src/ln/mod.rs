@@ -12,7 +12,6 @@
 pub mod channelmanager;
 pub mod channelmonitor;
 pub mod msgs;
-pub mod router;
 pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;

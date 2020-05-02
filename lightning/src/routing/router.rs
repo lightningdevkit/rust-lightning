@@ -1077,7 +1077,7 @@ impl Router {
 mod tests {
 	use chain::chaininterface;
 	use ln::channelmanager;
-	use ln::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
+	use routing::router::{Router,NodeInfo,NetworkMap,ChannelInfo,DirectionalChannelInfo,RouteHint};
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 	   UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
