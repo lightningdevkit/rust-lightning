@@ -9,6 +9,7 @@ use ln::channelmonitor::ChannelMonitorUpdateErr;
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
+use routing::router::get_route;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 
@@ -16,6 +17,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 
 use ln::functional_test_utils::*;
+
+use std::sync::Arc;
+use util::test_utils;
 
 #[test]
 fn test_simple_monitor_permanent_update_fail() {
@@ -25,11 +29,13 @@ fn test_simple_monitor_permanent_update_fail() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let logger = Arc::new(test_utils::TestLogger::new());
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable {..}, {});
 	check_added_monitors!(nodes[0], 2);
 
@@ -58,14 +64,18 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), false, APIError::MonitorUpdateFailed, {});
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), false, APIError::MonitorUpdateFailed, {});
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -106,9 +116,13 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 
 	// Now set it to failed again...
 	let (_, payment_hash_2) = get_payment_preimage_hash!(&nodes[0]);
-	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
-	check_added_monitors!(nodes[0], 1);
+	{
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -162,16 +176,19 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now try to send a second payment which will fail to send
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-
-	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
-	check_added_monitors!(nodes[0], 1);
+	{
+		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -494,11 +511,15 @@ fn test_monitor_update_fail_cs() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
@@ -579,11 +600,15 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
@@ -625,19 +650,25 @@ fn test_monitor_update_raa_while_paused() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	send_payment(&nodes[0], &[&nodes[1]], 5000000, 5_000_000);
-
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, our_payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, our_payment_hash_1, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash_1, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 	let send_event_1 = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 
-	let route = nodes[1].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, our_payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[1].node.send_payment(&route, our_payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[1], 1);
+	{
+		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
+		let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[1].node.send_payment(&route, our_payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[1], 1);
+	}
 	let send_event_2 = SendEvent::from_event(nodes[1].node.get_and_clear_pending_msg_events().remove(0));
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event_1.msgs[0]);
@@ -697,6 +728,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Rebalance a bit so that we can send backwards from 2 to 1.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
@@ -723,9 +755,12 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// While the second channel is AwaitingRAA, forward a second payment to get it into the
 	// holding cell.
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-	nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	let mut send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
@@ -746,11 +781,13 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Attempt to forward a third payment but fail due to the second channel being unavailable
 	// for forwarding.
-
 	let (_, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
-	let route = nodes[0].router.get_route(&nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
-	nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Ok(()); // We succeed in updating the monitor for the first channel
 	send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -795,7 +832,8 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (payment_preimage_4, payment_hash_4) = if test_ignore_second_cs {
 		// Try to route another payment backwards from 2 to make sure 1 holds off on responding
 		let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[0]);
-		let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
+		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_4, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 
@@ -1036,8 +1074,8 @@ fn raa_no_response_awaiting_raa_state() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	let (payment_preimage_3, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
@@ -1047,10 +1085,14 @@ fn raa_no_response_awaiting_raa_state() {
 	// immediately after a CS. By setting failing the monitor update failure from the CS (which
 	// requires only an RAA response due to AwaitingRAA) we can deliver the RAA and require the CS
 	// generation during RAA while in monitor-update-failed state.
-	nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[0], 0);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[0], 0);
+	}
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1097,10 +1139,13 @@ fn raa_no_response_awaiting_raa_state() {
 	// We send a third payment here, which is somewhat of a redundant test, but the
 	// chanmon_fail_consistency test required it to actually find the bug (by seeing out-of-sync
 	// commitment transaction states) whereas here we can explicitly check for it.
-	nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
-	check_added_monitors!(nodes[0], 0);
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
+		check_added_monitors!(nodes[0], 0);
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	}
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_responses.0);
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1153,6 +1198,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Forward a payment for B to claim
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -1184,10 +1230,13 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	// Send a second payment from A to B, resulting in a commitment update that gets swallowed with
 	// the monitor still failed
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
@@ -1273,13 +1322,17 @@ fn monitor_failed_no_reestablish_response() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
 	// on receipt).
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	*nodes[1].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1343,13 +1396,17 @@ fn first_message_on_recv_ordering() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Route the first payment outbound, holding the last RAA for B until we are set up so that we
 	// can deliver it and fail the monitor update.
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1368,10 +1425,13 @@ fn first_message_on_recv_ordering() {
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
 	// Route the second payment, generating an update_add_htlc/commitment_signed
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
@@ -1434,6 +1494,7 @@ fn test_monitor_update_fail_claim() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Rebalance a bit so that we can send backwards from 3 to 2.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
@@ -1444,10 +1505,13 @@ fn test_monitor_update_fail_claim() {
 	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
-	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[2], 1);
+	{
+		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[2], 1);
+	}
 
 	// Successfully update the monitor on the 1<->2 channel, but the 0<->1 channel should still be
 	// paused, so forward shouldn't succeed until we call channel_monitor_updated().
@@ -1511,6 +1575,7 @@ fn test_monitor_update_on_pending_forwards() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Rebalance a bit so that we can send backwards from 3 to 1.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
@@ -1525,10 +1590,13 @@ fn test_monitor_update_on_pending_forwards() {
 	commitment_signed_dance!(nodes[1], nodes[2], cs_fail_update.commitment_signed, true, true);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	let route = nodes[2].router.get_route(&nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[2], 1);
+	{
+		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[2], 1);
+	}
 
 	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1579,15 +1647,19 @@ fn monitor_update_claim_fail_no_response() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	// Forward a payment for B to claim
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
-	let route = nodes[0].router.get_route(&nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV).unwrap();
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
-	check_added_monitors!(nodes[0], 1);
+	{
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1716,9 +1788,9 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 		(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &funding_locked))
 	};
 	for node in nodes.iter() {
-		assert!(node.router.handle_channel_announcement(&announcement).unwrap());
-		node.router.handle_channel_update(&as_update).unwrap();
-		node.router.handle_channel_update(&bs_update).unwrap();
+		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
+		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
+		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000, 8_000_000);
@@ -1745,10 +1817,11 @@ fn test_path_paused_mpp() {
 	let (chan_2_ann, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
 	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let logger = Arc::new(test_utils::TestLogger::new());
 
 	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
 	let payment_secret = PaymentSecret([0xdb; 32]);
-	let mut route = nodes[0].router.get_route(&nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV).unwrap();
+	let mut route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler, &nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, logger.clone()).unwrap();
 
 	// Set us up to take multiple routes, one 0 -> 1 -> 3 and one 0 -> 2 -> 3:
 	let path = route.paths[0].clone();

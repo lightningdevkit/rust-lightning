@@ -819,7 +819,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	}
 
 	/// Gets the list of usable channels, in random order. Useful as an argument to
-	/// Router::get_route to ensure non-announced channels are used.
+	/// get_route to ensure non-announced channels are used.
 	///
 	/// These are guaranteed to have their is_live value set to true, see the documentation for
 	/// ChannelDetails::is_live for more info on exactly what the criteria are.
@@ -1869,7 +1869,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 							.. } => {
 						// we get a fail_malformed_htlc from the first hop
 						// TODO: We'd like to generate a PaymentFailureNetworkUpdate for temporary
-						// failures here, but that would be insufficient as Router::get_route
+						// failures here, but that would be insufficient as get_route
 						// generally ignores its view of our own channels as we provide them via
 						// ChannelDetails.
 						// TODO: For non-temporary failures, we really should be closing the

@@ -23,7 +23,8 @@ use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
-use lightning::routing::router::Router;
+use lightning::routing::router::get_route;
+use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::events::{EventsProvider,Event};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::logger::Logger;
@@ -332,12 +333,13 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
 	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
-	let router = Arc::new(Router::new(PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret()), watch.clone(), Arc::clone(&logger)));
+	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
+	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(watch.clone(), Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
 		chan_handler: channelmanager.clone(),
-		route_handler: router.clone(),
+		route_handler: net_graph_msg_handler.clone(),
 	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger)));
 
 	let mut should_forward = false;
@@ -389,7 +391,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let route = match router.get_route(&get_pubkey!(), None, &Vec::new(), value, 42) {
+				let route = match get_route(&our_id, &net_graph_msg_handler, &get_pubkey!(), None, &Vec::new(), value, 42, Arc::clone(&logger)) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -406,7 +408,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let mut route = match router.get_route(&get_pubkey!(), None, &Vec::new(), value, 42) {
+				let mut route = match get_route(&our_id, &net_graph_msg_handler, &get_pubkey!(), None, &Vec::new(), value, 42, Arc::clone(&logger)) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
