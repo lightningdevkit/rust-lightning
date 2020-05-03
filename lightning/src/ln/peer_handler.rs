@@ -641,6 +641,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 													peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
 													peers.peers_needing_send.insert(peer_descriptor.clone());
 												}
+												if !msg.features.supports_static_remote_key() {
+													log_debug!(self, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(peer.their_node_id.unwrap()));
+													return Err(PeerHandleError{ no_connection_possible: true });
+												}
 
 												if !peer.outbound {
 													let mut features = InitFeatures::known();

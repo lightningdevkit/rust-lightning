@@ -36,7 +36,6 @@ impl EnforcingChannelKeys {
 	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
 	                                                               keys: &TxCreationKeys) {
 		let revocation_base = PublicKey::from_secret_key(secp_ctx, &self.inner.revocation_base_key());
-		let payment_base = PublicKey::from_secret_key(secp_ctx, &self.inner.payment_base_key());
 		let htlc_base = PublicKey::from_secret_key(secp_ctx, &self.inner.htlc_base_key());
 
 		let remote_points = self.inner.remote_channel_pubkeys.as_ref().unwrap();
@@ -46,7 +45,6 @@ impl EnforcingChannelKeys {
 		                                        &remote_points.delayed_payment_basepoint,
 		                                        &remote_points.htlc_basepoint,
 		                                        &revocation_base,
-		                                        &payment_base,
 		                                        &htlc_base).unwrap();
 		if keys != &keys_expected { panic!("derived different per-tx keys") }
 	}

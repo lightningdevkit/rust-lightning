@@ -252,7 +252,7 @@ impl MsgHandleErrInternal {
 						},
 					},
 				},
-				ChannelError::CloseDelayBroadcast { msg, .. } => LightningError {
+				ChannelError::CloseDelayBroadcast(msg) => LightningError {
 					err: msg,
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
@@ -575,8 +575,9 @@ macro_rules! break_chan_entry {
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
 				}
-				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok())) },
-			Err(ChannelError::CloseDelayBroadcast { .. }) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
+				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()))
+			},
+			Err(ChannelError::CloseDelayBroadcast(_)) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 		}
 	}
 }
@@ -596,21 +597,11 @@ macro_rules! try_chan_entry {
 				}
 				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()))
 			},
-			Err(ChannelError::CloseDelayBroadcast { msg, update }) => {
+			Err(ChannelError::CloseDelayBroadcast(msg)) => {
 				log_error!($self, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($entry.key()[..]), msg);
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
-				}
-				if let Err(e) = $self.monitor.update_monitor(chan.get_funding_txo().unwrap(), update) {
-					match e {
-						// Upstream channel is dead, but we want at least to fail backward HTLCs to save
-						// downstream channels. In case of PermanentFailure, we are not going to be able
-						// to claim back to_remote output on remote commitment transaction. Doesn't
-						// make a difference here, we are concern about HTLCs circuit, not onchain funds.
-						ChannelMonitorUpdateErr::PermanentFailure => {},
-						ChannelMonitorUpdateErr::TemporaryFailure => {},
-					}
 				}
 				let shutdown_res = chan.force_shutdown(false);
 				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, $self.get_channel_update(&chan).ok()))
@@ -1665,7 +1656,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 											}
 											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(true), self.get_channel_update(&channel).ok()))
 										},
-										ChannelError::CloseDelayBroadcast { .. } => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
+										ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 									};
 									handle_errors.push((their_node_id, err));
 									continue;

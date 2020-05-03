@@ -89,7 +89,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			,
+			StaticRemoteKey,
 			// Byte 2
 			,
 		],
@@ -107,7 +107,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			,
+			StaticRemoteKey,
 			// Byte 2
 			,
 		],
@@ -567,10 +567,10 @@ mod tests {
 		assert!(!InitFeatures::known().requires_variable_length_onion());
 		assert!(!NodeFeatures::known().requires_variable_length_onion());
 
-		assert!(!InitFeatures::known().supports_static_remote_key());
-		assert!(!NodeFeatures::known().supports_static_remote_key());
-		assert!(!InitFeatures::known().requires_static_remote_key());
-		assert!(!NodeFeatures::known().requires_static_remote_key());
+		assert!(InitFeatures::known().supports_static_remote_key());
+		assert!(NodeFeatures::known().supports_static_remote_key());
+		assert!(InitFeatures::known().requires_static_remote_key());
+		assert!(NodeFeatures::known().requires_static_remote_key());
 
 		assert!(InitFeatures::known().supports_payment_secret());
 		assert!(NodeFeatures::known().supports_payment_secret());
@@ -617,11 +617,11 @@ mod tests {
 		{
 			// Check that the flags are as expected:
 			// - option_data_loss_protect
-			// - var_onion_optin | payment_secret
+			// - var_onion_optin | static_remote_key (req) | payment_secret
 			// - basic_mpp
 			assert_eq!(node_features.flags.len(), 3);
 			assert_eq!(node_features.flags[0], 0b00000010);
-			assert_eq!(node_features.flags[1], 0b10000010);
+			assert_eq!(node_features.flags[1], 0b10010010);
 			assert_eq!(node_features.flags[2], 0b00000010);
 		}
 

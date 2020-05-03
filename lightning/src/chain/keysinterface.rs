@@ -74,6 +74,8 @@ pub enum SpendableOutputDescriptor {
 		/// The output which is referenced by the given outpoint
 		output: TxOut,
 	},
+	// TODO: Note that because key is now static and exactly what is provided by us, we should drop
+	// this in favor of StaticOutput:
 	/// An output to a P2WPKH, spendable exclusively by the given private key.
 	/// The witness in the spending input, is, thus, simply:
 	/// <BIP 143 signature generated with the given key> <public key derived from the given key>

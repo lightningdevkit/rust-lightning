@@ -262,11 +262,9 @@ pub struct TxCreationKeys {
 	pub(crate) b_htlc_key: PublicKey,
 	/// A's Payment Key (which isn't allowed to be spent from for some delay)
 	pub(crate) a_delayed_payment_key: PublicKey,
-	/// B's Payment Key
-	pub(crate) b_payment_key: PublicKey,
 }
 impl_writeable!(TxCreationKeys, 33*6,
-	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key, b_payment_key });
+	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key });
 
 /// One counterparty's public keys which do not change over the life of a channel.
 #[derive(Clone, PartialEq)]
@@ -301,14 +299,13 @@ impl_writeable!(ChannelPublicKeys, 33*5, {
 
 
 impl TxCreationKeys {
-	pub(crate) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
+	pub(crate) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
 			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)?,
 			a_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &a_htlc_base)?,
 			b_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &b_htlc_base)?,
 			a_delayed_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &a_delayed_payment_base)?,
-			b_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &b_payment_base)?,
 		})
 	}
 }
@@ -537,7 +534,6 @@ impl LocalCommitmentTransaction {
 					a_htlc_key: dummy_key.clone(),
 					b_htlc_key: dummy_key.clone(),
 					a_delayed_payment_key: dummy_key.clone(),
-					b_payment_key: dummy_key.clone(),
 				},
 			feerate_per_kw: 0,
 			per_htlc: Vec::new()
