@@ -141,9 +141,16 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref chan)) = iter.next() {
 				if chan.announcement_message.is_some() {
-					result.push((chan.announcement_message.clone().unwrap(),
-						chan.one_to_two.last_update_message.clone(),
-						chan.two_to_one.last_update_message.clone()));
+					let chan_announcement = chan.announcement_message.clone().unwrap();
+					let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
+					let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
+					if let Some(one_to_two) = chan.one_to_two.as_ref() {
+						one_to_two_announcement = one_to_two.last_update_message.clone();
+					}
+					if let Some(two_to_one) = chan.two_to_one.as_ref() {
+						two_to_one_announcement = two_to_one.last_update_message.clone();
+					}
+					result.push((chan_announcement, one_to_two_announcement, two_to_one_announcement));
 				} else {
 					// TODO: We may end up sending un-announced channel_updates if we are sending
 					// initial sync data while receiving announce/updates for this channel.
@@ -238,11 +245,9 @@ impl ReadableArgs<NetGraphMsgHandlerReadArgs> for NetGraphMsgHandler {
 	}
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 /// Details regarding one direction of a channel
 pub struct DirectionalChannelInfo {
-	/// A node from which the channel direction starts
-	pub src_node_id: PublicKey,
 	/// When the last update to the channel direction was issued
 	pub last_update: u32,
 	/// Whether the channel can be currently used for payments
@@ -259,13 +264,12 @@ pub struct DirectionalChannelInfo {
 
 impl std::fmt::Display for DirectionalChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "src_node_id {}, last_update {}, enabled {}, cltv_expiry_delta {}, htlc_minimum_msat {}, fees {:?}", log_pubkey!(self.src_node_id), self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fees)?;
+		write!(f, "last_update {}, enabled {}, cltv_expiry_delta {}, htlc_minimum_msat {}, fees {:?}", self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fees)?;
 		Ok(())
 	}
 }
 
 impl_writeable!(DirectionalChannelInfo, 0, {
-	src_node_id,
 	last_update,
 	enabled,
 	cltv_expiry_delta,
@@ -279,10 +283,14 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 pub struct ChannelInfo {
 	/// Protocol features of a channel communicated during its announcement
 	pub features: ChannelFeatures,
-	/// Details regarding one of the directions of a channel
-	pub one_to_two: DirectionalChannelInfo,
-	/// Details regarding another direction of a channel
-	pub two_to_one: DirectionalChannelInfo,
+	/// Source node of the first direction of a channel
+	pub node_one: PublicKey,
+	/// Details about the first direction of a channel
+	pub one_to_two: Option<DirectionalChannelInfo>,
+	/// Source node of the second direction of a channel
+	pub node_two: PublicKey,
+	/// Details about the second direction of a channel
+	pub two_to_one: Option<DirectionalChannelInfo>,
 	/// An initial announcement of the channel
 	//this is cached here so we can send out it later if required by initial routing sync
 	//keep an eye on this to see if the extra memory is a problem
@@ -291,14 +299,17 @@ pub struct ChannelInfo {
 
 impl std::fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "features: {}, one_to_two: {}, two_to_one: {}", log_bytes!(self.features.encode()), self.one_to_two, self.two_to_one)?;
+		write!(f, "features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
+		   log_bytes!(self.features.encode()), log_pubkey!(self.node_one), self.one_to_two, log_pubkey!(self.node_two), self.two_to_one)?;
 		Ok(())
 	}
 }
 
 impl_writeable!(ChannelInfo, 0, {
 	features,
+	node_one,
 	one_to_two,
+	node_two,
 	two_to_one,
 	announcement_message
 });
@@ -560,30 +571,10 @@ impl NetworkGraph {
 
 		let chan_info = ChannelInfo {
 				features: msg.contents.features.clone(),
-				one_to_two: DirectionalChannelInfo {
-					src_node_id: msg.contents.node_id_1.clone(),
-					last_update: 0,
-					enabled: false,
-					cltv_expiry_delta: u16::max_value(),
-					htlc_minimum_msat: u64::max_value(),
-					fees: RoutingFees {
-						base_msat: u32::max_value(),
-						proportional_millionths: u32::max_value(),
-					},
-					last_update_message: None,
-				},
-				two_to_one: DirectionalChannelInfo {
-					src_node_id: msg.contents.node_id_2.clone(),
-					last_update: 0,
-					enabled: false,
-					cltv_expiry_delta: u16::max_value(),
-					htlc_minimum_msat: u64::max_value(),
-					fees: RoutingFees {
-						base_msat: u32::max_value(),
-						proportional_millionths: u32::max_value(),
-					},
-					last_update_message: None,
-				},
+				node_one: msg.contents.node_id_1.clone(),
+				one_to_two: None,
+				node_two: msg.contents.node_id_2.clone(),
+				two_to_one: None,
 				announcement_message: if should_relay { Some(msg.clone()) } else { None },
 			};
 
@@ -646,8 +637,12 @@ impl NetworkGraph {
 			}
 		} else {
 			if let Some(chan) = self.channels.get_mut(&short_channel_id) {
-				chan.one_to_two.enabled = false;
-				chan.two_to_one.enabled = false;
+				if let Some(one_to_two) = chan.one_to_two.as_mut() {
+					one_to_two.enabled = false;
+				}
+				if let Some(two_to_one) = chan.two_to_one.as_mut() {
+					two_to_one.enabled = false;
+				}
 			}
 		}
 	}
@@ -671,37 +666,50 @@ impl NetworkGraph {
 			None => return Err(LightningError{err: "Couldn't find channel for update", action: ErrorAction::IgnoreError}),
 			Some(channel) => {
 				macro_rules! maybe_update_channel_info {
-					( $target: expr) => {
-						if $target.last_update >= msg.contents.timestamp {
-							return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
+					( $target: expr, $src_node: expr) => {
+						if let Some(existing_chan_info) = $target.as_ref() {
+							if existing_chan_info.last_update >= msg.contents.timestamp {
+								return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
+							}
+							chan_was_enabled = existing_chan_info.enabled;
+						} else {
+							chan_was_enabled = false;
 						}
-						chan_was_enabled = $target.enabled;
-						$target.last_update = msg.contents.timestamp;
-						$target.enabled = chan_enabled;
-						$target.cltv_expiry_delta = msg.contents.cltv_expiry_delta;
-						$target.htlc_minimum_msat = msg.contents.htlc_minimum_msat;
-						$target.fees.base_msat = msg.contents.fee_base_msat;
-						$target.fees.proportional_millionths = msg.contents.fee_proportional_millionths;
-						$target.last_update_message = if msg.contents.excess_data.is_empty() {
+
+						let last_update_message = if msg.contents.excess_data.is_empty() {
 							Some(msg.clone())
 						} else {
 							None
 						};
+
+						let updated_channel_dir_info = DirectionalChannelInfo {
+							enabled: chan_enabled,
+							last_update: msg.contents.timestamp,
+							cltv_expiry_delta: msg.contents.cltv_expiry_delta,
+							htlc_minimum_msat: msg.contents.htlc_minimum_msat,
+							fees: RoutingFees {
+								base_msat: msg.contents.fee_base_msat,
+								proportional_millionths: msg.contents.fee_proportional_millionths,
+							},
+							last_update_message
+						};
+						$target = Some(updated_channel_dir_info);
 					}
 				}
+
 				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 				if msg.contents.flags & 1 == 1 {
-					dest_node_id = channel.one_to_two.src_node_id.clone();
+					dest_node_id = channel.node_one.clone();
 					if let Some(sig_verifier) = secp_ctx {
-						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.two_to_one.src_node_id);
+						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_two);
 					}
-					maybe_update_channel_info!(channel.two_to_one);
+					maybe_update_channel_info!(channel.two_to_one, channel.node_two);
 				} else {
-					dest_node_id = channel.two_to_one.src_node_id.clone();
+					dest_node_id = channel.node_two.clone();
 					if let Some(sig_verifier) = secp_ctx {
-						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.one_to_two.src_node_id);
+						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_one);
 					}
-					maybe_update_channel_info!(channel.one_to_two);
+					maybe_update_channel_info!(channel.one_to_two, channel.node_one);
 				}
 			}
 		}
@@ -727,13 +735,15 @@ impl NetworkGraph {
 
 				for chan_id in node.channels.iter() {
 					let chan = self.channels.get(chan_id).unwrap();
-					if chan.one_to_two.src_node_id == dest_node_id {
-						lowest_inbound_channel_fee_base_msat = cmp::min(lowest_inbound_channel_fee_base_msat, chan.two_to_one.fees.base_msat);
-						lowest_inbound_channel_fee_proportional_millionths = cmp::min(lowest_inbound_channel_fee_proportional_millionths, chan.two_to_one.fees.proportional_millionths);
+					// Since direction was enabled, the channel indeed had directional info
+					let chan_info;
+					if chan.node_one == dest_node_id {
+						chan_info = chan.two_to_one.as_ref().unwrap();
 					} else {
-						lowest_inbound_channel_fee_base_msat = cmp::min(lowest_inbound_channel_fee_base_msat, chan.one_to_two.fees.base_msat);
-						lowest_inbound_channel_fee_proportional_millionths = cmp::min(lowest_inbound_channel_fee_proportional_millionths, chan.one_to_two.fees.proportional_millionths);
+						chan_info = chan.one_to_two.as_ref().unwrap();
 					}
+					lowest_inbound_channel_fee_base_msat = cmp::min(lowest_inbound_channel_fee_base_msat, chan_info.fees.base_msat);
+					lowest_inbound_channel_fee_proportional_millionths = cmp::min(lowest_inbound_channel_fee_proportional_millionths, chan_info.fees.proportional_millionths);
 				}
 			}
 
@@ -765,8 +775,9 @@ impl NetworkGraph {
 				}
 			}
 		}
-		remove_from_node!(chan.one_to_two.src_node_id);
-		remove_from_node!(chan.two_to_one.src_node_id);
+
+		remove_from_node!(chan.node_one);
+		remove_from_node!(chan.node_two);
 	}
 }
 
@@ -1177,8 +1188,8 @@ mod tests {
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert_eq!(channel_info.one_to_two.cltv_expiry_delta, 144);
-					assert_eq!(channel_info.two_to_one.cltv_expiry_delta, u16::max_value());
+					assert_eq!(channel_info.one_to_two.as_ref().unwrap().cltv_expiry_delta, 144);
+					assert!(channel_info.two_to_one.is_none());
 				}
 			}
 		}
@@ -1283,6 +1294,38 @@ mod tests {
 				Err(_) => panic!()
 			};
 
+			let unsigned_channel_update = UnsignedChannelUpdate {
+				chain_hash,
+				short_channel_id,
+				timestamp: 100,
+				flags: 0,
+				cltv_expiry_delta: 144,
+				htlc_minimum_msat: 1000000,
+				fee_base_msat: 10000,
+				fee_proportional_millionths: 20,
+				excess_data: Vec::new()
+			};
+			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+			let valid_channel_update = ChannelUpdate {
+				signature: secp_ctx.sign(&msghash, node_1_privkey),
+				contents: unsigned_channel_update.clone()
+			};
+
+			match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+				Ok(res) => assert!(res),
+				_ => panic!()
+			};
+		}
+
+		// Non-permanent closing just disables a channel
+		{
+			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			match network.get_channels().get(&short_channel_id) {
+				None => panic!(),
+				Some(channel_info) => {
+					assert!(channel_info.one_to_two.is_some());
+				}
+			}
 		}
 
 		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
@@ -1298,8 +1341,7 @@ mod tests {
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert!(!channel_info.one_to_two.enabled);
-					assert!(!channel_info.two_to_one.enabled);
+					assert!(!channel_info.one_to_two.as_ref().unwrap().enabled);
 				}
 			}
 		}

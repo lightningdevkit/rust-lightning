@@ -138,7 +138,6 @@ impl cmp::PartialOrd for RouteGraphNode {
 }
 
 struct DummyDirectionalChannelInfo {
-	src_node_id: PublicKey,
 	cltv_expiry_delta: u32,
 	htlc_minimum_msat: u64,
 	fees: RoutingFees,
@@ -180,7 +179,6 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 	// one.
 
 	let dummy_directional_info = DummyDirectionalChannelInfo { // used for first_hops routes
-		src_node_id: our_node_id.clone(),
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		fees: RoutingFees {
@@ -217,10 +215,10 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 	}
 
 	macro_rules! add_entry {
-		// Adds entry which goes from the node pointed to by $directional_info to
-		// $dest_node_id over the channel with id $chan_id with fees described in
+		// Adds entry which goes from $src_node_id to $dest_node_id
+		// over the channel with id $chan_id with fees described in
 		// $directional_info.
-		( $chan_id: expr, $dest_node_id: expr, $directional_info: expr, $chan_features: expr, $starting_fee_msat: expr ) => {
+		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $chan_features: expr, $starting_fee_msat: expr ) => {
 			//TODO: Explore simply adding fee to hit htlc_minimum_msat
 			if $starting_fee_msat as u64 + final_value_msat >= $directional_info.htlc_minimum_msat {
 				let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fees.proportional_millionths as u64);
@@ -228,9 +226,9 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 						($directional_info.fees.base_msat as u64).checked_add(part / 1000000) })
 				{
 					let mut total_fee = $starting_fee_msat as u64;
-					let hm_entry = dist.entry(&$directional_info.src_node_id);
+					let hm_entry = dist.entry(&$src_node_id);
 					let old_entry = hm_entry.or_insert_with(|| {
-						let node = network.get_nodes().get(&$directional_info.src_node_id).unwrap();
+						let node = network.get_nodes().get(&$src_node_id).unwrap();
 						let mut fee_base_msat = u32::max_value();
 						let mut fee_proportional_millionths = u32::max_value();
 						if let Some(fees) = node.lowest_inbound_channel_fees {
@@ -249,7 +247,7 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 								cltv_expiry_delta: 0,
 						})
 					});
-					if $directional_info.src_node_id != *our_node_id {
+					if $src_node_id != *our_node_id {
 						// Ignore new_fee for channel-from-us as we assume all channels-from-us
 						// will have the same effective-fee
 						total_fee += new_fee;
@@ -261,7 +259,7 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 						}
 					}
 					let new_graph_node = RouteGraphNode {
-						pubkey: $directional_info.src_node_id,
+						pubkey: $src_node_id,
 						lowest_fee_to_peer_through_node: total_fee,
 						lowest_fee_to_node: $starting_fee_msat as u64 + new_fee,
 					};
@@ -286,7 +284,7 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 			if first_hops.is_some() {
 				if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&$node_id) {
-					add_entry!(first_hop, $node_id, dummy_directional_info, features.to_context(), $fee_to_target_msat);
+					add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, features.to_context(), $fee_to_target_msat);
 				}
 			}
 
@@ -301,18 +299,23 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 				for chan_id in $node.channels.iter() {
 					let chan = network.get_channels().get(chan_id).unwrap();
 					if !chan.features.requires_unknown_bits() {
-						if chan.one_to_two.src_node_id == *$node_id {
+						if chan.node_one == *$node_id {
 							// ie $node is one, ie next hop in A* is two, via the two_to_one channel
-							if first_hops.is_none() || chan.two_to_one.src_node_id != *our_node_id {
-								if chan.two_to_one.enabled {
-									add_entry!(chan_id, chan.one_to_two.src_node_id, chan.two_to_one, chan.features, $fee_to_target_msat);
+							if first_hops.is_none() || chan.node_two != *our_node_id {
+								if let Some(two_to_one) = chan.two_to_one.as_ref() {
+									if two_to_one.enabled {
+										add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.features, $fee_to_target_msat);
+									}
 								}
 							}
 						} else {
-							if first_hops.is_none() || chan.one_to_two.src_node_id != *our_node_id {
-								if chan.one_to_two.enabled {
-									add_entry!(chan_id, chan.two_to_one.src_node_id, chan.one_to_two, chan.features, $fee_to_target_msat);
+							if first_hops.is_none() || chan.node_one != *our_node_id {
+								if let Some(one_to_two) = chan.one_to_two.as_ref() {
+									if one_to_two.enabled {
+										add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.features, $fee_to_target_msat);
+									}
 								}
+
 							}
 						}
 					}
@@ -337,12 +340,12 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 						// bit lazy here. In the future, we should pull them out via our
 						// ChannelManager, but there's no reason to waste the space until we
 						// need them.
-						add_entry!(first_hop, hop.src_node_id, dummy_directional_info, features.to_context(), 0);
+						add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, features.to_context(), 0);
 					}
 				}
 				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
 				// really sucks, cause we're gonna need that eventually.
-				add_entry!(hop.short_channel_id, target, hop, ChannelFeatures::empty(), 0);
+				add_entry!(hop.short_channel_id, hop.src_node_id, target, hop, ChannelFeatures::empty(), 0);
 			}
 		}
 	}
