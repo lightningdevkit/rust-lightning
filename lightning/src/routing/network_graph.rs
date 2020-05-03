@@ -73,7 +73,7 @@ macro_rules! secp_verify_sig {
 
 impl RoutingMessageHandler for NetGraphMsgHandler {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().process_node_announcement(msg, Some(&self.secp_ctx))
+		self.network_graph.write().unwrap().update_node_from_announcement(msg, Some(&self.secp_ctx))
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
@@ -106,7 +106,7 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 				return Err(LightningError{err: "Channel announced without corresponding UTXO entry", action: ErrorAction::IgnoreError});
 			},
 		};
-		let result = self.network_graph.write().unwrap().process_channel_announcement(msg, checked_utxo, Some(&self.secp_ctx));
+		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, checked_utxo, Some(&self.secp_ctx));
 		log_trace!(self, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		result
 	}
@@ -114,19 +114,19 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
 		match update {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
-				let _ = self.network_graph.write().unwrap().process_channel_update(msg, Some(&self.secp_ctx));
+				let _ = self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx));
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id, ref is_permanent } => {
-				self.network_graph.write().unwrap().process_channel_closing(short_channel_id, &is_permanent);
+				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, &is_permanent);
 			},
 			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, ref is_permanent } => {
-				self.network_graph.write().unwrap().process_node_failure(node_id, &is_permanent);
+				self.network_graph.write().unwrap().fail_node(node_id, &is_permanent);
 			},
 		}
 	}
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().process_channel_update(msg, Some(&self.secp_ctx))
+		self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx))
 	}
 
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
@@ -483,7 +483,9 @@ impl NetworkGraph {
 	/// Returns all known nodes
 	pub fn get_nodes<'a>(&'a self) -> &'a BTreeMap<PublicKey, NodeInfo> { &self.nodes }
 
-	fn process_node_announcement(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
+	/// For an already known node (from channel announcements), update its stored properties from a given node announcement
+	/// Announcement signatures are checked here only if Secp256k1 object is provided.
+	fn update_node_from_announcement(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		if let Some(sig_verifier) = secp_ctx {
 			let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 			secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &msg.contents.node_id);
@@ -512,7 +514,11 @@ impl NetworkGraph {
 		}
 	}
 
-	fn process_channel_announcement(&mut self, msg: &msgs::ChannelAnnouncement, checked_utxo: bool, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
+	/// For a new or already known (from previous announcement) channel, store or update channel info,
+	/// after making sure it corresponds to a real transaction on-chain.
+	/// Also store nodes (if not stored yet) the channel is between, and make node aware of this channel.
+	/// Announcement signatures are checked here only if Secp256k1 object is provided.
+	fn update_channel_from_announcement(&mut self, msg: &msgs::ChannelAnnouncement, checked_utxo: bool, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		if let Some(sig_verifier) = secp_ctx {
 			let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 			secp_verify_sig!(sig_verifier, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
@@ -605,7 +611,11 @@ impl NetworkGraph {
 		Ok(should_relay)
 	}
 
-	fn process_channel_closing(&mut self, short_channel_id: &u64, is_permanent: &bool) {
+	/// Close a channel if a corresponding HTLC fail was sent.
+	/// If permanent, removes a channel from the local storage.
+	/// May cause the removal of nodes too, if this was their last channel.
+	/// If not permanent, makes channels unavailable for routing.
+	pub fn close_channel_from_update(&mut self, short_channel_id: &u64, is_permanent: &bool) {
 		if *is_permanent {
 			if let Some(chan) = self.channels.remove(short_channel_id) {
 				Self::remove_channel_in_nodes(&mut self.nodes, &chan, *short_channel_id);
@@ -618,7 +628,7 @@ impl NetworkGraph {
 		}
 	}
 
-	fn process_node_failure(&mut self, _node_id: &PublicKey, is_permanent: &bool) {
+	fn fail_node(&mut self, _node_id: &PublicKey, is_permanent: &bool) {
 		if *is_permanent {
 			// TODO: Wholly remove the node
 		} else {
@@ -626,7 +636,9 @@ impl NetworkGraph {
 		}
 	}
 
-	fn process_channel_update(&mut self, msg: &msgs::ChannelUpdate, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
+	/// For an already known (from announcement) channel, update info regarding one of the directions of a channel.
+	/// Announcement signatures are checked here only if Secp256k1 object is provided.
+	fn update_channel(&mut self, msg: &msgs::ChannelUpdate, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		let dest_node_id;
 		let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
