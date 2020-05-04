@@ -582,7 +582,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_remote_tx_csv, &chan_keys.a_delayed_payment_key)
 							};
 
-							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, &witness_script, *amount, &per_commitment_key, &chan_keys.revocation_key, htlc.is_some(),  &self.secp_ctx) {
+							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, *on_remote_tx_csv, &self.secp_ctx) {
 								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 								if htlc.is_some() {

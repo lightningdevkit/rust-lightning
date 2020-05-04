@@ -280,9 +280,6 @@ pub trait ChannelKeys : Send+Clone {
 	/// It may be called multiples time for same output(s) if a fee-bump is needed with regards
 	/// to an upcoming timelock expiration.
 	///
-	/// Witness_script is a revokable witness script as defined in BOLT3 for `to_local`/HTLC
-	/// outputs.
-	///
 	/// Input index is a pointer towards outpoint spent, commited by sigs (BIP 143).
 	///
 	/// Amount is value of the output spent by this input, committed by sigs (BIP 143).
@@ -291,8 +288,14 @@ pub trait ChannelKeys : Send+Clone {
 	/// revocating detected onchain transaction. It's not a _local_ secret key, therefore
 	/// it may cross interfaces, a node compromise won't allow to spend revoked output without
 	/// also compromissing revocation key.
-	//TODO: dry-up witness_script and pass pubkeys
-	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	///
+	/// htlc holds HTLC elements (hash, timelock) if output spent is a HTLC one, committed as
+	/// part of witnessScript by sigs (BIP 143).
+	///
+	/// on_remote_tx_csv is the relative lock-time challenge if output spent is on remote
+	/// balance or 2nd-stage HTLC transactions, committed as part of witnessScript by sigs
+	/// (BIP 143).
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Create a signature for a claiming transaction for a HTLC output on a remote commitment
 	/// transaction, either offered or received.
@@ -468,13 +471,36 @@ impl ChannelKeys for InMemoryChannelKeys {
 		local_commitment_tx.get_htlc_sigs(&self.htlc_base_key, local_csv, secp_ctx)
 	}
 
-	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		if let Ok(revocation_key) = chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
-			let sighash_parts = bip143::SighashComponents::new(&justice_tx);
-			let sighash = hash_to_message!(&sighash_parts.sighash_all(&justice_tx.input[input], &witness_script, amount)[..]);
-			return Ok(secp_ctx.sign(&sighash, &revocation_key))
-		}
-		Err(())
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		let revocation_key = match chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
+			Ok(revocation_key) => revocation_key,
+			Err(_) => return Err(())
+		};
+		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
+		let revocation_pubkey = match chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint) {
+			Ok(revocation_pubkey) => revocation_pubkey,
+			Err(_) => return Err(())
+		};
+		let witness_script = if let &Some(ref htlc) = htlc {
+			let remote_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().htlc_basepoint) {
+				Ok(remote_htlcpubkey) => remote_htlcpubkey,
+				Err(_) => return Err(())
+			};
+			let local_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
+				Ok(local_htlcpubkey) => local_htlcpubkey,
+				Err(_) => return Err(())
+			};
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &remote_htlcpubkey, &local_htlcpubkey, &revocation_pubkey)
+		} else {
+			let remote_delayedpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().delayed_payment_basepoint) {
+				Ok(remote_delayedpubkey) => remote_delayedpubkey,
+				Err(_) => return Err(())
+			};
+			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, on_remote_tx_csv, &remote_delayedpubkey)
+		};
+		let sighash_parts = bip143::SighashComponents::new(&justice_tx);
+		let sighash = hash_to_message!(&sighash_parts.sighash_all(&justice_tx.input[input], &witness_script, amount)[..]);
+		return Ok(secp_ctx.sign(&sighash, &revocation_key))
 	}
 
 	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

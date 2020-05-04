@@ -106,8 +106,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, local_csv, secp_ctx).unwrap())
 	}
 
-	fn sign_justice_transaction<T: secp256k1::Signing>(&self, justice_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_key: &SecretKey, revocation_pubkey: &PublicKey, is_htlc: bool, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		Ok(self.inner.sign_justice_transaction(justice_tx, input, witness_script, amount, per_commitment_key, revocation_pubkey, is_htlc, secp_ctx).unwrap())
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_justice_transaction(justice_tx, input, amount, per_commitment_key, htlc, on_remote_tx_csv, secp_ctx).unwrap())
 	}
 
 	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
