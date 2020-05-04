@@ -51,7 +51,12 @@ impl NetGraphMsgHandler {
 	/// Get network addresses by node id
 	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
 		let network = self.network_graph.read().unwrap();
-		network.get_nodes().get(pubkey).map(|n| n.addresses.clone())
+		if let Some(node) = network.get_nodes().get(pubkey) {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				return Some(node_info.addresses.clone())
+			}
+		}
+		None
 	}
 
 	/// Dumps the entire network view of this NetGraphMsgHandler to the logger provided in the constructor at
@@ -162,8 +167,10 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 			};
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref node)) = iter.next() {
-				if node.announcement_message.is_some() {
-					result.push(node.announcement_message.clone().unwrap());
+				if let Some(node_info) = node.announcement_info.as_ref() {
+					if node_info.announcement_message.is_some() {
+						result.push(node_info.announcement_message.clone().unwrap());
+					}
 				}
 			} else {
 				return result;
@@ -325,21 +332,13 @@ impl Writeable for RoutingFees {
 	}
 }
 
-
-#[derive(PartialEq)]
-/// Details regarding a node in the network
-pub struct NodeInfo {
-	/// All valid channels a node has announced
-	pub channels: Vec<u64>,
-	/// Lowest fees enabling routing via any of the known channels to a node
-	pub lowest_inbound_channel_fees: Option<RoutingFees>,
+#[derive(PartialEq, Debug)]
+/// Information received in the latest node_announcement from this node.
+pub struct NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
-	pub features: NodeFeatures,
+      pub features: NodeFeatures,
 	/// When the last known update to the node state was issued
-	/// Unlike for channels, we may have a NodeInfo entry before having received a node_update.
-	/// Thus, we have to be able to capture "no update has been received", which we do with an
-	/// Option here.
-	pub last_update: Option<u32>,
+      pub last_update: u32,
 	/// Color assigned to the node
 	pub rgb: [u8; 3],
 	/// Moniker assigned to the node
@@ -347,25 +346,13 @@ pub struct NodeInfo {
 	/// Internet-level addresses via which one can connect to the node
 	pub addresses: Vec<NetAddress>,
 	/// An initial announcement of the node
-	//this is cached here so we can send out it later if required by initial routing sync
-	//keep an eye on this to see if the extra memory is a problem
-	pub announcement_message: Option<msgs::NodeAnnouncement>,
+	// this is cached here so we can send out it later if required by initial routing sync
+	// keep an eye on this to see if the extra memory is a problem
+	pub announcement_message: Option<msgs::NodeAnnouncement>
 }
 
-impl std::fmt::Display for NodeInfo {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "features: {}, last_update: {:?}, lowest_inbound_channel_fees: {:?}, channels: {:?}", log_bytes!(self.features.encode()), self.last_update, self.lowest_inbound_channel_fees, &self.channels[..])?;
-		Ok(())
-	}
-}
-
-impl Writeable for NodeInfo {
+impl Writeable for NodeAnnouncementInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		(self.channels.len() as u64).write(writer)?;
-		for ref chan in self.channels.iter() {
-			chan.write(writer)?;
-		}
-		self.lowest_inbound_channel_fees.write(writer)?;
 		self.features.write(writer)?;
 		self.last_update.write(writer)?;
 		self.rgb.write(writer)?;
@@ -379,16 +366,8 @@ impl Writeable for NodeInfo {
 	}
 }
 
-const MAX_ALLOC_SIZE: u64 = 64*1024;
-
-impl Readable for NodeInfo {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
-		let channels_count: u64 = Readable::read(reader)?;
-		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
-		for _ in 0..channels_count {
-			channels.push(Readable::read(reader)?);
-		}
-		let lowest_inbound_channel_fees = Readable::read(reader)?;
+impl Readable for NodeAnnouncementInfo {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeAnnouncementInfo, DecodeError> {
 		let features = Readable::read(reader)?;
 		let last_update = Readable::read(reader)?;
 		let rgb = Readable::read(reader)?;
@@ -404,15 +383,64 @@ impl Readable for NodeInfo {
 			}
 		}
 		let announcement_message = Readable::read(reader)?;
-		Ok(NodeInfo {
-			channels,
-			lowest_inbound_channel_fees,
+		Ok(NodeAnnouncementInfo {
 			features,
 			last_update,
 			rgb,
 			alias,
 			addresses,
 			announcement_message
+		})
+	}
+}
+
+#[derive(PartialEq)]
+/// Details regarding a node in the network
+pub struct NodeInfo {
+	/// All valid channels a node has announced
+	pub channels: Vec<u64>,
+	/// Lowest fees enabling routing via any of the known channels to a node
+	pub lowest_inbound_channel_fees: Option<RoutingFees>,
+	/// More information about a node from node_announcement
+	/// Optional because we may have a NodeInfo entry before having received the announcement
+	pub announcement_info: Option<NodeAnnouncementInfo>
+}
+
+impl std::fmt::Display for NodeInfo {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		write!(f, "lowest_inbound_channel_fees: {:?}, channels: {:?}, announcement_info: {:?}",
+		   self.lowest_inbound_channel_fees, &self.channels[..], self.announcement_info)?;
+		Ok(())
+	}
+}
+
+impl Writeable for NodeInfo {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		(self.channels.len() as u64).write(writer)?;
+		for ref chan in self.channels.iter() {
+			chan.write(writer)?;
+		}
+		self.lowest_inbound_channel_fees.write(writer)?;
+		self.announcement_info.write(writer)?;
+		Ok(())
+	}
+}
+
+const MAX_ALLOC_SIZE: u64 = 64*1024;
+
+impl Readable for NodeInfo {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
+		let channels_count: u64 = Readable::read(reader)?;
+		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
+		for _ in 0..channels_count {
+			channels.push(Readable::read(reader)?);
+		}
+		let lowest_inbound_channel_fees = Readable::read(reader)?;
+		let announcement_info = Readable::read(reader)?;
+		Ok(NodeInfo {
+			channels,
+			lowest_inbound_channel_fees,
+			announcement_info,
 		})
 	}
 }
@@ -494,21 +522,22 @@ impl NetworkGraph {
 		match self.nodes.get_mut(&msg.contents.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement", action: ErrorAction::IgnoreError}),
 			Some(node) => {
-				match node.last_update {
-					Some(last_update) => if last_update >= msg.contents.timestamp {
+				if let Some(node_info) = node.announcement_info.as_ref() {
+					if node_info.last_update  >= msg.contents.timestamp {
 						return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
-					},
-					None => {},
+					}
 				}
 
-				node.features = msg.contents.features.clone();
-				node.last_update = Some(msg.contents.timestamp);
-				node.rgb = msg.contents.rgb;
-				node.alias = msg.contents.alias;
-				node.addresses = msg.contents.addresses.clone();
-
 				let should_relay = msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty();
-				node.announcement_message = if should_relay { Some(msg.clone()) } else { None };
+				node.announcement_info = Some(NodeAnnouncementInfo {
+					features: msg.contents.features.clone(),
+					last_update: msg.contents.timestamp,
+					rgb: msg.contents.rgb,
+					alias: msg.contents.alias,
+					addresses: msg.contents.addresses.clone(),
+					announcement_message: if should_relay { Some(msg.clone()) } else { None },
+				});
+
 				Ok(should_relay)
 			}
 		}
@@ -593,12 +622,7 @@ impl NetworkGraph {
 						node_entry.insert(NodeInfo {
 							channels: vec!(msg.contents.short_channel_id),
 							lowest_inbound_channel_fees: None,
-							features: NodeFeatures::empty(),
-							last_update: None,
-							rgb: [0; 3],
-							alias: [0; 32],
-							addresses: Vec::new(),
-							announcement_message: None,
+							announcement_info: None,
 						});
 					}
 				}

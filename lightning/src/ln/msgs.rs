@@ -391,7 +391,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
 	pub(crate) signature: Signature,

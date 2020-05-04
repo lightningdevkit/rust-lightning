@@ -290,7 +290,14 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 				}
 			}
 
-			if !$node.features.requires_unknown_bits() {
+			let features;
+			if let Some(node_info) = $node.announcement_info.as_ref() {
+				features = node_info.features.clone();
+			} else {
+				features = NodeFeatures::empty();
+			}
+
+			if !features.requires_unknown_bits() {
 				for chan_id in $node.channels.iter() {
 					let chan = network.get_channels().get(chan_id).unwrap();
 					if !chan.features.requires_unknown_bits() {
@@ -347,7 +354,11 @@ pub fn get_route(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHan
 				if let Some(&(_, ref features)) = first_hop_targets.get(&res.last().unwrap().pubkey) {
 					res.last_mut().unwrap().node_features = features.to_context();
 				} else if let Some(node) = network.get_nodes().get(&res.last().unwrap().pubkey) {
-					res.last_mut().unwrap().node_features = node.features.clone();
+					if let Some(node_info) = node.announcement_info.as_ref() {
+						res.last_mut().unwrap().node_features = node_info.features.clone();
+					} else {
+						res.last_mut().unwrap().node_features = NodeFeatures::empty();
+					}
 				} else {
 					// We should be able to fill in features for everything except the last
 					// hop, if the last hop was provided via a BOLT 11 invoice (though we
