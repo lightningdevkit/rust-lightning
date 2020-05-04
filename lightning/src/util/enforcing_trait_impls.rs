@@ -110,8 +110,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_justice_transaction(justice_tx, input, amount, per_commitment_key, htlc, on_remote_tx_csv, secp_ctx).unwrap())
 	}
 
-	fn sign_remote_htlc_transaction<T: secp256k1::Signing>(&self, htlc_tx: &Transaction, input: usize, witness_script: &Script, amount: u64, per_commitment_point: &PublicKey, preimage: &Option<PaymentPreimage>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		Ok(self.inner.sign_remote_htlc_transaction(htlc_tx, input, witness_script, amount, per_commitment_point, preimage, secp_ctx).unwrap())
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_remote_htlc_transaction(htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx).unwrap())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

@@ -602,7 +602,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &witness_script, htlc.amount_msat / 1000, &per_commitment_point, preimage, &self.secp_ctx) {
+							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {
 								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 								if let &Some(preimage) = preimage {
