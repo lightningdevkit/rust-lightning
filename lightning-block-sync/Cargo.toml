@@ -1,0 +1,25 @@
+[package]
+name = "lightning-block-sync"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+license = "Apache-2.0"
+edition = "2018"
+description = """
+Utilities to fetch the chain from Bitcoin Core REST/RPC Interfaces and feed them into Rust Lightning.
+"""
+
+[features]
+rest-client = [ "serde", "serde_json", "serde_derive" ]
+rpc-client = [ "serde", "serde_json", "serde_derive", "base64" ]
+
+[dependencies]
+bitcoin = "0.23"
+lightning = { version = "0.0.11", path = "../lightning" }
+tokio = { version = ">=0.2.12", features = [ "tcp", "io-util", "dns" ], optional = true }
+serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+serde_derive = { version = "1", optional = true }
+base64 = { version = "0.9", optional = true }
+
+[dev-dependencies]
+tokio = { version = ">=0.2.12", features = [ "macros", "rt-core" ] }
