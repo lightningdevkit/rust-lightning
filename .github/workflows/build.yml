@@ -12,7 +12,7 @@ jobs:
                      1.22.0,
                      # 1.34.2 is Debian stable
                      1.34.2,
-                     # 1.39.0 is MSRV for lightning-net-tokio and generates coverage
+                     # 1.39.0 is MSRV for lightning-net-tokio and lightning-block-sync and generates coverage
                      1.39.0]
         include:
           - toolchain: stable
@@ -38,6 +38,15 @@ jobs:
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning
+      - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
+        if: matrix.build-net-tokio
+        run: |
+          cd lightning-block-sync
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rest-client
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
+          cd ..
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: matrix.build-net-tokio
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
