@@ -44,6 +44,7 @@ pub struct ChannelValueStat {
 	pub pending_inbound_htlcs_amount_msat: u64,
 	pub holding_cell_outbound_amount_msat: u64,
 	pub their_max_htlc_value_in_flight_msat: u64, // outgoing
+	pub their_dust_limit_msat: u64,
 }
 
 enum InboundHTLCRemovalReason {
@@ -1663,6 +1664,73 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
 	}
 
+	// Get the fee cost of a commitment tx with a given number of HTLC outputs.
+	// Note that num_htlcs should not include dust HTLCs.
+	fn commit_tx_fee_msat(&self, num_htlcs: usize) -> u64 {
+		// Note that we need to divide before multiplying to round properly,
+		// since the lowest denomination of bitcoin on-chain is the satoshi.
+		(COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * self.feerate_per_kw / 1000 * 1000
+	}
+
+	// Get the commitment tx fee for the local (i.e our) next commitment transaction
+	// based on the number of pending HTLCs that are on track to be in our next
+	// commitment tx. `addl_htcs` is an optional parameter allowing the caller
+	// to add a number of additional HTLCs to the calculation. Note that dust
+	// HTLCs are excluded.
+	fn next_local_commit_tx_fee_msat(&self, addl_htlcs: usize) -> u64 {
+		assert!(self.channel_outbound);
+
+		let mut their_acked_htlcs = self.pending_inbound_htlcs.len();
+		for ref htlc in self.pending_outbound_htlcs.iter() {
+			if htlc.amount_msat / 1000 <= self.our_dust_limit_satoshis {
+				continue
+			}
+			match htlc.state {
+				OutboundHTLCState::Committed => their_acked_htlcs += 1,
+				OutboundHTLCState::RemoteRemoved {..} => their_acked_htlcs += 1,
+				OutboundHTLCState::LocalAnnounced {..} => their_acked_htlcs += 1,
+				_ => {},
+			}
+		}
+
+		for htlc in self.holding_cell_htlc_updates.iter() {
+			match htlc {
+				&HTLCUpdateAwaitingACK::AddHTLC { .. } => their_acked_htlcs += 1,
+				_ => {},
+			}
+		}
+
+		self.commit_tx_fee_msat(their_acked_htlcs + addl_htlcs)
+	}
+
+	// Get the commitment tx fee for the remote's next commitment transaction
+	// based on the number of pending HTLCs that are on track to be in their
+	// next commitment tx. `addl_htcs` is an optional parameter allowing the caller
+	// to add a number of additional HTLCs to the calculation. Note that dust HTLCs
+	// are excluded.
+	fn next_remote_commit_tx_fee_msat(&self, addl_htlcs: usize) -> u64 {
+		assert!(!self.channel_outbound);
+
+		// When calculating the set of HTLCs which will be included in their next
+		// commitment_signed, all inbound HTLCs are included (as all states imply it will be
+		// included) and only committed outbound HTLCs, see below.
+		let mut their_acked_htlcs = self.pending_inbound_htlcs.len();
+		for ref htlc in self.pending_outbound_htlcs.iter() {
+			if htlc.amount_msat / 1000 <= self.their_dust_limit_satoshis {
+				continue
+			}
+			// We only include outbound HTLCs if it will not be included in their next
+			// commitment_signed, i.e. if they've responded to us with an RAA after announcement.
+			match htlc.state {
+				OutboundHTLCState::Committed => their_acked_htlcs += 1,
+				OutboundHTLCState::RemoteRemoved {..} => their_acked_htlcs += 1,
+				_ => {},
+			}
+		}
+
+		self.commit_tx_fee_msat(their_acked_htlcs + addl_htlcs)
+	}
+
 	pub fn update_add_htlc<F>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F) -> Result<(), ChannelError>
 	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus {
 		// We can't accept HTLCs sent after we've sent a shutdown.
@@ -1716,9 +1784,55 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
-		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 + removed_outbound_total_msat {
-			return Err(ChannelError::Close("Remote HTLC add would put them under their reserve value"));
+
+		let pending_value_to_self_msat =
+			self.value_to_self_msat + htlc_inbound_value_msat - removed_outbound_total_msat;
+		let pending_remote_value_msat =
+			self.channel_value_satoshis * 1000 - pending_value_to_self_msat;
+		if pending_remote_value_msat < msg.amount_msat {
+			return Err(ChannelError::Close("Remote HTLC add would overdraw remaining funds"));
 		}
+
+		// Check that the remote can afford to pay for this HTLC on-chain at the current
+		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
+		let remote_commit_tx_fee_msat = if self.channel_outbound { 0 } else {
+			// +1 for this HTLC.
+			self.next_remote_commit_tx_fee_msat(1)
+		};
+		if pending_remote_value_msat - msg.amount_msat < remote_commit_tx_fee_msat {
+			return Err(ChannelError::Close("Remote HTLC add would not leave enough to pay for fees"));
+		};
+
+		let chan_reserve_msat =
+			Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis) * 1000;
+		if pending_remote_value_msat - msg.amount_msat - remote_commit_tx_fee_msat < chan_reserve_msat {
+			return Err(ChannelError::Close("Remote HTLC add would put them under remote reserve value"));
+		}
+
+		if !self.channel_outbound {
+			// `+1` for this HTLC, `2 *` and `+1` fee spike buffer we keep for the remote. This deviates from the
+			// spec because in the spec, the fee spike buffer requirement doesn't exist on the receiver's side,
+			// only on the sender's.
+			// Note that when we eventually remove support for fee updates and switch to anchor output fees,
+			// we will drop the `2 *`, since we no longer be as sensitive to fee spikes. But, keep the extra +1
+			// as we should still be able to afford adding this HTLC plus one more future HTLC, regardless of
+			// being sensitive to fee spikes.
+			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.next_remote_commit_tx_fee_msat(1 + 1);
+			if pending_remote_value_msat - msg.amount_msat - chan_reserve_msat < remote_fee_cost_incl_stuck_buffer_msat {
+				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
+				// the HTLC, i.e. its status is already set to failing.
+				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
+			}
+		} else {
+			// Check that they won't violate our local required channel reserve by adding this HTLC.
+
+			// +1 for this HTLC.
+			let local_commit_tx_fee_msat = self.next_local_commit_tx_fee_msat(1);
+			if self.value_to_self_msat < self.local_channel_reserve_satoshis * 1000 + local_commit_tx_fee_msat {
+				return Err(ChannelError::Close("Cannot receive value that would put us under local channel reserve value"));
+			}
+		}
+
 		if self.next_remote_htlc_id != msg.htlc_id {
 			return Err(ChannelError::Close("Remote skipped HTLC ID"));
 		}
@@ -3044,6 +3158,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				res
 			},
 			their_max_htlc_value_in_flight_msat: self.their_max_htlc_value_in_flight_msat,
+			their_dust_limit_msat: self.their_dust_limit_satoshis * 1000,
 		}
 	}
 
@@ -3554,29 +3669,56 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Ignore("Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 		}
 
+		if !self.channel_outbound {
+			// Check that we won't violate the remote channel reserve by adding this HTLC.
+
+			let remote_balance_msat = self.channel_value_satoshis * 1000 - self.value_to_self_msat;
+			let remote_chan_reserve_msat = Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis);
+			// 1 additional HTLC corresponding to this HTLC.
+			let remote_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(1);
+			if remote_balance_msat < remote_chan_reserve_msat + remote_commit_tx_fee_msat {
+				return Err(ChannelError::Ignore("Cannot send value that would put them under remote channel reserve value"));
+			}
+		}
+
+		let pending_value_to_self_msat = self.value_to_self_msat - htlc_outbound_value_msat;
+		if pending_value_to_self_msat < amount_msat {
+			return Err(ChannelError::Ignore("Cannot send value that would overdraw remaining funds"));
+		}
+
+		// The `+1` is for the HTLC currently being added to the commitment tx and
+		// the `2 *` and `+1` are for the fee spike buffer.
+		let local_commit_tx_fee_msat = if self.channel_outbound {
+			2 * self.next_local_commit_tx_fee_msat(1 + 1)
+		} else { 0 };
+		if pending_value_to_self_msat - amount_msat < local_commit_tx_fee_msat {
+			return Err(ChannelError::Ignore("Cannot send value that would not leave enough to pay for fees"));
+		}
+
 		// Check self.local_channel_reserve_satoshis (the amount we must keep as
 		// reserve for the remote to have something to claim if we misbehave)
-		if self.value_to_self_msat < self.local_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
+		let chan_reserve_msat = self.local_channel_reserve_satoshis * 1000;
+		if pending_value_to_self_msat - amount_msat - local_commit_tx_fee_msat < chan_reserve_msat {
 			return Err(ChannelError::Ignore("Cannot send value that would put us under local channel reserve value"));
 		}
 
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
-				amount_msat: amount_msat,
-				payment_hash: payment_hash,
-				cltv_expiry: cltv_expiry,
+				amount_msat,
+				payment_hash,
+				cltv_expiry,
 				source,
-				onion_routing_packet: onion_routing_packet,
+				onion_routing_packet,
 			});
 			return Ok(None);
 		}
 
 		self.pending_outbound_htlcs.push(OutboundHTLCOutput {
 			htlc_id: self.next_local_htlc_id,
-			amount_msat: amount_msat,
+			amount_msat,
 			payment_hash: payment_hash.clone(),
-			cltv_expiry: cltv_expiry,
+			cltv_expiry,
 			state: OutboundHTLCState::LocalAnnounced(Box::new(onion_routing_packet.clone())),
 			source,
 		});
@@ -3584,10 +3726,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let res = msgs::UpdateAddHTLC {
 			channel_id: self.channel_id,
 			htlc_id: self.next_local_htlc_id,
-			amount_msat: amount_msat,
-			payment_hash: payment_hash,
-			cltv_expiry: cltv_expiry,
-			onion_routing_packet: onion_routing_packet,
+			amount_msat,
+			payment_hash,
+			cltv_expiry,
+			onion_routing_packet,
 		};
 		self.next_local_htlc_id += 1;
 
