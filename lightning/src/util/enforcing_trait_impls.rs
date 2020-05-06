@@ -60,6 +60,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 	fn htlc_base_key(&self) -> &SecretKey { self.inner.htlc_base_key() }
 	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }
 	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { self.inner.pubkeys() }
+	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
