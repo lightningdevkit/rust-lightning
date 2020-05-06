@@ -3,7 +3,7 @@
 //! Instead of actually servicing sockets ourselves we require that you implement the
 //! SocketDescriptor interface and use that to receive actions which you should perform on the
 //! socket, and call into PeerManager with bytes read from the socket. The PeerManager will then
-//! call into the provided message handlers (probably a ChannelManager and Router) with messages
+//! call into the provided message handlers (probably a ChannelManager and NetGraphmsgHandler) with messages
 //! they should handle, and encoding/sending response messages.
 
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};

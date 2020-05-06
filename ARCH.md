@@ -11,11 +11,11 @@ receive `ChannelMonitorUpdate`s from `ChannelManager` and persist them to disk b
 channel steps forward.
 
 There are two additional important structures that you may use either on the same device
-as the `ChannelManager` or on a separate one. `Router` handles receiving channel and node 
-announcements and calculates routes for sending payments. `PeerManager` handles the
-authenticated and encrypted communication protocol, monitoring for liveness of peers,
-routing messages to `ChannelManager` and `Router` instances directly, and receiving
-messages from them via the `EventsProvider` interface.
+as the `ChannelManager` or on a separate one. `NetGraphMsgHandler` handles receiving channel
+and node announcements, which are then used to calculate routes by `get_route` for sending payments.
+`PeerManager` handles the authenticated and encrypted communication protocol,
+monitoring for liveness of peers, routing messages to `ChannelManager` and `NetGraphMsgHandler`
+instances directly, and receiving messages from them via the `EventsProvider` interface.
 
 These structs communicate with each other using a public API, so that you can easily add
 a proxy in between for special handling. Further, APIs for key generation, transaction
@@ -56,7 +56,7 @@ At a high level, some of the common interfaces fit together as follows:
  |              -----------------------        ---------
  |                            |                | Event |
 (as RoutingMessageHandler)    v                ---------
-  \                   ----------
-   -----------------> | Router |
-                      ----------
+  \                   --------------------
+   -----------------> | NetGraphMsgHandler |
+                      --------------------
 ```

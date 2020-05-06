@@ -23,7 +23,11 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std;
 
-/// Receives network updates from peers to track view of the network.
+/// Receives and validates network updates from peers,
+/// stores authentic and relevant data as a network graph.
+/// This network graph is then used for routing payments.
+/// Provides interface to help with initial routing sync by
+/// serving historical announcements.
 pub struct NetGraphMsgHandler {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	/// Representation of the payment channel network
@@ -35,7 +39,10 @@ pub struct NetGraphMsgHandler {
 
 impl NetGraphMsgHandler {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
-	/// assuming fresh Network Graph
+	/// assuming a fresh network graph.
+	/// Chain monitor is used to make sure announced channels exist on-chain,
+	/// channel data is correct, and that the announcement is signed with
+	/// channel owners' keys.
 	pub fn new(chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
@@ -61,7 +68,9 @@ impl NetGraphMsgHandler {
 		}
 	}
 
-	/// Get network addresses by node id
+	/// Get network addresses by node id.
+	/// Returns None if the requested node is completely unknown,
+	/// or if node announcement for the node was never received.
 	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
 		let network = self.network_graph.read().unwrap();
 		if let Some(node) = network.get_nodes().get(pubkey) {
@@ -212,13 +221,15 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 }
 
 #[derive(PartialEq, Debug)]
-/// Details regarding one direction of a channel
+/// Details about one direction of a channel. Received
+/// within a channel update.
 pub struct DirectionalChannelInfo {
-	/// When the last update to the channel direction was issued
+	/// When the last update to the channel direction was issued.
+	/// Value is opaque, as set in the announcement.
 	pub last_update: u32,
-	/// Whether the channel can be currently used for payments
+	/// Whether the channel can be currently used for payments (in this one direction).
 	pub enabled: bool,
-	/// The difference in CLTV values between the source and the destination node of the channel
+	/// The difference in CLTV values that you must have when routing through this channel.
 	pub cltv_expiry_delta: u16,
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
@@ -245,7 +256,8 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 });
 
 #[derive(PartialEq)]
-/// Details regarding a channel (both directions)
+/// Details about a channel (both directions).
+/// Received within a channel announcement.
 pub struct ChannelInfo {
 	/// Protocol features of a channel communicated during its announcement
 	pub features: ChannelFeatures,
@@ -258,8 +270,9 @@ pub struct ChannelInfo {
 	/// Details about the second direction of a channel
 	pub two_to_one: Option<DirectionalChannelInfo>,
 	/// An initial announcement of the channel
-	//this is cached here so we can send out it later if required by initial routing sync
-	//keep an eye on this to see if the extra memory is a problem
+	/// Mostly redundant with the data we store in fields explicitly.
+	/// Everything else is useful only for sending out for initial routing sync.
+	/// Not stored if contains excess data to prevent DoS.
 	pub announcement_message: Option<msgs::ChannelAnnouncement>,
 }
 
@@ -284,9 +297,10 @@ impl_writeable!(ChannelInfo, 0, {
 /// Fees for routing via a given channel or a node
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub struct RoutingFees {
-	/// Flat routing fee
+	/// Flat routing fee in satoshis
 	pub base_msat: u32,
-	/// Liquidity-based routing fee
+	/// Liquidity-based routing fee in millionths of a routed amount.
+	/// In other words, 10000 is 1%.
 	pub proportional_millionths: u32,
 }
 
@@ -314,17 +328,21 @@ impl Writeable for RoutingFees {
 pub struct NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
       pub features: NodeFeatures,
-	/// When the last known update to the node state was issued
+	/// When the last known update to the node state was issued.
+	/// Value is opaque, as set in the announcement.
       pub last_update: u32,
 	/// Color assigned to the node
 	pub rgb: [u8; 3],
-	/// Moniker assigned to the node
+	/// Moniker assigned to the node.
+	/// May be invalid or malicious (eg control chars),
+	/// should not be exposed to the user.
 	pub alias: [u8; 32],
 	/// Internet-level addresses via which one can connect to the node
 	pub addresses: Vec<NetAddress>,
 	/// An initial announcement of the node
-	// this is cached here so we can send out it later if required by initial routing sync
-	// keep an eye on this to see if the extra memory is a problem
+	/// Mostly redundant with the data we store in fields explicitly.
+	/// Everything else is useful only for sending out for initial routing sync.
+	/// Not stored if contains excess data to prevent DoS.
 	pub announcement_message: Option<msgs::NodeAnnouncement>
 }
 
@@ -372,14 +390,17 @@ impl Readable for NodeAnnouncementInfo {
 }
 
 #[derive(PartialEq)]
-/// Details regarding a node in the network
+/// Details about a node in the network, known from the network announcement.
 pub struct NodeInfo {
 	/// All valid channels a node has announced
 	pub channels: Vec<u64>,
-	/// Lowest fees enabling routing via any of the known channels to a node
+	/// Lowest fees enabling routing via any of the known channels to a node.
+ 	/// The two fields (flat and proportional fee) are independent,
+	/// meaning they don't have to refer to the same channel.
 	pub lowest_inbound_channel_fees: Option<RoutingFees>,
-	/// More information about a node from node_announcement
-	/// Optional because we may have a NodeInfo entry before having received the announcement
+	/// More information about a node from node_announcement.
+	/// Optional because we store a Node entry after learning about it from
+	/// a channel announcement, but before receiving a node announcement.
 	pub announcement_info: Option<NodeAnnouncementInfo>
 }
 
@@ -483,9 +504,9 @@ impl std::fmt::Display for NetworkGraph {
 }
 
 impl NetworkGraph {
-	/// Returns all known valid channels
+	/// Returns all known valid channels' short ids along with announced channel info.
 	pub fn get_channels<'a>(&'a self) -> &'a BTreeMap<u64, ChannelInfo> { &self.channels }
-	/// Returns all known nodes
+	/// Returns all known nodes' public keys along with announced node info.
 	pub fn get_nodes<'a>(&'a self) -> &'a BTreeMap<PublicKey, NodeInfo> { &self.nodes }
 
 	/// For an already known node (from channel announcements), update its stored properties from a given node announcement
@@ -520,9 +541,11 @@ impl NetworkGraph {
 		}
 	}
 
-	/// For a new or already known (from previous announcement) channel, store or update channel info,
-	/// after making sure it corresponds to a real transaction on-chain.
+	/// For a new or already known (from previous announcement) channel, store or update channel info.
 	/// Also store nodes (if not stored yet) the channel is between, and make node aware of this channel.
+	/// Checking utxo on-chain is useful if we receive an update for already known channel id,
+	/// which is probably result of a reorg. In that case, we update channel info only if the
+	/// utxo was checked, otherwise stick to the existing update, to prevent DoS risks.
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
 	fn update_channel_from_announcement(&mut self, msg: &msgs::ChannelAnnouncement, checked_utxo: bool, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		if let Some(sig_verifier) = secp_ctx {
@@ -621,7 +644,7 @@ impl NetworkGraph {
 		}
 	}
 
-	/// For an already known (from announcement) channel, update info regarding one of the directions of a channel.
+	/// For an already known (from announcement) channel, update info about one of the directions of a channel.
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
 	fn update_channel(&mut self, msg: &msgs::ChannelUpdate, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		let dest_node_id;

@@ -1,6 +1,6 @@
 //! The top-level routing/network map tracking logic lives here.
 //!
-//! You probably want to create a Router and use that as your RoutingMessageHandler and then
+//! You probably want to create a NetGraphMsgHandler and use that as your RoutingMessageHandler and then
 //! interrogate it to get routes for your own payments.
 
 use bitcoin::secp256k1::key::PublicKey;
@@ -151,7 +151,7 @@ struct DummyDirectionalChannelInfo {
 ///
 /// If some channels aren't announced, it may be useful to fill in a first_hops with the
 /// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
-/// (this Router's) view of our local channels will be ignored, and only those in first_hops
+/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those in first_hops
 /// will be used.
 ///
 /// Panics if first_hops contains channels without short_channel_ids
