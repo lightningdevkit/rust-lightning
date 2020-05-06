@@ -2199,7 +2199,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					break;
 				}
 			} else if self.remote_payment_script == outp.script_pubkey {
-				spendable_output = Some(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+				spendable_output = Some(SpendableOutputDescriptor::StaticOutputRemotePayment {
 					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
 					output: outp.clone(),
 					key_derivation_params: self.keys.key_derivation_params(),

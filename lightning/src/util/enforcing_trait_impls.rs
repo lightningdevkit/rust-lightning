@@ -1,13 +1,11 @@
 use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction};
 use ln::{chan_utils, msgs};
-use ln::channelmanager::PaymentPreimage;
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
 use std::cmp;
 use std::sync::{Mutex, Arc};
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::script::Script;
 use bitcoin::util::bip143;
 
 use bitcoin::secp256k1;

@@ -4274,7 +4274,7 @@ macro_rules! check_spendable_outputs {
 					Event::SpendableOutputs { ref outputs } => {
 						for outp in outputs {
 							match *outp {
-								SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, ref output, ref key_derivation_params } => {
+								SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, ref output, ref key_derivation_params } => {
 									let input = TxIn {
 										previous_output: outpoint.clone(),
 										script_sig: Script::new(),
