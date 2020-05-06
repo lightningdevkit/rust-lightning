@@ -629,16 +629,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 													return Err(PeerHandleError{ no_connection_possible: false });
 												}
 
-												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, unkown local flags: {}, unknown global flags: {}",
+												log_info!(self, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unkown local flags: {}, unknown global flags: {}",
 													if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
 													if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
 													if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+													if msg.features.supports_static_remote_key() { "supported" } else { "not supported"},
 													if msg.features.supports_unknown_bits() { "present" } else { "none" },
 													if msg.features.supports_unknown_bits() { "present" } else { "none" });
 
 												if msg.features.initial_routing_sync() {
 													peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
 													peers.peers_needing_send.insert(peer_descriptor.clone());
+												}
+												if !msg.features.supports_static_remote_key() {
+													log_debug!(self, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(peer.their_node_id.unwrap()));
+													return Err(PeerHandleError{ no_connection_possible: true });
 												}
 
 												if !peer.outbound {

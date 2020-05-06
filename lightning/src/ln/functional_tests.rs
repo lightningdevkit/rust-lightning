@@ -5775,7 +5775,7 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.funding_pubkey.serialize()).is_ok());
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.revocation_basepoint.serialize()).is_ok());
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.htlc_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.payment_basepoint.serialize()).is_ok());
+	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.payment_point.serialize()).is_ok());
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.delayed_payment_basepoint.serialize()).is_ok());
 }
 
@@ -6807,7 +6807,7 @@ fn test_data_loss_protect() {
 	// We want to be sure that :
 	// * we don't broadcast our Local Commitment Tx in case of fallen behind
 	// * we close channel in case of detecting other being fallen behind
-	// * we are able to claim our own outputs thanks to remote my_current_per_commitment_point
+	// * we are able to claim our own outputs thanks to to_remote being static
 	let keys_manager;
 	let fee_estimator;
 	let tx_broadcaster;
@@ -6868,9 +6868,9 @@ fn test_data_loss_protect() {
 
 	let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	// Check we update monitor following learning of per_commitment_point from B
+	// Check we don't broadcast any transactions following learning of per_commitment_point from B
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0]);
-	check_added_monitors!(nodes[0], 2);
+	check_added_monitors!(nodes[0], 1);
 
 	{
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();

@@ -589,11 +589,6 @@ pub(super) enum ChannelMonitorUpdateStep {
 		idx: u64,
 		secret: [u8; 32],
 	},
-	/// Indicates our channel is likely a stale version, we're closing, but this update should
-	/// allow us to spend what is ours if our counterparty broadcasts their latest state.
-	RescueRemoteCommitmentTXInfo {
-		their_current_per_commitment_point: PublicKey,
-	},
 	/// Used to indicate that the no future updates will occur, and likely that the latest local
 	/// commitment transaction(s) should be broadcast, as the channel has been force-closed.
 	ChannelForceClosed {
@@ -636,12 +631,8 @@ impl Writeable for ChannelMonitorUpdateStep {
 				idx.write(w)?;
 				secret.write(w)?;
 			},
-			&ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { ref their_current_per_commitment_point } => {
-				4u8.write(w)?;
-				their_current_per_commitment_point.write(w)?;
-			},
 			&ChannelMonitorUpdateStep::ChannelForceClosed { ref should_broadcast } => {
-				5u8.write(w)?;
+				4u8.write(w)?;
 				should_broadcast.write(w)?;
 			},
 		}
@@ -691,11 +682,6 @@ impl Readable for ChannelMonitorUpdateStep {
 				})
 			},
 			4u8 => {
-				Ok(ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo {
-					their_current_per_commitment_point: Readable::read(r)?,
-				})
-			},
-			5u8 => {
 				Ok(ChannelMonitorUpdateStep::ChannelForceClosed {
 					should_broadcast: Readable::read(r)?
 				})
@@ -721,7 +707,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 
 	destination_script: Script,
 	broadcasted_local_revokable_script: Option<(Script, SecretKey, Script)>,
-	broadcasted_remote_payment_script: Option<(Script, SecretKey)>,
+	remote_payment_script: Script,
 	shutdown_script: Script,
 
 	keys: ChanSigner,
@@ -817,7 +803,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
 			self.destination_script != other.destination_script ||
 			self.broadcasted_local_revokable_script != other.broadcasted_local_revokable_script ||
-			self.broadcasted_remote_payment_script != other.broadcasted_remote_payment_script ||
+			self.remote_payment_script != other.remote_payment_script ||
 			self.keys.pubkeys() != other.keys.pubkeys() ||
 			self.funding_info != other.funding_info ||
 			self.current_remote_commitment_txid != other.current_remote_commitment_txid ||
@@ -881,13 +867,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&[1; 1])?;
 		}
 
-		if let Some(ref broadcasted_remote_payment_script) = self.broadcasted_remote_payment_script {
-			writer.write_all(&[0; 1])?;
-			broadcasted_remote_payment_script.0.write(writer)?;
-			broadcasted_remote_payment_script.1.write(writer)?;
-		} else {
-			writer.write_all(&[1; 1])?;
-		}
+		self.remote_payment_script.write(writer)?;
 		self.shutdown_script.write(writer)?;
 
 		self.keys.write(writer)?;
@@ -1062,6 +1042,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
+		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
+		let remote_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
 
 		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, logger.clone());
 
@@ -1090,7 +1072,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 			destination_script: destination_script.clone(),
 			broadcasted_local_revokable_script: None,
-			broadcasted_remote_payment_script: None,
+			remote_payment_script,
 			shutdown_script,
 
 			keys,
@@ -1227,17 +1209,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_rescue_remote_commitment_tx_info(&mut self, their_revocation_point: PublicKey) {
-		if let Ok(payment_key) = chan_utils::derive_public_key(&self.secp_ctx, &their_revocation_point, &self.keys.pubkeys().payment_basepoint) {
-			let to_remote_script =  Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				.push_slice(&WPubkeyHash::hash(&payment_key.serialize())[..])
-				.into_script();
-			if let Ok(to_remote_key) = chan_utils::derive_private_key(&self.secp_ctx, &their_revocation_point, &self.keys.payment_base_key()) {
-				self.broadcasted_remote_payment_script = Some((to_remote_script, to_remote_key));
-			}
-		}
-	}
-
 	/// Informs this monitor of the latest local (ie broadcastable) commitment transaction. The
 	/// monitor watches for timeouts and may broadcast it if we approach such a timeout. Thus, it
 	/// is important that any clones of this channel monitor (including remote clones) by kept
@@ -1302,8 +1273,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
 					self.provide_secret(idx, secret)?,
-				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
-					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 			}
 		}
@@ -1333,8 +1302,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
 					self.provide_secret(idx, secret)?,
-				ChannelMonitorUpdateStep::RescueRemoteCommitmentTXInfo { their_current_per_commitment_point } =>
-					self.provide_rescue_remote_commitment_tx_info(their_current_per_commitment_point),
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					self.lockdown_from_offchain = true;
 					if should_broadcast {
@@ -1449,19 +1416,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().revocation_basepoint));
 			let revocation_key = ignore_error!(chan_utils::derive_private_revocation_key(&self.secp_ctx, &per_commitment_key, &self.keys.revocation_base_key()));
 			let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().htlc_basepoint));
-			let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, &per_commitment_point, &self.keys.payment_base_key()));
 			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key));
 			let a_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_htlc_base_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
-
-			self.broadcasted_remote_payment_script = {
-				// Note that the Network here is ignored as we immediately drop the address for the
-				// script_pubkey version
-				let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
-				Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
-			};
 
 			// First, process non-htlc outputs (to_local & to_remote)
 			for (idx, outp) in tx.output.iter().enumerate() {
@@ -1603,14 +1562,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					let b_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &self.keys.pubkeys().htlc_basepoint));
 					let htlc_privkey = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.keys.htlc_base_key()));
 					let a_htlc_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, revocation_point, &self.their_htlc_base_key));
-					let local_payment_key = ignore_error!(chan_utils::derive_private_key(&self.secp_ctx, revocation_point, &self.keys.payment_base_key()));
-
-					self.broadcasted_remote_payment_script = {
-						// Note that the Network here is ignored as we immediately drop the address for the
-						// script_pubkey version
-						let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &local_payment_key).serialize());
-						Some((Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script(), local_payment_key))
-					};
 
 					// Then, try to find htlc outputs
 					for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
@@ -2176,15 +2127,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					});
 					break;
 				}
-			} else if let Some(ref broadcasted_remote_payment_script) = self.broadcasted_remote_payment_script {
-				if broadcasted_remote_payment_script.0 == outp.script_pubkey {
-					spendable_output = Some(SpendableOutputDescriptor::DynamicOutputP2WPKH {
-						outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
-						key: broadcasted_remote_payment_script.1,
-						output: outp.clone(),
-					});
-					break;
-				}
+			} else if self.remote_payment_script == outp.script_pubkey {
+				spendable_output = Some(SpendableOutputDescriptor::DynamicOutputP2WPKH {
+					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
+					key: self.keys.payment_key().clone(),
+					output: outp.clone(),
+				});
+				break;
 			} else if outp.script_pubkey == self.shutdown_script {
 				spendable_output = Some(SpendableOutputDescriptor::StaticOutput {
 					outpoint: BitcoinOutPoint { txid: tx.txid(), vout: i as u32 },
@@ -2240,15 +2189,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (BlockHas
 			1 => { None },
 			_ => return Err(DecodeError::InvalidValue),
 		};
-		let broadcasted_remote_payment_script = match <u8 as Readable>::read(reader)? {
-			0 => {
-				let payment_address = Readable::read(reader)?;
-				let payment_key = Readable::read(reader)?;
-				Some((payment_address, payment_key))
-			},
-			1 => { None },
-			_ => return Err(DecodeError::InvalidValue),
-		};
+		let remote_payment_script = Readable::read(reader)?;
 		let shutdown_script = Readable::read(reader)?;
 
 		let keys = Readable::read(reader)?;
@@ -2464,7 +2405,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for (BlockHas
 
 			destination_script,
 			broadcasted_local_revokable_script,
-			broadcasted_remote_payment_script,
+			remote_payment_script,
 			shutdown_script,
 
 			keys,
