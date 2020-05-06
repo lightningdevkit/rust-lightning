@@ -64,7 +64,7 @@ fn test_insane_channel_opens() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
-	let channel_reserve_satoshis = Channel::<EnforcingChannelKeys>::get_our_channel_reserve_satoshis(channel_value_sat);
+	let channel_reserve_satoshis = Channel::<EnforcingChannelKeys>::get_remote_channel_reserve_satoshis(channel_value_sat);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -1578,9 +1578,9 @@ fn do_channel_reserve_test(test_recv: bool) {
 		// attempt to get channel_reserve violation
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us over their reserve value"));
+			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over their reserve value".to_string(), 1);
+		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
 	}
 
 	// adding pending output
@@ -1603,9 +1603,9 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us over their reserve value"));
+			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over their reserve value".to_string(), 2);
+		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
 	}
 
 	{
@@ -1640,7 +1640,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 			assert_eq!(nodes[1].node.list_channels().len(), 1);
 			assert_eq!(nodes[1].node.list_channels().len(), 1);
 			let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-			assert_eq!(err_msg.data, "Remote HTLC add would put them over their reserve value");
+			assert_eq!(err_msg.data, "Remote HTLC add would put them under their reserve value");
 			check_added_monitors!(nodes[1], 1);
 			return;
 		}
@@ -1666,9 +1666,9 @@ fn do_channel_reserve_test(test_recv: bool) {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us over their reserve value"));
+			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over their reserve value".to_string(), 3);
+		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 3);
 	}
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(recv_value_22);
@@ -5977,7 +5977,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data, "Remote HTLC add would put them over their reserve value");
+	assert_eq!(err_msg.data, "Remote HTLC add would put them under their reserve value");
 	check_added_monitors!(nodes[1], 1);
 }
 

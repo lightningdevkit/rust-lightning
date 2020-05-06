@@ -329,9 +329,9 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	#[cfg(not(test))]
 	their_max_htlc_value_in_flight_msat: u64,
 	//get_our_max_htlc_value_in_flight_msat(): u64,
-	/// minimum channel reserve for **self** to maintain - set by them.
-	their_channel_reserve_satoshis: u64,
-	//get_our_channel_reserve_satoshis(): u64,
+	/// minimum channel reserve for self to maintain - set by them.
+	local_channel_reserve_satoshis: u64,
+	// get_remote_channel_reserve_satoshis(channel_value_sats: u64): u64
 	their_htlc_minimum_msat: u64,
 	our_htlc_minimum_msat: u64,
 	their_to_self_delay: u16,
@@ -420,10 +420,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		channel_value_satoshis * 1000 / 10 //TODO
 	}
 
-	/// Returns a minimum channel reserve value **they** need to maintain
+	/// Returns a minimum channel reserve value the remote needs to maintain,
+	/// required by us.
 	///
 	/// Guaranteed to return a value no larger than channel_value_satoshis
-	pub(crate) fn get_our_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
+	pub(crate) fn get_remote_channel_reserve_satoshis(channel_value_satoshis: u64) -> u64 {
 		let (q, _) = channel_value_satoshis.overflowing_div(100);
 		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}
@@ -452,7 +453,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		if Channel::<ChanSigner>::get_our_channel_reserve_satoshis(channel_value_satoshis) < Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate) {
+		if Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(channel_value_satoshis) < Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate) {
 			return Err(APIError::FeeRateTooHigh{err: format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate), feerate: background_feerate});
 		}
 
@@ -512,7 +513,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_dust_limit_satoshis: 0,
 			our_dust_limit_satoshis: Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate),
 			their_max_htlc_value_in_flight_msat: 0,
-			their_channel_reserve_satoshis: 0,
+			local_channel_reserve_satoshis: 0,
 			their_htlc_minimum_msat: 0,
 			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			their_to_self_delay: 0,
@@ -638,15 +639,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let our_dust_limit_satoshis = Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate);
-		let our_channel_reserve_satoshis = Channel::<ChanSigner>::get_our_channel_reserve_satoshis(msg.funding_satoshis);
-		if our_channel_reserve_satoshis < our_dust_limit_satoshis {
+		let remote_channel_reserve_satoshis = Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(msg.funding_satoshis);
+		if remote_channel_reserve_satoshis < our_dust_limit_satoshis {
 			return Err(ChannelError::Close("Suitable channel reserve not found. aborting"));
 		}
 		if msg.channel_reserve_satoshis < our_dust_limit_satoshis {
 			return Err(ChannelError::Close("channel_reserve_satoshis too small"));
 		}
-		if our_channel_reserve_satoshis < msg.dust_limit_satoshis {
-			return Err(ChannelError::Close("Dust limit too high for our channel reserve"));
+		if remote_channel_reserve_satoshis < msg.dust_limit_satoshis {
+			return Err(ChannelError::Close("Dust limit too high for the channel reserve we require the remote to keep"));
 		}
 
 		// check if the funder's amount for the initial commitment tx is sufficient
@@ -658,7 +659,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let to_local_msat = msg.push_msat;
 		let to_remote_msat = funders_amount_msat - background_feerate * COMMITMENT_TX_BASE_WEIGHT;
-		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= our_channel_reserve_satoshis * 1000 {
+		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= remote_channel_reserve_satoshis * 1000 {
 			return Err(ChannelError::Close("Insufficient funding amount for initial commitment"));
 		}
 
@@ -737,7 +738,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_dust_limit_satoshis: msg.dust_limit_satoshis,
 			our_dust_limit_satoshis: our_dust_limit_satoshis,
 			their_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
-			their_channel_reserve_satoshis: msg.channel_reserve_satoshis,
+			local_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			their_htlc_minimum_msat: msg.htlc_minimum_msat,
 			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			their_to_self_delay: msg.to_self_delay,
@@ -952,9 +953,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			} else {
 				self.max_commitment_tx_output_remote.lock().unwrap()
 			};
-			debug_assert!(max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.their_channel_reserve_satoshis as i64);
+			debug_assert!(max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.local_channel_reserve_satoshis as i64);
 			max_commitment_tx_output.0 = cmp::max(max_commitment_tx_output.0, value_to_self_msat as u64);
-			debug_assert!(max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
+			debug_assert!(max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
 			max_commitment_tx_output.1 = cmp::max(max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
@@ -1362,7 +1363,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.channel_reserve_satoshis < self.our_dust_limit_satoshis {
 			return Err(ChannelError::Close("Peer never wants payout outputs?"));
 		}
-		if msg.dust_limit_satoshis > Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis) {
+		if msg.dust_limit_satoshis > Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis) {
 			return Err(ChannelError::Close("Dust limit is bigger than our channel reverse"));
 		}
 		if msg.htlc_minimum_msat >= (self.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000 {
@@ -1424,7 +1425,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.their_dust_limit_satoshis = msg.dust_limit_satoshis;
 		self.their_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
-		self.their_channel_reserve_satoshis = msg.channel_reserve_satoshis;
+		self.local_channel_reserve_satoshis = msg.channel_reserve_satoshis;
 		self.their_htlc_minimum_msat = msg.htlc_minimum_msat;
 		self.their_to_self_delay = msg.to_self_delay;
 		self.their_max_accepted_htlcs = msg.max_accepted_htlcs;
@@ -1696,7 +1697,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if htlc_inbound_value_msat + msg.amount_msat > Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis) {
 			return Err(ChannelError::Close("Remote HTLC add would put them over our max HTLC value"));
 		}
-		// Check our_channel_reserve_satoshis (we're getting paid, so they have to at least meet
+		// Check remote_channel_reserve_satoshis (we're getting paid, so they have to at least meet
 		// the reserve_satoshis we told them to always have as direct payment so that they lose
 		// something if we punish them for broadcasting an old state).
 		// Note that we don't really care about having a small/no to_remote output in our local
@@ -1716,8 +1717,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
-		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 + removed_outbound_total_msat {
-			return Err(ChannelError::Close("Remote HTLC add would put them over their reserve value"));
+		if htlc_inbound_value_msat + msg.amount_msat + self.value_to_self_msat > (self.channel_value_satoshis - Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis)) * 1000 + removed_outbound_total_msat {
+			return Err(ChannelError::Close("Remote HTLC add would put them under their reserve value"));
 		}
 		if self.next_remote_htlc_id != msg.htlc_id {
 			return Err(ChannelError::Close("Remote skipped HTLC ID"));
@@ -1847,7 +1848,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			let num_htlcs = local_commitment_tx.1;
 			let total_fee: u64 = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 
-			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + self.their_channel_reserve_satoshis {
+			let remote_reserve_we_require = Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis);
+			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + remote_reserve_we_require {
 				return Err((None, ChannelError::Close("Funding remote cannot afford proposed new fee")));
 			}
 		}
@@ -3033,7 +3035,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		ChannelValueStat {
 			value_to_self_msat: self.value_to_self_msat,
 			channel_value_msat: self.channel_value_satoshis * 1000,
-			channel_reserve_msat: self.their_channel_reserve_satoshis * 1000,
+			channel_reserve_msat: self.local_channel_reserve_satoshis * 1000,
 			pending_outbound_htlcs_amount_msat: self.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
 			pending_inbound_htlcs_amount_msat: self.pending_inbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
 			holding_cell_outbound_amount_msat: {
@@ -3321,7 +3323,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			push_msat: self.channel_value_satoshis * 1000 - self.value_to_self_msat,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
 			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
-			channel_reserve_satoshis: Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
+			channel_reserve_satoshis: Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
 			feerate_per_kw: fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u32,
 			to_self_delay: self.our_to_self_delay,
@@ -3354,7 +3356,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			temporary_channel_id: self.channel_id,
 			dust_limit_satoshis: self.our_dust_limit_satoshis,
 			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
-			channel_reserve_satoshis: Channel::<ChanSigner>::get_our_channel_reserve_satoshis(self.channel_value_satoshis),
+			channel_reserve_satoshis: Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
 			minimum_depth: self.minimum_depth,
 			to_self_delay: self.our_to_self_delay,
@@ -3550,10 +3552,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Ignore("Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
 		}
 
-		// Check self.their_channel_reserve_satoshis (the amount we must keep as
-		// reserve for them to have something to claim if we misbehave)
-		if self.value_to_self_msat < self.their_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
-			return Err(ChannelError::Ignore("Cannot send value that would put us over their reserve value"));
+		// Check self.local_channel_reserve_satoshis (the amount we must keep as
+		// reserve for the remote to have something to claim if we misbehave)
+		if self.value_to_self_msat < self.local_channel_reserve_satoshis * 1000 + amount_msat + htlc_outbound_value_msat {
+			return Err(ChannelError::Ignore("Cannot send value that would put us under local channel reserve value"));
 		}
 
 		// Now update local state:
@@ -4019,7 +4021,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.their_dust_limit_satoshis.write(writer)?;
 		self.our_dust_limit_satoshis.write(writer)?;
 		self.their_max_htlc_value_in_flight_msat.write(writer)?;
-		self.their_channel_reserve_satoshis.write(writer)?;
+		self.local_channel_reserve_satoshis.write(writer)?;
 		self.their_htlc_minimum_msat.write(writer)?;
 		self.our_htlc_minimum_msat.write(writer)?;
 		self.their_to_self_delay.write(writer)?;
@@ -4175,7 +4177,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 		let their_dust_limit_satoshis = Readable::read(reader)?;
 		let our_dust_limit_satoshis = Readable::read(reader)?;
 		let their_max_htlc_value_in_flight_msat = Readable::read(reader)?;
-		let their_channel_reserve_satoshis = Readable::read(reader)?;
+		let local_channel_reserve_satoshis = Readable::read(reader)?;
 		let their_htlc_minimum_msat = Readable::read(reader)?;
 		let our_htlc_minimum_msat = Readable::read(reader)?;
 		let their_to_self_delay = Readable::read(reader)?;
@@ -4254,7 +4256,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 			their_dust_limit_satoshis,
 			our_dust_limit_satoshis,
 			their_max_htlc_value_in_flight_msat,
-			their_channel_reserve_satoshis,
+			local_channel_reserve_satoshis,
 			their_htlc_minimum_msat,
 			our_htlc_minimum_msat,
 			their_to_self_delay,
