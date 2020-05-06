@@ -13,7 +13,7 @@ use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
-use util::ser::{Writeable, Readable, Writer, ReadableArgs};
+use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
 use std::cmp;
@@ -34,7 +34,8 @@ pub struct NetGraphMsgHandler {
 }
 
 impl NetGraphMsgHandler {
-	/// Creates a new tracker of the actual state of the network of channels and nodes.
+	/// Creates a new tracker of the actual state of the network of channels and nodes,
+	/// assuming fresh Network Graph
 	pub fn new(chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
@@ -42,6 +43,18 @@ impl NetGraphMsgHandler {
 				channels: BTreeMap::new(),
 				nodes: BTreeMap::new(),
 			}),
+			full_syncs_requested: AtomicUsize::new(0),
+			chain_monitor,
+			logger: logger.clone(),
+		}
+	}
+
+	/// Creates a new tracker of the actual state of the network of channels and nodes,
+	/// assuming an existing Network Graph.
+	pub fn from_net_graph(chain_monitor: Arc<ChainWatchInterface>, logger: Arc<Logger>, network_graph: RwLock<NetworkGraph>) -> Self {
+		NetGraphMsgHandler {
+			secp_ctx: Secp256k1::verification_only(),
+			network_graph: network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
 			logger: logger.clone(),
@@ -195,53 +208,6 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 		} else {
 			false
 		}
-	}
-}
-
-
-const SERIALIZATION_VERSION: u8 = 1;
-const MIN_SERIALIZATION_VERSION: u8 = 1;
-
-impl Writeable for NetGraphMsgHandler {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
-		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
-
-		let network = self.network_graph.read().unwrap();
-		network.write(writer)?;
-		Ok(())
-	}
-}
-
-/// Arguments for the creation of a NetGraphMsgHandler that are not deserialized.
-/// At a high-level, the process for deserializing a NetGraphMsgHandler and resuming normal operation is:
-/// 1) Deserialize the NetGraphMsgHandler by filling in this struct and calling <NetGraphMsgHandler>::read(reaser, args).
-/// 2) Register the new NetGraphMsgHandler with your ChainWatchInterface
-pub struct NetGraphMsgHandlerReadArgs {
-	/// The ChainWatchInterface for use in the NetGraphMsgHandler in the future.
-	///
-	/// No calls to the ChainWatchInterface will be made during deserialization.
-	pub chain_monitor: Arc<ChainWatchInterface>,
-	/// The Logger for use in the ChannelManager and which may be used to log information during
-	/// deserialization.
-	pub logger: Arc<Logger>,
-}
-
-impl ReadableArgs<NetGraphMsgHandlerReadArgs> for NetGraphMsgHandler {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: NetGraphMsgHandlerReadArgs) -> Result<NetGraphMsgHandler, DecodeError> {
-		let _ver: u8 = Readable::read(reader)?;
-		let min_ver: u8 = Readable::read(reader)?;
-		if min_ver > SERIALIZATION_VERSION {
-			return Err(DecodeError::UnknownVersion);
-		}
-		let network_graph = Readable::read(reader)?;
-		Ok(NetGraphMsgHandler {
-			secp_ctx: Secp256k1::verification_only(),
-			network_graph: RwLock::new(network_graph),
-			chain_monitor: args.chain_monitor,
-			full_syncs_requested: AtomicUsize::new(0),
-			logger: args.logger.clone(),
-		})
 	}
 }
 

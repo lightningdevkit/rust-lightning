@@ -7,7 +7,7 @@ use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use routing::router::{Route, get_route};
-use routing::network_graph::{NetGraphMsgHandler, NetGraphMsgHandlerReadArgs};
+use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -18,7 +18,7 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::logger::Logger;
 use util::config::UserConfig;
-use util::ser::{ReadableArgs, Writeable};
+use util::ser::{ReadableArgs, Writeable, Readable};
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
@@ -36,7 +36,7 @@ use rand::{thread_rng,Rng};
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::mem;
 use std::collections::HashMap;
 
@@ -102,11 +102,13 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
 				let mut w = test_utils::TestVecWriter(Vec::new());
-				self.net_graph_msg_handler.write(&mut w).unwrap();
-				let net_graph_msg_handler = NetGraphMsgHandler::read(&mut ::std::io::Cursor::new(&w.0), NetGraphMsgHandlerReadArgs {
-					chain_monitor: Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
-					logger: Arc::clone(&self.logger) as Arc<Logger>
-				}).unwrap();
+				let network_graph_ser = self.net_graph_msg_handler.network_graph.read().unwrap();
+				network_graph_ser.write(&mut w).unwrap();
+				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
+				   Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
+				   Arc::clone(&self.logger) as Arc<Logger>, RwLock::new(network_graph_deser)
+				);
 				let mut chan_progress = 0;
 				loop {
 					let orig_announcements = self.net_graph_msg_handler.get_next_channel_announcements(chan_progress, 255);
