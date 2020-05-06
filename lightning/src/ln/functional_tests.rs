@@ -6387,6 +6387,342 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.delayed_payment_basepoint.serialize()).is_ok());
 }
 
+// Test that if we fail to send an HTLC that is being freed from the holding cell, and the HTLC
+// originated from our node, its failure is surfaced to the user. We trigger this failure to
+// free the HTLC by increasing our fee while the HTLC is in the holding cell such that the HTLC
+// is no longer affordable once it's freed.
+#[test]
+fn test_fail_holding_cell_htlc_upon_free() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	// First nodes[0] generates an update_fee, setting the channel's
+	// pending_update_fee.
+	nodes[0].node.update_fee(chan.2, get_feerate!(nodes[0], chan.2) + 20).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_msg, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+			(update_fee.as_ref(), commitment_signed)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap());
+
+	let mut chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let channel_reserve = chan_stat.channel_reserve_msat;
+	let feerate = get_feerate!(nodes[0], chan.2);
+
+	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1);
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
+
+	// Send a payment which passes reserve checks but gets stuck in the holding cell.
+	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
+
+	// Flush the pending fee update.
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed);
+	let (as_revoke_and_ack, _) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(nodes[1], 1);
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_revoke_and_ack);
+	check_added_monitors!(nodes[0], 1);
+
+	// Upon receipt of the RAA, there will be an attempt to resend the holding cell
+	// HTLC, but now that the fee has been raised the payment will now fail, causing
+	// us to surface its failure to the user.
+	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), "Freeing holding cell with 1 HTLC updates".to_string(), 1);
+	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put us under local channel reserve value ({})", log_bytes!(our_payment_hash.0), chan_stat.channel_reserve_msat);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
+
+	// Check that the payment failed to be sent out.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref error_code, ref error_data } => {
+			assert_eq!(our_payment_hash.clone(), *payment_hash);
+			assert_eq!(*rejected_by_dest, false);
+			assert_eq!(*error_code, None);
+			assert_eq!(*error_data, None);
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+// Test that if multiple HTLCs are released from the holding cell and one is
+// valid but the other is no longer valid upon release, the valid HTLC can be
+// successfully completed while the other one fails as expected.
+#[test]
+fn test_free_and_fail_holding_cell_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	// First nodes[0] generates an update_fee, setting the channel's
+	// pending_update_fee.
+	nodes[0].node.update_fee(chan.2, get_feerate!(nodes[0], chan.2) + 200).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_msg, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+			(update_fee.as_ref(), commitment_signed)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap());
+
+	let mut chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let channel_reserve = chan_stat.channel_reserve_msat;
+	let feerate = get_feerate!(nodes[0], chan.2);
+
+	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
+	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	let amt_1 = 20000;
+	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let amt_2 = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 2 + 1) - amt_1;
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], amt_1, TEST_FINAL_CLTV, &logger).unwrap();
+	let route_2 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], amt_2, TEST_FINAL_CLTV, &logger).unwrap();
+
+	// Send 2 payments which pass reserve checks but get stuck in the holding cell.
+	nodes[0].node.send_payment(&route_1, payment_hash_1, &None).unwrap();
+	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
+	nodes[0].node.send_payment(&route_2, payment_hash_2, &None).unwrap();
+	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
+
+	// Flush the pending fee update.
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed);
+	let (revoke_and_ack, commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(nodes[1], 1);
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_and_ack);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed);
+	check_added_monitors!(nodes[0], 2);
+
+	// Upon receipt of the RAA, there will be an attempt to resend the holding cell HTLCs,
+	// but now that the fee has been raised the second payment will now fail, causing us
+	// to surface its failure to the user. The first payment should succeed.
+	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), "Freeing holding cell with 2 HTLC updates".to_string(), 1);
+	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put us under local channel reserve value ({})", log_bytes!(payment_hash_2.0), chan_stat.channel_reserve_msat);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
+
+	// Check that the second payment failed to be sent out.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref error_code, ref error_data } => {
+			assert_eq!(payment_hash_2.clone(), *payment_hash);
+			assert_eq!(*rejected_by_dest, false);
+			assert_eq!(*error_code, None);
+			assert_eq!(*error_data, None);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Complete the first payment and the RAA from the fee update.
+	let (payment_event, send_raa_event) = {
+		let mut msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msgs.len(), 2);
+		(SendEvent::from_event(msgs.remove(0)), msgs.remove(0))
+	};
+	let raa = match send_raa_event {
+		MessageSendEvent::SendRevokeAndACK { msg, .. } => msg,
+		_ => panic!("Unexpected event"),
+	};
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa);
+	check_added_monitors!(nodes[1], 1);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PendingHTLCsForwardable { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	nodes[1].node.process_pending_htlc_forwards();
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentReceived { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	nodes[1].node.claim_funds(payment_preimage_1, &None, amt_1);
+	check_added_monitors!(nodes[1], 1);
+	let update_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_msgs.update_fulfill_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], update_msgs.commitment_signed, false, true);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentSent { ref payment_preimage } => {
+			assert_eq!(*payment_preimage, payment_preimage_1);
+		}
+		_ => panic!("Unexpected event"),
+	}
+}
+
+// Test that if we fail to forward an HTLC that is being freed from the holding cell that the
+// HTLC is failed backwards. We trigger this failure to forward the freed HTLC by increasing
+// our fee while the HTLC is in the holding cell such that the HTLC is no longer affordable
+// once it's freed.
+#[test]
+fn test_fail_holding_cell_htlc_upon_free_multihop() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let chan_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	// First nodes[1] generates an update_fee, setting the channel's
+	// pending_update_fee.
+	nodes[1].node.update_fee(chan_1_2.2, get_feerate!(nodes[1], chan_1_2.2) + 20).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_msg, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+			(update_fee.as_ref(), commitment_signed)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[2].node.handle_update_fee(&nodes[1].node.get_our_node_id(), update_msg.unwrap());
+
+	let mut chan_stat = get_channel_value_stat!(nodes[0], chan_0_1.2);
+	let channel_reserve = chan_stat.channel_reserve_msat;
+	let feerate = get_feerate!(nodes[0], chan_0_1.2);
+
+	// Send a payment which passes reserve checks but gets stuck in the holding cell.
+	let feemsat = 239;
+	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1) - total_routing_fee_msat;
+	let payment_event = {
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	chan_stat = get_channel_value_stat!(nodes[1], chan_1_2.2);
+	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
+
+	// Flush the pending fee update.
+	nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+	let (raa, commitment_signed) = get_revoke_commit_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	check_added_monitors!(nodes[2], 1);
+	nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &raa);
+	nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &commitment_signed);
+	check_added_monitors!(nodes[1], 2);
+
+	// A final RAA message is generated to finalize the fee update.
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	let raa_msg = match &events[0] {
+		&MessageSendEvent::SendRevokeAndACK { ref msg, .. } => {
+			msg.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa_msg);
+	check_added_monitors!(nodes[2], 1);
+	assert!(nodes[2].node.get_and_clear_pending_msg_events().is_empty());
+
+	// nodes[1]'s ChannelManager will now signal that we have HTLC forwards to process.
+	let process_htlc_forwards_event = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(process_htlc_forwards_event.len(), 1);
+	match &process_htlc_forwards_event[0] {
+		&Event::PendingHTLCsForwardable { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// In response, we call ChannelManager's process_pending_htlc_forwards
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors!(nodes[1], 1);
+
+	// This causes the HTLC to be failed backwards.
+	let fail_event = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(fail_event.len(), 1);
+	let (fail_msg, commitment_signed) = match &fail_event[0] {
+		&MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+			assert_eq!(updates.update_add_htlcs.len(), 0);
+			assert_eq!(updates.update_fulfill_htlcs.len(), 0);
+			assert_eq!(updates.update_fail_malformed_htlcs.len(), 0);
+			assert_eq!(updates.update_fail_htlcs.len(), 1);
+			(updates.update_fail_htlcs[0].clone(), updates.commitment_signed.clone())
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	// Pass the failure messages back to nodes[0].
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed);
+
+	// Complete the HTLC failure+removal process.
+	let (raa, commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	check_added_monitors!(nodes[0], 1);
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
+	check_added_monitors!(nodes[1], 2);
+	let final_raa_event = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(final_raa_event.len(), 1);
+	let raa = match &final_raa_event[0] {
+		&MessageSendEvent::SendRevokeAndACK { ref msg, .. } => msg.clone(),
+		_ => panic!("Unexpected event"),
+	};
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
+	let fail_msg_event = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(fail_msg_event.len(), 1);
+	match &fail_msg_event[0] {
+		&MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	let failure_event = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(failure_event.len(), 1);
+	match &failure_event[0] {
+		&Event::PaymentFailed { rejected_by_dest, .. } => {
+			assert!(!rejected_by_dest);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	check_added_monitors!(nodes[0], 1);
+}
+
 // BOLT 2 Requirements for the Sender when constructing and sending an update_add_htlc message.
 // BOLT 2 Requirement: MUST NOT offer amount_msat it cannot pay for in the remote commitment transaction at the current feerate_per_kw (see "Updating Fees") while maintaining its channel reserve.
 //TODO: I don't believe this is explicitly enforced when sending an HTLC but as the Fee aspect of the BOLT specs is in flux leaving this as a TODO.
