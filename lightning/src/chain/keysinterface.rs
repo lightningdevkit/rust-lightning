@@ -64,9 +64,16 @@ pub enum SpendableOutputDescriptor {
 	/// delayed_payment_pubkey to chan_utils::get_revokeable_redeemscript.
 	///
 	/// To derive the delayed_payment key corresponding to the channel state, you must pass the
-	/// channel's delayed_payment_key and the provided per_commitment_point to
+	/// local delayed_payment_base_key and the provided per_commitment_point to
 	/// chan_utils::derive_private_key. The resulting key should be used to sign the spending
 	/// transaction.
+	///
+	/// To derive the revocation_pubkey corresponding to the channel state, you must pass the
+	/// remote revocation_basepoint and the provided per_commitment point to
+	/// chan_utils::derive_public_revocation_key.
+	///
+	/// Both remote revocation_basepoint and local delayed_payment_base_key should be given
+	/// by ChannelKeys, either default implementation (InMemoryChannelKeys) or custom one.
 	DynamicOutputP2WSH {
 		/// The outpoint which is spendable
 		outpoint: OutPoint,
