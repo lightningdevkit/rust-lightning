@@ -90,6 +90,41 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
+/// A generic trait to ascribe state transition to any kind of output
+trait InboundGenericOutput {
+	fn update_state(&mut self, state: InboundHTLCState);
+	fn state(&self) -> &InboundHTLCState;
+	fn value(&self) -> u64;
+	fn timelock(&self) -> u32;
+	fn hash(&self) -> PaymentHash;
+	fn id(&self) -> u64;
+	fn log(&self);
+}
+
+impl InboundGenericOutput for InboundHTLCOutput {
+	fn update_state(&mut self, state: InboundHTLCState) {
+		self.state = state;
+	}
+	fn state(&self) -> &InboundHTLCState {
+		&self.state
+	}
+	fn value(&self) -> u64 {
+		self.amount_msat
+	}
+	fn timelock(&self) -> u32 {
+		self.cltv_expiry
+	}
+	fn hash(&self) -> PaymentHash {
+		self.payment_hash
+	}
+	fn id(&self) -> u64 {
+		self.htlc_id
+	}
+	fn log(&self) {
+		log_bytes!(self.payment_hash.0);
+	}
+}
+
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
