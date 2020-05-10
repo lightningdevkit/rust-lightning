@@ -250,6 +250,48 @@ struct OutboundHTLCOutput {
 	source: HTLCSource,
 }
 
+/// A generic trait to ascribe state transaition to any kind of outbound payload
+/// output
+trait OutboundGenericOutput: Send {
+	fn update_state(&mut self, state: OutboundHTLCState);
+	fn mut_state(&mut self) -> &mut OutboundHTLCState;
+	fn state(&self) -> &OutboundHTLCState;
+	fn value(&self) -> u64;
+	fn timelock(&self) -> u32;
+	fn hash(&self) -> PaymentHash;
+	fn id(&self) -> u64;
+	fn routing_source(&self) -> &HTLCSource;
+	fn log(&self);
+}
+
+impl OutboundGenericOutput for OutboundHTLCOutput {
+	fn update_state(&mut self, state: OutboundHTLCState) {
+		self.state = state;
+	}
+	fn mut_state(&mut self) -> &mut OutboundHTLCState {
+		&mut self.state
+	}
+	fn state(&self) -> &OutboundHTLCState {
+		&self.state
+	}
+	fn value(&self) -> u64 {
+		self.amount_msat
+	}
+	fn timelock(&self) -> u32 {
+		self.cltv_expiry
+	}
+	fn hash(&self) -> PaymentHash {
+		self.payment_hash
+	}
+	fn id(&self) -> u64 {
+		self.htlc_id
+	}
+	fn routing_source(&self) -> &HTLCSource {
+		&self.source
+	}
+	fn log(&self) {}
+}
+
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum HTLCUpdateAwaitingACK {
 	AddHTLC { // TODO: Time out if we're getting close to cltv_expiry
