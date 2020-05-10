@@ -2250,6 +2250,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						update_fulfill_htlcs,
 						update_fail_htlcs,
 						update_fail_malformed_htlcs: Vec::new(),
+						update_add_dlcs: Vec::new(),
+						update_countersign_dlcs: Vec::new(),
 						update_fee: update_fee,
 						commitment_signed,
 					}, monitor_update)))
@@ -2476,6 +2478,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						update_fulfill_htlcs: Vec::new(),
 						update_fail_htlcs,
 						update_fail_malformed_htlcs,
+						update_add_dlcs: Vec::new(),
+						update_countersign_dlcs: Vec::new(),
 						update_fee: None,
 						commitment_signed
 					}), to_forward_infos, revoked_htlcs, None, monitor_update))
@@ -2696,7 +2700,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut update_fulfill_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
 		let mut update_fail_malformed_htlcs = Vec::new();
+		let mut update_add_dlcs = Vec::new();
+		let mut update_countersign_dlcs = Vec::new();
 
+		//XXX: support generic payload support
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let &OutboundHTLCState::LocalAnnounced(ref onion_packet) = &htlc.state() {
 				update_add_htlcs.push(msgs::UpdateAddHTLC {
@@ -2742,7 +2749,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		log_trace!(self, "Regenerated latest commitment update with {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
-			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
+			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_add_dlcs, update_countersign_dlcs,
 			update_fee: None,
 			commitment_signed: self.send_commitment_no_state_update().expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 		}

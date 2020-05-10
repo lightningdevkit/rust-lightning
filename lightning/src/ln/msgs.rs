@@ -200,6 +200,33 @@ pub struct UpdateFailMalformedHTLC {
 	pub(crate) failure_code: u16,
 }
 
+/// An update_add_dlc message to be sent or received from a peer
+#[derive(Clone, PartialEq)]
+pub struct UpdateAddDLC {
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) event_id: u64,
+	pub(crate) amount_msat: u64,
+	pub(crate) payment_hash: PaymentHash,
+	pub(crate) maturity: u32,
+	pub(crate) cet_sigs: Vec<Signature>,
+}
+
+/// An update_countersign_dlc message to be sent or received from a peer
+#[derive(Clone, PartialEq)]
+pub struct UpdateCounterSignDLC {
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) event_id: u64,
+	pub(crate) cet_sigs: Vec<Signature>
+}
+
+/// An update_fulfill_dlc message to be sent or received from a peer
+#[derive(Clone, PartialEq)]
+pub struct UpdateFulfillDLC {
+	pub(crate) channel_id: [u8; 32],
+	pub(crate) event_id: u64,
+	pub(crate) oracle_sig: u64,
+}
+
 /// A commitment_signed message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct CommitmentSigned {
@@ -479,6 +506,10 @@ pub struct CommitmentUpdate {
 	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
 	/// update_fail_malformed_htlc messages which should be sent
 	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
+	/// update_add_dlc messages which should be sent
+	pub update_add_dlcs: Vec<UpdateAddDLC>,
+	/// update_countersign_dlc messages which should be sent
+	pub update_countersign_dlcs: Vec<UpdateCounterSignDLC>,
 	/// An update_fee message which should be sent
 	pub update_fee: Option<UpdateFee>,
 	/// Finally, the commitment_signed message which should be sent
@@ -929,6 +960,27 @@ impl_writeable!(UpdateFulfillHTLC, 32+8+32, {
 	channel_id,
 	htlc_id,
 	payment_preimage
+});
+
+impl_writeable!(UpdateAddDLC, 32+8+288, {
+	channel_id,
+	event_id,
+	amount_msat,
+	payment_hash,
+	maturity,
+	cet_sigs
+});
+
+impl_writeable!(UpdateCounterSignDLC, 32+8+72, {
+	channel_id,
+	event_id,
+	cet_sigs
+});
+
+impl_writeable!(UpdateFulfillDLC, 32+8+72, {
+	channel_id,
+	event_id,
+	oracle_sig
 });
 
 impl_writeable_len_match!(OnionErrorPacket, {
