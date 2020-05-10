@@ -90,6 +90,59 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
+impl Writeable for InboundHTLCOutput {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.htlc_id.write(writer)?;
+		self.amount_msat.write(writer)?;
+		self.cltv_expiry.write(writer)?;
+		self.payment_hash.write(writer)?;
+		match &self.state {
+			&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
+			&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
+				1u8.write(writer)?;
+				htlc_state.write(writer)?;
+			},
+			&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
+				2u8.write(writer)?;
+				htlc_state.write(writer)?;
+			},
+			&InboundHTLCState::Committed => {
+				3u8.write(writer)?;
+			},
+			&InboundHTLCState::LocalRemoved(ref removal_reason) => {
+				4u8.write(writer)?;
+				removal_reason.write(writer)?;
+			},
+		}
+
+		Ok(())
+	}
+}
+
+impl Readable for InboundHTLCOutput {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let htlc_id = Readable::read(reader)?;
+		let amount_msat = Readable::read(reader)?;
+		let cltv_expiry = Readable::read(reader)?;
+		let payment_hash = Readable::read(reader)?;
+		let state = match <u8 as Readable>::read(reader)? {
+			1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
+			2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
+			3 => InboundHTLCState::Committed,
+			4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		Ok(InboundHTLCOutput {
+			htlc_id,
+			amount_msat,
+			cltv_expiry,
+			payment_hash,
+			state
+		})
+	}
+}
+
 /// A generic trait to ascribe state transition to any kind of output
 trait InboundGenericOutput {
 	fn update_state(&mut self, state: InboundHTLCState);
@@ -3925,32 +3978,18 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 			}
 		}
 		(self.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
+		let mut dropped_inbound_htlcs = 0;
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
+				dropped_inbound_htlcs += 1;
+			}
+		}
+		(self.pending_inbound_htlcs.len() as u64 - dropped_inbound_htlcs).write(writer)?;
 		for htlc in self.pending_inbound_htlcs.iter() {
 			if let &InboundHTLCState::RemoteAnnounced(_) = &htlc.state {
 				continue; // Drop
 			}
-			htlc.htlc_id.write(writer)?;
-			htlc.amount_msat.write(writer)?;
-			htlc.cltv_expiry.write(writer)?;
-			htlc.payment_hash.write(writer)?;
-			match &htlc.state {
-				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
-				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
-					1u8.write(writer)?;
-					htlc_state.write(writer)?;
-				},
-				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
-					2u8.write(writer)?;
-					htlc_state.write(writer)?;
-				},
-				&InboundHTLCState::Committed => {
-					3u8.write(writer)?;
-				},
-				&InboundHTLCState::LocalRemoved(ref removal_reason) => {
-					4u8.write(writer)?;
-					removal_reason.write(writer)?;
-				},
-			}
+			htlc.write(writer)?;
 		}
 
 		(self.pending_outbound_htlcs.len() as u64).write(writer)?;
@@ -4109,19 +4148,8 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for Channel<C
 		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
 		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
 		for _ in 0..pending_inbound_htlc_count {
-			pending_inbound_htlcs.push(InboundHTLCOutput {
-				htlc_id: Readable::read(reader)?,
-				amount_msat: Readable::read(reader)?,
-				cltv_expiry: Readable::read(reader)?,
-				payment_hash: Readable::read(reader)?,
-				state: match <u8 as Readable>::read(reader)? {
-					1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
-					2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
-					3 => InboundHTLCState::Committed,
-					4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
-					_ => return Err(DecodeError::InvalidValue),
-				},
-			});
+			let htlc = Readable::read(reader)?;
+			pending_inbound_htlcs.push(htlc);
 		}
 
 		let pending_outbound_htlc_count: u64 = Readable::read(reader)?;
