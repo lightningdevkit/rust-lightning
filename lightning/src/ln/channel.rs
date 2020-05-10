@@ -143,6 +143,14 @@ impl Readable for InboundHTLCOutput {
 	}
 }
 
+struct InboundCETOutput {
+	cet_id: u64,
+	amount_msat: u64,
+	maturity: u32,
+	identifier: PaymentHash,
+	state: InboundHTLCState,
+}
+
 /// A generic trait to ascribe state transition to any kind of output
 trait InboundGenericOutput: Send {
 	fn update_state(&mut self, state: InboundHTLCState);
@@ -176,6 +184,29 @@ impl InboundGenericOutput for InboundHTLCOutput {
 	fn log(&self) {
 		log_bytes!(self.payment_hash.0);
 	}
+}
+
+impl InboundGenericOutput for InboundCETOutput {
+	fn update_state(&mut self, state: InboundHTLCState) {
+		self.state = state;
+	}
+	fn state(&self) -> &InboundHTLCState {
+		&self.state
+	}
+	fn value(&self) -> u64 {
+		self.amount_msat
+	}
+	fn timelock(&self) -> u32 {
+		self.maturity
+	}
+	fn hash(&self) -> PaymentHash {
+		//XXX
+		PaymentHash([0; 32])
+	}
+	fn id(&self) -> u64 {
+		self.cet_id
+	}
+	fn log(&self) {}
 }
 
 enum OutboundHTLCState {
