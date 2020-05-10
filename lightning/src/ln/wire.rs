@@ -38,6 +38,9 @@ pub enum Message {
 	UpdateFulfillHTLC(msgs::UpdateFulfillHTLC),
 	UpdateFailHTLC(msgs::UpdateFailHTLC),
 	UpdateFailMalformedHTLC(msgs::UpdateFailMalformedHTLC),
+	UpdateAddDLC(msgs::UpdateAddDLC),
+	UpdateCounterSignDLC(msgs::UpdateCounterSignDLC),
+	UpdateFulfillDLC(msgs::UpdateFulfillDLC),
 	CommitmentSigned(msgs::CommitmentSigned),
 	RevokeAndACK(msgs::RevokeAndACK),
 	UpdateFee(msgs::UpdateFee),
@@ -73,6 +76,9 @@ impl Message {
 			&Message::UpdateFulfillHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailMalformedHTLC(ref msg) => msg.type_id(),
+			&Message::UpdateAddDLC(ref msg) => msg.type_id(),
+			&Message::UpdateCounterSignDLC(ref msg) => msg.type_id(),
+			&Message::UpdateFulfillDLC(ref msg) => msg.type_id(),
 			&Message::CommitmentSigned(ref msg) => msg.type_id(),
 			&Message::RevokeAndACK(ref msg) => msg.type_id(),
 			&Message::UpdateFee(ref msg) => msg.type_id(),
@@ -152,6 +158,15 @@ pub fn read<R: ::std::io::Read>(buffer: &mut R) -> Result<Message, msgs::DecodeE
 		},
 		msgs::UpdateFailMalformedHTLC::TYPE => {
 			Ok(Message::UpdateFailMalformedHTLC(Readable::read(buffer)?))
+		},
+		msgs::UpdateAddDLC::TYPE => {
+			Ok(Message::UpdateAddDLC(Readable::read(buffer)?))
+		},
+		msgs::UpdateCounterSignDLC::TYPE => {
+			Ok(Message::UpdateCounterSignDLC(Readable::read(buffer)?))
+		},
+		msgs::UpdateFulfillDLC::TYPE => {
+			Ok(Message::UpdateFulfillDLC(Readable::read(buffer)?))
 		},
 		msgs::CommitmentSigned::TYPE => {
 			Ok(Message::CommitmentSigned(Readable::read(buffer)?))
@@ -269,6 +284,18 @@ impl Encode for msgs::UpdateFailHTLC {
 
 impl Encode for msgs::UpdateFailMalformedHTLC {
 	const TYPE: u16 = 135;
+}
+
+impl Encode for msgs::UpdateAddDLC {
+	const TYPE: u16 = 0xeffe;
+}
+
+impl Encode for msgs::UpdateCounterSignDLC {
+	const TYPE: u16 = 0xfeef;
+}
+
+impl Encode for msgs::UpdateFulfillDLC {
+	const TYPE: u16 = 0xfefe;
 }
 
 impl Encode for msgs::CommitmentSigned {

@@ -151,6 +151,9 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFulfillHTLC) {}
 	fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailHTLC) {}
 	fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFailMalformedHTLC) {}
+	fn handle_update_add_dlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateAddDLC) {}
+	fn handle_update_countersign_dlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateCounterSignDLC) {}
+	fn handle_update_fulfill_dlc(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFulfillDLC) {}
 	fn handle_commitment_signed(&self, _their_node_id: &PublicKey, _msg: &msgs::CommitmentSigned) {}
 	fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, _msg: &msgs::RevokeAndACK) {}
 	fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &msgs::UpdateFee) {}

@@ -589,6 +589,12 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC);
 	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC);
+	/// Handle an incoming update_add_dlc message from the given peer.
+	fn handle_update_add_dlc(&self, their_node_id: &PublicKey, msg: &UpdateAddDLC);
+	/// Handle an incoming update_countersign_dlc message from the given peer.
+	fn handle_update_countersign_dlc(&self, their_node_id: &PublicKey, msg: &UpdateCounterSignDLC);
+	/// Handle an incoming update_fulfill_dlc message from the given peer.
+	fn handle_update_fulfill_dlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillDLC);
 	/// Handle an incoming commitment_signed message from the given peer.
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned);
 	/// Handle an incoming revoke_and_ack message from the given peer.

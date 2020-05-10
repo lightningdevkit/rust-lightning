@@ -2577,6 +2577,18 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		}
 	}
 
+	fn internal_update_add_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddDLC) -> Result<(), MsgHandleErrInternal> {
+		Ok(())
+	}
+
+	fn internal_update_countersign_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateCounterSignDLC) -> Result<(), MsgHandleErrInternal> {
+		Ok(())
+	}
+
+	fn internal_update_fulfill_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillDLC) -> Result<(), MsgHandleErrInternal> {
+		Ok(())
+	}
+
 	fn internal_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -3183,6 +3195,21 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg), *their_node_id);
+	}
+
+	fn handle_update_add_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddDLC) {
+		let _ = self.total_consistency_lock.read().unwrap();
+		let _ = handle_error!(self, self.internal_update_add_dlc(their_node_id, msg), *their_node_id);
+	}
+
+	fn handle_update_countersign_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateCounterSignDLC) {
+		let _ = self.total_consistency_lock.read().unwrap();
+		let _ = handle_error!(self, self.internal_update_countersign_dlc(their_node_id, msg), *their_node_id);
+	}
+
+	fn handle_update_fulfill_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillDLC) {
+		let _ = self.total_consistency_lock.read().unwrap();
+		let _ = handle_error!(self, self.internal_update_fulfill_dlc(their_node_id, msg), *their_node_id);
 	}
 
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {

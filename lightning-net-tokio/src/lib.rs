@@ -523,6 +523,9 @@ mod tests {
 		fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFulfillHTLC) {}
 		fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFailHTLC) {}
 		fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFailMalformedHTLC) {}
+		fn handle_update_add_dlc(&self, _their_node_id: &PublicKey, _msg: &UpdateAddDLC) {}
+		fn handle_update_countersign_dlc(&self, _their_node_id: &PublicKey, _msg: &UpdateCounterSignDLC) {}
+		fn handle_update_fulfill_dlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFulfillDLC) {}
 		fn handle_commitment_signed(&self, _their_node_id: &PublicKey, _msg: &CommitmentSigned) {}
 		fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, _msg: &RevokeAndACK) {}
 		fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &UpdateFee) {}

@@ -766,7 +766,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref> PeerManager<Descriptor, CM> where 
 													// TODO: forward msg along to all our other peers!
 												}
 											},
-
+											wire::Message::UpdateAddDLC(msg) => {
+												self.message_handler.chan_handler.handle_update_add_dlc(&peer.their_node_id.unwrap(), &msg);
+											},
+											wire::Message::UpdateCounterSignDLC(msg) => {
+												self.message_handler.chan_handler.handle_update_countersign_dlc(&peer.their_node_id.unwrap(), &msg);
+											},
+											wire::Message::UpdateFulfillDLC(msg) => {
+												self.message_handler.chan_handler.handle_update_fulfill_dlc(&peer.their_node_id.unwrap(), &msg);
+											},
 											// Unknown messages:
 											wire::Message::Unknown(msg_type) if msg_type.is_even() => {
 												log_debug!(self, "Received unknown even message of type {}, disconnecting peer!", msg_type);
