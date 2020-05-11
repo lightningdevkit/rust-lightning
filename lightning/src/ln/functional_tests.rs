@@ -7685,3 +7685,59 @@ fn test_update_err_monitor_lockdown() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 }
+
+#[test]
+fn test_send_dlc() {
+	// Create a channel and send a basic DLC through the following flow
+	//
+	//              update_add_dlc
+	// 	------------------------------->
+	//
+	//              update_countersign_dlc
+	// 	<-------------------------------
+	//
+	//              commitment_signed (+cet_sigs)
+	// 	------------------------------->
+	//
+	//              update_countersign_dlc
+	// 	------------------------------->
+	//
+	//              revoke_and_ack
+	// 	<-------------------------------
+	//
+	//              commitment_signed (+cet_sigs)
+	// 	<-------------------------------
+	//
+	//              revoke_and_ack
+	// 	------------------------------->
+	//
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::nown());
+	// Create a dlc payload on Alice
+	let dlc_offer = make_dummy_dlc();
+	let mut dlc_event = nodes[0].node.send_dlc(dlc_offer).unwrap();
+
+	// Bob receives dlc payload
+	nodes[1].node.handle_update_add_dlc(&nodes[1].node.get_our_node_id(), &dlc_event.msgs[0]);
+	let mut bob_events = nodes[1].node.get_and_clear_pending_msg_events();
+
+	// Alice receives dlc counter-sig and sends back commitment_signed + counter_sig
+	nodes[0].node.handle_update_countersign_dlc(&nodes[1].node.get_our_node_id(), &bob_event.msgs[0]);
+	//XXX fetch oracle ?
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &alice_events.msg[0]);
+	nodes[1].node.handle_update_countersign_dlc(&nodes[0].node.get_our_node_id(), &alice_events.msgs[0]);
+
+	// Bob sends back revoke_and_ack+commitment_signed
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bob_revoke_and_ack);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bob_cs);
+
+	// Alice sends back her revoke_and_ack
+	nodes[1].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &alice_revoke_and_ack);
+
+
+	//XXX add events fetching accordingly
+}
