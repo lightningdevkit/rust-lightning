@@ -3,7 +3,6 @@
 
 use chain::chaininterface;
 use chain::transaction::OutPoint;
-use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use routing::router::{Route, get_route};
@@ -29,7 +28,6 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 
-use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::PublicKey;
 
 use rand::{thread_rng,Rng};
@@ -84,7 +82,6 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>,
 	pub net_graph_msg_handler: NetGraphMsgHandler,
-	pub our_node_id: PublicKey,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -955,7 +952,7 @@ pub const TEST_FINAL_CLTV: u32 = 32;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
 	let logger = Arc::new(test_utils::TestLogger::new());
-	let route = get_route(&origin_node.our_node_id, net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -968,7 +965,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let logger = Arc::new(test_utils::TestLogger::new());
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.our_node_id, net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1101,7 +1098,6 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 }
 
 pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>>) -> Vec<Node<'a, 'b, 'c>> {
-	let secp_ctx = Secp256k1::new();
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
@@ -1112,11 +1108,10 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		block_notifier.register_listener(&chan_mgrs[i] as &chaininterface::ChainListener);
 		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_monitor.clone(), cfgs[i].logger.clone() as Arc<Logger>);
 		nodes.push(Node{ chain_monitor: cfgs[i].chain_monitor.clone(), block_notifier,
-										 tx_broadcaster: cfgs[i].tx_broadcaster, chan_monitor: &cfgs[i].chan_monitor,
-										 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
-										 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
-										 network_payment_count: payment_count.clone(), logger: cfgs[i].logger.clone(),
-										 our_node_id: PublicKey::from_secret_key(&secp_ctx, &cfgs[i].keys_manager.get_node_secret()),
+		                 tx_broadcaster: cfgs[i].tx_broadcaster, chan_monitor: &cfgs[i].chan_monitor,
+		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
+		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
+		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger.clone(),
 		})
 	}
 
