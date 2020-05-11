@@ -101,6 +101,7 @@ pub(super) enum HTLCFailureMsg {
 pub(super) enum PendingHTLCStatus {
 	Forward(PendingHTLCInfo),
 	Fail(HTLCFailureMsg),
+	Dummy, //non-routed payload (aka DLC)
 }
 
 pub(super) enum HTLCForwardInfo {
@@ -2578,6 +2579,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	}
 
 	fn internal_update_add_dlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddDLC) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_lock;
+		match channel_state.by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				if chan.get().get_their_node_id() != *their_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				}
+				try_chan_entry!(self, chan.get_mut().update_add_dlc(&msg, PendingHTLCStatus::Dummy), channel_state, chan);
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+		}
 		Ok(())
 	}
 
@@ -3463,6 +3475,9 @@ impl Writeable for PendingHTLCStatus {
 				1u8.write(writer)?;
 				fail_msg.write(writer)?;
 			}
+			&PendingHTLCStatus::Dummy => {
+				2u8.write(writer)?;
+			}
 		}
 		Ok(())
 	}
@@ -3473,6 +3488,7 @@ impl Readable for PendingHTLCStatus {
 		match <u8 as Readable>::read(reader)? {
 			0 => Ok(PendingHTLCStatus::Forward(Readable::read(reader)?)),
 			1 => Ok(PendingHTLCStatus::Fail(Readable::read(reader)?)),
+			2 => Ok(PendingHTLCStatus::Dummy),
 			_ => Err(DecodeError::InvalidValue),
 		}
 	}

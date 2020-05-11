@@ -1909,6 +1909,24 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
+	pub fn update_add_dlc(&mut self, msg: &msgs::UpdateAddDLC, pending_forward_state: PendingHTLCStatus) -> Result<(), ChannelError> {
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
+			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state"));
+		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(ChannelError::Close("Peer sent update_add_htlc when we needed a channel_reestablish"));
+		}
+		self.next_remote_htlc_id += 1;
+		self.pending_inbound_htlcs.push(Box::new(InboundCETOutput {
+			cet_id: msg.event_id,
+			amount_msat: msg.amount_msat,
+			maturity: msg.maturity,
+			identifier: PaymentHash([0; 32]),
+			state: InboundHTLCState::RemoteAnnounced(pending_forward_state),
+		}));
+		Ok(())
+	}
+
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentHash>, fail_reason: Option<HTLCFailReason>) -> Result<&HTLCSource, ChannelError> {
@@ -2389,6 +2407,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 								to_forward_infos.push((forward_info, htlc.id()));
 								htlc.update_state(InboundHTLCState::Committed);
 							}
+							_ => {}
 						}
 					}
 				}
