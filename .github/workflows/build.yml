@@ -17,11 +17,16 @@ jobs:
         include:
           - toolchain: stable
             build-net-tokio: true
+            build-bindings: true
           - toolchain: beta
             build-net-tokio: true
+            build-bindings: true
           - toolchain: 1.39.0
             build-net-tokio: true
+            build-bindings: true
             coverage: true
+          - toolchain: 1.34.2
+            build-bindings: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
@@ -38,6 +43,9 @@ jobs:
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning
+      - name: Build bindings on Rust ${{ matrix.toolchain }}
+        if: matrix.build-bindings
+        run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning-c-bindings
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: matrix.build-net-tokio
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
@@ -98,3 +106,43 @@ jobs:
         run: cd fuzz && cargo test --verbose --color always
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh
+
+  check_bindings:
+    runs-on: ubuntu-latest
+    # Ubuntu's version of rustc uses its own LLVM instead of being a real native package.
+    # This leaves us with an incompatible LLVM version when linking. Instead, use a real OS.
+    container: debian:testing
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Install native Rust toolchain, Valgrind, and build utilitis
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade
+          apt-get -y install cargo valgrind lld git g++ clang
+      - name: Checkout source code
+        uses: actions/checkout@v2
+      - name: Install cbindgen
+        run: cargo install --force cbindgen
+      - name: Rebuild bindings, and check the sample app builds + links
+        run: ./genbindings.sh
+      - name: Check that the latest bindings are in git
+        run: |
+          if [ "$(git diff)" != "" ]; then
+            # cbindgen's bindings output order can be FS-dependant, so check that the lines are all the same:
+            mv lightning-c-bindings/include/lightning.h lightning-c-bindings/include/lightning.h.new
+            git checkout lightning-c-bindings/include/lightning.h
+            cat lightning-c-bindings/include/lightning.h | sort > lightning-c-bindings/include/lightning.h.sorted
+            cat lightning-c-bindings/include/lightning.h.new | sort > lightning-c-bindings/include/lightning.h.new.sorted
+            diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted
+            #
+            mv lightning-c-bindings/include/lightningpp.hpp lightning-c-bindings/include/lightningpp.hpp.new
+            git checkout lightning-c-bindings/include/lightningpp.hpp
+            cat lightning-c-bindings/include/lightningpp.hpp | sort > lightning-c-bindings/include/lightningpp.hpp.sorted
+            cat lightning-c-bindings/include/lightningpp.hpp.new | sort > lightning-c-bindings/include/lightningpp.hpp.new.sorted
+            diff lightning-c-bindings/include/lightningpp.hpp.sorted lightning-c-bindings/include/lightningpp.hpp.new.sorted
+            #
+            [ "$(diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted)" != "" ] && exit 2
+            [ "$(diff lightning-c-bindings/include/lightningpp.hpp.sorted lightning-c-bindings/include/lightningpp.hpp.new.sorted)" != "" ] && exit 3
+            git diff --exit-code
+          fi
