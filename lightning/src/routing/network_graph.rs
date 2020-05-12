@@ -378,8 +378,8 @@ impl Readable for NodeAnnouncementInfo {
 pub struct NodeInfo {
 	/// All valid channels a node has announced
 	pub channels: Vec<u64>,
-	/// Lowest fees enabling routing via any of the known channels to a node.
- 	/// The two fields (flat and proportional fee) are independent,
+	/// Lowest fees enabling routing via any of the enabled, known channels to a node.
+	/// The two fields (flat and proportional fee) are independent,
 	/// meaning they don't have to refer to the same channel.
 	pub lowest_inbound_channel_fees: Option<RoutingFees>,
 	/// More information about a node from node_announcement.
@@ -712,34 +712,28 @@ impl NetworkGraph {
 				proportional_millionths
 			});
 		} else if chan_was_enabled {
-			let mut lowest_inbound_channel_fee_base_msat = u32::max_value();
-			let mut lowest_inbound_channel_fee_proportional_millionths = u32::max_value();
+			let mut node = self.nodes.get_mut(&dest_node_id).unwrap();
+			let mut lowest_inbound_channel_fees = None;
 
-			{
-				let node = self.nodes.get(&dest_node_id).unwrap();
-
-				for chan_id in node.channels.iter() {
-					let chan = self.channels.get(chan_id).unwrap();
-					// Since direction was enabled, the channel indeed had directional info
-					let chan_info;
-					if chan.node_one == dest_node_id {
-						chan_info = chan.two_to_one.as_ref().unwrap();
-					} else {
-						chan_info = chan.one_to_two.as_ref().unwrap();
+			for chan_id in node.channels.iter() {
+				let chan = self.channels.get(chan_id).unwrap();
+				let chan_info_opt;
+				if chan.node_one == dest_node_id {
+					chan_info_opt = chan.two_to_one.as_ref();
+				} else {
+					chan_info_opt = chan.one_to_two.as_ref();
+				}
+				if let Some(chan_info) = chan_info_opt {
+					if chan_info.enabled {
+						let fees = lowest_inbound_channel_fees.get_or_insert(RoutingFees {
+							base_msat: u32::max_value(), proportional_millionths: u32::max_value() });
+						fees.base_msat = cmp::min(fees.base_msat, chan_info.fees.base_msat);
+						fees.proportional_millionths = cmp::min(fees.proportional_millionths, chan_info.fees.proportional_millionths);
 					}
-					lowest_inbound_channel_fee_base_msat = cmp::min(lowest_inbound_channel_fee_base_msat, chan_info.fees.base_msat);
-					lowest_inbound_channel_fee_proportional_millionths = cmp::min(lowest_inbound_channel_fee_proportional_millionths, chan_info.fees.proportional_millionths);
 				}
 			}
 
-			//TODO: satisfy the borrow-checker without a double-map-lookup :(
-			let mut_node = self.nodes.get_mut(&dest_node_id).unwrap();
-			if mut_node.channels.len() > 0 {
-				mut_node.lowest_inbound_channel_fees = Some(RoutingFees {
-					base_msat: lowest_inbound_channel_fee_base_msat,
-					proportional_millionths: lowest_inbound_channel_fee_proportional_millionths
-				});
-			}
+			node.lowest_inbound_channel_fees = lowest_inbound_channel_fees;
 		}
 
 		Ok(msg.contents.excess_data.is_empty())
