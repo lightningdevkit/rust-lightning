@@ -311,10 +311,10 @@ impl Writeable for RoutingFees {
 /// Information received in the latest node_announcement from this node.
 pub struct NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
-      pub features: NodeFeatures,
+	pub features: NodeFeatures,
 	/// When the last known update to the node state was issued.
 	/// Value is opaque, as set in the announcement.
-      pub last_update: u32,
+	pub last_update: u32,
 	/// Color assigned to the node
 	pub rgb: [u8; 3],
 	/// Moniker assigned to the node.
@@ -766,7 +766,7 @@ mod tests {
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-	   UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
+		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
@@ -845,7 +845,7 @@ mod tests {
 			// Announce a channel to add a corresponding node.
 			let unsigned_announcement = UnsignedChannelAnnouncement {
 				features: ChannelFeatures::known(),
-		 		chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+				chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 				short_channel_id: 0,
 				node_id_1,
 				node_id_2,

@@ -104,8 +104,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
 				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-				   Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
-				   Arc::clone(&self.logger) as Arc<Logger>, RwLock::new(network_graph_deser)
+					Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
+					Arc::clone(&self.logger) as Arc<Logger>, RwLock::new(network_graph_deser)
 				);
 				let mut chan_progress = 0;
 				loop {
