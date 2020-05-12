@@ -646,6 +646,7 @@ pub enum HTLCFailChannelUpdate {
 /// As we wish to serialize these differently from Option<T>s (Options get a tag byte, but
 /// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
 /// separate enum type for them.
+/// (C-not exported) due to a free generic in T
 #[derive(Clone, PartialEq, Debug)]
 pub enum OptionalField<T> {
 	/// Optional field is included in message

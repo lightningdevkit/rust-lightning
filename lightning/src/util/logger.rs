@@ -86,6 +86,7 @@ impl Level {
 
 /// A Record, unit of logging output with Metadata to enable filtering
 /// Module_path, file, line to inform on log's source
+/// (C-not exported) - we convert to a const char* instead
 #[derive(Clone,Debug)]
 pub struct Record<'a> {
 	/// The verbosity level of the message.
@@ -102,6 +103,7 @@ pub struct Record<'a> {
 
 impl<'a> Record<'a> {
 	/// Returns a new Record.
+	/// (C-not exported) as fmt can't be used in C
 	#[inline]
 	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'a str, file: &'a str, line: u32) -> Record<'a> {
 		Record {

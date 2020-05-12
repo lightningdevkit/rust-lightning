@@ -226,6 +226,8 @@ impl ChainWatchedUtil {
 /// parameters with static lifetimes). Other times you can afford a reference, which is more
 /// efficient, in which case BlockNotifierRef is a more appropriate type. Defining these type
 /// aliases prevents issues such as overly long function definitions.
+///
+/// (C-not exported) as we let clients handle any reference counting they need to do
 pub type BlockNotifierArc<C> = Arc<BlockNotifier<'static, Arc<ChainListener>, C>>;
 
 /// BlockNotifierRef is useful when you want a BlockNotifier that points to ChainListeners
@@ -273,6 +275,8 @@ impl<'a, CL: Deref + 'a, C: Deref> BlockNotifier<'a, CL, C>
 	/// If the same listener is registered multiple times, unregistering
 	/// will remove ALL occurrences of that listener. Comparison is done using
 	/// the pointer returned by the Deref trait implementation.
+	///
+	/// (C-not exported) because the equality check would always fail
 	pub fn unregister_listener(&self, listener: CL) {
 		let mut vec = self.listeners.lock().unwrap();
 		// item is a ref to an abstract thing that dereferences to a ChainListener,

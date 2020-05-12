@@ -526,13 +526,19 @@ impl fmt::Display for NetworkGraph {
 
 impl NetworkGraph {
 	/// Returns all known valid channels' short ids along with announced channel info.
+	///
+	/// (C-not exported) because we have no mapping for `BTreeMap`s
 	pub fn get_channels<'a>(&'a self) -> &'a BTreeMap<u64, ChannelInfo> { &self.channels }
 	/// Returns all known nodes' public keys along with announced node info.
+	///
+	/// (C-not exported) because we have no mapping for `BTreeMap`s
 	pub fn get_nodes<'a>(&'a self) -> &'a BTreeMap<PublicKey, NodeInfo> { &self.nodes }
 
 	/// Get network addresses by node id.
 	/// Returns None if the requested node is completely unknown,
 	/// or if node announcement for the node was never received.
+	///
+	/// (C-not exported) as there is no practical way to track lifetimes of returned values.
 	pub fn get_addresses<'a>(&'a self, pubkey: &PublicKey) -> Option<&'a Vec<NetAddress>> {
 		if let Some(node) = self.nodes.get(pubkey) {
 			if let Some(node_info) = node.announcement_info.as_ref() {
