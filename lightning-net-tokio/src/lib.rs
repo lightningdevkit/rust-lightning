@@ -28,7 +28,7 @@
 //! type ChainWatchInterface = dyn lightning::chain::chaininterface::ChainWatchInterface;
 //! type ChannelMonitor = lightning::ln::channelmonitor::SimpleManyChannelMonitor<lightning::chain::transaction::OutPoint, lightning::chain::keysinterface::InMemoryChannelKeys, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>, Arc<ChainWatchInterface>>;
 //! type ChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<ChannelMonitor, TxBroadcaster, FeeEstimator, Logger>;
-//! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator, Logger>;
+//! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator, ChainWatchInterface, Logger>;
 //!
 //! // Connect to node with pubkey their_node_id at addr:
 //! async fn connect_to_node(peer_manager: PeerManager, channel_monitor: Arc<ChannelMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
@@ -70,7 +70,7 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
-use lightning::ln::msgs::ChannelMessageHandler;
+use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::util::logger::Logger;
 
 use std::{task, thread};
@@ -124,7 +124,10 @@ impl Connection {
 			_ => panic!()
 		}
 	}
-	async fn schedule_read<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) {
+	async fn schedule_read<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) where
+			CMH: ChannelMessageHandler + 'static,
+			RMH: RoutingMessageHandler + 'static,
+			L: Logger + 'static + ?Sized {
 		let peer_manager_ref = peer_manager.clone();
 		// 8KB is nice and big but also should never cause any issues with stack overflowing.
 		let mut buf = [0; 8192];
@@ -234,7 +237,10 @@ impl Connection {
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_inbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> {
+pub fn setup_inbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> where
+		CMH: ChannelMessageHandler + 'static,
+		RMH: RoutingMessageHandler + 'static,
+		L: Logger + 'static + ?Sized {
 	let (reader, write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -273,7 +279,10 @@ pub fn setup_inbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static +
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_outbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> {
+pub fn setup_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> where
+		CMH: ChannelMessageHandler + 'static,
+		RMH: RoutingMessageHandler + 'static,
+		L: Logger + 'static + ?Sized {
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -342,7 +351,10 @@ pub fn setup_outbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static 
 /// make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub async fn connect_outbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> {
+pub async fn connect_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> where
+		CMH: ChannelMessageHandler + 'static,
+		RMH: RoutingMessageHandler + 'static,
+		L: Logger + 'static + ?Sized {
 	if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await {
 		Some(setup_outbound(peer_manager, event_notify, their_node_id, stream))
 	} else { None }
@@ -568,7 +580,7 @@ mod tests {
 		});
 		let a_manager = Arc::new(PeerManager::new(MessageHandler {
 			chan_handler: Arc::clone(&a_handler),
-			route_handler: Arc::clone(&a_handler) as Arc<dyn RoutingMessageHandler>,
+			route_handler: Arc::clone(&a_handler),
 		}, a_key.clone(), &[1; 32], Arc::new(TestLogger())));
 
 		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
@@ -581,7 +593,7 @@ mod tests {
 		});
 		let b_manager = Arc::new(PeerManager::new(MessageHandler {
 			chan_handler: Arc::clone(&b_handler),
-			route_handler: Arc::clone(&b_handler) as Arc<dyn RoutingMessageHandler>,
+			route_handler: Arc::clone(&b_handler),
 		}, b_key.clone(), &[2; 32], Arc::new(TestLogger())));
 
 		// We bind on localhost, hoping the environment is properly configured with a local
