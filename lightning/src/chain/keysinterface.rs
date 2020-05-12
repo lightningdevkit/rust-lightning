@@ -542,7 +542,9 @@ pub struct KeysManager {
 	channel_id_master_key: ExtendedPrivKey,
 	channel_id_child_index: AtomicUsize,
 
-	unique_start: Sha256State,
+	seed: [u8; 32],
+	starting_time_secs: u64,
+	starting_time_nanos: u32,
 }
 
 impl KeysManager {
@@ -587,11 +589,6 @@ impl KeysManager {
 				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
 				let channel_id_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted");
 
-				let mut unique_start = Sha256::engine();
-				unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
-				unique_start.input(&byte_utils::be32_to_array(starting_time_nanos));
-				unique_start.input(seed);
-
 				KeysManager {
 					secp_ctx,
 					node_secret,
@@ -604,11 +601,20 @@ impl KeysManager {
 					channel_id_master_key,
 					channel_id_child_index: AtomicUsize::new(0),
 
-					unique_start,
+					seed: *seed,
+					starting_time_secs,
+					starting_time_nanos,
 				}
 			},
 			Err(_) => panic!("Your rng is busted"),
 		}
+	}
+	fn derive_unique_start(&self) -> Sha256State {
+		let mut unique_start = Sha256::engine();
+		unique_start.input(&byte_utils::be64_to_array(self.starting_time_secs));
+		unique_start.input(&byte_utils::be32_to_array(self.starting_time_nanos));
+		unique_start.input(&self.seed);
+		unique_start
 	}
 }
 
@@ -631,7 +637,7 @@ impl KeysInterface for KeysManager {
 		// We only seriously intend to rely on the channel_master_key for true secure
 		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
 		// starting_time provided in the constructor) to be unique.
-		let mut sha = self.unique_start.clone();
+		let mut sha = self.derive_unique_start();
 
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
@@ -673,7 +679,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
-		let mut sha = self.unique_start.clone();
+		let mut sha = self.derive_unique_start();
 
 		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
@@ -689,7 +695,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_channel_id(&self) -> [u8; 32] {
-		let mut sha = self.unique_start.clone();
+		let mut sha = self.derive_unique_start();
 
 		let child_ix = self.channel_id_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
