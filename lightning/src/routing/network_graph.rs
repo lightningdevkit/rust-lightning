@@ -217,6 +217,9 @@ pub struct DirectionalChannelInfo {
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
 	/// Most recent update for the channel received from the network
+	/// Mostly redundant with the data we store in fields explicitly.
+	/// Everything else is useful only for sending out for initial routing sync.
+	/// Not stored if contains excess data to prevent DoS.
 	pub last_update_message: Option<msgs::ChannelUpdate>,
 }
 
