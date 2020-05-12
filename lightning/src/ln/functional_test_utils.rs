@@ -320,7 +320,7 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 			let tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]};
-			let funding_outpoint = OutPoint::new(tx.txid(), 0);
+			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
 			(*temporary_channel_id, tx, funding_outpoint)
 		},
 		_ => panic!("Unexpected event"),

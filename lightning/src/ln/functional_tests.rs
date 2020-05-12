@@ -822,7 +822,7 @@ fn pre_funding_lock_shutdown_test() {
 	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![tx.clone()]}, 1);
 	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![tx.clone()]}, 1);
 
-	nodes[0].node.close_channel(&OutPoint::new(tx.txid(), 0).to_channel_id()).unwrap();
+	nodes[0].node.close_channel(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -3111,7 +3111,7 @@ fn test_force_close_fail_back() {
 	// Now check that if we add the preimage to ChannelMonitor it broadcasts our HTLC-Success..
 	{
 		let mut monitors = nodes[2].chan_monitor.simple_monitor.monitors.lock().unwrap();
-		monitors.get_mut(&OutPoint::new(Txid::from_slice(&payment_event.commitment_msg.channel_id[..]).unwrap(), 0)).unwrap()
+		monitors.get_mut(&OutPoint{ txid: Txid::from_slice(&payment_event.commitment_msg.channel_id[..]).unwrap(), index: 0 }).unwrap()
 			.provide_payment_preimage(&our_payment_hash, &our_payment_preimage);
 	}
 	nodes[2].block_notifier.block_connected_checked(&header, 1, &[&tx], &[1]);
@@ -6900,7 +6900,7 @@ fn test_upfront_shutdown_script() {
 	// We test that in case of peer committing upfront to a script, if it changes at closing, we refuse to sign
 	let flags = InitFeatures::known();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
-	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	// Test we enforce upfront_scriptpbukey if by providing a diffrent one at closing that  we disconnect peer
@@ -6910,7 +6910,7 @@ fn test_upfront_shutdown_script() {
 
 	// We test that in case of peer committing upfront to a script, if it doesn't change at closing, we sign
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
-	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
 	// We test that in case of peer committing upfront to a script, if it oesn't change at closing, we sign
 	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
@@ -6924,7 +6924,7 @@ fn test_upfront_shutdown_script() {
 	// We test that if case of peer non-signaling we don't enforce committed script at channel opening
 	let flags_no = InitFeatures::known().clear_upfront_shutdown_script();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags_no, flags.clone());
-	nodes[0].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	node_1_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_1_shutdown);
@@ -6938,7 +6938,7 @@ fn test_upfront_shutdown_script() {
 	// We test that if user opt-out, we provide a zero-length script at channel opening and we are able to close
 	// channel smoothly, opt-out is from channel initiator here
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 1000000, 1000000, flags.clone(), flags.clone());
-	nodes[1].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown);
@@ -6952,7 +6952,7 @@ fn test_upfront_shutdown_script() {
 	//// We test that if user opt-out, we provide a zero-length script at channel opening and we are able to close
 	//// channel smoothly
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags.clone(), flags.clone());
-	nodes[1].node.close_channel(&OutPoint::new(chan.3.txid(), 0).to_channel_id()).unwrap();
+	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown);
@@ -7759,7 +7759,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	connect_blocks(&nodes[0].block_notifier, 5, 130,  false, header_130.bitcoin_hash());
 	{
 		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
-		if let Some(monitor) = monitors.get(&OutPoint::new(chan.3.txid(), 0)) {
+		if let Some(monitor) = monitors.get(&OutPoint { txid: chan.3.txid(), index: 0 }) {
 			assert!(monitor.onchain_tx_handler.pending_claim_requests.is_empty());
 			assert!(monitor.onchain_tx_handler.claimable_outpoints.is_empty());
 		}

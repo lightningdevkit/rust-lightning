@@ -476,7 +476,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					let funding_output = 'search_loop: loop {
 						let funding_txid = tx.txid();
 						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
-							let outpoint = OutPoint::new(funding_txid, 0);
+							let outpoint = OutPoint { txid: funding_txid, index: 0 };
 							for chan in channelmanager.list_channels() {
 								if chan.channel_id == outpoint.to_channel_id() {
 									tx.version += 1;

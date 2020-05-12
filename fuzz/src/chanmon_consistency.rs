@@ -267,7 +267,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					let tx = Transaction { version: $chan_id, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
-					funding_output = OutPoint::new(tx.txid(), 0);
+					funding_output = OutPoint { txid: tx.txid(), index: 0 };
 					$source.funding_transaction_generated(&temporary_channel_id, funding_output);
 					channel_txn.push(tx);
 				} else { panic!("Wrong event type"); }
