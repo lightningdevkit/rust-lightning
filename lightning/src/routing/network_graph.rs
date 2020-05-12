@@ -67,25 +67,6 @@ impl NetGraphMsgHandler {
 			logger: logger.clone(),
 		}
 	}
-
-	/// Get network addresses by node id.
-	/// Returns None if the requested node is completely unknown,
-	/// or if node announcement for the node was never received.
-	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
-		let network = self.network_graph.read().unwrap();
-		if let Some(node) = network.get_nodes().get(pubkey) {
-			if let Some(node_info) = node.announcement_info.as_ref() {
-				return Some(node_info.addresses.clone())
-			}
-		}
-		None
-	}
-
-	/// Dumps the entire network view of this NetGraphMsgHandler to the logger provided in the constructor at
-	/// level Trace
-	pub fn trace_state(&self) {
-		log_trace!(self, "{}", self.network_graph.read().unwrap());
-	}
 }
 
 
@@ -508,6 +489,18 @@ impl NetworkGraph {
 	pub fn get_channels<'a>(&'a self) -> &'a BTreeMap<u64, ChannelInfo> { &self.channels }
 	/// Returns all known nodes' public keys along with announced node info.
 	pub fn get_nodes<'a>(&'a self) -> &'a BTreeMap<PublicKey, NodeInfo> { &self.nodes }
+
+	/// Get network addresses by node id.
+	/// Returns None if the requested node is completely unknown,
+	/// or if node announcement for the node was never received.
+	pub fn get_addresses<'a>(&'a self, pubkey: &PublicKey) -> Option<&'a Vec<NetAddress>> {
+		if let Some(node) = self.nodes.get(pubkey) {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				return Some(&node_info.addresses)
+			}
+		}
+		None
+	}
 
 	/// For an already known node (from channel announcements), update its stored properties from a given node announcement
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
