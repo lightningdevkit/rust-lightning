@@ -370,7 +370,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
 pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -683,7 +683,7 @@ macro_rules! maybe_break_monitor_err {
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -2889,7 +2889,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -2920,7 +2920,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -2952,7 +2952,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
 	ChainListener for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3120,7 +3120,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 
 impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
 	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3559,7 +3559,7 @@ impl Readable for HTLCForwardInfo {
 }
 
 impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3643,7 +3643,7 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
 pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3693,7 +3693,7 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 // SipmleArcChannelManager type:
 impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F, L>>)
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
@@ -3707,7 +3707,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)
-	where M::Target: ManyChannelMonitor<ChanSigner>,
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,

@@ -96,7 +96,9 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
+impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
+	type Keys = EnforcingChannelKeys;
+
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut ser).unwrap();

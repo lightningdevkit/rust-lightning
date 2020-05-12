@@ -66,7 +66,9 @@ impl<'a> TestChannelMonitor<'a> {
 		}
 	}
 }
-impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor<'a> {
+impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
+	type Keys = EnforcingChannelKeys;
+
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
