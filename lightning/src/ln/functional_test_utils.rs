@@ -3,10 +3,10 @@
 
 use chain::chaininterface;
 use chain::transaction::OutPoint;
-use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
-use ln::router::{Route, Router, RouterReadArgs};
+use routing::router::{Route, get_route};
+use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -17,7 +17,7 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::errors::APIError;
 use util::logger::Logger;
 use util::config::UserConfig;
-use util::ser::{ReadableArgs, Writeable};
+use util::ser::{ReadableArgs, Writeable, Readable};
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
@@ -28,14 +28,13 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 
-use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::PublicKey;
 
 use rand::{thread_rng,Rng};
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::mem;
 use std::collections::HashMap;
 
@@ -82,7 +81,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chan_monitor: &'b test_utils::TestChannelMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>,
-	pub router: Router,
+	pub net_graph_msg_handler: NetGraphMsgHandler,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -100,15 +99,18 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
 				let mut w = test_utils::TestVecWriter(Vec::new());
-				self.router.write(&mut w).unwrap();
-				let deserialized_router = Router::read(&mut ::std::io::Cursor::new(&w.0), RouterReadArgs {
-					chain_monitor: Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
-					logger: Arc::clone(&self.logger) as Arc<Logger>
-				}).unwrap();
+				let network_graph_ser = self.net_graph_msg_handler.network_graph.read().unwrap();
+				network_graph_ser.write(&mut w).unwrap();
+				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
+				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
+					Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
+					Arc::clone(&self.logger) as Arc<Logger>, RwLock::new(network_graph_deser)
+				);
 				let mut chan_progress = 0;
 				loop {
-					let orig_announcements = self.router.get_next_channel_announcements(chan_progress, 255);
-					let deserialized_announcements = deserialized_router.get_next_channel_announcements(chan_progress, 255);
+					let orig_announcements = self.net_graph_msg_handler.get_next_channel_announcements(chan_progress, 255);
+					let deserialized_announcements = net_graph_msg_handler.get_next_channel_announcements(chan_progress, 255);
 					assert!(orig_announcements == deserialized_announcements);
 					chan_progress = match orig_announcements.last() {
 						Some(announcement) => announcement.0.contents.short_channel_id + 1,
@@ -117,8 +119,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}
 				let mut node_progress = None;
 				loop {
-					let orig_announcements = self.router.get_next_node_announcements(node_progress.as_ref(), 255);
-					let deserialized_announcements = deserialized_router.get_next_node_announcements(node_progress.as_ref(), 255);
+					let orig_announcements = self.net_graph_msg_handler.get_next_node_announcements(node_progress.as_ref(), 255);
+					let deserialized_announcements = net_graph_msg_handler.get_next_node_announcements(node_progress.as_ref(), 255);
 					assert!(orig_announcements == deserialized_announcements);
 					node_progress = match orig_announcements.last() {
 						Some(announcement) => Some(announcement.contents.node_id),
@@ -461,11 +463,11 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 	};
 
 	for node in nodes {
-		assert!(node.router.handle_channel_announcement(&chan_announcement.0).unwrap());
-		node.router.handle_channel_update(&chan_announcement.1).unwrap();
-		node.router.handle_channel_update(&chan_announcement.2).unwrap();
-		node.router.handle_node_announcement(&a_node_announcement).unwrap();
-		node.router.handle_node_announcement(&b_node_announcement).unwrap();
+		assert!(node.net_graph_msg_handler.handle_channel_announcement(&chan_announcement.0).unwrap());
+		node.net_graph_msg_handler.handle_channel_update(&chan_announcement.1).unwrap();
+		node.net_graph_msg_handler.handle_channel_update(&chan_announcement.2).unwrap();
+		node.net_graph_msg_handler.handle_node_announcement(&a_node_announcement).unwrap();
+		node.net_graph_msg_handler.handle_node_announcement(&b_node_announcement).unwrap();
 	}
 	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 }
@@ -949,7 +951,9 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub const TEST_FINAL_CLTV: u32 = 32;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
-	let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
+	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
+	let logger = Arc::new(test_utils::TestLogger::new());
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -960,7 +964,9 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let route = origin_node.router.get_route(&expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV).unwrap();
+	let logger = Arc::new(test_utils::TestLogger::new());
+	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1093,7 +1099,6 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 }
 
 pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>>) -> Vec<Node<'a, 'b, 'c>> {
-	let secp_ctx = Secp256k1::new();
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
@@ -1102,12 +1107,12 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		let block_notifier = chaininterface::BlockNotifier::new(cfgs[i].chain_monitor.clone());
 		block_notifier.register_listener(&cfgs[i].chan_monitor.simple_monitor as &chaininterface::ChainListener);
 		block_notifier.register_listener(&chan_mgrs[i] as &chaininterface::ChainListener);
-		let router = Router::new(PublicKey::from_secret_key(&secp_ctx, &cfgs[i].keys_manager.get_node_secret()), cfgs[i].chain_monitor.clone(), cfgs[i].logger.clone() as Arc<Logger>);
+		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_monitor.clone(), cfgs[i].logger.clone() as Arc<Logger>);
 		nodes.push(Node{ chain_monitor: cfgs[i].chain_monitor.clone(), block_notifier,
-										 tx_broadcaster: cfgs[i].tx_broadcaster, chan_monitor: &cfgs[i].chan_monitor,
-										 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], router,
-										 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
-										 network_payment_count: payment_count.clone(), logger: cfgs[i].logger.clone(),
+		                 tx_broadcaster: cfgs[i].tx_broadcaster, chan_monitor: &cfgs[i].chan_monitor,
+		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
+		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
+		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger.clone(),
 		})
 	}
 
@@ -1237,8 +1242,8 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	};
 
 	for node in nodes {
-		node.router.handle_channel_update(&as_update).unwrap();
-		node.router.handle_channel_update(&bs_update).unwrap();
+		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
+		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
 	}
 }
 

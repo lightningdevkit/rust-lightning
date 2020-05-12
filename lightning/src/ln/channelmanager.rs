@@ -4,7 +4,7 @@
 //! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
 //! upon reconnect to the relevant peer(s).
 //!
-//! It does not manage routing logic (see ln::router for that) nor does it manage constructing
+//! It does not manage routing logic (see routing::router::get_route for that) nor does it manage constructing
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
@@ -31,7 +31,7 @@ use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use ln::features::{InitFeatures, NodeFeatures};
-use ln::router::{Route, RouteHop};
+use routing::router::{Route, RouteHop};
 use ln::msgs;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
@@ -819,7 +819,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	}
 
 	/// Gets the list of usable channels, in random order. Useful as an argument to
-	/// Router::get_route to ensure non-announced channels are used.
+	/// get_route to ensure non-announced channels are used.
 	///
 	/// These are guaranteed to have their is_live value set to true, see the documentation for
 	/// ChannelDetails::is_live for more info on exactly what the criteria are.
@@ -1869,7 +1869,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 							.. } => {
 						// we get a fail_malformed_htlc from the first hop
 						// TODO: We'd like to generate a PaymentFailureNetworkUpdate for temporary
-						// failures here, but that would be insufficient as Router::get_route
+						// failures here, but that would be insufficient as get_route
 						// generally ignores its view of our own channels as we provide them via
 						// ChannelDetails.
 						// TODO: For non-temporary failures, we really should be closing the

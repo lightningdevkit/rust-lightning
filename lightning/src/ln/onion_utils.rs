@@ -1,6 +1,6 @@
 use ln::channelmanager::{PaymentHash, PaymentSecret, HTLCSource};
 use ln::msgs;
-use ln::router::RouteHop;
+use routing::router::RouteHop;
 use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
@@ -472,7 +472,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing>(secp_ctx: &Secp256k1<
 mod tests {
 	use ln::channelmanager::PaymentHash;
 	use ln::features::{ChannelFeatures, NodeFeatures};
-	use ln::router::{Route, RouteHop};
+	use routing::router::{Route, RouteHop};
 	use ln::msgs;
 	use util::ser::{Writeable, Writer};
 

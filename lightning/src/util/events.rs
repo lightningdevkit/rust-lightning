@@ -332,9 +332,9 @@ pub enum MessageSendEvent {
 		action: msgs::ErrorAction
 	},
 	/// When a payment fails we may receive updates back from the hop where it failed. In such
-	/// cases this event is generated so that we can inform the router of this information.
+	/// cases this event is generated so that we can inform the network graph of this information.
 	PaymentFailureNetworkUpdate {
-		/// The channel/node update which should be sent to router
+		/// The channel/node update which should be sent to NetGraphMsgHandler
 		update: msgs::HTLCFailChannelUpdate,
 	}
 }

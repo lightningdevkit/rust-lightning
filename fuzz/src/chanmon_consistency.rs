@@ -27,7 +27,6 @@ use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
-use lightning::ln::router::{Route, RouteHop};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
@@ -36,6 +35,8 @@ use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider, MessageSendEventsProvider};
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use lightning::routing::router::{Route, RouteHop};
+
 
 use utils::test_logger;
 

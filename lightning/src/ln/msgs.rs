@@ -391,7 +391,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
 	pub(crate) signature: Signature,
@@ -1445,7 +1445,7 @@ mod tests {
 		assert_eq!(encoded_value, hex::decode("040000000000000005000000000000000600000000000000070000000000000000083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073acf9953cef4700860f5967838eba2bae89288ad188ebf8b20bf995c3ea53a26df1876d0a3a0e13172ba286a673140190c02ba9da60a2e43a745188c8a83c7f3ef").unwrap());
 	}
 
-	fn do_encoding_channel_announcement(unknown_features_bits: bool, non_bitcoin_chain_hash: bool, excess_data: bool) {
+	fn do_encoding_channel_announcement(unknown_features_bits: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let (privkey_2, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
@@ -1461,7 +1461,7 @@ mod tests {
 		}
 		let unsigned_channel_announcement = msgs::UnsignedChannelAnnouncement {
 			features,
-			chain_hash: if !non_bitcoin_chain_hash { BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { BlockHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			short_channel_id: 2316138423780173,
 			node_id_1: pubkey_1,
 			node_id_2: pubkey_2,
@@ -1483,11 +1483,7 @@ mod tests {
 		} else {
 			target_value.append(&mut hex::decode("0000").unwrap());
 		}
-		if non_bitcoin_chain_hash {
-			target_value.append(&mut hex::decode("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000").unwrap());
-		} else {
-			target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
-		}
+		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
 		target_value.append(&mut hex::decode("00083a840000034d031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
 		if excess_data {
 			target_value.append(&mut hex::decode("0a00001400001e000028").unwrap());
@@ -1497,14 +1493,10 @@ mod tests {
 
 	#[test]
 	fn encoding_channel_announcement() {
-		do_encoding_channel_announcement(false, false, false);
-		do_encoding_channel_announcement(true, false, false);
-		do_encoding_channel_announcement(true, true, false);
-		do_encoding_channel_announcement(true, true, true);
-		do_encoding_channel_announcement(false, true, true);
-		do_encoding_channel_announcement(false, false, true);
-		do_encoding_channel_announcement(false, true, false);
-		do_encoding_channel_announcement(true, false, true);
+		do_encoding_channel_announcement(true, false);
+		do_encoding_channel_announcement(false, true);
+		do_encoding_channel_announcement(false, false);
+		do_encoding_channel_announcement(true, true);
 	}
 
 	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, excess_address_data: bool, excess_data: bool) {
@@ -1606,12 +1598,12 @@ mod tests {
 		do_encoding_node_announcement(false, false, true, false, true, false, false);
 	}
 
-	fn do_encoding_channel_update(non_bitcoin_chain_hash: bool, direction: bool, disable: bool, htlc_maximum_msat: bool) {
+	fn do_encoding_channel_update(direction: bool, disable: bool, htlc_maximum_msat: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let unsigned_channel_update = msgs::UnsignedChannelUpdate {
-			chain_hash: if !non_bitcoin_chain_hash { BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { BlockHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
 			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 } | if htlc_maximum_msat { 1 << 8 } else { 0 },
@@ -1627,11 +1619,7 @@ mod tests {
 		};
 		let encoded_value = channel_update.encode();
 		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
-		if non_bitcoin_chain_hash {
-			target_value.append(&mut hex::decode("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000").unwrap());
-		} else {
-			target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
-		}
+		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
 		target_value.append(&mut hex::decode("00083a840000034d013413a7").unwrap());
 		if htlc_maximum_msat {
 			target_value.append(&mut hex::decode("01").unwrap());
@@ -1656,15 +1644,14 @@ mod tests {
 
 	#[test]
 	fn encoding_channel_update() {
-		do_encoding_channel_update(false, false, false, false);
-		do_encoding_channel_update(true, false, false, false);
-		do_encoding_channel_update(false, true, false, false);
-		do_encoding_channel_update(false, false, true, false);
-		do_encoding_channel_update(false, false, false, true);
-		do_encoding_channel_update(true, true, true, true);
+		do_encoding_channel_update(false, false, false);
+		do_encoding_channel_update(true, false, false);
+		do_encoding_channel_update(false, true, false);
+		do_encoding_channel_update(false, false, true);
+		do_encoding_channel_update(true, true, true);
 	}
 
-	fn do_encoding_open_channel(non_bitcoin_chain_hash: bool, random_bit: bool, shutdown: bool) {
+	fn do_encoding_open_channel(random_bit: bool, shutdown: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
@@ -1673,7 +1660,7 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let open_channel = msgs::OpenChannel {
-			chain_hash: if !non_bitcoin_chain_hash { BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap() } else { BlockHash::from_hex("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").unwrap() },
+			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			temporary_channel_id: [2; 32],
 			funding_satoshis: 1311768467284833366,
 			push_msat: 2536655962884945560,
@@ -1695,11 +1682,7 @@ mod tests {
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
-		if non_bitcoin_chain_hash {
-			target_value.append(&mut hex::decode("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000").unwrap());
-		} else {
-			target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
-		}
+		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
 		target_value.append(&mut hex::decode("02020202020202020202020202020202020202020202020202020202020202021234567890123456233403289122369832144668701144767633030896203198784335490624111800083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
 		if random_bit {
 			target_value.append(&mut hex::decode("20").unwrap());
@@ -1714,11 +1697,10 @@ mod tests {
 
 	#[test]
 	fn encoding_open_channel() {
-		do_encoding_open_channel(false, false, false);
-		do_encoding_open_channel(true, false, false);
-		do_encoding_open_channel(false, true, false);
-		do_encoding_open_channel(false, false, true);
-		do_encoding_open_channel(true, true, true);
+		do_encoding_open_channel(false, false);
+		do_encoding_open_channel(true, false);
+		do_encoding_open_channel(false, true);
+		do_encoding_open_channel(true, true);
 	}
 
 	fn do_encoding_accept_channel(shutdown: bool) {

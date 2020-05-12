@@ -5,7 +5,7 @@ use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::secp256k1::key::PublicKey;
 
-use ln::router::Route;
+use routing::router::Route;
 use ln::chan_utils::HTLCType;
 
 use std;
