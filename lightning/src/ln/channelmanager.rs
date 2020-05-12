@@ -707,10 +707,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M, T, K, F, L>, secp256k1::Error> {
+	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
 		let secp_ctx = Secp256k1::new();
 
-		let res = ChannelManager {
+		ChannelManager {
 			default_configuration: config.clone(),
 			genesis_hash: genesis_block(network).header.bitcoin_hash(),
 			fee_estimator: fee_est,
@@ -740,9 +740,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			keys_manager,
 
 			logger,
-		};
-
-		Ok(res)
+		}
 	}
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
