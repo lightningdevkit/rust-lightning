@@ -86,7 +86,7 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 pub struct PeerHandleError {
 	/// Used to indicate that we probably can't make any future connections to this peer, implying
 	/// we should go ahead and force-close any channels we have with it.
-	no_connection_possible: bool,
+	pub no_connection_possible: bool,
 }
 impl fmt::Debug for PeerHandleError {
 	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
