@@ -38,7 +38,7 @@ use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use chain::keysinterface::{ChannelKeys, KeysInterface, KeysManager, InMemoryChannelKeys};
 use util::config::UserConfig;
 use util::{byte_utils, events};
-use util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use util::ser::{Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::Logger;
 use util::errors::APIError;
@@ -3608,6 +3608,12 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 			peer_state.latest_features.write(writer)?;
 		}
 
+		let events = self.pending_events.lock().unwrap();
+		(events.len() as u64).write(writer)?;
+		for event in events.iter() {
+			event.write(writer)?;
+		}
+
 		(self.last_node_announcement_serial.load(Ordering::Acquire) as u32).write(writer)?;
 
 		Ok(())
@@ -3754,12 +3760,13 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			}
 		}
 
+		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 		let forward_htlcs_count: u64 = Readable::read(reader)?;
 		let mut forward_htlcs = HashMap::with_capacity(cmp::min(forward_htlcs_count as usize, 128));
 		for _ in 0..forward_htlcs_count {
 			let short_channel_id = Readable::read(reader)?;
 			let pending_forwards_count: u64 = Readable::read(reader)?;
-			let mut pending_forwards = Vec::with_capacity(cmp::min(pending_forwards_count as usize, 128));
+			let mut pending_forwards = Vec::with_capacity(cmp::min(pending_forwards_count as usize, MAX_ALLOC_SIZE/mem::size_of::<HTLCForwardInfo>()));
 			for _ in 0..pending_forwards_count {
 				pending_forwards.push(Readable::read(reader)?);
 			}
@@ -3771,7 +3778,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		for _ in 0..claimable_htlcs_count {
 			let payment_hash = Readable::read(reader)?;
 			let previous_hops_len: u64 = Readable::read(reader)?;
-			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, 2));
+			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, MAX_ALLOC_SIZE/mem::size_of::<ClaimableHTLC>()));
 			for _ in 0..previous_hops_len {
 				previous_hops.push(Readable::read(reader)?);
 			}
@@ -3779,13 +3786,22 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, 128));
+		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_state = PeerState {
 				latest_features: Readable::read(reader)?,
 			};
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
+		}
+
+		let event_count: u64 = Readable::read(reader)?;
+		let mut pending_events_read: Vec<events::Event> = Vec::with_capacity(cmp::min(event_count as usize, MAX_ALLOC_SIZE/mem::size_of::<events::Event>()));
+		for _ in 0..event_count {
+			match MaybeReadable::read(reader)? {
+				Some(event) => pending_events_read.push(event),
+				None => continue,
+			}
 		}
 
 		let last_node_announcement_serial: u32 = Readable::read(reader)?;
@@ -3813,7 +3829,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 			per_peer_state: RwLock::new(per_peer_state),
 
-			pending_events: Mutex::new(Vec::new()),
+			pending_events: Mutex::new(pending_events_read),
 			total_consistency_lock: RwLock::new(()),
 			keys_manager: args.keys_manager,
 			logger: args.logger,
