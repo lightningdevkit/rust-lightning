@@ -9,3 +9,7 @@ members = [
 # Our tests do actual crypo and lots of work, the tradeoff for -O1 is well worth it
 [profile.dev]
 opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true
