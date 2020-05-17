@@ -1,5 +1,6 @@
 use ln::msgs::LightningError;
 use ln::msgs;
+use ln::wire::LN_MAX_MSG_LEN;
 
 use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -373,7 +374,7 @@ impl PeerChannelEncryptor {
 	/// Encrypts the given message, returning the encrypted version
 	/// panics if msg.len() > 65535 or Noise handshake has not finished.
 	pub fn encrypt_message(&mut self, msg: &[u8]) -> Vec<u8> {
-		if msg.len() > 65535 {
+		if msg.len() > LN_MAX_MSG_LEN {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}
 
@@ -427,7 +428,7 @@ impl PeerChannelEncryptor {
 	/// Decrypts the given message.
 	/// panics if msg.len() > 65535 + 16
 	pub fn decrypt_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, LightningError> {
-		if msg.len() > 65535 + 16 {
+		if msg.len() > LN_MAX_MSG_LEN + 16 {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}
 

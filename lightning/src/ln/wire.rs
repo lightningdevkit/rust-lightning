@@ -16,6 +16,13 @@
 use ln::msgs;
 use util::ser::{Readable, Writeable, Writer};
 
+/// Maximum Lightning message data length according to
+/// [BOLT-8](https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification):
+/// "The maximum size of any Lightning message MUST NOT exceed 65535 bytes.
+/// A maximum size of 65535 simplifies testing, makes memory management easier,
+/// and helps mitigate memory-exhaustion attacks."
+pub const LN_MAX_MSG_LEN: usize = 65535;
+
 /// A Lightning message returned by [`read`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`ln::msgs`] or otherwise the message type if unknown.
 ///

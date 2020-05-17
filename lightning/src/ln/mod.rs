@@ -35,3 +35,5 @@ mod functional_tests;
 mod chanmon_update_fail_tests;
 #[cfg(test)]
 mod reorg_tests;
+
+pub use self::wire::LN_MAX_MSG_LEN;
