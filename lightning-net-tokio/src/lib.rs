@@ -71,6 +71,7 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
 use lightning::ln::msgs::ChannelMessageHandler;
+use lightning::util::logger::Logger;
 
 use std::{task, thread};
 use std::net::SocketAddr;
@@ -123,7 +124,7 @@ impl Connection {
 			_ => panic!()
 		}
 	}
-	async fn schedule_read<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) {
+	async fn schedule_read<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) {
 		let peer_manager_ref = peer_manager.clone();
 		// 8KB is nice and big but also should never cause any issues with stack overflowing.
 		let mut buf = [0; 8192];
@@ -233,7 +234,7 @@ impl Connection {
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_inbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> {
+pub fn setup_inbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> {
 	let (reader, write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -272,7 +273,7 @@ pub fn setup_inbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<pee
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> {
+pub fn setup_outbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> {
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -341,7 +342,7 @@ pub fn setup_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<pe
 /// make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub async fn connect_outbound<CMH: ChannelMessageHandler + 'static>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> {
+pub async fn connect_outbound<CMH: ChannelMessageHandler + 'static, L: Logger + 'static + ?Sized>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> {
 	if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await {
 		Some(setup_outbound(peer_manager, event_notify, their_node_id, stream))
 	} else { None }
