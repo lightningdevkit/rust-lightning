@@ -12,7 +12,7 @@ use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
-use util::ser::VecWriter;
+use util::ser::{VecWriter, Writeable};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
@@ -459,6 +459,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 		}
 	}
 
+	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
+	fn enqueue_message<M: Encode + Writeable>(&self, peers_needing_send: &mut HashSet<Descriptor>, peer: &mut Peer, descriptor: Descriptor, message: &M) {
+		let mut buffer = VecWriter(Vec::new());
+		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
+		let encoded_message = buffer.0;
+
+		log_trace!(self.logger, "Enqueueing message of type {} to {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
+		peers_needing_send.insert(descriptor);
+	}
+
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
 		let pause_read = {
 			let mut peers_lock = self.peers.lock().unwrap();
@@ -481,16 +492,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 						if peer.pending_read_buffer_pos == peer.pending_read_buffer.len() {
 							peer.pending_read_buffer_pos = 0;
 
-							macro_rules! encode_and_send_msg {
-								($msg: expr) => {
-									{
-										log_trace!(self.logger, "Encoding and sending message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
-										peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(&$msg)[..]));
-										peers.peers_needing_send.insert(peer_descriptor.clone());
-									}
-								}
-							}
-
 							macro_rules! try_potential_handleerror {
 								($thing: expr) => {
 									match $thing {
@@ -508,7 +509,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 												},
 												msgs::ErrorAction::SendErrorMessage { msg } => {
 													log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
-													encode_and_send_msg!(msg);
+													self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &msg);
 													continue;
 												},
 											}
@@ -554,7 +555,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 									}
 
 									let resp = msgs::Init { features };
-									encode_and_send_msg!(resp);
+									self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
 								},
 								NextNoiseStep::ActThree => {
 									let their_node_id = try_potential_handleerror!(peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]));
@@ -653,7 +654,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 													}
 
 													let resp = msgs::Init { features };
-													encode_and_send_msg!(resp);
+													self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
 												}
 
 												self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
@@ -682,7 +683,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 											wire::Message::Ping(msg) => {
 												if msg.ponglen < 65532 {
 													let resp = msgs::Pong { byteslen: msg.ponglen };
-													encode_and_send_msg!(resp);
+													self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
 												}
 											},
 											wire::Message::Pong(_msg) => {
