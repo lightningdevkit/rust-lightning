@@ -5281,6 +5281,79 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 }
 
 #[test]
+fn test_key_derivation_params() {
+	// This test is a copy of test_dynamic_spendable_outputs_local_htlc_timeout_tx, with
+	// a key manager rotation to test that key_derivation_params returned in DynamicOutputP2WSH
+	// let us re-derive the channel key set to then derive a delayed_payment_key.
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+
+	// We manually create the node configuration to backup the seed.
+	let mut rng = thread_rng();
+	let mut seed = [0; 32];
+	rng.fill_bytes(&mut seed);
+	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+	let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[0].chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator);
+	let node = NodeCfg { chain_monitor: &chanmon_cfgs[0].chain_monitor, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chan_monitor, keys_manager, node_seed: seed };
+	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	node_cfgs.remove(0);
+	node_cfgs.insert(0, node);
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create some initial channels
+	// Create a dummy channel to advance index by one and thus test re-derivation correctness
+	// for node 0
+	let chan_0 = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	assert_ne!(chan_0.3.output[0].script_pubkey, chan_1.3.output[0].script_pubkey);
+
+	let (_, our_payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
+	let local_txn_0 = get_local_commitment_txn!(nodes[0], chan_0.2);
+	let local_txn_1 = get_local_commitment_txn!(nodes[0], chan_1.2);
+	assert_eq!(local_txn_1[0].input.len(), 1);
+	check_spends!(local_txn_1[0], chan_1.3);
+
+	// We check funding pubkey are unique
+	let (from_0_funding_key_0, from_0_funding_key_1) = (PublicKey::from_slice(&local_txn_0[0].input[0].witness[3][2..35]), PublicKey::from_slice(&local_txn_0[0].input[0].witness[3][36..69]));
+	let (from_1_funding_key_0, from_1_funding_key_1) = (PublicKey::from_slice(&local_txn_1[0].input[0].witness[3][2..35]), PublicKey::from_slice(&local_txn_1[0].input[0].witness[3][36..69]));
+	if from_0_funding_key_0 == from_1_funding_key_0
+	    || from_0_funding_key_0 == from_1_funding_key_1
+	    || from_0_funding_key_1 == from_1_funding_key_0
+	    || from_0_funding_key_1 == from_1_funding_key_1 {
+		panic!("Funding pubkeys aren't unique");
+	}
+
+	// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![local_txn_1[0].clone()] }, 200);
+	check_closed_broadcast!(nodes[0], false);
+	check_added_monitors!(nodes[0], 1);
+
+	let htlc_timeout = {
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[0], local_txn_1[0]);
+		node_txn[0].clone()
+	};
+
+	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
+	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 201, true, header_201.bitcoin_hash());
+	expect_payment_failed!(nodes[0], our_payment_hash, true);
+
+	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
+	let new_keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+	let spend_txn = check_spendable_outputs!(nodes[0], 1, new_keys_manager, 100000);
+	assert_eq!(spend_txn.len(), 3);
+	assert_eq!(spend_txn[0], spend_txn[1]);
+	check_spends!(spend_txn[0], local_txn_1[0]);
+	check_spends!(spend_txn[2], htlc_timeout);
+}
+
+#[test]
 fn test_static_output_closing_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
