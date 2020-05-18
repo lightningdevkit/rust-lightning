@@ -202,6 +202,36 @@ impl RoutingMessageHandler for NetGraphMsgHandler {
 }
 
 #[derive(PartialEq, Debug)]
+/// Details about the quality of a channel stored in a field within a DirectionalChannelInfo 
+/// object. Updates on PaymentSent/Failed events.
+pub struct ChannelScore {
+	/// Increments on detection of a PaymentSent event occuring
+	pub successes: u64,
+	/// Increments on detection of a PaymentFailed event occurring
+	pub failures: u64,
+	// Many more to come...
+}
+
+impl Readable for ChannelScore {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<ChannelScore, DecodeError> {
+		let successes: u64 = Readable::read(reader)?;
+		let failures: u64 = Readable::read(reader)?;
+		Ok(ChannelScore {
+			successes,
+			failures,
+		})
+	}
+}
+
+impl Writeable for ChannelScore {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.successes.write(writer)?;
+		self.failures.write(writer)?;
+		Ok(())
+	}
+}
+
+#[derive(PartialEq, Debug)]
 /// Details about one direction of a channel. Received
 /// within a channel update.
 pub struct DirectionalChannelInfo {
@@ -221,6 +251,9 @@ pub struct DirectionalChannelInfo {
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
 	pub last_update_message: Option<msgs::ChannelUpdate>,
+	/// Tracks a channel's performance over time. Gets updated on the detection of a
+	/// PaymentSent or PaymentFailed event
+	pub channel_score: ChannelScore,
 }
 
 impl std::fmt::Display for DirectionalChannelInfo {
@@ -236,7 +269,8 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 	cltv_expiry_delta,
 	htlc_minimum_msat,
 	fees,
-	last_update_message
+	last_update_message,
+	channel_score
 });
 
 #[derive(PartialEq)]
@@ -676,7 +710,11 @@ impl NetworkGraph {
 								base_msat: msg.contents.fee_base_msat,
 								proportional_millionths: msg.contents.fee_proportional_millionths,
 							},
-							last_update_message
+							last_update_message,
+							channel_score: ChannelScore {
+								successes: 0,
+								failures: 0,
+							}
 						};
 						$target = Some(updated_channel_dir_info);
 					}
