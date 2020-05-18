@@ -321,7 +321,7 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// issues such as overly long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
-pub type SimpleArcChannelManager<M, T, F> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>>>;
+pub type SimpleArcChannelManager<M, T, F, L> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
@@ -331,7 +331,7 @@ pub type SimpleArcChannelManager<M, T, F> = Arc<ChannelManager<InMemoryChannelKe
 /// helps with issues such as long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, M, T, F> = ChannelManager<InMemoryChannelKeys, &'a M, &'b T, &'c KeysManager, &'d F>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<InMemoryChannelKeys, &'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -369,11 +369,12 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, M, T, F> = ChannelManager<InMem
 /// essentially you should default to using a SimpleRefChannelManager, and use a
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
-pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref>
+pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+				L::Target: Logger,
 {
 	default_configuration: UserConfig,
 	genesis_hash: BlockHash,
@@ -414,7 +415,7 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
 
 	keys_manager: K,
 
-	logger: Arc<Logger>,
+	logger: L,
 }
 
 /// The amount of time we require our counterparty wait to claim their money (ie time between when
@@ -542,7 +543,7 @@ macro_rules! handle_error {
 					}
 				}
 
-				log_error!($self, "{}", err.err);
+				log_error!($self.logger, "{}", err.err);
 				if let msgs::ErrorAction::IgnoreError = err.action {
 				} else {
 					msg_events.push(events::MessageSendEvent::HandleError {
@@ -570,7 +571,7 @@ macro_rules! break_chan_entry {
 				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
-				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
+				log_trace!($self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -590,7 +591,7 @@ macro_rules! try_chan_entry {
 				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
 			},
 			Err(ChannelError::Close(msg)) => {
-				log_trace!($self, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
+				log_trace!($self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -598,7 +599,7 @@ macro_rules! try_chan_entry {
 				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()))
 			},
 			Err(ChannelError::CloseDelayBroadcast(msg)) => {
-				log_error!($self, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($entry.key()[..]), msg);
+				log_error!($self.logger, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($entry.key()[..]), msg);
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -617,7 +618,7 @@ macro_rules! handle_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
-				log_error!($self, "Closing channel {} due to monitor update PermanentFailure", log_bytes!($entry.key()[..]));
+				log_error!($self.logger, "Closing channel {} due to monitor update PermanentFailure", log_bytes!($entry.key()[..]));
 				let (channel_id, mut chan) = $entry.remove_entry();
 				if let Some(short_id) = chan.get_short_channel_id() {
 					$channel_state.short_to_id.remove(&short_id);
@@ -635,7 +636,7 @@ macro_rules! handle_monitor_err {
 				res
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
-				log_info!($self, "Disabling channel {} due to monitor update TemporaryFailure. On restore will send {} and process {} forwards and {} fails",
+				log_info!($self.logger, "Disabling channel {} due to monitor update TemporaryFailure. On restore will send {} and process {} forwards and {} fails",
 						log_bytes!($entry.key()[..]),
 						if $resend_commitment && $resend_raa {
 								match $action_type {
@@ -681,11 +682,12 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelManager<ChanSigner, M, T, K, F>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+        L::Target: Logger,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -705,7 +707,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
 	/// `block_(dis)connected` methods, which will notify all registered listeners in one
 	/// go.
-	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: Arc<Logger>, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M, T, K, F>, secp256k1::Error> {
+	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Result<ChannelManager<ChanSigner, M, T, K, F, L>, secp256k1::Error> {
 		let secp_ctx = Secp256k1::new();
 
 		let res = ChannelManager {
@@ -761,7 +763,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		}
 
 		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, Arc::clone(&self.logger), config)?;
+		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, config)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone(), &self.fee_estimator);
 
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -880,7 +882,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
 		let (funding_txo_option, monitor_update, mut failed_htlcs) = shutdown_res;
-		log_trace!(self, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
+		log_trace!(self.logger, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
@@ -910,7 +912,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				return;
 			}
 		};
-		log_trace!(self, "Force-closing channel {}", log_bytes!(channel_id[..]));
+		log_trace!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
 		self.finish_force_close_channel(chan.force_shutdown(true));
 		if let Ok(update) = self.get_channel_update(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -932,7 +934,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
-					log_info!(self, "Failed to accept/forward incoming HTLC: {}", $msg);
+					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 					return (PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
@@ -975,7 +977,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
-					log_info!(self, "Failed to accept/forward incoming HTLC: {}", $msg);
+					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 					if channel_state.is_none() {
 						channel_state = Some(self.channel_state.lock().unwrap());
 					}
@@ -1230,7 +1232,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 	// Only public for testing, this should otherwise never be called direcly
 	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32) -> Result<(), APIError> {
-		log_trace!(self, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
+		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
 		let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
@@ -1263,7 +1265,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						path: path.clone(),
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
-					}, onion_packet), channel_state, chan)
+					}, onion_packet, &self.logger), channel_state, chan)
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
 						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
@@ -1414,7 +1416,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		let (chan, msg) = {
 			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
 				Some(mut chan) => {
-					(chan.get_outbound_funding_created(funding_txo)
+					(chan.get_outbound_funding_created(funding_txo, &self.logger)
 						.map_err(|e| if let ChannelError::Close(msg) = e {
 							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(true), None)
 						} else { unreachable!(); })
@@ -1447,7 +1449,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 	fn get_announcement_sigs(&self, chan: &Channel<ChanSigner>) -> Option<msgs::AnnouncementSignatures> {
 		if !chan.should_announce() {
-			log_trace!(self, "Can't send announcement_signatures for private channel {}", log_bytes!(chan.channel_id()));
+			log_trace!(self.logger, "Can't send announcement_signatures for private channel {}", log_bytes!(chan.channel_id()));
 			return None
 		}
 
@@ -1569,7 +1571,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 										routing: PendingHTLCRouting::Forward {
 											onion_packet, ..
 										}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value }, } => {
-									log_trace!(self, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(payment_hash.0), prev_short_channel_id, short_chan_id);
+									log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(payment_hash.0), prev_short_channel_id, short_chan_id);
 									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										htlc_id: prev_htlc_id,
@@ -1578,7 +1580,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 									match chan.get_mut().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet) {
 										Err(e) => {
 											if let ChannelError::Ignore(msg) = e {
-												log_trace!(self, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
+												log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
@@ -1608,11 +1610,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 									panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
 								},
 								HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
-									log_trace!(self, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
+									log_trace!(self.logger, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
 									match chan.get_mut().get_update_fail_htlc(htlc_id, err_packet) {
 										Err(e) => {
 											if let ChannelError::Ignore(msg) = e {
-												log_trace!(self, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);
+												log_trace!(self.logger, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);
 											} else {
 												panic!("Stated return value requirements in get_update_fail_htlc() were not met");
 											}
@@ -1638,7 +1640,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 						}
 
 						if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-							let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment() {
+							let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment(&self.logger) {
 								Ok(res) => res,
 								Err(e) => {
 									// We surely failed send_commitment due to bad keys, in that case
@@ -1649,7 +1651,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 											panic!("Stated return value requirements in send_commitment() were not met");
 										},
 										ChannelError::Close(msg) => {
-											log_trace!(self, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
+											log_trace!(self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
 											let (channel_id, mut channel) = chan.remove_entry();
 											if let Some(short_id) = channel.get_short_channel_id() {
 												channel_state.short_to_id.remove(&short_id);
@@ -1832,7 +1834,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 		//timer handling.
 		match source {
 			HTLCSource::OutboundRoute { ref path, .. } => {
-				log_trace!(self, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
+				log_trace!(self.logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				mem::drop(channel_state_lock);
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
@@ -1890,12 +1892,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
-						log_trace!(self, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
+						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
 						let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
 						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
 					},
 					HTLCFailReason::LightningError { err } => {
-						log_trace!(self, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
+						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
 						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &err.data)
 					}
 				};
@@ -1993,13 +1995,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 							if let msgs::ErrorAction::IgnoreError = e.1.err.action {
 								// We got a temporary failure updating monitor, but will claim the
 								// HTLC when the monitor updating is restored (or on chain).
-								log_error!(self, "Temporary failure claiming HTLC, treating as success: {}", e.1.err.err);
+								log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", e.1.err.err);
 								claimed_any_htlcs = true;
 							} else { errs.push(e); }
 						},
 						Err(None) if is_mpp => unreachable!("We already checked for channel existence, we can't fail here!"),
 						Err(None) => {
-							log_warn!(self, "Channel we expected to claim an HTLC from was closed.");
+							log_warn!(self.logger, "Channel we expected to claim an HTLC from was closed.");
 						},
 						Ok(()) => claimed_any_htlcs = true,
 					}
@@ -2031,7 +2033,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 
 		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(chan_id) {
 			let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage) {
+			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
 				Ok((msgs, monitor_option)) => {
 					if let Some(monitor_update) = monitor_option {
 						if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
@@ -2146,7 +2148,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				return;
 			}
 
-			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored();
+			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored(&self.logger);
 			if !pending_forwards.is_empty() {
 				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), pending_forwards));
 			}
@@ -2216,7 +2218,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_features, msg, 0, Arc::clone(&self.logger), &self.default_configuration)
+		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_features, msg, 0, &self.default_configuration)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -2267,7 +2269,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
 					}
-					(try_chan_entry!(self, chan.get_mut().funding_created(msg), channel_state, chan), chan.remove())
+					(try_chan_entry!(self, chan.get_mut().funding_created(msg, &self.logger), channel_state, chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
 			}
@@ -2318,7 +2320,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					if chan.get().get_their_node_id() != *their_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 					}
-					let monitor = match chan.get_mut().funding_signed(&msg) {
+					let monitor = match chan.get_mut().funding_signed(&msg, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
@@ -2348,7 +2350,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 				}
 				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
 				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
-					log_trace!(self, "Sending announcement_signatures for {} in response to funding_locked", log_bytes!(chan.get().channel_id()));
+					log_trace!(self.logger, "Sending announcement_signatures for {} in response to funding_locked", log_bytes!(chan.get().channel_id()));
 					// If we see locking block before receiving remote funding_locked, we broadcast our
 					// announcement_sigs at remote funding_locked reception. If we receive remote
 					// funding_locked before seeing locking block, we broadcast our announcement_sigs at locking
@@ -2448,7 +2450,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 			}
 		};
 		if let Some(broadcast_tx) = tx {
-			log_trace!(self, "Broadcast onchain {}", log_tx!(broadcast_tx));
+			log_trace!(self.logger, "Broadcast onchain {}", log_tx!(broadcast_tx));
 			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
 		}
 		if let Some(chan) = chan_option {
@@ -2580,16 +2582,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
-						match chan.get_mut().commitment_signed(&msg, &self.fee_estimator) {
-					Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
-					Err((Some(update), e)) => {
-						assert!(chan.get().is_awaiting_monitor_update());
-						let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), update);
-						try_chan_entry!(self, Err(e), channel_state, chan);
-						unreachable!();
-					},
-					Ok(res) => res
-				};
+					match chan.get_mut().commitment_signed(&msg, &self.fee_estimator, &self.logger) {
+						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
+						Err((Some(update), e)) => {
+							assert!(chan.get().is_awaiting_monitor_update());
+							let _ = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), update);
+							try_chan_entry!(self, Err(e), channel_state, chan);
+							unreachable!();
+						},
+						Ok(res) => res
+					};
 				if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
@@ -2669,7 +2671,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
-						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator), channel_state, chan);
+						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
@@ -2771,7 +2773,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
 				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
-					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg), channel_state, chan);
+					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
 				if let Some(monitor_update) = monitor_update_opt {
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						// channel_reestablish doesn't guarantee the order it returns is sensical
@@ -2857,7 +2859,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 					}
 					their_node_id = chan.get().get_their_node_id();
 					if let Some((update_fee, commitment_signed, monitor_update)) =
-							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw), channel_state, chan)
+							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw, &self.logger), channel_state, chan)
 					{
 						if let Err(_e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							unimplemented!();
@@ -2886,11 +2888,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> ChannelMan
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
@@ -2900,10 +2903,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::Me
 			//TODO: This behavior should be documented.
 			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
-					log_trace!(self, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+					log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
-					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+					log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
 					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 				}
 			}
@@ -2916,11 +2919,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::Me
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K, F>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+				L::Target: Logger,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
@@ -2930,10 +2934,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::Ev
 			//TODO: This behavior should be documented.
 			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
 				if let Some(preimage) = htlc_update.payment_preimage {
-					log_trace!(self, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+					log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
 					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
 				} else {
-					log_trace!(self, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+					log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
 					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 				}
 			}
@@ -2946,16 +2950,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref> events::Ev
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send>
-	ChainListener for ChannelManager<ChanSigner, M, T, K, F>
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
+	ChainListener for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+				L::Target: Logger,
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
 		let header_hash = header.bitcoin_hash();
-		log_trace!(self, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
+		log_trace!(self.logger, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
@@ -2980,13 +2985,13 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 							msg: funding_locked,
 						});
 						if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
-							log_trace!(self, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
+							log_trace!(self.logger, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
 							pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 								node_id: channel.get_their_node_id(),
 								msg: announcement_sigs,
 							});
 						} else {
-							log_trace!(self, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
+							log_trace!(self.logger, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
 						}
 						short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 					}
@@ -3001,7 +3006,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					for tx in txn_matched {
 						for inp in tx.input.iter() {
 							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
-								log_trace!(self, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));
+								log_trace!(self.logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_id.remove(&short_id);
 								}
@@ -3019,7 +3024,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 						}
 					}
 				}
-				if channel.is_funding_initiated() && channel.channel_monitor().would_broadcast_at_height(height) {
+				if channel.is_funding_initiated() && channel.channel_monitor().would_broadcast_at_height(height, &self.logger) {
 					if let Some(short_id) = channel.get_short_channel_id() {
 						short_to_id.remove(&short_id);
 					}
@@ -3113,12 +3118,13 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send>
-	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K, F>
+impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
+	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+        L::Target: Logger,
 {
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3211,7 +3217,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			if no_connection_possible {
-				log_debug!(self, "Failing all channels with {} due to no_connection_possible", log_pubkey!(their_node_id));
+				log_debug!(self.logger, "Failing all channels with {} due to no_connection_possible", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
 						if let Some(short_id) = chan.get_short_channel_id() {
@@ -3229,10 +3235,10 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					}
 				});
 			} else {
-				log_debug!(self, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
+				log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
-						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused();
+						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {
 							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
@@ -3286,7 +3292,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	}
 
 	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
-		log_debug!(self, "Generating channel_reestablish events for {}", log_pubkey!(their_node_id));
+		log_debug!(self.logger, "Generating channel_reestablish events for {}", log_pubkey!(their_node_id));
 
 		let _ = self.total_consistency_lock.read().unwrap();
 
@@ -3318,7 +3324,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 				} else {
 					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
 						node_id: chan.get_their_node_id(),
-						msg: chan.get_channel_reestablish(),
+						msg: chan.get_channel_reestablish(&self.logger),
 					});
 					true
 				}
@@ -3552,11 +3558,12 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F>
+impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+        L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _ = self.total_consistency_lock.write().unwrap();
@@ -3635,11 +3642,12 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 /// 7) Register the new ChannelManager with your ChainWatchInterface.
-pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref>
+pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+        L::Target: Logger,
 {
 
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
@@ -3663,7 +3671,7 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	pub tx_broadcaster: T,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
-	pub logger: Arc<Logger>,
+	pub logger: L,
 	/// Default settings used for new channels. Any existing channels will continue to use the
 	/// runtime settings which were stored when the ChannelManager was serialized.
 	pub default_config: UserConfig,
@@ -3683,27 +3691,29 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F>>)
+impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F, L>>)
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+        L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<ChanSigner, M, T, K, F>)>::read(reader, args)?;
+	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F>)
+impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)
 	where M::Target: ManyChannelMonitor<ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
+        L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F>) -> Result<Self, DecodeError> {
+	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -3721,7 +3731,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
-			let mut channel: Channel<ChanSigner> = ReadableArgs::read(reader, args.logger.clone())?;
+			let mut channel: Channel<ChanSigner> = Readable::read(reader)?;
 			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -3742,7 +3752,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 					// But if the channel is behind of the monitor, close the channel:
 					let (_, _, mut new_failed_htlcs) = channel.force_shutdown(true);
 					failed_htlcs.append(&mut new_failed_htlcs);
-					monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster);
+					monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster, &args.logger);
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, channel.channel_id());
@@ -3756,7 +3766,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
-				monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster);
+				monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster, &args.logger);
 			}
 		}
 

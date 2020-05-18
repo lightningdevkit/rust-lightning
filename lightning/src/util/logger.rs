@@ -16,7 +16,6 @@
 
 use std::cmp;
 use std::fmt;
-use std::sync::Arc;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 
@@ -121,13 +120,11 @@ pub trait Logger: Sync + Send {
 	fn log(&self, record: &Record);
 }
 
-pub(crate) struct LogHolder<'a> { pub(crate) logger: &'a Arc<Logger> }
-
 #[cfg(test)]
 mod tests {
 	use util::logger::{Logger, Level};
 	use util::test_utils::TestLogger;
-	use std::sync::{Arc};
+	use std::sync::Arc;
 
 	#[test]
 	fn test_level_show() {
@@ -148,11 +145,11 @@ mod tests {
 		}
 
 		fn call_macros(&self) {
-			log_error!(self, "This is an error");
-			log_warn!(self, "This is a warning");
-			log_info!(self, "This is an info");
-			log_debug!(self, "This is a debug");
-			log_trace!(self, "This is a trace");
+			log_error!(self.logger, "This is an error");
+			log_warn!(self.logger, "This is a warning");
+			log_info!(self.logger, "This is an info");
+			log_debug!(self.logger, "This is a debug");
+			log_trace!(self.logger, "This is a trace");
 		}
 	}
 

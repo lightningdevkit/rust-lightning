@@ -15,7 +15,6 @@ use util::test_utils;
 use util::test_utils::TestChannelMonitor;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
-use util::logger::Logger;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable, Readable};
 
@@ -34,12 +33,12 @@ use rand::{thread_rng,Rng};
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 use std::mem;
 use std::collections::HashMap;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
-pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
+pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
 	assert!(chain.does_match_tx(tx));
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
@@ -49,7 +48,7 @@ pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifi
 	}
 }
 
-pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
+pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
 	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
 	for i in 2..depth + 1 {
@@ -62,30 +61,32 @@ pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>
 pub struct TestChanMonCfg {
 	pub tx_broadcaster: test_utils::TestBroadcaster,
 	pub fee_estimator: test_utils::TestFeeEstimator,
+	pub chain_monitor: chaininterface::ChainWatchInterfaceUtil,
+	pub logger: test_utils::TestLogger,
 }
 
 pub struct NodeCfg<'a> {
-	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
+	pub chain_monitor: &'a chaininterface::ChainWatchInterfaceUtil,
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
 	pub fee_estimator: &'a test_utils::TestFeeEstimator,
 	pub chan_monitor: test_utils::TestChannelMonitor<'a>,
 	pub keys_manager: test_utils::TestKeysInterface,
-	pub logger: Arc<test_utils::TestLogger>,
+	pub logger: &'a test_utils::TestLogger,
 	pub node_seed: [u8; 32],
 }
 
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
-	pub block_notifier: chaininterface::BlockNotifierRef<'a>,
-	pub chain_monitor: Arc<chaininterface::ChainWatchInterfaceUtil>,
+	pub block_notifier: chaininterface::BlockNotifierRef<'a, &'c chaininterface::ChainWatchInterfaceUtil>,
+	pub chain_monitor: &'c chaininterface::ChainWatchInterfaceUtil,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
 	pub chan_monitor: &'b test_utils::TestChannelMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
-	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>,
-	pub net_graph_msg_handler: NetGraphMsgHandler,
+	pub node: &'a ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>,
+	pub net_graph_msg_handler: NetGraphMsgHandler<&'c chaininterface::ChainWatchInterfaceUtil, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
-	pub logger: Arc<test_utils::TestLogger>
+	pub logger: &'c test_utils::TestLogger,
 }
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
@@ -104,8 +105,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
 				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-					Arc::clone(&self.chain_monitor) as Arc<chaininterface::ChainWatchInterface>,
-					Arc::clone(&self.logger) as Arc<Logger>, RwLock::new(network_graph_deser)
+					self.chain_monitor, self.logger, RwLock::new(network_graph_deser)
 				);
 				let mut chan_progress = 0;
 				loop {
@@ -140,7 +140,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					old_monitor.write_for_disk(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
-						&mut ::std::io::Cursor::new(&w.0), Arc::clone(&self.logger) as Arc<Logger>).unwrap();
+						&mut ::std::io::Cursor::new(&w.0)).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}
 			}
@@ -155,25 +155,25 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: UserConfig::default(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
 					monitor: self.chan_monitor,
 					tx_broadcaster: self.tx_broadcaster.clone(),
-					logger: Arc::new(test_utils::TestLogger::new()),
+					logger: &test_utils::TestLogger::new(),
 					channel_monitors: &mut channel_monitors,
 				}).unwrap();
 			}
 
-			let chain_watch = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, Arc::clone(&self.logger) as Arc<Logger>));
-			let channel_monitor = test_utils::TestChannelMonitor::new(chain_watch.clone(), self.tx_broadcaster.clone(), self.logger.clone(), &feeest);
+			let chain_watch = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
+			let channel_monitor = test_utils::TestChannelMonitor::new(&chain_watch, self.tx_broadcaster.clone(), &self.logger, &feeest);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo(), deserialized_monitor) {
 					panic!();
 				}
 			}
-			if *chain_watch != *self.chain_monitor {
+			if chain_watch != *self.chain_monitor {
 				panic!();
 			}
 		}
@@ -266,7 +266,7 @@ macro_rules! get_local_commitment_txn {
 			let mut commitment_txn = None;
 			for (funding_txo, monitor) in monitors.iter_mut() {
 				if funding_txo.to_channel_id() == $channel_id {
-					commitment_txn = Some(monitor.unsafe_get_latest_local_commitment_txn());
+					commitment_txn = Some(monitor.unsafe_get_latest_local_commitment_txn(&$node.logger));
 					break;
 				}
 			}
@@ -952,8 +952,8 @@ pub const TEST_FINAL_CLTV: u32 = 32;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let logger = Arc::new(test_utils::TestLogger::new());
-	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
+	let logger = test_utils::TestLogger::new();
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -964,9 +964,9 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, logger.clone()).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1058,10 +1058,12 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: 
 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
-	for _ in 0..node_count {
+	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator });
+		let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
+		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_monitor, logger });
 	}
 
 	chan_mon_cfgs
@@ -1072,19 +1074,17 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	let mut rng = thread_rng();
 
 	for i in 0..node_count {
-		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
-		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet, logger.clone() as Arc<Logger>));
 		let mut seed = [0; 32];
 		rng.fill_bytes(&mut seed);
-		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet, logger.clone() as Arc<Logger>);
-		let chan_monitor = test_utils::TestChannelMonitor::new(chain_monitor.clone(), &chanmon_cfgs[i].tx_broadcaster, logger.clone(), &chanmon_cfgs[i].fee_estimator);
-		nodes.push(NodeCfg { chain_monitor, logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chan_monitor, keys_manager, node_seed: seed });
+		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[i].chain_monitor, &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
+		nodes.push(NodeCfg { chain_monitor: &chanmon_cfgs[i].chain_monitor, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chan_monitor, keys_manager, node_seed: seed });
 	}
 
 	nodes
 }
 
-pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingChannelKeys, &'a TestChannelMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator>> {
+pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingChannelKeys, &'a TestChannelMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'b test_utils::TestLogger>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let mut default_config = UserConfig::default();
@@ -1098,21 +1098,21 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 	chanmgrs
 }
 
-pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator>>) -> Vec<Node<'a, 'b, 'c>> {
+pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeCfg<'c>>, chan_mgrs: &'a Vec<ChannelManager<EnforcingChannelKeys, &'b TestChannelMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>>) -> Vec<Node<'a, 'b, 'c>> {
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
 
 	for i in 0..node_count {
-		let block_notifier = chaininterface::BlockNotifier::new(cfgs[i].chain_monitor.clone());
+		let block_notifier = chaininterface::BlockNotifier::new(cfgs[i].chain_monitor);
 		block_notifier.register_listener(&cfgs[i].chan_monitor.simple_monitor as &chaininterface::ChainListener);
 		block_notifier.register_listener(&chan_mgrs[i] as &chaininterface::ChainListener);
-		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_monitor.clone(), cfgs[i].logger.clone() as Arc<Logger>);
-		nodes.push(Node{ chain_monitor: cfgs[i].chain_monitor.clone(), block_notifier,
+		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_monitor, cfgs[i].logger);
+		nodes.push(Node{ chain_monitor: &cfgs[i].chain_monitor, block_notifier,
 		                 tx_broadcaster: cfgs[i].tx_broadcaster, chan_monitor: &cfgs[i].chan_monitor,
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
-		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger.clone(),
+		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
 		})
 	}
 
