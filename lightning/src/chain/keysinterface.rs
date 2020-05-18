@@ -7,7 +7,6 @@ use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
-use bitcoin::util::address::Address;
 use bitcoin::util::bip143;
 
 use bitcoin::hashes::{Hash, HashEngine};

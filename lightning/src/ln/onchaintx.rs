@@ -50,10 +50,11 @@ enum OnchainEvent {
 
 /// Cache remote basepoint to compute any transaction on
 /// remote outputs, either justice or preimage/timeout transactions.
-struct RemoteTxCache {
-	remote_delayed_payment_base_key: PublicKey,
-	remote_htlc_base_key: PublicKey,
-	per_htlc: HashMap<Txid, Vec<HTLCOutputInCommitment>>
+#[derive(PartialEq)]
+pub(super) struct RemoteTxCache {
+	pub(super) remote_delayed_payment_base_key: PublicKey,
+	pub(super) remote_htlc_base_key: PublicKey,
+	pub(super) per_htlc: HashMap<Txid, Vec<HTLCOutputInCommitment>>
 }
 
 /// Higher-level cache structure needed to re-generate bumped claim txn if needed
@@ -596,9 +597,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					inputs_witnesses_weight += Self::get_witnesses_weight(&[*input_descriptor]);
 					amt += *amount;
 				},
-				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
+				&InputMaterial::RemoteHTLC { ref preimage, ref htlc, .. } => {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
-					amt += *amount;
+					amt += htlc.amount_msat / 1000;
 				},
 				&InputMaterial::LocalHTLC { .. } => {
 					dynamic_fee = false;
@@ -631,33 +632,19 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::Revoked { ref per_commitment_point, ref per_commitment_key, ref input_descriptor, ref amount } => {
-						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &self.remote_tx_cache.remote_delayed_payment_base_key, &self.remote_tx_cache.remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+					&InputMaterial::Revoked { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc } => {
+						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
 
-							let mut this_htlc = None;
-							if *input_descriptor != InputDescriptors::RevokedOutput {
-								if let Some(htlcs) = self.remote_tx_cache.per_htlc.get(&outp.txid) {
-									for htlc in htlcs {
-										if htlc.transaction_output_index.unwrap() == outp.vout {
-											this_htlc = Some(htlc);
-										}
-									}
-								}
-							}
-
-							let witness_script = if *input_descriptor != InputDescriptors::RevokedOutput && this_htlc.is_some() {
-								chan_utils::get_htlc_redeemscript_with_explicit_keys(&this_htlc.unwrap(), &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key)
-							} else if *input_descriptor != InputDescriptors::RevokedOutput {
-								return None;
+							let witness_script = if let Some(ref htlc) = *htlc {
+								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key)
 							} else {
 								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, self.remote_csv, &chan_keys.a_delayed_payment_key)
 							};
 
-							let is_htlc = *input_descriptor != InputDescriptors::RevokedOutput;
-							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, &witness_script, *amount, &per_commitment_key, &chan_keys.revocation_key, is_htlc,  &self.secp_ctx) {
+							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, &witness_script, *amount, &per_commitment_key, &chan_keys.revocation_key, htlc.is_some(),  &self.secp_ctx) {
 								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-								if is_htlc {
+								if htlc.is_some() {
 									bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
 								} else {
 									bumped_tx.input[i].witness.push(vec!(1));
@@ -669,21 +656,12 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 						}
 					},
-					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref preimage, ref amount, ref locktime } => {
-						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &self.remote_tx_cache.remote_delayed_payment_base_key, &self.remote_tx_cache.remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
-							let mut this_htlc = None;
-							if let Some(htlcs) = self.remote_tx_cache.per_htlc.get(&outp.txid) {
-								for htlc in htlcs {
-									if htlc.transaction_output_index.unwrap() == outp.vout {
-										this_htlc = Some(htlc);
-									}
-								}
-							}
-							if this_htlc.is_none() { return None; }
-							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&this_htlc.unwrap(), &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
+					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref preimage, ref htlc } => {
+						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
 
-							if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &witness_script, *amount, &per_commitment_point, preimage, &self.secp_ctx) {
+							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
+							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &witness_script, htlc.amount_msat / 1000, &per_commitment_point, preimage, &self.secp_ctx) {
 								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 								if let &Some(preimage) = preimage {

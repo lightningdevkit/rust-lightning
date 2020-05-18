@@ -31,7 +31,7 @@ use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, LocalCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
+use ln::onchaintx::{OnchainTxHandler, InputDescriptors, RemoteTxCache};
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
@@ -435,15 +435,19 @@ struct LocalSignedTx {
 pub(crate) enum InputMaterial {
 	Revoked {
 		per_commitment_point: PublicKey,
+		remote_delayed_payment_base_key: PublicKey,
+		remote_htlc_base_key: PublicKey,
 		per_commitment_key: SecretKey,
 		input_descriptor: InputDescriptors,
 		amount: u64,
+		htlc: Option<HTLCOutputInCommitment>
 	},
 	RemoteHTLC {
 		per_commitment_point: PublicKey,
+		remote_delayed_payment_base_key: PublicKey,
+		remote_htlc_base_key: PublicKey,
 		preimage: Option<PaymentPreimage>,
-		amount: u64,
-		locktime: u32,
+		htlc: HTLCOutputInCommitment
 	},
 	LocalHTLC {
 		preimage: Option<PaymentPreimage>,
@@ -457,19 +461,23 @@ pub(crate) enum InputMaterial {
 impl Writeable for InputMaterial  {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
-			&InputMaterial::Revoked { ref per_commitment_point, ref per_commitment_key, ref input_descriptor, ref amount} => {
+			&InputMaterial::Revoked { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc} => {
 				writer.write_all(&[0; 1])?;
 				per_commitment_point.write(writer)?;
+				remote_delayed_payment_base_key.write(writer)?;
+				remote_htlc_base_key.write(writer)?;
 				writer.write_all(&per_commitment_key[..])?;
 				input_descriptor.write(writer)?;
 				writer.write_all(&byte_utils::be64_to_array(*amount))?;
+				htlc.write(writer)?;
 			},
-			&InputMaterial::RemoteHTLC { ref per_commitment_point, ref preimage, ref amount, ref locktime } => {
+			&InputMaterial::RemoteHTLC { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref preimage, ref htlc} => {
 				writer.write_all(&[1; 1])?;
 				per_commitment_point.write(writer)?;
+				remote_delayed_payment_base_key.write(writer)?;
+				remote_htlc_base_key.write(writer)?;
 				preimage.write(writer)?;
-				writer.write_all(&byte_utils::be64_to_array(*amount))?;
-				writer.write_all(&byte_utils::be32_to_array(*locktime))?;
+				htlc.write(writer)?;
 			},
 			&InputMaterial::LocalHTLC { ref preimage, ref amount } => {
 				writer.write_all(&[2; 1])?;
@@ -490,26 +498,34 @@ impl Readable for InputMaterial {
 		let input_material = match <u8 as Readable>::read(reader)? {
 			0 => {
 				let per_commitment_point = Readable::read(reader)?;
+				let remote_delayed_payment_base_key = Readable::read(reader)?;
+				let remote_htlc_base_key = Readable::read(reader)?;
 				let per_commitment_key = Readable::read(reader)?;
 				let input_descriptor = Readable::read(reader)?;
 				let amount = Readable::read(reader)?;
+				let htlc = Readable::read(reader)?;
 				InputMaterial::Revoked {
 					per_commitment_point,
+					remote_delayed_payment_base_key,
+					remote_htlc_base_key,
 					per_commitment_key,
 					input_descriptor,
-					amount
+					amount,
+					htlc
 				}
 			},
 			1 => {
 				let per_commitment_point = Readable::read(reader)?;
+				let remote_delayed_payment_base_key = Readable::read(reader)?;
+				let remote_htlc_base_key = Readable::read(reader)?;
 				let preimage = Readable::read(reader)?;
-				let amount = Readable::read(reader)?;
-				let locktime = Readable::read(reader)?;
+				let htlc = Readable::read(reader)?;
 				InputMaterial::RemoteHTLC {
 					per_commitment_point,
+					remote_delayed_payment_base_key,
+					remote_htlc_base_key,
 					preimage,
-					amount,
-					locktime
+					htlc
 				}
 			},
 			2 => {
@@ -717,8 +733,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	current_remote_commitment_txid: Option<Txid>,
 	prev_remote_commitment_txid: Option<Txid>,
 
-	their_htlc_base_key: PublicKey,
-	their_delayed_payment_base_key: PublicKey,
+	remote_tx_cache: RemoteTxCache,
 	funding_redeemscript: Script,
 	channel_value_satoshis: u64,
 	// first is the idx of the first of the two revocation points
@@ -809,8 +824,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.funding_info != other.funding_info ||
 			self.current_remote_commitment_txid != other.current_remote_commitment_txid ||
 			self.prev_remote_commitment_txid != other.prev_remote_commitment_txid ||
-			self.their_htlc_base_key != other.their_htlc_base_key ||
-			self.their_delayed_payment_base_key != other.their_delayed_payment_base_key ||
+			self.remote_tx_cache != other.remote_tx_cache ||
 			self.funding_redeemscript != other.funding_redeemscript ||
 			self.channel_value_satoshis != other.channel_value_satoshis ||
 			self.their_cur_revocation_points != other.their_cur_revocation_points ||
@@ -878,8 +892,16 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		self.current_remote_commitment_txid.write(writer)?;
 		self.prev_remote_commitment_txid.write(writer)?;
 
-		writer.write_all(&self.their_htlc_base_key.serialize())?;
-		writer.write_all(&self.their_delayed_payment_base_key.serialize())?;
+		self.remote_tx_cache.remote_delayed_payment_base_key.write(writer)?;
+		self.remote_tx_cache.remote_htlc_base_key.write(writer)?;
+		writer.write_all(&byte_utils::be64_to_array(self.remote_tx_cache.per_htlc.len() as u64))?;
+		for (ref txid, ref htlcs) in self.remote_tx_cache.per_htlc.iter() {
+			writer.write_all(&txid[..])?;
+			writer.write_all(&byte_utils::be64_to_array(htlcs.len() as u64))?;
+			for &ref htlc in htlcs.iter() {
+				htlc.write(writer)?;
+			}
+		}
 		self.funding_redeemscript.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 
@@ -1034,7 +1056,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub(super) fn new(keys: ChanSigner, shutdown_pubkey: &PublicKey,
 			our_to_self_delay: u16, destination_script: &Script, funding_info: (OutPoint, Script),
-			their_htlc_base_key: &PublicKey, their_delayed_payment_base_key: &PublicKey,
+			remote_htlc_base_key: &PublicKey, remote_delayed_payment_base_key: &PublicKey,
 			their_to_self_delay: u16, funding_redeemscript: Script, channel_value_satoshis: u64,
 			commitment_transaction_number_obscure_factor: u64,
 			initial_local_commitment_tx: LocalCommitmentTransaction) -> ChannelMonitor<ChanSigner> {
@@ -1045,7 +1067,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
 		let remote_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
 
-		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, their_delayed_payment_base_key.clone(), their_htlc_base_key.clone(), our_to_self_delay);
+		let remote_tx_cache = RemoteTxCache { remote_delayed_payment_base_key: *remote_delayed_payment_base_key, remote_htlc_base_key: *remote_htlc_base_key, per_htlc: HashMap::new() };
+
+		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), their_to_self_delay, *remote_delayed_payment_base_key, *remote_htlc_base_key ,our_to_self_delay);
 
 		let local_tx_sequence = initial_local_commitment_tx.unsigned_tx.input[0].sequence as u64;
 		let local_tx_locktime = initial_local_commitment_tx.unsigned_tx.lock_time as u64;
@@ -1080,8 +1104,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			current_remote_commitment_txid: None,
 			prev_remote_commitment_txid: None,
 
-			their_htlc_base_key: *their_htlc_base_key,
-			their_delayed_payment_base_key: *their_delayed_payment_base_key,
+			remote_tx_cache,
 			funding_redeemscript,
 			channel_value_satoshis: channel_value_satoshis,
 			their_cur_revocation_points: None,
@@ -1212,6 +1235,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				htlcs.push(htlc.0);
 			}
 		}
+		self.remote_tx_cache.per_htlc.insert(new_txid, htlcs.clone());
 		self.onchain_tx_handler.provide_latest_remote_tx(new_txid, htlcs);
 	}
 
@@ -1422,7 +1446,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.keys.pubkeys().revocation_basepoint));
-			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.their_delayed_payment_base_key));
+			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.remote_tx_cache.remote_delayed_payment_base_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.our_to_self_delay, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
@@ -1430,7 +1454,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			// First, process non-htlc outputs (to_local & to_remote)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let witness_data = InputMaterial::Revoked { per_commitment_point, per_commitment_key, input_descriptor: InputDescriptors::RevokedOutput, amount: outp.value };
+					let witness_data = InputMaterial::Revoked { per_commitment_point, remote_delayed_payment_base_key: self.remote_tx_cache.remote_delayed_payment_base_key, remote_htlc_base_key: self.remote_tx_cache.remote_htlc_base_key, per_commitment_key, input_descriptor: InputDescriptors::RevokedOutput, amount: outp.value, htlc: None };
 					claimable_outpoints.push(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 }, witness_data});
 				}
 			}
@@ -1443,7 +1467,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
-						let witness_data = InputMaterial::Revoked { per_commitment_point, per_commitment_key, input_descriptor: if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }, amount: tx.output[transaction_output_index as usize].value };
+						let witness_data = InputMaterial::Revoked { per_commitment_point, remote_delayed_payment_base_key: self.remote_tx_cache.remote_delayed_payment_base_key, remote_htlc_base_key: self.remote_tx_cache.remote_htlc_base_key, per_commitment_key, input_descriptor: if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }, amount: tx.output[transaction_output_index as usize].value, htlc: Some(htlc.clone()) };
 						claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 					}
 				}
@@ -1578,7 +1602,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							let aggregable = if !htlc.offered { false } else { true };
 							if preimage.is_some() || !htlc.offered {
-								let witness_data = InputMaterial::RemoteHTLC { per_commitment_point: *revocation_point, preimage, amount: htlc.amount_msat / 1000, locktime: htlc.cltv_expiry };
+								let witness_data = InputMaterial::RemoteHTLC { per_commitment_point: *revocation_point, remote_delayed_payment_base_key: self.remote_tx_cache.remote_delayed_payment_base_key, remote_htlc_base_key: self.remote_tx_cache.remote_htlc_base_key, preimage, htlc: htlc.clone() };
 								claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 							}
 						}
@@ -1610,7 +1634,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 
 		log_trace!(logger, "Remote HTLC broadcast {}:{}", htlc_txid, 0);
-		let witness_data = InputMaterial::Revoked { per_commitment_point, per_commitment_key, input_descriptor: InputDescriptors::RevokedOutput, amount: tx.output[0].value };
+		let witness_data = InputMaterial::Revoked { per_commitment_point, remote_delayed_payment_base_key: self.remote_tx_cache.remote_delayed_payment_base_key, remote_htlc_base_key: self.remote_tx_cache.remote_htlc_base_key,  per_commitment_key, input_descriptor: InputDescriptors::RevokedOutput, amount: tx.output[0].value, htlc: None };
 		let claimable_outpoints = vec!(ClaimRequest { absolute_timelock: height + self.our_to_self_delay as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: htlc_txid, vout: 0}, witness_data });
 		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
 	}
@@ -2203,8 +2227,29 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 		let current_remote_commitment_txid = Readable::read(reader)?;
 		let prev_remote_commitment_txid = Readable::read(reader)?;
 
-		let their_htlc_base_key = Readable::read(reader)?;
-		let their_delayed_payment_base_key = Readable::read(reader)?;
+		let remote_tx_cache = {
+			let remote_delayed_payment_base_key = Readable::read(reader)?;
+			let remote_htlc_base_key = Readable::read(reader)?;
+			let per_htlc_len: u64 = Readable::read(reader)?;
+			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
+			for _  in 0..per_htlc_len {
+				let txid: Txid = Readable::read(reader)?;
+				let htlcs_count: u64 = Readable::read(reader)?;
+				let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
+				for _ in 0..htlcs_count {
+					let htlc = Readable::read(reader)?;
+					htlcs.push(htlc);
+				}
+				if let Some(_) = per_htlc.insert(txid, htlcs) {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
+			RemoteTxCache {
+				remote_delayed_payment_base_key,
+				remote_htlc_base_key,
+				per_htlc,
+			}
+		};
 		let funding_redeemscript = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
@@ -2413,8 +2458,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 			current_remote_commitment_txid,
 			prev_remote_commitment_txid,
 
-			their_htlc_base_key,
-			their_delayed_payment_base_key,
+			remote_tx_cache,
 			funding_redeemscript,
 			channel_value_satoshis,
 			their_cur_revocation_points,
