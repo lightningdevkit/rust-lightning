@@ -18,7 +18,6 @@ use bitcoin::hashes::Hash;
 
 use ln::functional_test_utils::*;
 
-use std::sync::Arc;
 use util::test_utils;
 
 #[test]
@@ -29,13 +28,13 @@ fn test_simple_monitor_permanent_update_fail() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (_, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable {..}, {});
 	check_added_monitors!(nodes[0], 2);
 
@@ -64,7 +63,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
 
@@ -72,7 +71,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -119,7 +118,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	{
 		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -176,7 +175,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
@@ -185,7 +184,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	{
 		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -511,12 +510,12 @@ fn test_monitor_update_fail_cs() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -600,12 +599,12 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (payment_preimage_1, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -650,13 +649,13 @@ fn test_monitor_update_raa_while_paused() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	send_payment(&nodes[0], &[&nodes[1]], 5000000, 5_000_000);
 	let (payment_preimage_1, our_payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, our_payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -665,7 +664,7 @@ fn test_monitor_update_raa_while_paused() {
 	let (payment_preimage_2, our_payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
-		let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[1].node.send_payment(&route, our_payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[1], 1);
 	}
@@ -728,7 +727,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Rebalance a bit so that we can send backwards from 2 to 1.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
@@ -757,7 +756,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -784,7 +783,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (_, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -833,7 +832,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		// Try to route another payment backwards from 2 to make sure 1 holds off on responding
 		let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[0]);
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
-		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_4, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 
@@ -1074,7 +1073,7 @@ fn raa_no_response_awaiting_raa_state() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
@@ -1087,7 +1086,7 @@ fn raa_no_response_awaiting_raa_state() {
 	// generation during RAA while in monitor-update-failed state.
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
@@ -1141,7 +1140,7 @@ fn raa_no_response_awaiting_raa_state() {
 	// commitment transaction states) whereas here we can explicitly check for it.
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
 		check_added_monitors!(nodes[0], 0);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1198,7 +1197,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Forward a payment for B to claim
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -1233,7 +1232,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1322,14 +1321,14 @@ fn monitor_failed_no_reestablish_response() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
 	// on receipt).
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1396,14 +1395,14 @@ fn first_message_on_recv_ordering() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Route the first payment outbound, holding the last RAA for B until we are set up so that we
 	// can deliver it and fail the monitor update.
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1428,7 +1427,7 @@ fn first_message_on_recv_ordering() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1494,7 +1493,7 @@ fn test_monitor_update_fail_claim() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Rebalance a bit so that we can send backwards from 3 to 2.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
@@ -1508,7 +1507,7 @@ fn test_monitor_update_fail_claim() {
 	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
-		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 	}
@@ -1575,7 +1574,7 @@ fn test_monitor_update_on_pending_forwards() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Rebalance a bit so that we can send backwards from 3 to 1.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
@@ -1593,7 +1592,7 @@ fn test_monitor_update_on_pending_forwards() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
-		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 	}
@@ -1647,7 +1646,7 @@ fn monitor_update_claim_fail_no_response() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	// Forward a payment for B to claim
 	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -1656,7 +1655,7 @@ fn monitor_update_claim_fail_no_response() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1817,11 +1816,11 @@ fn test_path_paused_mpp() {
 	let (chan_2_ann, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
 	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let logger = Arc::new(test_utils::TestLogger::new());
+	let logger = test_utils::TestLogger::new();
 
 	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
 	let payment_secret = PaymentSecret([0xdb; 32]);
-	let mut route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler, &nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, logger.clone()).unwrap();
+	let mut route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler, &nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 
 	// Set us up to take multiple routes, one 0 -> 1 -> 3 and one 0 -> 2 -> 3:
 	let path = route.paths[0].clone();

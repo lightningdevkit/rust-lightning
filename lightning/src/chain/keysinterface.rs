@@ -20,14 +20,12 @@ use bitcoin::secp256k1::{Secp256k1, Signature, Signing};
 use bitcoin::secp256k1;
 
 use util::byte_utils;
-use util::logger::Logger;
 use util::ser::{Writeable, Writer, Readable};
 
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction};
 use ln::msgs;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
 use ln::msgs::DecodeError;
@@ -486,7 +484,6 @@ pub struct KeysManager {
 	channel_id_child_index: AtomicUsize,
 
 	unique_start: Sha256State,
-	logger: Arc<Logger>,
 }
 
 impl KeysManager {
@@ -509,7 +506,7 @@ impl KeysManager {
 	/// Note that until the 0.1 release there is no guarantee of backward compatibility between
 	/// versions. Once the library is more fully supported, the docs will be updated to include a
 	/// detailed description of the guarantee.
-	pub fn new(seed: &[u8; 32], network: Network, logger: Arc<Logger>, starting_time_secs: u64, starting_time_nanos: u32) -> KeysManager {
+	pub fn new(seed: &[u8; 32], network: Network, starting_time_secs: u64, starting_time_nanos: u32) -> KeysManager {
 		let secp_ctx = Secp256k1::signing_only();
 		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {
@@ -549,7 +546,6 @@ impl KeysManager {
 					channel_id_child_index: AtomicUsize::new(0),
 
 					unique_start,
-					logger,
 				}
 			},
 			Err(_) => panic!("Your rng is busted"),

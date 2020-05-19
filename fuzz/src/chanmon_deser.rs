@@ -5,12 +5,11 @@ use bitcoin::hash_types::BlockHash;
 
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::ln::channelmonitor;
-use lightning::util::ser::{ReadableArgs, Writer};
+use lightning::util::ser::{Readable, Writer};
 
 use utils::test_logger;
 
 use std::io::Cursor;
-use std::sync::Arc;
 
 struct VecWriter(Vec<u8>);
 impl Writer for VecWriter {
@@ -24,12 +23,11 @@ impl Writer for VecWriter {
 }
 
 #[inline]
-pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let logger = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
-	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(data), logger.clone()) {
+pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
+	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(data)) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&w.0), logger.clone()).unwrap();
+		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&w.0)).unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);
 	}
