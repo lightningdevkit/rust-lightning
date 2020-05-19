@@ -13,6 +13,7 @@ use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
+use routing::router::{Route, RouteHop};
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
@@ -538,6 +539,13 @@ impl NetworkGraph {
 			}
 		}
 		None
+	}
+
+	/// Updates directional channels within the network graph based on route and 
+	/// whether or not the payment succeeded.
+	pub fn score_channels_on_route(&mut self, route: Route, payment_succeeded: bool) -> Result<bool, LightningError> {
+
+		Ok(true)
 	}
 
 	/// For an already known node (from channel announcements), update its stored properties from a given node announcement
