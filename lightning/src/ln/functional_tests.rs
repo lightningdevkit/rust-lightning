@@ -3962,10 +3962,16 @@ fn test_manager_serialize_deserialize_events() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let fee_estimator: test_utils::TestFeeEstimator;
+<<<<<<< HEAD
 	let logger: test_utils::TestLogger;
 	let new_chan_monitor: test_utils::TestChannelMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+=======
+	let new_chan_monitor: test_utils::TestChannelMonitor;
+	let keys_manager: test_utils::TestKeysInterface;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>;
+>>>>>>> 3f02a6c... Serialize ChannelManager events
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Start creating a channel, but stop right before broadcasting the event message FundingBroadcastSafe
@@ -4010,26 +4016,45 @@ fn test_manager_serialize_deserialize_events() {
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+<<<<<<< HEAD
 	logger = test_utils::TestLogger::new();
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
 	nodes[0].chan_monitor = &new_chan_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read).unwrap();
+=======
+	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), Arc::new(test_utils::TestLogger::new()), &fee_estimator);
+	nodes[0].chan_monitor = &new_chan_monitor;
+	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read, Arc::new(test_utils::TestLogger::new())).unwrap();
+>>>>>>> 3f02a6c... Serialize ChannelManager events
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let config = UserConfig::default();
+<<<<<<< HEAD
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo(), &mut chan_0_monitor);
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+=======
+	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet, Arc::new(test_utils::TestLogger::new()));
+	let (_, nodes_0_deserialized_tmp) = {
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(chan_0_monitor.get_funding_txo(), &mut chan_0_monitor);
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+>>>>>>> 3f02a6c... Serialize ChannelManager events
 			default_config: config,
 			keys_manager: &keys_manager,
 			fee_estimator: &fee_estimator,
 			monitor: nodes[0].chan_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+<<<<<<< HEAD
 			logger: &logger,
+=======
+			logger: Arc::new(test_utils::TestLogger::new()),
+>>>>>>> 3f02a6c... Serialize ChannelManager events
 			channel_monitors: &mut channel_monitors,
 		}).unwrap()
 	};
