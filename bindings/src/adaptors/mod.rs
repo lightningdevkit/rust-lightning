@@ -23,11 +23,8 @@ use lightning::{
 pub mod primitives;
 use primitives::*;
 use std::sync::Arc;
-use lightning::util::ser::Readable;
-use std::io::Read;
-use lightning::ln::msgs::DecodeError;
 
-type cstr = NonNull<i8>;
+type Cstr = NonNull<i8>;
 
 #[derive(PartialOrd, PartialEq, Eq, Ord, Debug, Copy, Clone)]
 #[repr(u8)]
@@ -158,11 +155,11 @@ pub struct FFILogRecord {
 	/// The verbosity level of the message.
 	pub level: FFILogLevel,
 	/// The message body.
-	pub args: cstr,
+	pub args: Cstr,
 	/// The module path of the message.
-	pub module_path: cstr,
+	pub module_path: Cstr,
 	/// The source file containing the message.
-	pub file: cstr,
+	pub file: Cstr,
 	/// The line containing the message.
 	pub line: u32,
 }
@@ -196,10 +193,10 @@ impl Logger for FFILogger {
 
 pub mod chain_watch_interface_fn {
     use super::*;
-    pub type InstallWatchTxPtr = extern "cdecl" fn(*const FFISha256dHash, script_pub_key: *const FFIScript);
+    pub type InstallWatchTxPtr = extern "cdecl" fn(*const Bytes32, script_pub_key: *const FFIScript);
     pub type InstallWatchOutpointPtr = extern "cdecl" fn(outpoint: *const FFIOutPoint, out_script: *const FFIScript);
     pub type WatchAllTxnPtr = extern "cdecl" fn();
-    pub type GetChainUtxoPtr = extern "cdecl" fn(genesis_hash: *const FFISha256dHash, unspent_tx_output_identifier: u64, err: *mut FFIChainError, script: *mut FFITxOut);
+    pub type GetChainUtxoPtr = extern "cdecl" fn(genesis_hash: *const Bytes32, unspent_tx_output_identifier: u64, err: *mut FFIChainError, script: *mut FFITxOut);
 }
 
 #[repr(C)]
@@ -217,7 +214,7 @@ impl FFIChainWatchInterface {
         watch_all_txn: chain_watch_interface_fn::WatchAllTxnPtr,
         get_chain_utxo: chain_watch_interface_fn::GetChainUtxoPtr,
         network: Network,
-        logger: Arc<Logger>
+        logger: Arc<dyn Logger>
     ) -> FFIChainWatchInterface {
         FFIChainWatchInterface{
             install_watch_tx_ptr: install_watch_tx,
@@ -234,11 +231,12 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         self.util.install_watch_tx(txid, script_pub_key);
         let spk_vec = bitcoin_serialize(script_pub_key);
         let ffi_spk = FFIScript::from(spk_vec.as_slice());
-        (self.install_watch_tx_ptr)(&txid.into() as *const _, &ffi_spk as *const _)
+        let txid: Bytes32 = txid.clone().into();
+        (self.install_watch_tx_ptr)(&txid as *const _, &ffi_spk as *const _)
     }
     fn install_watch_outpoint(&self, outpoint: (Txid, u32), out_script: &Script) {
         self.util.install_watch_outpoint(outpoint, out_script);
-        let txid: FFISha256dHash = outpoint.0.into();
+        let txid: Bytes32 = outpoint.0.into();
         let ffi_outpoint = FFIOutPoint { txid: txid, index: outpoint.1 as u16 };
         let out_script_vec = bitcoin_serialize(out_script);
         let ffi_outscript = FFIScript::from(out_script_vec.as_slice());
@@ -320,7 +318,7 @@ pub enum FFIErrorActionType {
 #[derive(Debug, Clone)]
 pub struct FFIErrorMsg {
     pub channel_id: [u8; 32],
-    pub data: cstr,
+    pub data: Cstr,
 }
 
 impl From<FFIErrorMsg> for ErrorMessage {
@@ -370,7 +368,7 @@ impl From<FFIErrorAction> for ErrorAction {
 #[repr(C)]
 pub struct FFILightningError {
     /// A human-readable message describing the error
-    pub err: cstr,
+    pub err: Cstr,
     /// The action which should be taken against the offending peer.
     pub action: FFIErrorAction,
 }
@@ -387,7 +385,7 @@ impl From<FFILightningError> for LightningError {
 
 pub mod routing_msg_descriptor_fn {
     use super::*;
-    use crate::adaptors::primitives::PublicKey;
+    use crate::adaptors::primitives::Bytes33;
 
     /// Handle an incoming node_announcement message, returning true if it should be forwarded on,
     /// false or returning an Err otherwise.
@@ -410,9 +408,9 @@ pub mod routing_msg_descriptor_fn {
     /// immediately higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
     /// If None is provided for starting_point, we start at the first node.
     /// Return type is binary serialized `Vec<NodeAnnouncement>` .
-    pub type GetNextNodeAnnouncements = extern "cdecl" fn (starting_point: Option<*const PublicKey>, batch_amount: u8) -> FFIBytes;
+    pub type GetNextNodeAnnouncements = extern "cdecl" fn (starting_point: Option<*const Bytes33>, batch_amount: u8) -> FFIBytes;
     /// Returns whether a full sync should be requested from a peer.
-    pub type ShouldRequestFullSync = extern "cdecl" fn (node_id: NonNull<PublicKey>) -> Bool;
+    pub type ShouldRequestFullSync = extern "cdecl" fn (node_id: Bytes33) -> Bool;
 }
 
 pub struct FFIRoutingMsgHandler {
@@ -439,17 +437,7 @@ impl Writer for VecWriter {
 
 impl RoutingMessageHandler for FFIRoutingMsgHandler {
     fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError> {
-        let mut w = VecWriter(Vec::new());
-        msg.write(&mut w);
-        let bytes = FFIBytes::from(w.0.into_boxed_slice());
-        let e = std::ptr::null_mut();
-        let is_success = (self.handle_node_announcement_ptr)(&bytes as *const _, e);
-        if e.is_null() {
-            Ok(is_success.to_bool())
-        } else {
-            let e = unsafe_block!("we know the error is not a null pointer" => (*e).clone());
-            Err(e.into())
-        }
+        unimplemented!()
     }
 
     fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, LightningError> {

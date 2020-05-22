@@ -19,5 +19,4 @@ bitcoin_hashes = "0.7"
 # see https://github.com/rust-lang/cargo/issues/7634
 # as a workaround, we just included it as an usual dependency
 hex = "0.3"
-rand = "0.7.3"
 

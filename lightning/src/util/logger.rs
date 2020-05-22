@@ -16,7 +16,6 @@
 
 use std::cmp;
 use std::fmt;
-use std::sync::Arc;
 use std::panic::{UnwindSafe, RefUnwindSafe};
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];

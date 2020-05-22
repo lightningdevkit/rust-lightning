@@ -1,11 +1,8 @@
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize},
     convert::TryInto,
     sync::Arc,
-    convert::TryFrom
 };
-
-use rand::{thread_rng, RngCore};
 
 use bitcoin::secp256k1;
 
@@ -13,15 +10,14 @@ use lightning::{
     ln::peer_handler::{PeerManager, MessageHandler},
     routing::network_graph::NetGraphMsgHandler,
     util::config::UserConfig,
-    util::ser::Writeable
 };
 
 use crate::{
-    channelmanager::{FFIArcChannelManager, construct_channel_manager},
+    channelmanager::{FFIArcChannelManager},
     error::FFIResult,
     handle::{Out, Ref, HandleShared},
     adaptors::*,
-    adaptors::primitives::{SecretKey, FFIBytes, PublicKey},
+    adaptors::primitives::{Bytes32, FFIBytes, Bytes33},
     utils::into_fixed_buffer
 };
 use crate::channelmanager::FFIArcChannelManagerHandle;
@@ -47,8 +43,7 @@ fn construct_socket_desc (
 
 ffi! {
     fn create_peer_manager(
-        seed_ptr: Ref<u8>,
-        seed_len: usize,
+        seed: Ref<Bytes32>,
         network_ref: Ref<FFINetwork>,
         cfg: Ref<UserConfig>,
 
@@ -59,23 +54,20 @@ ffi! {
         get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
         log_ptr: Ref<ffilogger_fn::LogExtern>,
 
-        our_node_secret_ptr: Ref<SecretKey>,
-        our_node_id_ptr: Ref<PublicKey>,
+        our_node_secret_ptr: Ref<Bytes32>,
+        our_node_id_ptr: Ref<Bytes33>,
         handle: Out<FFIArcPeerManagerHandle>
     ) -> FFIResult {
-        if (seed_len != 32) {
-            return FFIResult::invalid_data_length();
-        }
         let network = unsafe_block!("" => *network_ref.as_ref());
         let log_ref = unsafe_block!("" => log_ptr.as_ref());
 
         let our_node_secret: secp256k1::SecretKey =  {
             let o = unsafe_block!("" => our_node_secret_ptr.as_ref());
-            TryFrom::try_from(o.clone())?
+            o.clone().into()
         };
         let our_node_id: secp256k1::PublicKey = {
             let o = unsafe_block!("" => our_node_id_ptr.as_ref());
-            TryFrom::try_from(o.clone())?
+            o.clone().into()
         };
 
         let install_watch_tx_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_tx_ptr.as_ref());
@@ -96,12 +88,11 @@ ffi! {
         let chan_man = unsafe_block!("It must point to valid ChannelManager" => chan_man.as_arc());
         let msg_handler =
             MessageHandler { chan_handler: chan_man, route_handler: Arc::new(route_handler) };
-        let mut rng = thread_rng();
-        let mut ephemeral_bytes = [0; 32];
-        rng.fill_bytes(&mut ephemeral_bytes);
 
+        let seed = unsafe_block!("It points to valid length buffer" => seed.as_ref());
         let peer_man =
-            FFISimpleArcPeerManager::new(msg_handler, our_node_secret.clone(), &ephemeral_bytes, logger_arc);
+
+            FFISimpleArcPeerManager::new(msg_handler, our_node_secret.clone(), &seed.bytes, logger_arc);
         unsafe_block!("" => handle.init(FFIArcPeerManagerHandle::alloc(peer_man)));
         FFIResult::ok()
     }
@@ -122,18 +113,18 @@ ffi! {
         index: usize,
         send_data_ptr: Ref<socket_descriptor_fn::SendData>,
         disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
-        their_node_id: Ref<PublicKey>,
+        their_node_id: Ref<Bytes33>,
         handle: FFIArcPeerManagerHandle,
         initial_send: Out<[u8; 50]>
     ) -> FFIResult {
         let socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
         let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
-        let their_node_id: &PublicKey = unsafe_block!("" => their_node_id.as_ref());
+        let their_node_id = unsafe_block!("" => their_node_id.as_ref());
         let their_node_id: secp256k1::PublicKey = their_node_id.clone().try_into()?;
         let act_one = peer_man.new_outbound_connection(their_node_id, socket)?;
         let mut return_value = [0u8; 50];
         return_value.copy_from_slice(act_one.as_slice());
-        unsafe_block!("We know `initial_send` points to valid FFIBytes to store pointers" => initial_send.init(return_value));
+        unsafe_block!("We know `initial_send` points to valid buffer" => initial_send.init(return_value));
         FFIResult::ok()
     }
 
@@ -197,8 +188,10 @@ ffi! {
 
     fn release_peer_manager(handle: FFIArcPeerManagerHandle) -> FFIResult {
         unsafe_block!("The upstream caller guarantees the handle will not be accessed after being freed" => FFIArcPeerManagerHandle::dealloc(handle, |mut handle| {
+            // We keep reference to message_handler from wrapper side so that we can call methods
+            // on it. So disposing it is their job. Not ours.
+            std::mem::forget(handle.message_handler);
             FFIResult::ok()
         }))
     }
-
 }

@@ -8,7 +8,6 @@ use std::panic::{catch_unwind, UnwindSafe};
 use std::any::Any;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use lightning::util::errors::APIError;
 use crate::utils::option_extensions::OptionMutExt;
 
 static LAST_ERR_ID: AtomicU32 = AtomicU32::new(0);

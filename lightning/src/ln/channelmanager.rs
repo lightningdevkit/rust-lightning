@@ -45,7 +45,7 @@ use util::errors::APIError;
 
 use std::{cmp, mem};
 use std::collections::{HashMap, hash_map, HashSet};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Error};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -484,6 +484,61 @@ pub struct ChannelDetails {
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) no monitor update failure is pending resolution.
 	pub is_live: bool,
+}
+
+impl Writeable for ChannelDetails {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+        self.channel_id.write(writer)?;
+		self.short_channel_id.write(writer)?;
+        self.remote_network_id.write(writer)?;
+		self.counterparty_features.write(writer)?;
+		self.channel_value_satoshis.write(writer)?;
+		self.user_id.write(writer)?;
+		self.outbound_capacity_msat.write(writer)?;
+		self.inbound_capacity_msat.write(writer)?;
+        self.is_live.write(writer)?;
+		Ok(())
+	}
+}
+
+impl Writeable for Vec<ChannelDetails> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		(self.len() as u16).write(writer)?;
+		for i in self.iter() {
+			i.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for ChannelDetails {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+        let channel_id: [u8; 32] = Readable::read(reader)?;
+        let short_channel_id: Option<u64> = Readable::read(reader)?;
+		let remote_network_id: PublicKey = Readable::read(reader)?;
+		let counterparty_features: InitFeatures = Readable::read(reader)?;
+		let channel_value_satoshis: u64 = Readable::read(reader)?;
+		let user_id: u64 = Readable::read(reader)?;
+        let outbound_capacity_msat: u64 = Readable::read(reader)?;
+		let inbound_capacity_msat: u64 = Readable::read(reader)?;
+		let is_live: bool = Readable::read(reader)?;
+        Ok(ChannelDetails {
+            channel_id, short_channel_id, remote_network_id, counterparty_features,
+			channel_value_satoshis, user_id, outbound_capacity_msat, inbound_capacity_msat, is_live
+		})
+	}
+}
+
+impl Readable for Vec<ChannelDetails> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: u16 = Readable::read(r)?;
+		let mut ret = Vec::with_capacity(len as usize);
+		for i in 0..(len as usize) {
+			let d: ChannelDetails = Readable::read(r)?;
+			ret[i] = d;
+		}
+		Ok(ret)
+	}
 }
 
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the

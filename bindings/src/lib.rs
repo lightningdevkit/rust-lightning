@@ -24,10 +24,6 @@ pub(crate) mod is_null;
 
 mod adaptors;
 
-mod logger;
-mod broadcaster;
-mod fee_estimator;
-
 mod channelmanager;
 mod peermanager;
 mod error;

@@ -41,7 +41,7 @@ pub (crate) fn into_fixed_buffer<T: Writeable>(
 
     let data_vec = data.encode();
     let actual_len = data_vec.len();
-    if (actual_len > buf.len())
+    if actual_len > buf.len()
     {
         unsafe_block!("The out pointer is valid and not mutably aliased elsewhere" => actual_value_len.init(actual_len));
         FFIResult::buffer_too_small()

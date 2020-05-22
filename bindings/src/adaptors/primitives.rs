@@ -1,6 +1,6 @@
 use std::{
-    convert::{TryFrom, TryInto},
-    fmt::{Formatter, Error}
+    convert::{TryFrom},
+    fmt::{Formatter}
 };
 
 use bitcoin::{
@@ -22,6 +22,139 @@ use crate::{
     FFIResult,
     is_null::IsNull
 };
+use lightning::ln::channelmanager::PaymentPreimage;
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct Bytes32 {
+    pub bytes: [u8; 32],
+}
+
+impl IsNull for Bytes32 {
+    fn is_null(&self) -> bool {
+        false
+    }
+}
+
+impl From<Bytes32> for secp256k1::SecretKey {
+    fn from(value: Bytes32) -> Self {
+        secp256k1::SecretKey::from_slice(&value.bytes).unwrap()
+    }
+}
+
+impl From<secp256k1::SecretKey> for Bytes32 {
+    fn from(value: secp256k1::SecretKey) -> Self {
+        let mut bytes =  [0;32];
+        bytes.copy_from_slice(&value[..]);
+        Self {
+            bytes
+        }
+    }
+}
+
+impl From<Bytes32> for PaymentHash {
+    fn from(ffi_hash: Bytes32) -> PaymentHash {
+        PaymentHash(ffi_hash.bytes)
+    }
+}
+
+impl From<Txid> for Bytes32 {
+    fn from(hash: Txid) -> Self {
+        let bytes = hash.as_hash().into_inner();
+        Bytes32{ bytes }
+    }
+}
+
+impl From<Bytes32> for Txid {
+    fn from(hash: Bytes32) -> Self {
+        Txid::from_slice(&hash.bytes).unwrap()
+    }
+}
+
+impl From<BlockHash> for Bytes32 {
+    fn from(hash: BlockHash) -> Self {
+        let bytes = hash.as_hash().into_inner();
+        Bytes32{ bytes }
+    }
+}
+
+impl From<Bytes32> for PaymentSecret {
+    fn from(ffi_secret: Bytes32) -> PaymentSecret {
+        PaymentSecret(ffi_secret.bytes)
+    }
+}
+
+impl From<PaymentSecret> for Bytes32 {
+    fn from(x: PaymentSecret) -> Self {
+        Self {bytes: x.0}
+    }
+}
+
+impl From<PaymentPreimage> for Bytes32 {
+    fn from(x: PaymentPreimage) -> Self {
+        Self { bytes: x.0 }
+    }
+}
+
+impl From<Bytes32> for PaymentPreimage {
+    fn from(x: Bytes32) -> Self {
+        PaymentPreimage(x.bytes)
+    }
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct Bytes33 {
+    pub bytes: [u8; 33]
+}
+
+impl IsNull for Bytes33 {
+    fn is_null(&self) -> bool {
+        false
+    }
+}
+
+impl From<Bytes33> for secp256k1::PublicKey {
+    fn from(value: Bytes33) -> Self {
+        secp256k1::PublicKey::from_slice(&value.bytes).unwrap()
+    }
+}
+
+impl From<secp256k1::PublicKey> for Bytes33 {
+    fn from(value: secp256k1::PublicKey) -> Self {
+        Self {
+            bytes: value.serialize()
+        }
+    }
+}
+
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct FFIOutPoint {
+    pub txid: Bytes32,
+    pub index: u16,
+}
+
+impl From<FFIOutPoint> for OutPoint {
+    fn from(value: FFIOutPoint) -> Self {
+        let txid = value.txid.into();
+        OutPoint{ txid, index: value.index }
+    }
+}
+
+impl From<OutPoint> for FFIOutPoint {
+    fn from(value: OutPoint) -> Self {
+        let txid: Bytes32 =  value.txid.into();
+        FFIOutPoint { txid, index: value.index }
+    }
+}
+
+impl IsNull for FFIOutPoint {
+    fn is_null(&self) -> bool {
+        false
+    }
+}
 
 macro_rules! array_struct{
     (
@@ -78,126 +211,10 @@ macro_rules! array_struct{
     }
 }
 
-#[doc="The length must be [the same as a byte number of secp256k1 secret key](secp256k1::constants::SECRET_KEY_SIZE)"]
-array_struct!(SecretKey);
-
-impl TryFrom<SecretKey> for secp256k1::SecretKey {
-    type Error = FFIResult;
-
-    fn try_from(value: SecretKey) -> Result<Self, Self::Error> {
-        let s = value.as_ref();
-        secp256k1::SecretKey::from_slice(s).map_err(|e| FFIResult::internal_error().context(e))
-    }
-}
-
-
-#[doc="The length must be [the same as a byte number of secp256k1 public key] `secp256k1::constants::PUBLIC_KEY_SIZE`"]
-array_struct!(PublicKey);
-
-impl TryFrom<PublicKey> for secp256k1::PublicKey {
-    type Error = FFIResult;
-
-    fn try_from(value: PublicKey) -> Result<Self, Self::Error> {
-        let s = value.as_ref();
-        secp256k1::PublicKey::from_slice(s).map_err(|e| FFIResult::internal_error().context(e))
-    }
-}
-
-#[doc="256 bit seed to initialize [ChannelManager](lightning::ln::channelmanager::ChannelManager)"]
-array_struct!(Seed);
-
-array_struct!(FFISha256dHash);
-
-impl TryFrom<FFISha256dHash> for PaymentHash {
-    type Error = FFIResult;
-
-    fn try_from(ffi_hash: FFISha256dHash) -> Result<PaymentHash, Self::Error> {
-        let s = unsafe_block!("" => std::slice::from_raw_parts(ffi_hash.ptr, ffi_hash.len));
-        let s:[u8; 32] = s.try_into().map_err(|_| FFIResult::invalid_data_length())?;
-        Ok(PaymentHash(s))
-    }
-}
-
-impl From<&Txid> for FFISha256dHash {
-    fn from(hash: &Txid) -> Self {
-        let v = hash.encode();
-        FFISha256dHash::from(v.into_boxed_slice())
-    }
-}
-
-impl From<Txid> for FFISha256dHash {
-    fn from(hash: Txid) -> Self {
-        let v = hash.encode();
-        FFISha256dHash::from(v.into_boxed_slice())
-    }
-}
-
-impl TryFrom<FFISha256dHash> for Txid {
-    type Error = bitcoin::hashes::Error;
-    fn try_from(hash: FFISha256dHash) -> Result<Self, Self::Error> {
-        let slice = unsafe_block!("We know it points to valid buffer" => std::slice::from_raw_parts(hash.ptr, hash.len));
-        let v = bitcoin::hashes::sha256d::Hash::from_slice(slice)?;
-        Ok(v.into())
-    }
-}
-
-impl From<&BlockHash> for FFISha256dHash {
-    fn from(hash: &BlockHash) -> Self {
-        let v = hash.encode();
-        FFISha256dHash::from(v.into_boxed_slice())
-    }
-}
-
-impl From<BlockHash> for FFISha256dHash {
-    fn from(hash: BlockHash) -> Self {
-        let v = hash.encode();
-        FFISha256dHash::from(v.into_boxed_slice())
-    }
-}
-
-array_struct!(FFISecret);
-
-impl TryFrom<FFISecret> for PaymentSecret {
-    type Error = FFIResult;
-
-    fn try_from(ffi_secret: FFISecret) -> Result<PaymentSecret, Self::Error> {
-        let s = unsafe_block!("" => std::slice::from_raw_parts(ffi_secret.ptr, ffi_secret.len));
-        let s:[u8; 32] = s.try_into().map_err(|_| FFIResult::invalid_data_length())?;
-        Ok(PaymentSecret(s))
-    }
-}
-
 array_struct!(FFIScript);
 impl FFIScript {
     pub fn to_script(&self) -> Script {
         unimplemented!()
-    }
-}
-
-#[derive(Clone)]
-#[repr(C)]
-pub struct FFIOutPoint {
-	pub txid: FFISha256dHash,
-	pub index: u16,
-}
-
-impl TryFrom<FFIOutPoint> for OutPoint {
-    type Error = bitcoin::hashes::Error;
-    fn try_from(value: FFIOutPoint) -> Result<Self, Self::Error> {
-        let txid = value.txid.try_into()?;
-        Ok(OutPoint{ txid, index: value.index })
-    }
-}
-
-impl From<OutPoint> for FFIOutPoint {
-    fn from(value: OutPoint) -> Self {
-        FFIOutPoint { txid: value.txid.into(), index: value.index }
-    }
-}
-
-impl IsNull for FFIOutPoint {
-    fn is_null(&self) -> bool {
-        false
     }
 }
 
@@ -244,7 +261,7 @@ array_struct!(FFITransaction);
 array_struct!(FFIBlock);
 array_struct!(FFIEvents);
 
-/// General purpose byte array which has to cross ffi-boundary
+// General purpose byte array which has to cross ffi-boundary
 array_struct!(FFIBytes);
 
 /// For `ChainWatchInterface::filter_block`
