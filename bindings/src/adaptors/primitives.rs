@@ -23,6 +23,9 @@ use crate::{
     is_null::IsNull
 };
 use lightning::ln::channelmanager::PaymentPreimage;
+use std::io::{Error, Read};
+use lightning::ln::msgs::DecodeError;
+use lightning::util::ser::Writer;
 
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -259,7 +262,6 @@ impl TryFrom<FFIRoute> for Route {
 
 array_struct!(FFITransaction);
 array_struct!(FFIBlock);
-array_struct!(FFIEvents);
 
 // General purpose byte array which has to cross ffi-boundary
 array_struct!(FFIBytes);
@@ -273,15 +275,29 @@ impl TryFrom<FFIBytes> for (Vec<&Transaction>, Vec<u32>) {
     }
 }
 
-impl From<Vec<Event>> for FFIEvents {
+pub struct FFIEvents {
+    pub events: Vec<Event>,
+}
 
-    fn from(value: Vec<Event>) -> Self {
-        let len = value.len();
-        let mut result_vec: Vec<u8> = Vec::with_capacity(len * std::mem::size_of::<Event>());
-        for e in value {
-            result_vec.extend(e.encode());
+impl Writeable for FFIEvents {
+    fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+        (self.events.len() as u16).write(writer);
+        for e in &self.events {
+            match e {
+                Event::FundingGenerationReady {ref temporary_channel_id, ref channel_value_satoshis, ref output_script, ref user_channel_id} => {
+                    temporary_channel_id.write(writer)?;
+                    channel_value_satoshis.write(writer)?;
+                    output_script.write(writer)?;
+                    user_channel_id.write(writer)?
+                }
+                Event::PendingHTLCsForwardable { ref time_forwardable } => {
+                    let milli = time_forwardable.as_millis() as u64;
+                    milli.write(writer)?;
+                },
+                x => x.write(writer)?,
+            }
         }
-        let r = result_vec.into_boxed_slice();
-        r.into()
+        Ok(())
     }
 }
+

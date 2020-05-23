@@ -267,11 +267,11 @@ ffi! {
         FFIResult::ok()
     }
 
-    fn get_and_clear_pending_events(handle: FFIArcChannelManagerHandle, events: Out<FFIEvents>) -> FFIResult {
+    fn get_and_clear_pending_events(handle: FFIArcChannelManagerHandle, buf_out: Out<u8>, buf_len: usize, actual_channels_len: Out<usize>) -> FFIResult {
+        let buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => buf_out.as_uninit_bytes_mut(buf_len));
         let chan_man: &FFIArcChannelManager = unsafe_block!("We know handle points to valid channel_manager" => handle.as_ref());
-        let e = chan_man.get_and_clear_pending_events().try_into()?;
-        unsafe_block!("We know out parameter is writable" => events.init(e));
-        FFIResult::ok()
+        let mut e = FFIEvents{ events: chan_man.get_and_clear_pending_events() };
+        into_fixed_buffer(&mut e, buf, &mut actual_channels_len)
     }
 
     fn release_ffi_channel_manager(handle: FFIArcChannelManagerHandle) -> FFIResult {
