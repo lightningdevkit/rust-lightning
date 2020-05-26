@@ -564,6 +564,23 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	}
 }
 
+/// Gets the witnessScript for an anchor output from the funding public key.
+/// The witness in the spending input must be:
+/// <BIP 143 funding_signature>
+/// After 16 blocks of confirmation, an alternative satisfying witness could be:
+/// <>
+#[inline]
+pub(crate) fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
+	Builder::new().push_slice(&funding_pubkey.serialize()[..])
+		.push_opcode(opcodes::all::OP_CHECKSIG)
+		.push_opcode(opcodes::all::OP_IFDUP)
+		.push_opcode(opcodes::all::OP_NOTIF)
+		.push_int(16)
+		.push_opcode(opcodes::all::OP_CSV)
+		.push_opcode(opcodes::all::OP_ENDIF)
+		.into_script()
+}
+
 /// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).
 /// The fields are organized by holder/counterparty.
 ///
