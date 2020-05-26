@@ -550,6 +550,23 @@ pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, contest_del
 	}
 }
 
+/// Gets the witnessScript for an anchor output from the funding public key.
+/// The witness in the spending input must be:
+/// <BIP 143 funding_signature>
+/// After 10 blocks of confirmation, an alternative satisfying witness could be:
+/// <>
+#[inline]
+pub(crate) fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
+	Builder::new().push_slice(&funding_pubkey.serialize()[..])
+	              .push_opcode(opcodes::all::OP_CHECKSIG)
+		      .push_opcode(opcodes::all::OP_IFDUP)
+		      .push_opcode(opcodes::all::OP_NOTIF)
+		      .push_int(16)
+		      .push_opcode(opcodes::all::OP_CSV)
+		      .push_opcode(opcodes::all::OP_ENDIF)
+		      .into_script()
+}
+
 #[derive(Clone)]
 /// We use this to track holder commitment transactions and put off signing them until we are ready
 /// to broadcast. This class can be used inside a signer implementation to generate a signature
