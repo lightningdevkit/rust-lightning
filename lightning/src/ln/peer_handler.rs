@@ -272,10 +272,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 	///
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet had a
 	/// socket_disconnected().
-	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
+	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<(), PeerHandleError> {
 		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
 		let res = peer_encryptor.get_act_one().to_vec();
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act two is 50 bytes
+
+		let mut descriptor_clone = descriptor.clone();
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
@@ -298,7 +300,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
-		Ok(res)
+		descriptor_clone.send_data(&res, false);
+		Ok(())
 	}
 
 	/// Indicates a new inbound connection has been established.
@@ -1254,9 +1257,9 @@ mod tests {
 		let a_id = PublicKey::from_secret_key(&secp_ctx, &peer_a.our_node_secret);
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
-		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone()).unwrap();
+		peer_b.new_outbound_connection(a_id, fd_b.clone()).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone()).unwrap();
-		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		(fd_a.clone(), fd_b.clone())
