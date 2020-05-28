@@ -1486,7 +1486,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
-		let funding_txo = OutPoint::new(msg.funding_txid, msg.funding_output_index);
+		let funding_txo = OutPoint{ txid: msg.funding_txid, index: msg.funding_output_index };
 		self.funding_txo = Some(funding_txo.clone());
 
 		let (remote_initial_commitment_tx, local_initial_commitment_tx, our_signature) = match self.funding_created_signature(&msg.signature, logger) {
@@ -4387,7 +4387,7 @@ mod tests {
 		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
-		let funding_outpoint = OutPoint::new(tx.txid(), 0);
+		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint, &&logger).unwrap();
 		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, &&logger).unwrap();
 
@@ -4453,7 +4453,7 @@ mod tests {
 		chan.their_to_self_delay = 144;
 		chan.our_dust_limit_satoshis = 546;
 
-		let funding_info = OutPoint::new(Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), 0);
+		let funding_info = OutPoint{ txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 		chan.funding_txo = Some(funding_info);
 
 		let their_pubkeys = ChannelPublicKeys {

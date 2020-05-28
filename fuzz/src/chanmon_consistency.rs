@@ -96,7 +96,9 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor {
+impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
+	type Keys = EnforcingChannelKeys;
+
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut ser).unwrap();
@@ -196,7 +198,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap()),
+			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0)),
 			monitor)
 		} }
 	}
@@ -268,7 +270,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					let tx = Transaction { version: $chan_id, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
-					funding_output = OutPoint::new(tx.txid(), 0);
+					funding_output = OutPoint { txid: tx.txid(), index: 0 };
 					$source.funding_transaction_generated(&temporary_channel_id, funding_output);
 					channel_txn.push(tx);
 				} else { panic!("Wrong event type"); }

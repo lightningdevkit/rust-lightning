@@ -134,10 +134,17 @@ impl<'a> std::hash::Hash for Peer<'a> {
 	}
 }
 
+type ChannelMan = ChannelManager<
+	EnforcingChannelKeys,
+	Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>,
+	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
+type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<ChainWatchInterfaceUtil>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
+
 struct MoneyLossDetector<'a> {
-	manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
-	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>,
-	handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>>, Arc<dyn Logger>>,
+	manager: Arc<ChannelMan>,
+	monitor: Arc<channelmonitor::SimpleManyChannelMonitor<
+		OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>,
+	handler: PeerMan<'a>,
 
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
@@ -149,9 +156,9 @@ struct MoneyLossDetector<'a> {
 }
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
-	           manager: Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	           manager: Arc<ChannelMan>,
 	           monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>,
-	           handler: PeerManager<Peer<'a>, Arc<ChannelManager<EnforcingChannelKeys, Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<ChainWatchInterfaceUtil>>>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>>, Arc<dyn Logger>>) -> Self {
+	           handler: PeerMan<'a>) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -334,7 +341,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.channel_options.fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0).unwrap());
+	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0));
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
 	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(watch.clone(), Arc::clone(&logger)));
 
@@ -478,7 +485,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					let funding_output = 'search_loop: loop {
 						let funding_txid = tx.txid();
 						if let None = loss_detector.txids_confirmed.get(&funding_txid) {
-							let outpoint = OutPoint::new(funding_txid, 0);
+							let outpoint = OutPoint { txid: funding_txid, index: 0 };
 							for chan in channelmanager.list_channels() {
 								if chan.channel_id == outpoint.to_channel_id() {
 									tx.version += 1;

@@ -3,15 +3,16 @@ use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface}
 use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::channelmonitor;
-use ln::features::InitFeatures;
+use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
-use ln::msgs::LightningError;
 use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
+use bitcoin::BitcoinHash;
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::block::Block;
@@ -19,11 +20,12 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{Txid, BlockHash};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Mutex;
-use std::mem;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{cmp, mem};
 use std::collections::HashMap;
 
 pub struct TestVecWriter(pub Vec<u8>);
@@ -66,7 +68,9 @@ impl<'a> TestChannelMonitor<'a> {
 		}
 	}
 }
-impl<'a> channelmonitor::ManyChannelMonitor<EnforcingChannelKeys> for TestChannelMonitor<'a> {
+impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
+	type Keys = EnforcingChannelKeys;
+
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
@@ -170,41 +174,105 @@ impl events::MessageSendEventsProvider for TestChannelMessageHandler {
 	}
 }
 
+fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnouncement {
+	use bitcoin::secp256k1::ffi::Signature as FFISignature;
+	let secp_ctx = Secp256k1::new();
+	let network = Network::Testnet;
+	let node_1_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
+	let node_2_privkey = SecretKey::from_slice(&[41; 32]).unwrap();
+	let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
+	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
+	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
+		features: ChannelFeatures::known(),
+		chain_hash: genesis_block(network).header.bitcoin_hash(),
+		short_channel_id: short_chan_id,
+		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
+		node_id_2: PublicKey::from_secret_key(&secp_ctx, &node_2_privkey),
+		bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, &node_1_btckey),
+		bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, &node_2_btckey),
+		excess_data: Vec::new(),
+	};
+
+	msgs::ChannelAnnouncement {
+		node_signature_1: Signature::from(FFISignature::new()),
+		node_signature_2: Signature::from(FFISignature::new()),
+		bitcoin_signature_1: Signature::from(FFISignature::new()),
+		bitcoin_signature_2: Signature::from(FFISignature::new()),
+		contents: unsigned_ann,
+	}
+}
+
+fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
+	use bitcoin::secp256k1::ffi::Signature as FFISignature;
+	let network = Network::Testnet;
+	msgs::ChannelUpdate {
+		signature: Signature::from(FFISignature::new()),
+		contents: msgs::UnsignedChannelUpdate {
+			chain_hash: genesis_block(network).header.bitcoin_hash(),
+			short_channel_id: short_chan_id,
+			timestamp: 0,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: vec![],
+		}
+	}
+}
+
 pub struct TestRoutingMessageHandler {
-	request_full_sync: bool,
+	pub chan_upds_recvd: AtomicUsize,
+	pub chan_anns_recvd: AtomicUsize,
+	pub chan_anns_sent: AtomicUsize,
+	pub request_full_sync: AtomicBool,
 }
 
 impl TestRoutingMessageHandler {
 	pub fn new() -> Self {
 		TestRoutingMessageHandler {
-			request_full_sync: false,
+			chan_upds_recvd: AtomicUsize::new(0),
+			chan_anns_recvd: AtomicUsize::new(0),
+			chan_anns_sent: AtomicUsize::new(0),
+			request_full_sync: AtomicBool::new(false),
 		}
-	}
-
-	pub fn set_request_full_sync(mut self) -> Self {
-		self.request_full_sync = true;
-		self
 	}
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
-	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
-		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
+		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
+		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
+		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
-		Err(LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
+		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
+		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
-	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
-		Vec::new()
+	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+		let mut chan_anns = Vec::new();
+		const TOTAL_UPDS: u64 = 100;
+		let end: u64 = cmp::min(starting_point + batch_amount as u64, TOTAL_UPDS - self.chan_anns_sent.load(Ordering::Acquire) as u64);
+		for i in starting_point..end {
+			let chan_upd_1 = get_dummy_channel_update(i);
+			let chan_upd_2 = get_dummy_channel_update(i);
+			let chan_ann = get_dummy_channel_announcement(i);
+
+			chan_anns.push((chan_ann, Some(chan_upd_1), Some(chan_upd_2)));
+		}
+
+		self.chan_anns_sent.fetch_add(chan_anns.len(), Ordering::AcqRel);
+		chan_anns
 	}
+
 	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
 		Vec::new()
 	}
+
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		self.request_full_sync
+		self.request_full_sync.load(Ordering::Acquire)
 	}
 }
 

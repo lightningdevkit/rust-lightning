@@ -167,28 +167,6 @@ impl Readable for SpendableOutputDescriptor {
 	}
 }
 
-/// A trait to describe an object which can get user secrets and key material.
-pub trait KeysInterface: Send + Sync {
-	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
-	type ChanKeySigner : ChannelKeys;
-
-	/// Get node secret key (aka node_id or network_key)
-	fn get_node_secret(&self) -> SecretKey;
-	/// Get destination redeemScript to encumber static protocol exit points.
-	fn get_destination_script(&self) -> Script;
-	/// Get shutdown_pubkey to use as PublicKey at channel closure
-	fn get_shutdown_pubkey(&self) -> PublicKey;
-	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
-	/// restarted with some stale data!
-	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner;
-	/// Get a secret and PRNG seed for construting an onion packet
-	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
-	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
-	/// transaction is created, at which point they will use the outpoint in the funding
-	/// transaction.
-	fn get_channel_id(&self) -> [u8; 32];
-}
-
 /// Set of lightning keys needed to operate a channel as described in BOLT 3.
 ///
 /// Signing services could be implemented on a hardware wallet. In this case,
@@ -339,6 +317,28 @@ pub trait ChannelKeys : Send+Clone {
 	///
 	/// Will be called before any signatures are applied.
 	fn set_remote_channel_pubkeys(&mut self, channel_points: &ChannelPublicKeys);
+}
+
+/// A trait to describe an object which can get user secrets and key material.
+pub trait KeysInterface: Send + Sync {
+	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
+	type ChanKeySigner : ChannelKeys;
+
+	/// Get node secret key (aka node_id or network_key)
+	fn get_node_secret(&self) -> SecretKey;
+	/// Get destination redeemScript to encumber static protocol exit points.
+	fn get_destination_script(&self) -> Script;
+	/// Get shutdown_pubkey to use as PublicKey at channel closure
+	fn get_shutdown_pubkey(&self) -> PublicKey;
+	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
+	/// restarted with some stale data!
+	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner;
+	/// Get a secret and PRNG seed for constructing an onion packet
+	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
+	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
+	/// transaction is created, at which point they will use the outpoint in the funding
+	/// transaction.
+	fn get_channel_id(&self) -> [u8; 32];
 }
 
 #[derive(Clone)]
@@ -642,7 +642,7 @@ impl KeysManager {
 	/// Note that until the 0.1 release there is no guarantee of backward compatibility between
 	/// versions. Once the library is more fully supported, the docs will be updated to include a
 	/// detailed description of the guarantee.
-	pub fn new(seed: &[u8; 32], network: Network, starting_time_secs: u64, starting_time_nanos: u32) -> KeysManager {
+	pub fn new(seed: &[u8; 32], network: Network, starting_time_secs: u64, starting_time_nanos: u32) -> Self {
 		let secp_ctx = Secp256k1::signing_only();
 		match ExtendedPrivKey::new_master(network.clone(), seed) {
 			Ok(master_key) => {

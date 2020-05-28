@@ -43,7 +43,7 @@ macro_rules! log_bytes {
 pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
 impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		for i in OutPoint::new(self.0.clone(), self.1).to_channel_id().iter() {
+		for i in (OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().iter() {
 			write!(f, "{:02x}", i)?;
 		}
 		Ok(())

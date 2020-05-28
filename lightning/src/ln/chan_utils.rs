@@ -5,7 +5,8 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, SigHashType};
-use bitcoin::consensus::encode::{self, Decodable, Encodable};
+use bitcoin::consensus::encode::{Decodable, Encodable};
+use bitcoin::consensus::encode;
 use bitcoin::util::bip143;
 
 use bitcoin::hashes::{Hash, HashEngine};
