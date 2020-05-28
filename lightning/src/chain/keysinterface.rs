@@ -345,17 +345,17 @@ pub trait KeysInterface: Send + Sync {
 /// A simple implementation of ChannelKeys that just keeps the private keys in memory.
 pub struct InMemoryChannelKeys {
 	/// Private key of anchor tx
-	funding_key: SecretKey,
+	pub funding_key: SecretKey,
 	/// Local secret key for blinded revocation pubkey
-	revocation_base_key: SecretKey,
+	pub revocation_base_key: SecretKey,
 	/// Local secret key used for our balance in remote-broadcasted commitment transactions
-	payment_key: SecretKey,
+	pub payment_key: SecretKey,
 	/// Local secret key used in HTLC tx
-	delayed_payment_base_key: SecretKey,
+	pub delayed_payment_base_key: SecretKey,
 	/// Local htlc secret key used in commitment tx htlc outputs
-	htlc_base_key: SecretKey,
+	pub htlc_base_key: SecretKey,
 	/// Commitment seed
-	commitment_seed: [u8; 32],
+	pub commitment_seed: [u8; 32],
 	/// Local public keys and basepoints
 	pub(crate) local_channel_pubkeys: ChannelPublicKeys,
 	/// Remote public keys and base points
