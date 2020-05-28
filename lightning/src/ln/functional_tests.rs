@@ -3850,8 +3850,8 @@ fn test_invalid_channel_announcement() {
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
 			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
-			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().inner.funding_key());
-			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().inner.funding_key());
+			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().inner.funding_key);
+			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().inner.funding_key);
 			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
 			let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].keys_manager.get_node_secret());
 			chan_announcement = msgs::ChannelAnnouncement {

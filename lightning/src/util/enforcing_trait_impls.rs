@@ -51,7 +51,6 @@ impl EnforcingChannelKeys {
 }
 
 impl ChannelKeys for EnforcingChannelKeys {
-	fn funding_key(&self) -> &SecretKey { self.inner.funding_key() }
 	fn revocation_base_key(&self) -> &SecretKey { self.inner.revocation_base_key() }
 	fn payment_key(&self) -> &SecretKey { self.inner.payment_key() }
 	fn delayed_payment_base_key(&self) -> &SecretKey { self.inner.delayed_payment_base_key() }

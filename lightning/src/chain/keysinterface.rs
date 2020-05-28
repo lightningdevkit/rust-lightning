@@ -195,8 +195,6 @@ impl Readable for SpendableOutputDescriptor {
 // TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
-	/// Gets the private key for the anchor tx
-	fn funding_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key for blinded revocation pubkey
 	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key used in the to_remote output of remote commitment tx (ie the
@@ -416,7 +414,6 @@ impl InMemoryChannelKeys {
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
-	fn funding_key(&self) -> &SecretKey { &self.funding_key }
 	fn revocation_base_key(&self) -> &SecretKey { &self.revocation_base_key }
 	fn payment_key(&self) -> &SecretKey { &self.payment_key }
 	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
