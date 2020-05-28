@@ -1641,7 +1641,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					self.remote_payment_script = {
 						// Note that the Network here is ignored as we immediately drop the address for the
 						// script_pubkey version
-						let payment_hash160 = WPubkeyHash::hash(&PublicKey::from_secret_key(&self.secp_ctx, &self.keys.payment_key()).serialize());
+						let payment_hash160 = WPubkeyHash::hash(&self.keys.pubkeys().payment_point.serialize());
 						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script()
 					};
 

@@ -197,10 +197,6 @@ impl Readable for SpendableOutputDescriptor {
 pub trait ChannelKeys : Send+Clone {
 	/// Gets the local secret key for blinded revocation pubkey
 	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key used in the to_remote output of remote commitment tx (ie the
-	/// output to us in transactions our counterparty broadcasts).
-	/// Also as part of obscured commitment number.
-	fn payment_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local secret key used in HTLC-Success/HTLC-Timeout txn and to_local output
 	fn delayed_payment_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the local htlc secret key used in commitment tx htlc outputs
@@ -415,7 +411,6 @@ impl InMemoryChannelKeys {
 
 impl ChannelKeys for InMemoryChannelKeys {
 	fn revocation_base_key(&self) -> &SecretKey { &self.revocation_base_key }
-	fn payment_key(&self) -> &SecretKey { &self.payment_key }
 	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
 	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }

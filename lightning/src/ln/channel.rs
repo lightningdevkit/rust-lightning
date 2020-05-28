@@ -766,15 +766,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
 		let mut sha = Sha256::engine();
-		let our_payment_point = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_key());
 
 		let their_payment_point = &self.their_pubkeys.as_ref().unwrap().payment_point.serialize();
 		if self.channel_outbound {
-			sha.input(&our_payment_point.serialize());
+			sha.input(&self.local_keys.pubkeys().payment_point.serialize());
 			sha.input(their_payment_point);
 		} else {
 			sha.input(their_payment_point);
-			sha.input(&our_payment_point.serialize());
+			sha.input(&self.local_keys.pubkeys().payment_point.serialize());
 		}
 		let res = Sha256::from_engine(sha).into_inner();
 
@@ -3317,7 +3316,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: local_keys.funding_pubkey,
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
-			payment_point: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_key()),
+			payment_point: local_keys.payment_point,
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
@@ -3351,7 +3350,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: local_keys.funding_pubkey,
 			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
-			payment_point: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.payment_key()),
+			payment_point: local_keys.payment_point,
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
