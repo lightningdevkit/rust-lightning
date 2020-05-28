@@ -1094,11 +1094,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_local_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, ChannelError> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number));
-		let delayed_payment_base = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key());
+		let delayed_payment_base = &self.local_keys.pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key());
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys"))
+		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys"))
 	}
 
 	#[inline]
@@ -3317,7 +3317,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			funding_pubkey: local_keys.funding_pubkey,
 			revocation_basepoint: local_keys.revocation_basepoint,
 			payment_point: local_keys.payment_point,
-			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
+			delayed_payment_basepoint: local_keys.delayed_payment_basepoint,
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			channel_flags: if self.config.announced_channel {1} else {0},
@@ -3351,7 +3351,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			funding_pubkey: local_keys.funding_pubkey,
 			revocation_basepoint: local_keys.revocation_basepoint,
 			payment_point: local_keys.payment_point,
-			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
+			delayed_payment_basepoint: local_keys.delayed_payment_basepoint,
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
 			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
 			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
@@ -4476,11 +4476,11 @@ mod tests {
 		// We can't just use build_local_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
 		// build_commitment_transaction.
-		let delayed_payment_base = PublicKey::from_secret_key(&secp_ctx, chan.local_keys.delayed_payment_base_key());
+		let delayed_payment_base = &chan.local_keys.pubkeys().delayed_payment_basepoint;
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 		let htlc_basepoint = PublicKey::from_secret_key(&secp_ctx, chan.local_keys.htlc_base_key());
-		let keys = TxCreationKeys::new(&secp_ctx, &per_commitment_point, &delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint).unwrap();
+		let keys = TxCreationKeys::new(&secp_ctx, &per_commitment_point, delayed_payment_base, &htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint).unwrap();
 
 		chan.their_pubkeys = Some(their_pubkeys);
 
