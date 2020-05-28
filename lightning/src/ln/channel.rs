@@ -1108,11 +1108,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn build_remote_transaction_keys(&self) -> Result<TxCreationKeys, ChannelError> {
 		//TODO: Ensure that the payment_key derived here ends up in the library users' wallet as we
 		//may see payments to it!
-		let revocation_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key());
+		let revocation_basepoint = &self.local_keys.pubkeys().revocation_basepoint;
 		let htlc_basepoint = PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key());
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &their_pubkeys.delayed_payment_basepoint, &their_pubkeys.htlc_basepoint, &revocation_basepoint, &htlc_basepoint), "Remote tx keys generation got bogus keys"))
+		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &their_pubkeys.delayed_payment_basepoint, &their_pubkeys.htlc_basepoint, revocation_basepoint, &htlc_basepoint), "Remote tx keys generation got bogus keys"))
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -3315,7 +3315,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			to_self_delay: self.our_to_self_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: local_keys.funding_pubkey,
-			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
+			revocation_basepoint: local_keys.revocation_basepoint,
 			payment_point: local_keys.payment_point,
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
@@ -3349,7 +3349,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			to_self_delay: self.our_to_self_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: local_keys.funding_pubkey,
-			revocation_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.revocation_base_key()),
+			revocation_basepoint: local_keys.revocation_basepoint,
 			payment_point: local_keys.payment_point,
 			delayed_payment_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.delayed_payment_base_key()),
 			htlc_basepoint: PublicKey::from_secret_key(&self.secp_ctx, self.local_keys.htlc_base_key()),
