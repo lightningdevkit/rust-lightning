@@ -195,8 +195,6 @@ impl Readable for SpendableOutputDescriptor {
 // TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
-	/// Gets the local htlc secret key used in commitment tx htlc outputs
-	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the commitment seed
 	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
 	/// Gets the local channel public keys and basepoints
@@ -406,7 +404,6 @@ impl InMemoryChannelKeys {
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
-	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { &self.local_channel_pubkeys }
 	fn key_derivation_params(&self) -> (u64, u64) { self.key_derivation_params }
