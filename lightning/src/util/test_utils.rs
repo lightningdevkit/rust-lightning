@@ -283,6 +283,9 @@ impl TestKeysInterface {
 			override_channel_id_priv: Mutex::new(None),
 		}
 	}
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, user_id_1: u64, user_id_2: u64) -> EnforcingChannelKeys {
+		EnforcingChannelKeys::new(self.backing.derive_channel_keys(channel_value_satoshis, user_id_1, user_id_2))
+	}
 }
 
 pub struct TestChainWatcher {
