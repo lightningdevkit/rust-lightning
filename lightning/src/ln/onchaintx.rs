@@ -586,9 +586,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
 
 							let witness_script = if let Some(ref htlc) = *htlc {
-								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key)
+								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key)
 							} else {
-								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_remote_tx_csv, &chan_keys.a_delayed_payment_key)
+								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_remote_tx_csv, &chan_keys.delayed_payment_key)
 							};
 
 							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx) {
@@ -608,7 +608,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					},
 					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref preimage, ref htlc } => {
 						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
-							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
+							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
 							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {

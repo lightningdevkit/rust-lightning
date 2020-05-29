@@ -617,9 +617,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 		Channel::<ChanSigner>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 
-		let max_to_self_delay = u16::min(config.peer_channel_config_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
-		if msg.to_self_delay > max_to_self_delay {
-			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_to_self_delay, msg.to_self_delay)));
+		let max_counterparty_selected_contest_delay = u16::min(config.peer_channel_config_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
+		if msg.to_self_delay > max_counterparty_selected_contest_delay {
+			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_counterparty_selected_contest_delay, msg.to_self_delay)));
 		}
 		if msg.max_accepted_htlcs < 1 {
 			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
@@ -990,7 +990,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			txouts.push((TxOut {
 				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
 				                                                       if local { self.their_to_self_delay } else { self.our_to_self_delay },
-				                                                       &keys.a_delayed_payment_key).to_v0_p2wsh(),
+				                                                       &keys.delayed_payment_key).to_v0_p2wsh(),
 				value: value_to_a as u64
 			}, None));
 		}
@@ -1117,7 +1117,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Creates a set of keys for build_commitment_transaction to generate a transaction which our
 	/// counterparty will sign (ie DO NOT send signatures over a transaction created by this to
 	/// our counterparty!)
-	/// The result is a transaction which we can revoke ownership of (ie a "local" transaction)
+	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_local_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, ChannelError> {
 		let per_commitment_point = self.local_keys.get_per_commitment_point(commitment_number, &self.secp_ctx);
@@ -1153,7 +1153,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
 	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u32) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
+		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.delayed_payment_key, &keys.revocation_key)
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
@@ -2011,8 +2011,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
 				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
-				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript));
-				if let Err(_) = self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key) {
+				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.countersignatory_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript));
+				if let Err(_) = self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.countersignatory_htlc_key) {
 					return Err((None, ChannelError::Close("Invalid HTLC tx signature from peer".to_owned())));
 				}
 				htlcs_without_source.push((htlc.clone(), Some(msg.htlc_signatures[idx])));
@@ -3884,9 +3884,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&remote_commitment_tx.0.txid(), feerate_per_kw, self.our_to_self_delay, htlc, &remote_keys.a_delayed_payment_key, &remote_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&remote_commitment_tx.0.txid(), feerate_per_kw, self.our_to_self_delay, htlc, &remote_keys.delayed_payment_key, &remote_keys.revocation_key)),
 					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, remote_keys)),
-					log_bytes!(remote_keys.a_htlc_key.serialize()),
+					log_bytes!(remote_keys.broadcaster_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]));
 			}
 		}
@@ -4719,7 +4719,7 @@ mod tests {
 					let htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys, chan.feerate_per_kw);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 					let htlc_sighash = Message::from_slice(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]).unwrap();
-					secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
+					secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).unwrap();
 
 					let mut preimage: Option<PaymentPreimage> = None;
 					if !htlc.offered {

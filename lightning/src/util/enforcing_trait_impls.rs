@@ -100,16 +100,16 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let commitment_txid = local_commitment_tx.txid();
-		let local_csv = self.inner.remote_to_self_delay();
+		let local_csv = self.inner.counterparty_to_self_delay();
 
 		for this_htlc in local_commitment_tx.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, local_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &local_commitment_tx.local_keys.a_delayed_payment_key, &local_commitment_tx.local_keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, local_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &local_commitment_tx.local_keys.delayed_payment_key, &local_commitment_tx.local_keys.revocation_key);
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &local_commitment_tx.local_keys);
 
 				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
-				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &local_commitment_tx.local_keys.b_htlc_key).unwrap();
+				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &local_commitment_tx.local_keys.countersignatory_htlc_key).unwrap();
 			}
 		}
 

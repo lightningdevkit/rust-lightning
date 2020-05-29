@@ -143,48 +143,48 @@ pub extern "C" fn TxCreationKeys_get_revocation_key(this_ptr: &TxCreationKeys) -
 pub extern "C" fn TxCreationKeys_set_revocation_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
 	unsafe { &mut *this_ptr.inner }.revocation_key = val.into_rust();
 }
-/// A's HTLC Key
+/// Broadcaster's HTLC Key
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_get_a_htlc_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.a_htlc_key;
+pub extern "C" fn TxCreationKeys_get_broadcaster_htlc_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.broadcaster_htlc_key;
 	crate::c_types::PublicKey::from_rust(&(*inner_val))
 }
-/// A's HTLC Key
+/// Broadcaster's HTLC Key
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_set_a_htlc_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
-	unsafe { &mut *this_ptr.inner }.a_htlc_key = val.into_rust();
+pub extern "C" fn TxCreationKeys_set_broadcaster_htlc_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
+	unsafe { &mut *this_ptr.inner }.broadcaster_htlc_key = val.into_rust();
 }
-/// B's HTLC Key
+/// Countersignatory's HTLC Key
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_get_b_htlc_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.b_htlc_key;
+pub extern "C" fn TxCreationKeys_get_countersignatory_htlc_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.countersignatory_htlc_key;
 	crate::c_types::PublicKey::from_rust(&(*inner_val))
 }
-/// B's HTLC Key
+/// Countersignatory's HTLC Key
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_set_b_htlc_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
-	unsafe { &mut *this_ptr.inner }.b_htlc_key = val.into_rust();
+pub extern "C" fn TxCreationKeys_set_countersignatory_htlc_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
+	unsafe { &mut *this_ptr.inner }.countersignatory_htlc_key = val.into_rust();
 }
-/// A's Payment Key (which isn't allowed to be spent from for some delay)
+/// Payment Key (which isn't allowed to be spent from for some delay)
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_get_a_delayed_payment_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.a_delayed_payment_key;
+pub extern "C" fn TxCreationKeys_get_delayed_payment_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.delayed_payment_key;
 	crate::c_types::PublicKey::from_rust(&(*inner_val))
 }
-/// A's Payment Key (which isn't allowed to be spent from for some delay)
+/// Payment Key (which isn't allowed to be spent from for some delay)
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_set_a_delayed_payment_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
-	unsafe { &mut *this_ptr.inner }.a_delayed_payment_key = val.into_rust();
+pub extern "C" fn TxCreationKeys_set_delayed_payment_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
+	unsafe { &mut *this_ptr.inner }.delayed_payment_key = val.into_rust();
 }
 #[must_use]
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_types::PublicKey, mut revocation_key_arg: crate::c_types::PublicKey, mut a_htlc_key_arg: crate::c_types::PublicKey, mut b_htlc_key_arg: crate::c_types::PublicKey, mut a_delayed_payment_key_arg: crate::c_types::PublicKey) -> TxCreationKeys {
+pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_types::PublicKey, mut revocation_key_arg: crate::c_types::PublicKey, mut broadcaster_htlc_key_arg: crate::c_types::PublicKey, mut countersignatory_htlc_key_arg: crate::c_types::PublicKey, mut delayed_payment_key_arg: crate::c_types::PublicKey) -> TxCreationKeys {
 	TxCreationKeys { inner: Box::into_raw(Box::new(nativeTxCreationKeys {
 		per_commitment_point: per_commitment_point_arg.into_rust(),
 		revocation_key: revocation_key_arg.into_rust(),
-		a_htlc_key: a_htlc_key_arg.into_rust(),
-		b_htlc_key: b_htlc_key_arg.into_rust(),
-		a_delayed_payment_key: a_delayed_payment_key_arg.into_rust(),
+		broadcaster_htlc_key: broadcaster_htlc_key_arg.into_rust(),
+		countersignatory_htlc_key: countersignatory_htlc_key_arg.into_rust(),
+		delayed_payment_key: delayed_payment_key_arg.into_rust(),
 	})), is_owned: true }
 }
 #[no_mangle]

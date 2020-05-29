@@ -319,13 +319,13 @@ pub trait ChannelKeys : Send+Clone {
 	/// protocol.
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
-	/// Set the remote channel basepoints and remote/local to_self_delay.
+	/// Set the remote channel basepoints and counterparty/local_to_self_delay.
 	/// This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
 	///
 	/// We bind local_to_self_delay late here for API convenience.
 	///
 	/// Will be called before any signatures are applied.
-	fn on_accept(&mut self, channel_points: &ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16);
+	fn on_accept(&mut self, channel_points: &ChannelPublicKeys, counterparty_to_self_delay: u16, local_to_self_delay: u16);
 }
 
 /// A trait to describe an object which can get user secrets and key material.
@@ -360,7 +360,7 @@ struct AcceptedChannelData {
 	/// transactions, ie the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction. You'll likely want to pass this to the
 	/// ln::chan_utils::build*_transaction functions when signing local transactions.
-	remote_to_self_delay: u16,
+	counterparty_to_self_delay: u16,
 	/// The to_self_delay value specified by us and applied on transactions broadcastable
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
@@ -384,7 +384,7 @@ pub struct InMemoryChannelKeys {
 	pub commitment_seed: [u8; 32],
 	/// Local public keys and basepoints
 	pub(crate) local_channel_pubkeys: ChannelPublicKeys,
-	/// Remote public keys and remote/local to_self_delay, populated on channel acceptance
+	/// Remote public keys and counterparty/local to_self_delay, populated on channel acceptance
 	accepted_channel_data: Option<AcceptedChannelData>,
 	/// The total value of this channel
 	channel_value_satoshis: u64,
@@ -447,7 +447,7 @@ impl InMemoryChannelKeys {
 	/// broadcast a transaction. You'll likely want to pass this to the
 	/// ln::chan_utils::build*_transaction functions when signing local transactions.
 	/// Will panic if on_accept wasn't called.
-	pub fn remote_to_self_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().remote_to_self_delay }
+	pub fn counterparty_to_self_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().counterparty_to_self_delay }
 
 	/// The to_self_delay value specified by us and applied on transactions broadcastable
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
@@ -485,7 +485,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let mut htlc_sigs = Vec::with_capacity(htlcs.len());
 		for ref htlc in htlcs {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.local_to_self_delay, htlc, &keys.a_delayed_payment_key, &keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.local_to_self_delay, htlc, &keys.delayed_payment_key, &keys.revocation_key);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
@@ -517,7 +517,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 	}
 
 	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
-		let local_csv = self.accepted_channel_data.as_ref().unwrap().remote_to_self_delay;
+		let local_csv = self.accepted_channel_data.as_ref().unwrap().counterparty_to_self_delay;
 		local_commitment_tx.get_htlc_sigs(&self.htlc_base_key, local_csv, secp_ctx)
 	}
 
@@ -532,21 +532,21 @@ impl ChannelKeys for InMemoryChannelKeys {
 			Err(_) => return Err(())
 		};
 		let witness_script = if let &Some(ref htlc) = htlc {
-			let remote_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().htlc_basepoint) {
-				Ok(remote_htlcpubkey) => remote_htlcpubkey,
+			let counterparty_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().htlc_basepoint) {
+				Ok(counterparty_htlcpubkey) => counterparty_htlcpubkey,
 				Err(_) => return Err(())
 			};
 			let local_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
 				Ok(local_htlcpubkey) => local_htlcpubkey,
 				Err(_) => return Err(())
 			};
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &remote_htlcpubkey, &local_htlcpubkey, &revocation_pubkey)
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &local_htlcpubkey, &revocation_pubkey)
 		} else {
-			let remote_delayedpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().delayed_payment_basepoint) {
-				Ok(remote_delayedpubkey) => remote_delayedpubkey,
+			let counterparty_delayedpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().delayed_payment_basepoint) {
+				Ok(counterparty_delayedpubkey) => counterparty_delayedpubkey,
 				Err(_) => return Err(())
 			};
-			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.local_to_self_delay(), &remote_delayedpubkey)
+			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.local_to_self_delay(), &counterparty_delayedpubkey)
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
@@ -556,9 +556,9 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn sign_remote_htlc_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		if let Ok(htlc_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &self.htlc_base_key) {
 			let witness_script = if let Ok(revocation_pubkey) = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint) {
-				if let Ok(remote_htlcpubkey) = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().htlc_basepoint) {
-					if let Ok(local_htlcpubkey) = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
-						chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &remote_htlcpubkey, &local_htlcpubkey, &revocation_pubkey)
+				if let Ok(counterparty_htlcpubkey) = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.remote_pubkeys().htlc_basepoint) {
+					if let Ok(htlcpubkey) = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
+						chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey)
 					} else { return Err(()) }
 				} else { return Err(()) }
 			} else { return Err(()) };
@@ -588,18 +588,18 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16) {
+	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_to_self_delay: u16, local_to_self_delay: u16) {
 		assert!(self.accepted_channel_data.is_none(), "Already accepted");
 		self.accepted_channel_data = Some(AcceptedChannelData {
 			remote_channel_pubkeys: channel_pubkeys.clone(),
-			remote_to_self_delay,
+			counterparty_to_self_delay,
 			local_to_self_delay,
 		});
 	}
 }
 
 impl_writeable!(AcceptedChannelData, 0,
- { remote_channel_pubkeys, remote_to_self_delay, local_to_self_delay });
+ { remote_channel_pubkeys, counterparty_to_self_delay, local_to_self_delay });
 
 impl Writeable for InMemoryChannelKeys {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {

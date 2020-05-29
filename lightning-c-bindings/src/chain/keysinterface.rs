@@ -357,7 +357,7 @@ pub struct ChannelKeys {
 	/// We bind local_to_self_delay late here for API convenience.
 	///
 	/// Will be called before any signatures are applied.
-	pub on_accept: extern "C" fn (this_arg: *mut c_void, channel_points: &crate::ln::chan_utils::ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16),
+	pub on_accept: extern "C" fn (this_arg: *mut c_void, channel_points: &crate::ln::chan_utils::ChannelPublicKeys, counterparty_to_self_delay: u16, local_to_self_delay: u16),
 	pub clone: Option<extern "C" fn (this_arg: *const c_void) -> *mut c_void>,
 	pub free: Option<extern "C" fn(this_arg: *mut c_void)>,
 }
@@ -447,8 +447,8 @@ impl rustChannelKeys for ChannelKeys {
 		let mut local_ret = match ret.result_ok { true => Ok( { (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust() }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
-	fn on_accept(&mut self, channel_points: &lightning::ln::chan_utils::ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16) {
-		(self.on_accept)(self.this_arg, &crate::ln::chan_utils::ChannelPublicKeys { inner: unsafe { (channel_points as *const _) as *mut _ }, is_owned: false }, remote_to_self_delay, local_to_self_delay)
+	fn on_accept(&mut self, channel_points: &lightning::ln::chan_utils::ChannelPublicKeys, counterparty_to_self_delay: u16, local_to_self_delay: u16) {
+		(self.on_accept)(self.this_arg, &crate::ln::chan_utils::ChannelPublicKeys { inner: unsafe { (channel_points as *const _) as *mut _ }, is_owned: false }, counterparty_to_self_delay, local_to_self_delay)
 	}
 }
 
@@ -682,8 +682,8 @@ pub extern "C" fn InMemoryChannelKeys_remote_pubkeys(this_arg: &InMemoryChannelK
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn InMemoryChannelKeys_remote_to_self_delay(this_arg: &InMemoryChannelKeys) -> u16 {
-	let mut ret = unsafe { &*this_arg.inner }.remote_to_self_delay();
+pub extern "C" fn InMemoryChannelKeys_counterparty_to_self_delay(this_arg: &InMemoryChannelKeys) -> u16 {
+	let mut ret = unsafe { &*this_arg.inner }.counterparty_to_self_delay();
 	ret
 }
 
