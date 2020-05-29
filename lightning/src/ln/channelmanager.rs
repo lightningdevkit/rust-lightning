@@ -1843,7 +1843,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
+						let mut faultive_node = None;
 						if let Some(update) = channel_update {
+							faultive_node = match update.clone() {
+								msgs::HTLCFailChannelUpdate::NodeFailure {node_id, is_permanent: _} => Some(node_id),
+								_ => None,
+							};
 							self.channel_state.lock().unwrap().pending_msg_events.push(
 								events::MessageSendEvent::PaymentFailureNetworkUpdate {
 									update,
@@ -1854,6 +1859,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
+								faultive_node: faultive_node,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -1878,6 +1884,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
+								faultive_node: None,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]

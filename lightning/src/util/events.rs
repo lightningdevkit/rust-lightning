@@ -98,6 +98,8 @@ pub enum Event {
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
 		rejected_by_dest: bool,
+		/// Indicates the node responsible for the failure in the event of NodeFailure event.
+		faultive_node: Option<PublicKey>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -145,7 +147,7 @@ impl Writeable for Event {
 				3u8.write(writer)?;
 				payment_preimage.write(writer)?;
 			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
+			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref faultive_node,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -154,6 +156,7 @@ impl Writeable for Event {
 				4u8.write(writer)?;
 				payment_hash.write(writer)?;
 				rejected_by_dest.write(writer)?;
+				faultive_node.write(writer)?;
 				#[cfg(test)]
 				error_code.write(writer)?;
 				#[cfg(test)]
@@ -194,6 +197,7 @@ impl MaybeReadable for Event {
 			4u8 => Ok(Some(Event::PaymentFailed {
 					payment_hash: Readable::read(reader)?,
 					rejected_by_dest: Readable::read(reader)?,
+					faultive_node: Readable::read(reader)?,
 					#[cfg(test)]
 					error_code: Readable::read(reader)?,
 					#[cfg(test)]

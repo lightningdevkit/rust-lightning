@@ -13,6 +13,7 @@ use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
+use routing::router::RouteHop;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
@@ -146,15 +147,15 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			if let Some((_, ref chan)) = iter.next() {
 				if chan.announcement_message.is_some() {
 					let chan_announcement = chan.announcement_message.clone().unwrap();
-					let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
-					let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
-					if let Some(one_to_two) = chan.one_to_two.as_ref() {
-						one_to_two_announcement = one_to_two.last_update_message.clone();
+					let mut alice_to_bob_announcement: Option<msgs::ChannelUpdate> = None;
+					let mut bob_to_alice_announcement: Option<msgs::ChannelUpdate> = None;
+					if let Some(alice_to_bob) = chan.alice_to_bob.as_ref() {
+						alice_to_bob_announcement = alice_to_bob.last_update_message.clone();
 					}
-					if let Some(two_to_one) = chan.two_to_one.as_ref() {
-						two_to_one_announcement = two_to_one.last_update_message.clone();
+					if let Some(bob_to_alice) = chan.bob_to_alice.as_ref() {
+						bob_to_alice_announcement = bob_to_alice.last_update_message.clone();
 					}
-					result.push((chan_announcement, one_to_two_announcement, two_to_one_announcement));
+					result.push((chan_announcement, alice_to_bob_announcement, bob_to_alice_announcement));
 				} else {
 					// TODO: We may end up sending un-announced channel_updates if we are sending
 					// initial sync data while receiving announce/updates for this channel.
@@ -203,6 +204,36 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 }
 
 #[derive(PartialEq, Debug)]
+/// Tracks the score of a payment by holding onto certain metadata about
+/// the channel. Right now it stores a count of PaymentSent and PaymentFailed
+/// occurances for a given channel, but there's a lot more that could be
+/// added down the road (eg uptime, fee rates, variation, floppiness...)
+pub struct ChannelScore {
+	/// Count of occurances of PaymentSent events
+	pub payment_sent_score: u64,
+	/// Count of occurances of PaymentFailed events
+	pub payment_failed_score: u64,
+}
+
+impl Readable for ChannelScore {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<ChannelScore, DecodeError> {
+		let payment_sent_score: u64 = Readable::read(reader)?;
+		let payment_failed_score: u64 = Readable::read(reader)?;
+		Ok(ChannelScore {
+			payment_sent_score,
+			payment_failed_score,
+		})
+	}
+}
+
+impl Writeable for ChannelScore {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.payment_sent_score.write(writer)?;
+		self.payment_failed_score.write(writer)?;
+		Ok(())
+	}
+}
+#[derive(PartialEq, Debug)]
 /// Details about one direction of a channel. Received
 /// within a channel update.
 pub struct DirectionalChannelInfo {
@@ -222,6 +253,8 @@ pub struct DirectionalChannelInfo {
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
 	pub last_update_message: Option<msgs::ChannelUpdate>,
+	/// A structure that tracks the reliablity of a channel.
+	pub channel_score: ChannelScore,
 }
 
 impl std::fmt::Display for DirectionalChannelInfo {
@@ -237,7 +270,8 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 	cltv_expiry_delta,
 	htlc_minimum_msat,
 	fees,
-	last_update_message
+	last_update_message,
+	channel_score
 });
 
 #[derive(PartialEq)]
@@ -247,13 +281,13 @@ pub struct ChannelInfo {
 	/// Protocol features of a channel communicated during its announcement
 	pub features: ChannelFeatures,
 	/// Source node of the first direction of a channel
-	pub node_one: PublicKey,
+	pub node_alice: PublicKey,
 	/// Details about the first direction of a channel
-	pub one_to_two: Option<DirectionalChannelInfo>,
+	pub alice_to_bob: Option<DirectionalChannelInfo>,
 	/// Source node of the second direction of a channel
-	pub node_two: PublicKey,
+	pub node_bob: PublicKey,
 	/// Details about the second direction of a channel
-	pub two_to_one: Option<DirectionalChannelInfo>,
+	pub bob_to_alice: Option<DirectionalChannelInfo>,
 	/// An initial announcement of the channel
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -263,18 +297,18 @@ pub struct ChannelInfo {
 
 impl std::fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		write!(f, "features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
-		   log_bytes!(self.features.encode()), log_pubkey!(self.node_one), self.one_to_two, log_pubkey!(self.node_two), self.two_to_one)?;
+		write!(f, "features: {}, node_alice: {}, alice_to_bob: {:?}, node_bob: {}, bob_to_alice: {:?}",
+		   log_bytes!(self.features.encode()), log_pubkey!(self.node_alice), self.alice_to_bob, log_pubkey!(self.node_bob), self.bob_to_alice)?;
 		Ok(())
 	}
 }
 
 impl_writeable!(ChannelInfo, 0, {
 	features,
-	node_one,
-	one_to_two,
-	node_two,
-	two_to_one,
+	node_alice,
+	alice_to_bob,
+	node_bob,
+	bob_to_alice,
 	announcement_message
 });
 
@@ -506,6 +540,61 @@ impl NetworkGraph {
 		None
 	}
 
+	/// Increments payment_sent_score for both DirectionalChannelInfos on any channel that
+	/// cooperatively executed a successful payment. In the future, this could be more nuanced (eg
+	/// only score the direction that cooperates, bring in other parameters for the channel_score
+	/// field within DirectionalChannelInfo)
+	pub fn score_payment_sent_for_route(&mut self, route: Vec<Vec<RouteHop>>) -> Result<bool, LightningError> {
+		let mut channel_down: bool = false;
+		for path in route {
+			for route_hop in path {
+				let short_channel_id = route_hop.short_channel_id;
+				if let Some(channel) = self.channels.get_mut(&short_channel_id) {
+					channel.alice_to_bob.as_mut().unwrap().channel_score.payment_sent_score += 1;
+					channel.bob_to_alice.as_mut().unwrap().channel_score.payment_sent_score += 1;
+				} else {
+					channel_down = true;
+					continue;
+				}
+			}
+		}
+		if channel_down {
+			return Err(LightningError {
+				err: "PaymentSent event occurred for this channel, but the channel was closed before scoring",
+				action: ErrorAction::IgnoreError
+			});
+		}
+		Ok(true)
+	}
+
+	/// Increments payment_failed_score for approriate DirectionalChannelInfos on the network
+	/// graph. Like the case for scoring PaymentSent events, this method uses the node's PublicKey
+	/// to identify the appropriate DirectionalChannelInfo to score. From there, there is a check
+	/// against a list of at fault nodes that determines whether the node's channel score should be
+	/// penalized for failing to execute or rewarded for executing properly.
+	pub fn score_payment_failed_for_route(&mut self, route: Vec<Vec<RouteHop>>, faultive_nodes: Vec<PublicKey>) -> Result<bool, LightningError> {
+		for path in route {
+			for route_hop in path {
+				let short_channel_id = route_hop.short_channel_id;
+				let channel = self.channels.get_mut(&short_channel_id).unwrap();
+				if faultive_nodes.contains(&(route_hop.pubkey)) {
+					let directional_channel_info = if route_hop.pubkey == channel.node_alice {
+						channel.bob_to_alice.as_mut().unwrap()
+					} else {
+						channel.alice_to_bob.as_mut().unwrap()
+					};
+					let channel_score = &mut directional_channel_info.channel_score;
+					channel_score.payment_failed_score += 1;
+					break; // You don't want to reward channels past this point in the path, but you don't want to penalize either. So here we just move onto the next path in the route.
+				} else {
+					channel.alice_to_bob.as_mut().unwrap().channel_score.payment_sent_score += 1;
+					channel.bob_to_alice.as_mut().unwrap().channel_score.payment_sent_score += 1;
+				}
+			}
+		}
+		Ok(true)
+	}
+
 	/// For an already known node (from channel announcements), update its stored properties from a given node announcement
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
 	fn update_node_from_announcement(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
@@ -557,10 +646,10 @@ impl NetworkGraph {
 
 		let chan_info = ChannelInfo {
 				features: msg.contents.features.clone(),
-				node_one: msg.contents.node_id_1.clone(),
-				one_to_two: None,
-				node_two: msg.contents.node_id_2.clone(),
-				two_to_one: None,
+				node_alice: msg.contents.node_id_1.clone(),
+				alice_to_bob: None,
+				node_bob: msg.contents.node_id_2.clone(),
+				bob_to_alice: None,
 				announcement_message: if should_relay { Some(msg.clone()) } else { None },
 			};
 
@@ -623,11 +712,11 @@ impl NetworkGraph {
 			}
 		} else {
 			if let Some(chan) = self.channels.get_mut(&short_channel_id) {
-				if let Some(one_to_two) = chan.one_to_two.as_mut() {
-					one_to_two.enabled = false;
+				if let Some(alice_to_bob) = chan.alice_to_bob.as_mut() {
+					alice_to_bob.enabled = false;
 				}
-				if let Some(two_to_one) = chan.two_to_one.as_mut() {
-					two_to_one.enabled = false;
+				if let Some(bob_to_alice) = chan.bob_to_alice.as_mut() {
+					bob_to_alice.enabled = false;
 				}
 			}
 		}
@@ -677,7 +766,11 @@ impl NetworkGraph {
 								base_msat: msg.contents.fee_base_msat,
 								proportional_millionths: msg.contents.fee_proportional_millionths,
 							},
-							last_update_message
+							last_update_message,
+							channel_score: ChannelScore {
+								payment_sent_score: 0,
+								payment_failed_score: 0,
+							}
 						};
 						$target = Some(updated_channel_dir_info);
 					}
@@ -685,17 +778,17 @@ impl NetworkGraph {
 
 				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 				if msg.contents.flags & 1 == 1 {
-					dest_node_id = channel.node_one.clone();
+					dest_node_id = channel.node_alice.clone();
 					if let Some(sig_verifier) = secp_ctx {
-						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_two);
+						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_bob);
 					}
-					maybe_update_channel_info!(channel.two_to_one, channel.node_two);
+					maybe_update_channel_info!(channel.bob_to_alice, channel.node_bob);
 				} else {
-					dest_node_id = channel.node_two.clone();
+					dest_node_id = channel.node_bob.clone();
 					if let Some(sig_verifier) = secp_ctx {
-						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_one);
+						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_alice);
 					}
-					maybe_update_channel_info!(channel.one_to_two, channel.node_one);
+					maybe_update_channel_info!(channel.alice_to_bob, channel.node_alice);
 				}
 			}
 		}
@@ -719,10 +812,10 @@ impl NetworkGraph {
 			for chan_id in node.channels.iter() {
 				let chan = self.channels.get(chan_id).unwrap();
 				let chan_info_opt;
-				if chan.node_one == dest_node_id {
-					chan_info_opt = chan.two_to_one.as_ref();
+				if chan.node_alice == dest_node_id {
+					chan_info_opt = chan.bob_to_alice.as_ref();
 				} else {
-					chan_info_opt = chan.one_to_two.as_ref();
+					chan_info_opt = chan.alice_to_bob.as_ref();
 				}
 				if let Some(chan_info) = chan_info_opt {
 					if chan_info.enabled {
@@ -756,8 +849,8 @@ impl NetworkGraph {
 			}
 		}
 
-		remove_from_node!(chan.node_one);
-		remove_from_node!(chan.node_two);
+		remove_from_node!(chan.node_alice);
+		remove_from_node!(chan.node_bob);
 	}
 }
 
@@ -765,12 +858,13 @@ impl NetworkGraph {
 mod tests {
 	use chain::chaininterface;
 	use ln::features::{ChannelFeatures, NodeFeatures};
-	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, DirectionalChannelInfo, ChannelScore, RoutingFees};
 	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
+	use routing::router::RouteHop;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
@@ -1168,8 +1262,8 @@ mod tests {
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert_eq!(channel_info.one_to_two.as_ref().unwrap().cltv_expiry_delta, 144);
-					assert!(channel_info.two_to_one.is_none());
+					assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().cltv_expiry_delta, 144);
+					assert!(channel_info.bob_to_alice.is_none());
 				}
 			}
 		}
@@ -1303,7 +1397,7 @@ mod tests {
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert!(channel_info.one_to_two.is_some());
+					assert!(channel_info.alice_to_bob.is_some());
 				}
 			}
 		}
@@ -1321,7 +1415,7 @@ mod tests {
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert!(!channel_info.one_to_two.as_ref().unwrap().enabled);
+					assert!(!channel_info.alice_to_bob.as_ref().unwrap().enabled);
 				}
 			}
 		}
@@ -1657,5 +1751,361 @@ mod tests {
 		assert!(!network.get_channels().is_empty());
 		network.write(&mut w).unwrap();
 		assert!(<NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == *network);
+	}
+
+	#[test]
+	fn network_graph_score_payment() {
+		// Set up a network that consists of the following channels:
+		// node_1 -> node_2
+		// node_1 -> node_3
+		// node_2 -> node_4
+		// node_3 -> node_4
+		// We can use this to simulate a MPP from node_1 to node_4 via node_2 and node_3.
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let num_nodes = 4;
+		let node_0_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_3_privkey = &SecretKey::from_slice(&[39; 32]).unwrap();
+		let node_privkeys = vec![node_0_privkey, node_1_privkey, node_2_privkey, node_3_privkey];
+		let node_id_0 = PublicKey::from_secret_key(&secp_ctx, node_0_privkey);
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_id_3 = PublicKey::from_secret_key(&secp_ctx, node_3_privkey);
+		let node_ids = vec![node_id_0, node_id_1, node_id_2, node_id_3];
+		let node_0_btckey = &SecretKey::from_slice(&[38; 32]).unwrap();
+		let node_1_btckey = &SecretKey::from_slice(&[37; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[36; 32]).unwrap();
+		let node_3_btckey = &SecretKey::from_slice(&[35; 32]).unwrap();
+		let node_btckeys = vec![node_0_btckey, node_1_btckey, node_2_btckey, node_3_btckey];
+
+		let mut short_channel_id = 0;
+		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+
+		{
+			// There is no nodes in the table at the beginning.
+			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			assert_eq!(network.get_nodes().len(), 0);
+		}
+
+		{
+			// Create channels between each node
+			// The short channel IDs will be assigned as follows:
+			// 0 <-> 1 = 0
+			// 0 <-> 2 = 1
+			// 0 <-> 3 = 2
+			// 1 <-> 2 = 3
+			// 1 <-> 3 = 4
+			// 2 <-> 3 = 5
+			for i in 0..num_nodes {
+				for j in 0..num_nodes {
+					if i >= j {
+						continue;
+					} else {
+						let node_i = node_ids[i];
+						let node_j = node_ids[j];
+						let unsigned_announcement = UnsignedChannelAnnouncement {
+							features: ChannelFeatures::empty(),
+							chain_hash,
+							short_channel_id,
+							node_id_1: node_i,
+							node_id_2: node_j,
+							bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_btckeys[i]),
+							bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_btckeys[j]),
+							excess_data: Vec::new(),
+						};
+
+						let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+						let valid_channel_announcement = ChannelAnnouncement {
+							node_signature_1: secp_ctx.sign(&msghash, node_privkeys[i]),
+							node_signature_2: secp_ctx.sign(&msghash, node_privkeys[j]),
+							bitcoin_signature_1: secp_ctx.sign(&msghash, node_btckeys[i]),
+							bitcoin_signature_2: secp_ctx.sign(&msghash, node_btckeys[j]),
+							contents: unsigned_announcement.clone(),
+						};
+						match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
+							Ok(_) => (),
+							Err(_) => panic!()
+						};
+						short_channel_id += 1;
+					}
+				}
+			}
+			// There is no nodes in the table at the beginning.
+			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			assert_eq!(network.get_nodes().len(), 4);
+			assert_eq!(network.get_channels().len(), 6);
+		}
+
+		{
+			// Create the DirectionalChannelInfo, RoutingFee and ChannelScore objects for each
+			// channel
+			let mut network = net_graph_msg_handler.network_graph.write().unwrap();
+			for channel_id in 0..short_channel_id {
+				let channel_info = network.channels.get_mut(&channel_id).unwrap();
+				// Assign a DirectionalChannelInfo and ChannelScore object to alice_to_bob of
+				// channel_info
+				let chan_score_alice_to_bob = ChannelScore {
+					payment_sent_score: 0,
+					payment_failed_score: 0,
+				};
+				let chan_score_bob_to_alice = ChannelScore {
+					payment_sent_score: 0,
+					payment_failed_score: 0,
+				};
+
+				let dummy_routing_fee = RoutingFees {
+					base_msat: 0,
+					proportional_millionths: 0,
+				};
+				let dir_chan_info_alice_to_bob = DirectionalChannelInfo {
+					last_update: 0,
+					enabled: true,
+					cltv_expiry_delta: 0,
+					htlc_minimum_msat: 0,
+					fees: dummy_routing_fee,
+					last_update_message: None,
+					channel_score: chan_score_alice_to_bob,
+				};
+
+				let dir_chan_info_bob_to_alice = DirectionalChannelInfo {
+					last_update: 0,
+					enabled: true,
+					cltv_expiry_delta: 0,
+					htlc_minimum_msat: 0,
+					fees: dummy_routing_fee,
+					last_update_message: None,
+					channel_score: chan_score_bob_to_alice,
+				};
+
+				channel_info.alice_to_bob = Some(dir_chan_info_alice_to_bob);
+				channel_info.bob_to_alice = Some(dir_chan_info_bob_to_alice);
+				let dir_alice_to_bob = channel_info.alice_to_bob.as_mut().unwrap();
+				assert_eq!(dir_alice_to_bob.channel_score.payment_sent_score, 0);
+				assert_eq!(dir_alice_to_bob.channel_score.payment_failed_score, 0);
+			}
+		}
+
+		// Network is now setup so we can proceed with testing the scoring function
+		{
+			// Assume a PaymentSent event is picked up and it consists of a simple payment from
+			// node_0 to node_1
+			let route_hop = RouteHop {
+				pubkey: node_ids[1],
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+			};
+			let sent_paths: Vec<RouteHop> = vec![route_hop];
+			let sent_route: Vec<Vec<RouteHop>> = vec![sent_paths];
+			let mut network = net_graph_msg_handler.network_graph.write().unwrap();
+			let sent_res = network.score_payment_sent_for_route(sent_route);
+			assert!(sent_res.unwrap() == true);
+			// Check that score_payment_sent_for_route incremented the appropriate ChannelScore
+			let chan_id = 0;
+			let channel_info = network.channels.get_mut(&chan_id).unwrap();
+			let dir_alice_to_bob = &channel_info.alice_to_bob.as_ref();
+			assert_eq!(dir_alice_to_bob.unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(dir_alice_to_bob.unwrap().channel_score.payment_failed_score, 0);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+		}
+
+		{
+			// Assume a payment fails due to node_1 (identified by its PublicKey), verify that its
+			// directional channel's score (node_0 -> node_1) has its PaymentFailed score
+			// incremented.
+			let route_hop = RouteHop {
+				pubkey: node_ids[1],
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+			};
+			let faultive_nodes: Vec<PublicKey> = vec![node_ids[1]];
+			let attempted_path: Vec<RouteHop> = vec![route_hop];
+			let failed_route: Vec<Vec<RouteHop>> = vec![attempted_path];
+			let mut network = net_graph_msg_handler.network_graph.write().unwrap();
+			let failed_res = network.score_payment_failed_for_route(failed_route, faultive_nodes);
+			assert!(failed_res.unwrap() == true);
+			let chan_id = 0;
+			let channel_info = network.channels.get_mut(&chan_id).unwrap();
+			assert!(channel_info.node_bob == node_ids[1]);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+		}
+
+		{
+			// In this case, the route through node_1 succeeded, but the route through node_2
+			// failed. We expect the node_0 <-> node_2 channel to be penalized.
+			let mut route_hops: Vec<RouteHop> = vec![];
+			for i in 0..num_nodes {
+				let route_hop = RouteHop {
+					pubkey: node_ids[i],
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+				};
+				route_hops.push(route_hop);
+			}
+			let faultive_nodes: Vec<PublicKey> = vec![node_ids[2]];
+			let mut success_path: Vec<RouteHop> = vec![route_hops[1].clone(), route_hops[3].clone()];
+			let mut failed_path: Vec<RouteHop> = vec![route_hops[2].clone(), route_hops[3].clone()];
+
+			let mut network = net_graph_msg_handler.network_graph.write().unwrap();
+			success_path[0].short_channel_id = 0;
+			success_path[1].short_channel_id = 4;
+			failed_path[0].short_channel_id = 1;
+			failed_path[1].short_channel_id = 5;
+
+			let mpp_route: Vec<Vec<RouteHop>> = vec![success_path, failed_path];
+			let failed_res = network.score_payment_failed_for_route(mpp_route, faultive_nodes);
+			assert!(failed_res.unwrap() == true);
+		}
+
+		{
+			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let mut chan_id = 0; // Check on 0 <-> 1
+			let mut channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 2);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 2);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 1; // Check on 0 <-> 2
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 0);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 0);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+		}
+
+		{
+			// In this case, both routes succeed, so we will check that the payment_sent_score's
+			// for all channels are incremented.
+			let mut route_hops: Vec<RouteHop> = vec![];
+			for i in 0..num_nodes {
+				let route_hop = RouteHop {
+					pubkey: node_ids[i],
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+				};
+				route_hops.push(route_hop);
+			}
+			let mut success_path_1: Vec<RouteHop> = vec![route_hops[1].clone(), route_hops[3].clone()];
+			let mut success_path_2: Vec<RouteHop> = vec![route_hops[2].clone(), route_hops[3].clone()];
+
+			let mut network = net_graph_msg_handler.network_graph.write().unwrap();
+			success_path_1[0].short_channel_id = 0;
+			success_path_1[1].short_channel_id = 4;
+			success_path_2[0].short_channel_id = 1;
+			success_path_2[1].short_channel_id = 5;
+
+			let mpp_route: Vec<Vec<RouteHop>> = vec![success_path_1, success_path_2];
+			let failed_res = network.score_payment_sent_for_route(mpp_route);
+			assert!(failed_res.unwrap() == true);
+		}
+
+		{
+			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let mut chan_id = 0; // Check on 0 <-> 1
+			let mut channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 3);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 3);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 1; // Check on 0 <-> 2
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 4; // Check on 1 <-> 3
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 2);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 0);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 2);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 5; // Check on 2 <-> 3
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 0);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+		}
+
+		{
+			// In this case, both routes fail, so we will check that the payment_fail_score's
+			// for all 0 <-> 1 and 0 <-> 2 are incremented while 1 <->3 and 2 <-> 3 remain the
+			// same.
+			let mut route_hops: Vec<RouteHop> = vec![];
+			for i in 0..num_nodes {
+				let route_hop = RouteHop {
+					pubkey: node_ids[i],
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 0,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0,
+					cltv_expiry_delta: 0,
+				};
+				route_hops.push(route_hop);
+			}
+			let faultive_nodes = vec![node_ids[1], node_ids[2]];
+			let mut fail_path_1: Vec<RouteHop> = vec![route_hops[1].clone(), route_hops[3].clone()];
+			let mut fail_path_2: Vec<RouteHop> = vec![route_hops[2].clone(), route_hops[3].clone()];
+
+			let mut network = net_graph_msg_handler.network_graph.write().unwrap();
+			fail_path_1[0].short_channel_id = 0;
+			fail_path_1[1].short_channel_id = 4;
+			fail_path_2[0].short_channel_id = 1;
+			fail_path_2[1].short_channel_id = 5;
+
+			let mpp_route: Vec<Vec<RouteHop>> = vec![fail_path_1, fail_path_2];
+			let failed_res = network.score_payment_failed_for_route(mpp_route, faultive_nodes);
+			assert!(failed_res.unwrap() == true);
+		}
+		{
+			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let mut chan_id = 0; // Check on 0 <-> 1
+			let mut channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 3);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 2);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 3);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 1; // Check on 0 <-> 2
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 2);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 4; // Check on 1 <-> 3
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 2);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 0);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 2);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+
+			chan_id = 5; // Check on 2 <-> 3
+			channel_info = network.channels.get(&chan_id).unwrap();
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.alice_to_bob.as_ref().unwrap().channel_score.payment_failed_score, 0);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_sent_score, 1);
+			assert_eq!(channel_info.bob_to_alice.as_ref().unwrap().channel_score.payment_failed_score, 0);
+		}
 	}
 }

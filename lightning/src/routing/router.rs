@@ -300,20 +300,20 @@ pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_hand
 				for chan_id in $node.channels.iter() {
 					let chan = network.get_channels().get(chan_id).unwrap();
 					if !chan.features.requires_unknown_bits() {
-						if chan.node_one == *$node_id {
-							// ie $node is one, ie next hop in A* is two, via the two_to_one channel
-							if first_hops.is_none() || chan.node_two != *our_node_id {
-								if let Some(two_to_one) = chan.two_to_one.as_ref() {
-									if two_to_one.enabled {
-										add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.features, $fee_to_target_msat);
+						if chan.node_alice == *$node_id {
+							// ie $node is one, ie next hop in A* is two, via the bob_to_alice channel
+							if first_hops.is_none() || chan.node_bob != *our_node_id {
+								if let Some(bob_to_alice) = chan.bob_to_alice.as_ref() {
+									if bob_to_alice.enabled {
+										add_entry!(chan_id, chan.node_bob, chan.node_alice, bob_to_alice, chan.features, $fee_to_target_msat);
 									}
 								}
 							}
 						} else {
-							if first_hops.is_none() || chan.node_one != *our_node_id {
-								if let Some(one_to_two) = chan.one_to_two.as_ref() {
-									if one_to_two.enabled {
-										add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.features, $fee_to_target_msat);
+							if first_hops.is_none() || chan.node_alice != *our_node_id {
+								if let Some(alice_to_bob) = chan.alice_to_bob.as_ref() {
+									if alice_to_bob.enabled {
+										add_entry!(chan_id, chan.node_alice, chan.node_bob, alice_to_bob, chan.features, $fee_to_target_msat);
 									}
 								}
 
