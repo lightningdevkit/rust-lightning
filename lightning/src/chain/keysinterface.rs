@@ -815,7 +815,7 @@ impl KeysInterface for KeysManager {
 		self.shutdown_pubkey.clone()
 	}
 
-	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> InMemoryChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner {
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		let ix_and_nanos: u64 = (child_ix as u64) << 32 | (self.starting_time_nanos as u64);
 		self.derive_channel_keys(channel_value_satoshis, ix_and_nanos, self.starting_time_secs)
