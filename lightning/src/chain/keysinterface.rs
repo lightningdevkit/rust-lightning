@@ -196,9 +196,9 @@ impl Readable for SpendableOutputDescriptor {
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
 	/// Gets the commitment seed
-	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
+	fn commitment_seed(&self) -> &[u8; 32];
 	/// Gets the local channel public keys and basepoints
-	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys;
+	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets arbitrary identifiers describing the set of keys which are provided back to you in
 	/// some SpendableOutputDescriptor types. These should be sufficient to identify this
 	/// ChannelKeys object uniquely and lookup or re-derive its keys.
@@ -405,7 +405,7 @@ impl InMemoryChannelKeys {
 
 impl ChannelKeys for InMemoryChannelKeys {
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
-	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { &self.local_channel_pubkeys }
+	fn pubkeys(&self) -> &ChannelPublicKeys { &self.local_channel_pubkeys }
 	fn key_derivation_params(&self) -> (u64, u64) { self.key_derivation_params }
 
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {

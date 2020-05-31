@@ -274,7 +274,7 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 	///
 	/// Handles re-scanning the block and calling block_connected again if listeners register new
 	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
-	pub fn block_connected<'b>(&self, block: &'b Block, height: u32) {
+	pub fn block_connected(&self, block: &Block, height: u32) {
 		let mut reentered = true;
 		while reentered {
 			let (matched, matched_index) = self.chain_monitor.filter_block(block);
