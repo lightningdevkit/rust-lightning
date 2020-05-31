@@ -42,10 +42,12 @@ use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpd
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
+use ln::msgs::NetAddress;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
 use chain::keysinterface::{ChannelKeys, KeysInterface, KeysManager, InMemoryChannelKeys};
 use util::config::UserConfig;
+use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -312,7 +314,7 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	claimable_htlcs: HashMap<(PaymentHash, Option<PaymentSecret>), Vec<ClaimableHTLC>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
-	pub(super) pending_msg_events: Vec<events::MessageSendEvent>,
+	pub(super) pending_msg_events: Vec<MessageSendEvent>,
 }
 
 /// State we hold per-peer. In the future we should put channels in here, but for now we only hold
@@ -1483,7 +1485,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	// be absurd. We ensure this by checking that at least 500 (our stated public contract on when
 	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
 	// message...
-	const HALF_MESSAGE_IS_ADDRS: u32 = ::std::u16::MAX as u32 / (msgs::NetAddress::MAX_LEN as u32 + 1) / 2;
+	const HALF_MESSAGE_IS_ADDRS: u32 = ::std::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
 	#[deny(const_err)]
 	#[allow(dead_code)]
 	// ...by failing to compile if the number of addresses that would be half of a message is
@@ -1503,7 +1505,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// only Tor Onion addresses.
 	///
 	/// Panics if addresses is absurdly large (more than 500).
-	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], addresses: Vec<msgs::NetAddress>) {
+	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], addresses: Vec<NetAddress>) {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		if addresses.len() > 500 {
@@ -3010,14 +3012,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		//TODO: This behavior should be documented. It's non-intuitive that we query
 		// ChannelMonitors when clearing other events.
 		self.process_pending_monitor_events();
@@ -3029,14 +3031,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		//TODO: This behavior should be documented. It's non-intuitive that we query
 		// ChannelMonitors when clearing other events.
 		self.process_pending_monitor_events();

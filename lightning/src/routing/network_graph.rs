@@ -20,7 +20,8 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, OptionalField, MAX_VALUE_MSAT};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
+use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
@@ -154,7 +155,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx))
 	}
 
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 		let network_graph = self.network_graph.read().unwrap();
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let mut iter = network_graph.get_channels().range(starting_point..);
@@ -182,7 +183,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		result
 	}
 
-	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
+	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
 		let network_graph = self.network_graph.read().unwrap();
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let mut iter = if let Some(pubkey) = starting_point {
