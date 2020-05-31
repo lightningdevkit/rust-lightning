@@ -245,13 +245,15 @@ pub type BlockNotifierRef<'a, C> = BlockNotifier<'a, &'a ChainListener, C>;
 /// or a BlockNotifierRef for conciseness. See their documentation for more details, but essentially
 /// you should default to using a BlockNotifierRef, and use a BlockNotifierArc instead when you
 /// require ChainListeners with static lifetimes, such as when you're using lightning-net-tokio.
-pub struct BlockNotifier<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> where C::Target: ChainWatchInterface {
+pub struct BlockNotifier<'a, CL: Deref + 'a, C: Deref>
+		where CL::Target: ChainListener + 'a, C::Target: ChainWatchInterface {
 	listeners: Mutex<Vec<CL>>,
 	chain_monitor: C,
 	phantom: PhantomData<&'a ()>,
 }
 
-impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a, CL, C> where C::Target: ChainWatchInterface {
+impl<'a, CL: Deref + 'a, C: Deref> BlockNotifier<'a, CL, C>
+		where CL::Target: ChainListener + 'a, C::Target: ChainWatchInterface {
 	/// Constructs a new BlockNotifier without any listeners.
 	pub fn new(chain_monitor: C) -> BlockNotifier<'a, CL, C> {
 		BlockNotifier {
