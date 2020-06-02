@@ -197,7 +197,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	on_holder_tx_csv: u16,
 
-	key_storage: ChanSigner,
+	pub(crate) key_storage: ChanSigner,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
 	// it (RBF or CPFP). If an input has been part of an aggregate tx at first claim try, we need to keep it within
@@ -228,7 +228,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 
 	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
 
-	secp_ctx: Secp256k1<secp256k1::All>,
+	pub(crate) secp_ctx: Secp256k1<secp256k1::All>,
 }
 
 impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {

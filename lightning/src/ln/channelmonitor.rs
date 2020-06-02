@@ -21,7 +21,7 @@
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{TxOut,Transaction};
+use bitcoin::blockdata::transaction::{TxOut, Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
@@ -490,7 +490,7 @@ pub(crate) enum InputMaterial {
 	}
 }
 
-impl Writeable for InputMaterial  {
+impl Writeable for InputMaterial {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
 			&InputMaterial::Revoked { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_counterparty_tx_csv} => {
