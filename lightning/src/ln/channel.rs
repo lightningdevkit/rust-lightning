@@ -1663,8 +1663,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
 	}
 
-	pub fn update_add_htlc(&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_state: PendingHTLCStatus) -> Result<(), ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32) {
+	pub fn update_add_htlc<F>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F) -> Result<(), ChannelError>
+	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus {
+		// We can't accept HTLCs sent after we've sent a shutdown.
+		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if local_sent_shutdown {
+			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|20);
+		}
+		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
+		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if remote_sent_shutdown {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state"));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -1719,7 +1727,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		if self.channel_state & ChannelState::LocalShutdownSent as u32 != 0 {
-			if let PendingHTLCStatus::Forward(_) = pending_forward_state {
+			if let PendingHTLCStatus::Forward(_) = pending_forward_status {
 				panic!("ChannelManager shouldn't be trying to add a forwardable HTLC after we've started closing");
 			}
 		}
@@ -1731,7 +1739,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(pending_forward_state),
+			state: InboundHTLCState::RemoteAnnounced(pending_forward_status),
 		});
 		Ok(())
 	}
