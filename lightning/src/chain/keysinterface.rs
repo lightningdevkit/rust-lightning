@@ -195,18 +195,6 @@ impl Readable for SpendableOutputDescriptor {
 // TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
-	/// Gets the private key for the anchor tx
-	fn funding_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key for blinded revocation pubkey
-	fn revocation_base_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key used in the to_remote output of remote commitment tx (ie the
-	/// output to us in transactions our counterparty broadcasts).
-	/// Also as part of obscured commitment number.
-	fn payment_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local secret key used in HTLC-Success/HTLC-Timeout txn and to_local output
-	fn delayed_payment_base_key<'a>(&'a self) -> &'a SecretKey;
-	/// Gets the local htlc secret key used in commitment tx htlc outputs
-	fn htlc_base_key<'a>(&'a self) -> &'a SecretKey;
 	/// Gets the commitment seed
 	fn commitment_seed<'a>(&'a self) -> &'a [u8; 32];
 	/// Gets the local channel public keys and basepoints
@@ -345,17 +333,17 @@ pub trait KeysInterface: Send + Sync {
 /// A simple implementation of ChannelKeys that just keeps the private keys in memory.
 pub struct InMemoryChannelKeys {
 	/// Private key of anchor tx
-	funding_key: SecretKey,
+	pub funding_key: SecretKey,
 	/// Local secret key for blinded revocation pubkey
-	revocation_base_key: SecretKey,
+	pub revocation_base_key: SecretKey,
 	/// Local secret key used for our balance in remote-broadcasted commitment transactions
-	payment_key: SecretKey,
+	pub payment_key: SecretKey,
 	/// Local secret key used in HTLC tx
-	delayed_payment_base_key: SecretKey,
+	pub delayed_payment_base_key: SecretKey,
 	/// Local htlc secret key used in commitment tx htlc outputs
-	htlc_base_key: SecretKey,
+	pub htlc_base_key: SecretKey,
 	/// Commitment seed
-	commitment_seed: [u8; 32],
+	pub commitment_seed: [u8; 32],
 	/// Local public keys and basepoints
 	pub(crate) local_channel_pubkeys: ChannelPublicKeys,
 	/// Remote public keys and base points
@@ -416,11 +404,6 @@ impl InMemoryChannelKeys {
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
-	fn funding_key(&self) -> &SecretKey { &self.funding_key }
-	fn revocation_base_key(&self) -> &SecretKey { &self.revocation_base_key }
-	fn payment_key(&self) -> &SecretKey { &self.payment_key }
-	fn delayed_payment_base_key(&self) -> &SecretKey { &self.delayed_payment_base_key }
-	fn htlc_base_key(&self) -> &SecretKey { &self.htlc_base_key }
 	fn commitment_seed(&self) -> &[u8; 32] { &self.commitment_seed }
 	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { &self.local_channel_pubkeys }
 	fn key_derivation_params(&self) -> (u64, u64) { self.key_derivation_params }
