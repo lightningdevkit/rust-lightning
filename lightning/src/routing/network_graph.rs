@@ -13,6 +13,7 @@ use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
 use ln::msgs;
+use routing::router::RouteHop;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
@@ -278,7 +279,6 @@ impl_writeable!(ChannelInfo, 0, {
 	announcement_message
 });
 
-
 /// Fees for routing via a given channel or a node
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub struct RoutingFees {
@@ -425,6 +425,70 @@ impl Readable for NodeInfo {
 			lowest_inbound_channel_fees,
 			announcement_info,
 		})
+	}
+}
+
+/// Allows for updating user's network metadata.
+pub trait UpdateMetadata {
+	/// Adds a failed route to track. If we see the route again, we'll reject it or we can take
+	/// some action (like set its fee to make route-finding not find that route again)
+	fn add_failed_route(&mut self, route: Vec<Vec<RouteHop>>);
+	/// If a route starts working again, then we can take it off the failed route list.
+	fn remove_failed_route(&mut self, route: Vec<Vec<RouteHop>>);
+	/// Returns true if a route is on the failed routes list, false otherwise.
+	fn check_route(&self, route: Vec<Vec<RouteHop>>) -> bool;
+	/// Sets the channel fee penalty being tracked in the Metadata object.
+	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64);
+	/// Gets a channel's fee penalty based on its channel_id (as stored in a NetworkGraph object).
+	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64>;
+}
+
+/// A default metadata object that is used to implement the default functionality for the
+/// NetworkTracker trait. A user could  make their own Metadata object and extend the
+/// functionality of it by implementing other functions/traits for their metadata.
+pub struct DefaultMetadata {
+	/// A lits of failed routes. Referenced by the failed route trackers, and sets channel fee
+	/// penalty to a high number if in trait
+	failed_routes: Vec<Vec<Vec<RouteHop>>>,
+	/// Minimum fee willing to be paid to avoid using a given channel. Often, this is updated when
+	/// a channel ends up on a failed route.
+	channel_fee_penalty: BTreeMap<u64, u64>,
+}
+
+impl UpdateMetadata for DefaultMetadata {
+	fn add_failed_route(&mut self, route: Vec<Vec<RouteHop>>) { self.failed_routes.push(route); }
+	fn remove_failed_route(&mut self, route: Vec<Vec<RouteHop>>) {
+		self.failed_routes.retain(|item| item != &route);
+	}
+	fn check_route(&self, route: Vec<Vec<RouteHop>>) -> bool {
+		self.failed_routes.contains(&route)
+	}
+	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64) { self.channel_fee_penalty.insert(chan_id, fee_penalty); }
+	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64> { self.channel_fee_penalty.get(&chan_id) }
+}
+
+/// Users store custom metadata about the network separately. This trait is implemented by users, who may use
+/// the NetworkGraph to update whatever metadata they are storing about their view of the network.
+pub trait NetworkTracker<T: UpdateMetadata = DefaultMetadata> {
+	/// Return score for a given channel by using user-defined channel_scorers
+	fn calculate_minimum_fee_penalty_for_channel(&self, chan_id: u64, network_metadata: T) -> u64 {
+		let chan_score = network_metadata.get_channel_fee_penalty(chan_id);
+		if chan_score != None {
+			return *chan_score.unwrap();
+		} else {
+			return 0;
+		}
+	}
+
+	/// Store routes that have previously failed by adding them to a list being held in Metadata
+	fn track_previously_failed_route(&self, mut network_metadata: T, failed_route: Vec<Vec<RouteHop>>) {
+		network_metadata.add_failed_route(failed_route);
+	}
+
+	/// Returns true if this route was attempted previously and failed by searching in Metadata's
+	/// failed routes
+	fn check_route_for_previous_failure(&self, network_metadata: T, route: Vec<Vec<RouteHop>>) -> bool {
+		network_metadata.check_route(route)
 	}
 }
 
