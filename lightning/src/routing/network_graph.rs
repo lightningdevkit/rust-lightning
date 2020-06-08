@@ -432,11 +432,11 @@ impl Readable for NodeInfo {
 pub trait UpdateMetadata {
 	/// Adds a failed route to track. If we see the route again, we'll reject it or we can take
 	/// some action (like set its fee to make route-finding not find that route again)
-	fn add_failed_route(&mut self, route: Vec<Vec<RouteHop>>);
+	fn add_failed_route(&mut self, route: Vec<RouteHop>);
 	/// If a route starts working again, then we can take it off the failed route list.
-	fn remove_failed_route(&mut self, route: Vec<Vec<RouteHop>>);
+	fn remove_failed_route(&mut self, route: Vec<RouteHop>);
 	/// Returns true if a route is on the failed routes list, false otherwise.
-	fn check_route(&self, route: Vec<Vec<RouteHop>>) -> bool;
+	fn check_route(&self, route: Vec<RouteHop>) -> bool;
 	/// Sets the channel fee penalty being tracked in the Metadata object.
 	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64);
 	/// Gets a channel's fee penalty based on its channel_id (as stored in a NetworkGraph object).
@@ -449,18 +449,18 @@ pub trait UpdateMetadata {
 pub struct DefaultMetadata {
 	/// A lits of failed routes. Referenced by the failed route trackers, and sets channel fee
 	/// penalty to a high number if in trait
-	failed_routes: Vec<Vec<Vec<RouteHop>>>,
+	failed_routes: Vec<Vec<RouteHop>>,
 	/// Minimum fee willing to be paid to avoid using a given channel. Often, this is updated when
 	/// a channel ends up on a failed route.
 	channel_fee_penalty: BTreeMap<u64, u64>,
 }
 
 impl UpdateMetadata for DefaultMetadata {
-	fn add_failed_route(&mut self, route: Vec<Vec<RouteHop>>) { self.failed_routes.push(route); }
-	fn remove_failed_route(&mut self, route: Vec<Vec<RouteHop>>) {
+	fn add_failed_route(&mut self, route: Vec<RouteHop>) { self.failed_routes.push(route); }
+	fn remove_failed_route(&mut self, route: Vec<RouteHop>) {
 		self.failed_routes.retain(|item| item != &route);
 	}
-	fn check_route(&self, route: Vec<Vec<RouteHop>>) -> bool {
+	fn check_route(&self, route: Vec<RouteHop>) -> bool {
 		self.failed_routes.contains(&route)
 	}
 	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64) { self.channel_fee_penalty.insert(chan_id, fee_penalty); }
@@ -481,13 +481,13 @@ pub trait NetworkTracker<T: UpdateMetadata = DefaultMetadata> {
 	}
 
 	/// Store routes that have previously failed by adding them to a list being held in Metadata
-	fn track_previously_failed_route(&self, mut network_metadata: T, failed_route: Vec<Vec<RouteHop>>) {
+	fn track_previously_failed_route(&self, mut network_metadata: T, failed_route: Vec<RouteHop>) {
 		network_metadata.add_failed_route(failed_route);
 	}
 
 	/// Returns true if this route was attempted previously and failed by searching in Metadata's
 	/// failed routes
-	fn check_route_for_previous_failure(&self, network_metadata: T, route: Vec<Vec<RouteHop>>) -> bool {
+	fn check_route_for_previous_failure(&self, network_metadata: T, route: Vec<RouteHop>) -> bool {
 		network_metadata.check_route(route)
 	}
 }
