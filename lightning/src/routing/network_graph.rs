@@ -429,13 +429,11 @@ impl Readable for NodeInfo {
 }
 
 /// Allows for updating user's network metadata.
-pub trait UpdateMetadata {
-	/// Checks if a route has failed previously
-	fn check_route(&self, route: Vec<RouteHop>) -> bool;
-	/// Sets the channel fee penalty being tracked in the Metadata object.
-	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64);
+pub trait RouteFeePenalty {
 	/// Gets a channel's fee penalty based on its channel_id (as stored in a NetworkGraph object).
 	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64>;
+	/// Informs metadata object that a route has successfully executed its payment.
+	fn route_succeeded(&mut self, route: Vec<RouteHop>);
 }
 
 /// A default metadata object that is used to implement the default functionality for the
@@ -450,17 +448,18 @@ pub struct DefaultMetadata {
 	channel_fee_penalty: BTreeMap<u64, u64>,
 }
 
-impl UpdateMetadata for DefaultMetadata {
-	fn check_route(&self, route: Vec<RouteHop>) -> bool {
-		self.failed_routes.contains(&route)
-	}
-	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64) { self.channel_fee_penalty.insert(chan_id, fee_penalty); }
+impl RouteFeePenalty for DefaultMetadata {
 	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64> { self.channel_fee_penalty.get(&chan_id) }
+	fn route_succeeded(&mut self, route: Vec<RouteHop>) {
+		if self.failed_routes.contains(&route) {
+			self.failed_routes.retain(|item| item != &route);
+		}
+	}
 }
 
 /// Users store custom metadata about the network separately. This trait is implemented by users, who may use
 /// the NetworkGraph to update whatever metadata they are storing about their view of the network.
-pub trait NetworkTracker<T: UpdateMetadata = DefaultMetadata> {
+pub trait NetworkTracker<T: RouteFeePenalty = DefaultMetadata> {
 	/// Return score for a given channel by using user-defined channel_scorers
 	fn calculate_minimum_fee_penalty_for_channel(&self, chan_id: u64, network_metadata: T) -> u64 {
 		let chan_score = network_metadata.get_channel_fee_penalty(chan_id);
@@ -469,12 +468,6 @@ pub trait NetworkTracker<T: UpdateMetadata = DefaultMetadata> {
 		} else {
 			return 0;
 		}
-	}
-
-	/// Returns true if this route was attempted previously and failed by searching in Metadata's
-	/// failed routes
-	fn check_route_for_previous_failure(&self, network_metadata: T, route: Vec<RouteHop>) -> bool {
-		network_metadata.check_route(route)
 	}
 }
 
