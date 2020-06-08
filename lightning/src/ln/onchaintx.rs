@@ -12,7 +12,7 @@
 //! OnchainTxHandler objetcs are fully-part of ChannelMonitor and encapsulates all
 //! building, tracking, bumping and notifications functions.
 
-use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 
@@ -22,12 +22,10 @@ use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
-use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
+use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, ClaimRequest};
 use ln::channelmanager::PaymentPreimage;
-use ln::chan_utils;
-use ln::chan_utils::{TxCreationKeys, HolderCommitmentTransaction};
-use ln::onchain_utils::InputDescriptors;
-use ln::onchain_utils;
+use ln::chan_utils::HolderCommitmentTransaction;
+use ln::onchain_utils::PackageTemplate;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -53,8 +51,7 @@ enum OnchainEvent {
 	/// In this case, we need to drop the outpoint and regenerate a new claim tx. By safety, we keep tracking
 	/// the outpoint to be sure to resurect it back to the claim tx if reorgs happen.
 	ContentiousOutpoint {
-		outpoint: BitcoinOutPoint,
-		input_material: InputMaterial,
+		package: PackageTemplate,
 	}
 }
 
@@ -69,8 +66,9 @@ pub struct ClaimTxBumpMaterial {
 	// Soonest timelocks among set of outpoints claimed, used to compute
 	// a priority of not feerate
 	soonest_timelock: u32,
-	// Cache of script, pubkey, sig or key to solve claimable outputs scriptpubkey.
-	per_input_material: HashMap<BitcoinOutPoint, InputMaterial>,
+	// Template (list of outpoint and set of data needed to generate transaction digest
+	// and satisfy witness program).
+	package_template: PackageTemplate,
 }
 
 impl Writeable for ClaimTxBumpMaterial  {
@@ -78,11 +76,7 @@ impl Writeable for ClaimTxBumpMaterial  {
 		self.height_timer.write(writer)?;
 		writer.write_all(&byte_utils::be32_to_array(self.feerate_previous))?;
 		writer.write_all(&byte_utils::be32_to_array(self.soonest_timelock))?;
-		writer.write_all(&byte_utils::be64_to_array(self.per_input_material.len() as u64))?;
-		for (outp, tx_material) in self.per_input_material.iter() {
-			outp.write(writer)?;
-			tx_material.write(writer)?;
-		}
+		self.package_template.write(writer)?;
 		Ok(())
 	}
 }
@@ -92,14 +86,8 @@ impl Readable for ClaimTxBumpMaterial {
 		let height_timer = Readable::read(reader)?;
 		let feerate_previous = Readable::read(reader)?;
 		let soonest_timelock = Readable::read(reader)?;
-		let per_input_material_len: u64 = Readable::read(reader)?;
-		let mut per_input_material = HashMap::with_capacity(cmp::min(per_input_material_len as usize, MAX_ALLOC_SIZE / 128));
-		for _ in 0 ..per_input_material_len {
-			let outpoint = Readable::read(reader)?;
-			let input_material = Readable::read(reader)?;
-			per_input_material.insert(outpoint, input_material);
-		}
-		Ok(Self { height_timer, feerate_previous, soonest_timelock, per_input_material })
+		let package_template = Readable::read(reader)?;
+		Ok(Self { height_timer, feerate_previous, soonest_timelock, package_template })
 	}
 }
 
@@ -197,7 +185,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	on_holder_tx_csv: u16,
 
-	pub(crate) key_storage: ChanSigner,
+	pub(super) key_storage: ChanSigner,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
 	// it (RBF or CPFP). If an input has been part of an aggregate tx at first claim try, we need to keep it within
@@ -228,7 +216,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 
 	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
 
-	pub(crate) secp_ctx: Secp256k1<secp256k1::All>,
+	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
 }
 
 impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
@@ -266,10 +254,9 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 						writer.write_all(&[0; 1])?;
 						claim_request.write(writer)?;
 					},
-					OnchainEvent::ContentiousOutpoint { ref outpoint, ref input_material } => {
+					OnchainEvent::ContentiousOutpoint { ref package } => {
 						writer.write_all(&[1; 1])?;
-						outpoint.write(writer)?;
-						input_material.write(writer)?;
+						package.write(writer)?;
 					}
 				}
 			}
@@ -320,11 +307,9 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 						}
 					},
 					1 => {
-						let outpoint = Readable::read(reader)?;
-						let input_material = Readable::read(reader)?;
+						let package = Readable::read(reader)?;
 						OnchainEvent::ContentiousOutpoint {
-							outpoint,
-							input_material
+							package
 						}
 					}
 					_ => return Err(DecodeError::InvalidValue),
@@ -391,26 +376,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		if cached_claim_datas.per_input_material.len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
-		let mut inputs = Vec::new();
-		for outp in cached_claim_datas.per_input_material.keys() {
-			log_trace!(logger, "Outpoint {}:{}", outp.txid, outp.vout);
-			inputs.push(TxIn {
-				previous_output: *outp,
-				script_sig: Script::new(),
-				sequence: 0xfffffffd,
-				witness: Vec::new(),
-			});
-		}
-		let mut bumped_tx = Transaction {
-			version: 2,
-			lock_time: 0,
-			input: inputs,
-			output: vec![TxOut {
-				script_pubkey: self.destination_script.clone(),
-				value: 0
-			}],
-		};
+		if cached_claim_datas.package_template.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
 		macro_rules! RBF_bump {
 			($amount: expr, $old_feerate: expr, $fee_estimator: expr, $predicted_weight: expr) => {
@@ -454,120 +420,36 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Some(Self::get_height_timer(height, cached_claim_datas.soonest_timelock));
-		let mut inputs_witnesses_weight = 0;
-		let mut amt = 0;
+		let mut amt = cached_claim_datas.package_template.package_amounts();
 		let mut dynamic_fee = true;
-		for per_outp_material in cached_claim_datas.per_input_material.values() {
-			match per_outp_material {
-				&InputMaterial::Revoked { ref input_descriptor, ref amount, .. } => {
-					inputs_witnesses_weight += onchain_utils::get_witnesses_weight(&[*input_descriptor]);
-					amt += *amount;
-				},
-				&InputMaterial::CounterpartyHTLC { ref preimage, ref htlc, .. } => {
-					inputs_witnesses_weight += onchain_utils::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
-					amt += htlc.amount_msat / 1000;
-				},
-				&InputMaterial::HolderHTLC { .. } => {
-					dynamic_fee = false;
-				},
-				&InputMaterial::Funding { .. } => {
-					dynamic_fee = false;
-				}
-			}
-		}
+		if amt == 0 { dynamic_fee = false; }
 		if dynamic_fee {
-			let predicted_weight = (bumped_tx.get_weight() + inputs_witnesses_weight) as u64;
+			let predicted_weight = cached_claim_datas.package_template.package_weight(&self.destination_script) as u64;
 			let mut new_feerate;
 			// If old feerate is 0, first iteration of this claim, use normal fee calculation
 			if cached_claim_datas.feerate_previous != 0 {
 				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight) {
 					// If new computed fee is superior at the whole claimable amount burn all in fees
-					if new_fee as u64 > amt {
-						bumped_tx.output[0].value = 0;
+					if new_fee > amt {
+						amt = 0;
 					} else {
-						bumped_tx.output[0].value = amt - new_fee as u64;
+						amt = amt - new_fee;
 					}
 					new_feerate = feerate;
 				} else { return None; }
 			} else {
 				if subtract_high_prio_fee!(logger, fee_estimator, amt, predicted_weight, new_feerate) {
-					bumped_tx.output[0].value = amt;
 				} else { return None; }
 			}
 			assert!(new_feerate != 0);
 
-			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
-				match per_outp_material {
-					&InputMaterial::Revoked { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_counterparty_tx_csv } => {
-						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
-
-							let witness_script = if let Some(ref htlc) = *htlc {
-								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key)
-							} else {
-								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key)
-							};
-
-							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx) {
-								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-								if htlc.is_some() {
-									bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
-								} else {
-									bumped_tx.input[i].witness.push(vec!(1));
-								}
-								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-							} else { return None; }
-							//TODO: panic ?
-
-							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_holder" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
-						}
-					},
-					&InputMaterial::CounterpartyHTLC { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref preimage, ref htlc } => {
-						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
-							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
-
-							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							if let Ok(sig) = self.key_storage.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {
-								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-								if let &Some(preimage) = preimage {
-									bumped_tx.input[i].witness.push(preimage.0.to_vec());
-								} else {
-									// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-									bumped_tx.input[i].witness.push(vec![]);
-								}
-								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-							}
-							log_trace!(logger, "Going to broadcast Claim Transaction {} claiming counterparty {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
-						}
-					},
-					_ => unreachable!()
-				}
-			}
-			log_trace!(logger, "...with timer {}", new_timer.unwrap());
-			assert!(predicted_weight >= bumped_tx.get_weight() as u64);
-			return Some((new_timer, new_feerate as u32, bumped_tx))
+			let transaction = cached_claim_datas.package_template.package_finalize(self, amt, self.destination_script.clone(), &logger).unwrap();
+			log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
+			assert!(predicted_weight >= transaction.get_weight() as u64);
+			return Some((new_timer, new_feerate as u32, transaction))
 		} else {
-			for (_, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
-				match per_outp_material {
-					&InputMaterial::HolderHTLC { ref preimage, ref amount } => {
-						let htlc_tx = self.get_fully_signed_htlc_tx(outp, preimage);
-						if let Some(htlc_tx) = htlc_tx {
-							let feerate = (amount - htlc_tx.output[0].value) * 1000 / htlc_tx.get_weight() as u64;
-							// Timer set to $NEVER given we can't bump tx without anchor outputs
-							log_trace!(logger, "Going to broadcast Holder HTLC-{} claiming HTLC output {} from {}...", if preimage.is_some() { "Success" } else { "Timeout" }, outp.vout, outp.txid);
-							return Some((None, feerate as u32, htlc_tx));
-						}
-						return None;
-					},
-					&InputMaterial::Funding { ref funding_redeemscript } => {
-						let signed_tx = self.get_fully_signed_holder_tx(funding_redeemscript).unwrap();
-						// Timer set to $NEVER given we can't bump tx without anchor outputs
-						log_trace!(logger, "Going to broadcast Holder Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
-						return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw, signed_tx));
-					}
-					_ => unreachable!()
-				}
+			if let Some(transaction) = cached_claim_datas.package_template.package_finalize(self, amt, self.destination_script.clone(), &logger) {
+				return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw, transaction));
 			}
 		}
 		None
@@ -580,38 +462,43 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	{
 		log_trace!(logger, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
 		let mut new_claims = Vec::new();
-		let mut aggregated_claim = HashMap::new();
+		let mut aggregated_templates = Vec::with_capacity(1);
 		let mut aggregated_soonest = ::std::u32::MAX;
 
 		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
 		for req in claimable_outpoints {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-			if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
+			if let Some(_) = self.claimable_outpoints.get(req.package_template.outpoints()[0]) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.package_template.outpoints()[0].txid, req.package_template.outpoints()[0].vout); } else {
 				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
 				if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
-					let mut single_input = HashMap::new();
-					single_input.insert(req.outpoint, req.witness_data);
-					new_claims.push((req.absolute_timelock, single_input));
+					new_claims.push((req.absolute_timelock, req.package_template));
 				} else {
-					aggregated_claim.insert(req.outpoint, req.witness_data);
+					//XXX: do better
+					if aggregated_templates.len() == 0 {
+						aggregated_templates.push(req.package_template);
+					} else {
+						aggregated_templates.first_mut().unwrap().package_merge(req.package_template);
+					}
 					if req.absolute_timelock < aggregated_soonest {
 						aggregated_soonest = req.absolute_timelock;
 					}
 				}
 			}
 		}
-		new_claims.push((aggregated_soonest, aggregated_claim));
+		if let Some(aggregated_template) = aggregated_templates.pop() {
+			new_claims.push((aggregated_soonest, aggregated_template));
+		}
 
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
-		for (soonest_timelock, claim) in new_claims.drain(..) {
-			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock, per_input_material: claim };
+		for (soonest_timelock, package) in new_claims.drain(..) {
+			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock, package_template: package };
 			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
 				let txid = tx.txid();
-				for k in claim_material.per_input_material.keys() {
+				for k in claim_material.package_template.outpoints() {
 					log_trace!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
@@ -633,11 +520,11 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
 						let mut set_equality = true;
-						if claim_material.per_input_material.len() != tx.input.len() {
+						if claim_material.package_template.outpoints().len() != tx.input.len() {
 							set_equality = false;
 						} else {
-							for (claim_inp, tx_inp) in claim_material.per_input_material.keys().zip(tx.input.iter()) {
-								if *claim_inp != tx_inp.previous_output {
+							for (claim_inp, tx_inp) in claim_material.package_template.outpoints().iter().zip(tx.input.iter()) {
+								if **claim_inp != tx_inp.previous_output {
 									set_equality = false;
 								}
 							}
@@ -667,12 +554,12 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						} else { // If false, generate new claim request with update outpoint set
 							let mut at_least_one_drop = false;
 							for input in tx.input.iter() {
-								if let Some(input_material) = claim_material.per_input_material.remove(&input.previous_output) {
-									claimed_outputs_material.push((input.previous_output, input_material));
+								if let Some(package) = claim_material.package_template.package_split(&input.previous_output) {
+									claimed_outputs_material.push(package);
 									at_least_one_drop = true;
 								}
 								// If there are no outpoints left to claim in this request, drop it entirely after ANTI_REORG_DELAY.
-								if claim_material.per_input_material.is_empty() {
+								if claim_material.package_template.outpoints().is_empty() {
 									clean_claim_request_after_safety_delay!();
 								}
 							}
@@ -687,8 +574,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					}
 				}
 			}
-			for (outpoint, input_material) in claimed_outputs_material.drain(..) {
-				let new_event = OnchainEvent::ContentiousOutpoint { outpoint, input_material };
+			for package in claimed_outputs_material.drain(..) {
+				let new_event = OnchainEvent::ContentiousOutpoint { package };
 				match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
 					hash_map::Entry::Occupied(mut entry) => {
 						if !entry.get().contains(&new_event) {
@@ -710,13 +597,13 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						// We may remove a whole set of claim outpoints here, as these one may have
 						// been aggregated in a single tx and claimed so atomically
 						if let Some(bump_material) = self.pending_claim_requests.remove(&claim_request) {
-							for outpoint in bump_material.per_input_material.keys() {
+							for outpoint in bump_material.package_template.outpoints() {
 								self.claimable_outpoints.remove(&outpoint);
 							}
 						}
 					},
-					OnchainEvent::ContentiousOutpoint { outpoint, .. } => {
-						self.claimable_outpoints.remove(&outpoint);
+					OnchainEvent::ContentiousOutpoint { package } => {
+						self.claimable_outpoints.remove(&package.outpoints()[0]);
 					}
 				}
 			}
@@ -756,10 +643,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			//- resurect outpoint back in its claimable set and regenerate tx
 			for ev in events {
 				match ev {
-					OnchainEvent::ContentiousOutpoint { outpoint, input_material } => {
-						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&outpoint) {
+					OnchainEvent::ContentiousOutpoint { package } => {
+						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&package.outpoints()[0]) {
 							if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
-								claim_material.per_input_material.insert(outpoint, input_material);
+								claim_material.package_template.package_merge(package);
 								// Using a HashMap guarantee us than if we have multiple outpoints getting
 								// resurrected only one bump claim tx is going to be broadcast
 								bump_candidates.insert(ancestor_claimable_txid.clone(), claim_material.clone());

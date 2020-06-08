@@ -280,11 +280,9 @@ impl PackageTemplate {
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
 		match self {
 			PackageTemplate::MalleableJusticeTx { ref inputs } => {
-				assert_ne!(inputs.len(), 0);
 				inputs.keys().collect()
 			},
 			PackageTemplate::CounterpartyHTLCTx { ref inputs } => {
-				assert_ne!(inputs.len(), 0);
 				inputs.keys().collect()
 			},
 			PackageTemplate::HolderHTLCTx { ref input } => {
@@ -299,29 +297,32 @@ impl PackageTemplate {
 			},
 		}
 	}
-	pub(crate) fn package_split(&mut self, outp: &BitcoinOutPoint) -> PackageTemplate {
-		let package = match self {
+	pub(crate) fn package_split(&mut self, outp: &BitcoinOutPoint) -> Option<PackageTemplate> {
+		match self {
 			PackageTemplate::MalleableJusticeTx { ref mut inputs } => {
-				assert_ne!(inputs.len(), 0);
-				let removed = inputs.remove(outp).unwrap();
-				let mut input_splitted = HashMap::with_capacity(1);
-				input_splitted.insert(*outp, removed);
-				PackageTemplate::MalleableJusticeTx {
-					inputs: input_splitted,
+				if let Some(removed) = inputs.remove(outp) {
+					let mut input_splitted = HashMap::with_capacity(1);
+					input_splitted.insert(*outp, removed);
+					return Some(PackageTemplate::MalleableJusticeTx {
+						inputs: input_splitted,
+					});
 				}
+				None
 			},
 			PackageTemplate::CounterpartyHTLCTx { ref mut inputs } => {
-				assert_ne!(inputs.len(), 0);
-				let removed = inputs.remove(outp).unwrap();
-				let mut input_splitted = HashMap::with_capacity(1);
-				input_splitted.insert(*outp, removed);
-				PackageTemplate::CounterpartyHTLCTx {
-					inputs: input_splitted,
+				if let Some(removed) = inputs.remove(outp) {
+					let mut input_splitted = HashMap::with_capacity(1);
+					input_splitted.insert(*outp, removed);
+					return Some(PackageTemplate::CounterpartyHTLCTx {
+						inputs: input_splitted,
+					});
 				}
+				None
 			},
-			_ => panic!("Removing outpoints from non-malleable packages")
-		};
-		package
+			_ => {
+				return None;
+			}
+		}
 	}
 	pub(crate) fn package_merge(&mut self, mut template: PackageTemplate) {
 		match self {
@@ -413,7 +414,7 @@ impl PackageTemplate {
 		};
 		bumped_tx.get_weight() + witnesses_weight
 	}
-	pub(crate) fn package_finalize<L: Deref, ChanSigner: ChannelKeys>(&self, onchain_handler: &mut OnchainTxHandler<ChanSigner>, amount: u64, destination_script: Script, logger: &L) -> Option<Transaction>
+	pub(crate) fn package_finalize<L: Deref, ChanSigner: ChannelKeys>(&self, onchain_handler: &mut OnchainTxHandler<ChanSigner>, value: u64, destination_script: Script, logger: &L) -> Option<Transaction>
 		where L::Target: Logger,
 	{
 		let mut bumped_tx = Transaction {
@@ -422,7 +423,7 @@ impl PackageTemplate {
 			input: vec![],
 			output: vec![TxOut {
 				script_pubkey: destination_script,
-				value: 0
+				value,
 			}],
 		};
 		match self {
@@ -444,7 +445,7 @@ impl PackageTemplate {
 							chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, revk.on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key)
 						};
 
-						if let Ok(sig) = onchain_handler.key_storage.sign_justice_transaction(&bumped_tx, i, amount, &revk.per_commitment_key, &revk.htlc, &onchain_handler.secp_ctx) {
+						if let Ok(sig) = onchain_handler.key_storage.sign_justice_transaction(&bumped_tx, i, revk.amount, &revk.per_commitment_key, &revk.htlc, &onchain_handler.secp_ctx) {
 							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 							if revk.htlc.is_some() {
