@@ -440,19 +440,34 @@ pub trait RouteFeePenalty {
 /// NetworkTracker trait. A user could  make their own Metadata object and extend the
 /// functionality of it by implementing other functions/traits for their metadata.
 pub struct DefaultMetadata {
-	/// A lits of failed routes. Referenced by the failed route trackers, and sets channel fee
-	/// penalty to a high number if in trait
-	failed_routes: Vec<Vec<RouteHop>>,
-	/// Minimum fee willing to be paid to avoid using a given channel. Often, this is updated when
-	/// a channel ends up on a failed route.
-	channel_fee_penalty: BTreeMap<u64, u64>,
+	/// A lits of failed channels. Maps channel_id (as specified in the NetworkGraph object) to
+	/// the number of successful routes to participate before being removed from the list. All
+	/// channels in failed_channels are assumed to have a penalty of u64::max.
+	failed_channels: BTreeMap<u64, u64>,
 }
 
 impl RouteFeePenalty for DefaultMetadata {
-	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64> { self.channel_fee_penalty.get(&chan_id) }
+	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64> {
+		if self.failed_channels.get(&chan_id) == None {
+			return Some(&0);
+		} else {
+			return Some(&u64::MAX);
+		}
+	}
 	fn route_succeeded(&mut self, route: Vec<RouteHop>) {
-		if self.failed_routes.contains(&route) {
-			self.failed_routes.retain(|item| item != &route);
+		for route_hop in route {
+			let chan_id = route_hop.short_channel_id;
+			let successes_needed = self.failed_channels.get(&chan_id);
+			if successes_needed == None {
+				self.failed_channels.insert(chan_id, 5);
+			} else {
+				let dec_successes_needed = successes_needed.unwrap() - 1;
+				if dec_successes_needed > 0 {
+					self.failed_channels.insert(chan_id, dec_successes_needed);
+				} else {
+					self.failed_channels.remove(&chan_id);
+				}
+			}
 		}
 	}
 }
