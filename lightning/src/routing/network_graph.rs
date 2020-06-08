@@ -430,12 +430,7 @@ impl Readable for NodeInfo {
 
 /// Allows for updating user's network metadata.
 pub trait UpdateMetadata {
-	/// Adds a failed route to track. If we see the route again, we'll reject it or we can take
-	/// some action (like set its fee to make route-finding not find that route again)
-	fn add_failed_route(&mut self, route: Vec<RouteHop>);
-	/// If a route starts working again, then we can take it off the failed route list.
-	fn remove_failed_route(&mut self, route: Vec<RouteHop>);
-	/// Returns true if a route is on the failed routes list, false otherwise.
+	/// Checks if a route has failed previously
 	fn check_route(&self, route: Vec<RouteHop>) -> bool;
 	/// Sets the channel fee penalty being tracked in the Metadata object.
 	fn set_channel_fee_penalty(&mut self, chan_id: u64, fee_penalty: u64);
@@ -456,10 +451,6 @@ pub struct DefaultMetadata {
 }
 
 impl UpdateMetadata for DefaultMetadata {
-	fn add_failed_route(&mut self, route: Vec<RouteHop>) { self.failed_routes.push(route); }
-	fn remove_failed_route(&mut self, route: Vec<RouteHop>) {
-		self.failed_routes.retain(|item| item != &route);
-	}
 	fn check_route(&self, route: Vec<RouteHop>) -> bool {
 		self.failed_routes.contains(&route)
 	}
@@ -478,11 +469,6 @@ pub trait NetworkTracker<T: UpdateMetadata = DefaultMetadata> {
 		} else {
 			return 0;
 		}
-	}
-
-	/// Store routes that have previously failed by adding them to a list being held in Metadata
-	fn track_previously_failed_route(&self, mut network_metadata: T, failed_route: Vec<RouteHop>) {
-		network_metadata.add_failed_route(failed_route);
 	}
 
 	/// Returns true if this route was attempted previously and failed by searching in Metadata's
