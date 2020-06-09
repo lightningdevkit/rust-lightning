@@ -73,7 +73,7 @@ fn test_insane_channel_opens() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
-	let channel_reserve_satoshis = Channel::<EnforcingChannelKeys>::get_remote_channel_reserve_satoshis(channel_value_sat);
+	let channel_reserve_satoshis = Channel::<EnforcingChannelKeys>::get_holder_selected_channel_reserve_satoshis(channel_value_sat);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -1554,14 +1554,14 @@ fn test_basic_channel_reserve() {
 		PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 			match &fails[0] {
 				&APIError::ChannelUnavailable{ref err} =>
-					assert!(regex::Regex::new(r"Cannot send value that would put us under local channel reserve value \(\d+\)").unwrap().is_match(err)),
+					assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)),
 				_ => panic!("Unexpected error variant"),
 			}
 		},
 		_ => panic!("Unexpected error variant"),
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
 
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send, max_can_send);
 }
@@ -1618,7 +1618,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let (local_revocation_basepoint, local_htlc_basepoint, local_payment_point, local_secret, local_secret2) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
-		let chan_keys = local_chan.get_local_keys();
+		let chan_keys = local_chan.get_keys();
 		let pubkeys = chan_keys.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
 		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER), chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2))
@@ -1626,7 +1626,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_payment_point, remote_secret1) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
 		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
-		let chan_keys = remote_chan.get_local_keys();
+		let chan_keys = remote_chan.get_keys();
 		let pubkeys = chan_keys.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
 		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1))
@@ -1702,7 +1702,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let res = {
 		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
-		let local_chan_keys = local_chan.get_local_keys();
+		let local_chan_keys = local_chan.get_keys();
 		let pre_commit_tx_keys = PreCalculatedTxCreationKeys::new(commit_tx_keys);
 		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &pre_commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
 	};
@@ -1764,9 +1764,9 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 
 	let (route, our_payment_hash, _) = get_route_and_payment_hash!(1000);
 	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Cannot send value that would put them under remote channel reserve value"));
+		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put them under remote channel reserve value".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_string(), 1);
 }
 
 #[test]
@@ -1813,10 +1813,10 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &msg);
 	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot receive value that would put us under local channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
-	assert_eq!(err_msg.data, "Cannot receive value that would put us under local channel reserve value");
+	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -1954,7 +1954,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let total_fee_msat = (nodes.len() - 2) as u64 * feemsat;
 	let feerate = get_feerate!(nodes[0], chan_1.2);
 
-	let recv_value_0 = stat01.their_max_htlc_value_in_flight_msat - total_fee_msat;
+	let recv_value_0 = stat01.counterparty_max_htlc_value_in_flight_msat - total_fee_msat;
 
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
@@ -1974,7 +1974,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		// Also, ensure that each payment has enough to be over the dust limit to
 		// ensure it'll be included in each commit tx fee calculation.
 		let commit_tx_fee_all_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1);
-		let ensure_htlc_amounts_above_dust_buffer = 3 * (stat01.their_dust_limit_msat + 1000);
+		let ensure_htlc_amounts_above_dust_buffer = 3 * (stat01.counterparty_dust_limit_msat + 1000);
 		if stat01.value_to_self_msat < stat01.channel_reserve_msat + commit_tx_fee_all_htlcs + ensure_htlc_amounts_above_dust_buffer + amt_msat {
 			break;
 		}
@@ -2025,7 +2025,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
-			assert!(regex::Regex::new(r"Cannot send value that would put us under local channel reserve value \(\d+\)").unwrap().is_match(err)));
+			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -2051,9 +2051,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
-			assert!(regex::Regex::new(r"Cannot send value that would put us under local channel reserve value \(\d+\)").unwrap().is_match(err)));
+			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 2);
 	}
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(recv_value_22);
@@ -2138,14 +2138,14 @@ fn test_channel_reserve_holding_cell_htlcs() {
 			PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 				match &fails[0] {
 					&APIError::ChannelUnavailable{ref err} =>
-						assert!(regex::Regex::new(r"Cannot send value that would put us under local channel reserve value \(\d+\)").unwrap().is_match(err)),
+						assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)),
 					_ => panic!("Unexpected error variant"),
 				}
 			},
 			_ => panic!("Unexpected error variant"),
 		}
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 3);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 3);
 	}
 
 	send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_3, recv_value_3);
@@ -3146,7 +3146,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let value = if use_dust {
 		// The dust limit applied to HTLC outputs considers the fee of the HTLC transaction as
 		// well, so HTLCs at exactly the dust limit will not be included in commitment txn.
-		nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().our_dust_limit_satoshis * 1000
+		nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().holder_dust_limit_satoshis * 1000
 	} else { 3000000 };
 
 	let (_, first_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
@@ -4217,8 +4217,8 @@ fn test_invalid_channel_announcement() {
 
 	nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
-	let as_bitcoin_key = as_chan.get_local_keys().inner.local_channel_pubkeys.funding_pubkey;
-	let bs_bitcoin_key = bs_chan.get_local_keys().inner.local_channel_pubkeys.funding_pubkey;
+	let as_bitcoin_key = as_chan.get_keys().inner.local_channel_pubkeys.funding_pubkey;
+	let bs_bitcoin_key = bs_chan.get_keys().inner.local_channel_pubkeys.funding_pubkey;
 
 	let as_network_key = nodes[0].node.get_our_node_id();
 	let bs_network_key = nodes[1].node.get_our_node_id();
@@ -4245,8 +4245,8 @@ fn test_invalid_channel_announcement() {
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
 			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
-			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_local_keys().inner.funding_key);
-			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_local_keys().inner.funding_key);
+			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_keys().inner.funding_key);
+			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_keys().inner.funding_key);
 			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
 			let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].keys_manager.get_node_secret());
 			chan_announcement = msgs::ChannelAnnouncement {
@@ -5407,7 +5407,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	send_payment(&nodes[1], &[&nodes[2], &nodes[3], &nodes[5]], 500000, 500_000);
 	assert_eq!(get_local_commitment_txn!(nodes[3], chan.2)[0].output.len(), 2);
 
-	let ds_dust_limit = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+	let ds_dust_limit = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
 	// 0th HTLC:
 	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
@@ -6289,7 +6289,7 @@ fn test_onion_failure() {
 	run_onion_failure_test("unknown_next_peer", 0, &nodes, &bogus_route, &payment_hash, |_| {}, ||{}, true, Some(PERM|10),
 	  Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: bogus_route.paths[0][1].short_channel_id, is_permanent:true}));
 
-	let amt_to_forward = nodes[1].node.channel_state.lock().unwrap().by_id.get(&channels[1].2).unwrap().get_their_htlc_minimum_msat() - 1;
+	let amt_to_forward = nodes[1].node.channel_state.lock().unwrap().by_id.get(&channels[1].2).unwrap().get_counterparty_htlc_minimum_msat() - 1;
 	let mut bogus_route = route.clone();
 	let route_len = bogus_route.paths[0].len();
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward;
@@ -6494,7 +6494,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), "Freeing holding cell with 1 HTLC updates".to_string(), 1);
-	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put us under local channel reserve value ({})", log_bytes!(our_payment_hash.0), chan_stat.channel_reserve_msat);
+	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", log_bytes!(our_payment_hash.0), chan_stat.channel_reserve_msat);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
 
 	// Check that the payment failed to be sent out.
@@ -6574,7 +6574,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), "Freeing holding cell with 2 HTLC updates".to_string(), 1);
-	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put us under local channel reserve value ({})", log_bytes!(payment_hash_2.0), chan_stat.channel_reserve_msat);
+	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", log_bytes!(payment_hash_2.0), chan_stat.channel_reserve_msat);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
 
 	// Check that the second payment failed to be sent out.
@@ -6872,7 +6872,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, InitFeatures::known(), InitFeatures::known());
-	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().their_max_accepted_htlcs as u64;
+	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().counterparty_max_accepted_htlcs as u64;
 
 	let logger = test_utils::TestLogger::new();
 	for i in 0..max_accepted_htlcs {
@@ -6918,7 +6918,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_value = 100000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0, InitFeatures::known(), InitFeatures::known());
-	let max_in_flight = get_channel_value_stat!(nodes[0], chan.2).their_max_htlc_value_in_flight_msat;
+	let max_in_flight = get_channel_value_stat!(nodes[0], chan.2).counterparty_max_htlc_value_in_flight_msat;
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], max_in_flight, max_in_flight);
 
@@ -6948,7 +6948,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	{
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let channel = chan_lock.by_id.get(&chan.2).unwrap();
-		htlc_minimum_msat = channel.get_our_htlc_minimum_msat();
+		htlc_minimum_msat = channel.get_holder_htlc_minimum_msat();
 	}
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -7062,7 +7062,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], chan.2).their_max_htlc_value_in_flight_msat + 1;
+	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], chan.2).counterparty_max_htlc_value_in_flight_msat + 1;
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -7466,7 +7466,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan =create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
 
 	// We route 2 dust-HTLCs between A and B
 	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
@@ -7558,8 +7558,8 @@ fn test_no_failure_dust_htlc_local_commitment() {
 	// Rebalance a bit
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
 
-	let as_dust_limit = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
-	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+	let as_dust_limit = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
 
 	// We route 2 dust-HTLCs between A and B
 	let (preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
@@ -7612,7 +7612,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().our_dust_limit_satoshis;
+	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
 
 	let (_payment_preimage_1, dust_hash) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
 	let (_payment_preimage_2, non_dust_hash) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -8515,11 +8515,11 @@ fn test_counterparty_raa_skip_no_crash() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let mut guard = nodes[0].node.channel_state.lock().unwrap();
-	let local_keys = &guard.by_id.get_mut(&channel_id).unwrap().local_keys;
+	let keys = &guard.by_id.get_mut(&channel_id).unwrap().holder_keys;
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-		&SecretKey::from_slice(&local_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
-	let per_commitment_secret = local_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+		&SecretKey::from_slice(&keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+	let per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
 		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });
