@@ -4280,6 +4280,7 @@ mod tests {
 	use bitcoin::util::bip143;
 	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
+	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
@@ -4354,28 +4355,43 @@ mod tests {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
 	}
 
-	#[test]
-	fn channel_reestablish_no_updates() {
-		let feeest = TestFeeEstimator{fee_est: 15000};
-		let logger = test_utils::TestLogger::new();
-		let secp_ctx = Secp256k1::new();
-		let mut seed = [0; 32];
-		let mut rng = thread_rng();
-		rng.fill_bytes(&mut seed);
-		let network = Network::Testnet;
-		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+	struct ChanCfg {
+		fee_est: TestFeeEstimator,
+		logger: test_utils::TestLogger,
+		keys_mgr: test_utils::TestKeysInterface,
+	}
 
+	fn create_chan_cfgs(num_chans: usize) -> Vec<ChanCfg> {
+		let mut chan_cfgs = Vec::new();
+		for _ in 0..num_chans {
+			let fee_est = TestFeeEstimator{fee_est: 250 };
+			let logger = test_utils::TestLogger::new();
+			let mut seed = [0; 32];
+			let mut rng = thread_rng();
+			rng.fill_bytes(&mut seed);
+			let network = Network::Testnet;
+			let keys_mgr = test_utils::TestKeysInterface::new(&seed, network);
+			chan_cfgs.push(ChanCfg{ fee_est, logger, keys_mgr });
+		}
+
+		chan_cfgs
+	}
+
+	fn create_channels(cfgs: &Vec<ChanCfg>, amt: u64, push_amt_msat: u64) -> Vec<Channel<EnforcingChannelKeys>> {
 		// Go through the flow of opening a channel between two nodes.
+		let network = Network::Testnet;
 
 		// Create Node A's channel
+		let secp_ctx = Secp256k1::new();
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut config = UserConfig::default();
+		config.own_channel_config.minimum_depth = 1;
+		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&cfgs[0].fee_est, &&cfgs[0].keys_mgr, node_a_node_id, amt, push_amt_msat, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&feeest);
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&cfgs[0].fee_est);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&cfgs[1].fee_est, &&cfgs[1].keys_mgr, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
@@ -4384,19 +4400,40 @@ mod tests {
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
 		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
-			value: 10000000, script_pubkey: output_script.clone(),
+			value: amt, script_pubkey: output_script.clone().to_v0_p2wsh(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint, &&logger).unwrap();
-		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, &&logger).unwrap();
+		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint, &&cfgs[0].logger).unwrap();
+		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, &&cfgs[1].logger).unwrap();
 
 		// Node B --> Node A: funding signed
-		let _ = node_a_chan.funding_signed(&funding_signed_msg, &&logger);
+		assert!(node_a_chan.funding_signed(&funding_signed_msg, &&cfgs[0].logger).is_ok());
 
-		// Now disconnect the two nodes and check that the commitment point in
+		// Confirm the channels, which should bring them into operational state.
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		let (funding_locked_msg_a, _) = match node_a_chan.block_connected(&header, 1, &[&tx; 1], &[0]) {
+			Ok(res) => res,
+			Err(_) => panic!(),
+		};
+		let (funding_locked_msg_b, _) = match node_b_chan.block_connected(&header, 1, &[&tx; 1], &[0]) {
+			Ok(res) => res,
+			Err(_) => panic!(),
+		};
+		assert!(node_b_chan.funding_locked(&funding_locked_msg_a.unwrap()).is_ok());
+		assert!(node_a_chan.funding_locked(&funding_locked_msg_b.unwrap()).is_ok());
+
+		vec![node_a_chan, node_b_chan]
+	}
+
+	#[test]
+	fn channel_reestablish_no_updates() {
+		let chan_cfgs = create_chan_cfgs(2);
+		let mut chans = create_channels(&chan_cfgs, 10000000, 100000);
+
+		// Disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.
-		node_b_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger);
-		let msg = node_b_chan.get_channel_reestablish(&&logger);
+		chans[1].remove_uncommitted_htlcs_and_mark_paused(&&chan_cfgs[1].logger);
+		let msg = chans[1].get_channel_reestablish(&&chan_cfgs[1].logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
 		match msg.data_loss_protect {
@@ -4408,8 +4445,8 @@ mod tests {
 
 		// Check that the commitment point in Node A's channel_reestablish message
 		// is sane.
-		node_a_chan.remove_uncommitted_htlcs_and_mark_paused(&&logger);
-		let msg = node_a_chan.get_channel_reestablish(&&logger);
+		chans[0].remove_uncommitted_htlcs_and_mark_paused(&&chan_cfgs[0].logger);
+		let msg = chans[0].get_channel_reestablish(&&chan_cfgs[0].logger);
 		assert_eq!(msg.next_local_commitment_number, 1); // now called next_commitment_number
 		assert_eq!(msg.next_remote_commitment_number, 0); // now called next_revocation_number
 		match msg.data_loss_protect {
