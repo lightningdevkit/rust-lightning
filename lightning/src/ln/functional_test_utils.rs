@@ -148,7 +148,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			{
 				let mut channel_monitors = HashMap::new();
 				for monitor in deserialized_monitors.iter_mut() {
-					channel_monitors.insert(monitor.get_funding_txo(), monitor);
+					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
 				}
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
@@ -167,7 +167,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let chain_watch = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 			let channel_monitor = test_utils::TestChannelMonitor::new(&chain_watch, self.tx_broadcaster.clone(), &self.logger, &feeest);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo(), deserialized_monitor) {
+				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
 				}
 			}

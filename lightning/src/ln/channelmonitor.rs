@@ -235,12 +235,15 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given key is already present")),
 			hash_map::Entry::Vacant(e) => e,
 		};
-		log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(monitor.funding_info.0.to_channel_id()[..]));
-		self.chain_monitor.install_watch_tx(&monitor.funding_info.0.txid, &monitor.funding_info.1);
-		self.chain_monitor.install_watch_outpoint((monitor.funding_info.0.txid, monitor.funding_info.0.index as u32), &monitor.funding_info.1);
-		for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
-			for (idx, script) in outputs.iter().enumerate() {
-				self.chain_monitor.install_watch_outpoint((*txid, idx as u32), script);
+		{
+			let funding_txo = monitor.get_funding_txo();
+			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
+			self.chain_monitor.install_watch_tx(&funding_txo.0.txid, &funding_txo.1);
+			self.chain_monitor.install_watch_outpoint((funding_txo.0.txid, funding_txo.0.index as u32), &funding_txo.1);
+			for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
+				for (idx, script) in outputs.iter().enumerate() {
+					self.chain_monitor.install_watch_outpoint((*txid, idx as u32), script);
+				}
 			}
 		}
 		entry.insert(monitor);
@@ -1408,8 +1411,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
-	pub fn get_funding_txo(&self) -> OutPoint {
-		self.funding_info.0
+	pub fn get_funding_txo(&self) -> &(OutPoint, Script) {
+		&self.funding_info
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the

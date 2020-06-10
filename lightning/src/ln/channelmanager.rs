@@ -2274,7 +2274,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
 		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo(), monitor_update) {
+		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo().0, monitor_update) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					// Note that we reply with the new channel_id in error messages if we gave up on the
