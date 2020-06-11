@@ -59,10 +59,10 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: ChainWatchInt
 
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing Network Graph.
-	pub fn from_net_graph(chain_monitor: C, logger: L, network_graph: RwLock<NetworkGraph>) -> Self {
+	pub fn from_net_graph(chain_monitor: C, logger: L, network_graph: NetworkGraph) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
-			network_graph,
+			network_graph: RwLock::new(network_graph),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_monitor,
 			logger,

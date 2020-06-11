@@ -31,7 +31,7 @@ use bitcoin::secp256k1::key::PublicKey;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Mutex, RwLock};
+use std::sync::Mutex;
 use std::mem;
 use std::collections::HashMap;
 
@@ -103,7 +103,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
 				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-					self.chain_monitor, self.logger, RwLock::new(network_graph_deser)
+					self.chain_monitor, self.logger, network_graph_deser
 				);
 				let mut chan_progress = 0;
 				loop {
