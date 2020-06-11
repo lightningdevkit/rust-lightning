@@ -53,19 +53,43 @@ enum InboundHTLCRemovalReason {
 }
 
 enum InboundHTLCState {
-	/// Added by remote, to be included in next local commitment tx.
+	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
+	/// update_add_htlc message for this HTLC.
 	RemoteAnnounced(PendingHTLCStatus),
-	/// Included in a received commitment_signed message (implying we've revoke_and_ack'ed it), but
-	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
-	/// accept this HTLC. Implies AwaitingRemoteRevoke.
-	/// We also have not yet included this HTLC in a commitment_signed message, and are waiting on
-	/// a remote revoke_and_ack on a previous state before we can do so.
+	/// Included in a received commitment_signed message (implying we've
+	/// revoke_and_ack'd it), but the remote hasn't yet revoked their previous
+	/// state (see the example below). We have not yet included this HTLC in a
+	/// commitment_signed message because we are waiting on the remote's
+	/// aforementioned state revocation. One reason this missing remote RAA
+	/// (revoke_and_ack) blocks us from constructing a commitment_signed message
+	/// is because every time we create a new "state", i.e. every time we sign a
+	/// new commitment tx (see [BOLT #2]), we need a new per_commitment_point,
+	/// which are provided one-at-a-time in each RAA. E.g., the last RAA they
+	/// sent provided the per_commitment_point for our current commitment tx.
+	/// The other reason we should not send a commitment_signed without their RAA
+	/// is because their RAA serves to ACK our previous commitment_signed.
+	///
+	/// Here's an example of how an HTLC could come to be in this state:
+	/// remote --> update_add_htlc(prev_htlc)   --> local
+	/// remote --> commitment_signed(prev_htlc) --> local
+	/// remote <-- revoke_and_ack               <-- local
+	/// remote <-- commitment_signed(prev_htlc) <-- local
+	/// [note that here, the remote does not respond with a RAA]
+	/// remote --> update_add_htlc(this_htlc)   --> local
+	/// remote --> commitment_signed(prev_htlc, this_htlc) --> local
+	/// Now `this_htlc` will be assigned this state. It's unable to be officially
+	/// accepted, i.e. included in a commitment_signed, because we're missing the
+	/// RAA that provides our next per_commitment_point. The per_commitment_point
+	/// is used to derive commitment keys, which are used to construct the
+	/// signatures in a commitment_signed message.
+	/// Implies AwaitingRemoteRevoke.
+	/// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
 	AwaitingRemoteRevokeToAnnounce(PendingHTLCStatus),
-	/// Included in a received commitment_signed message (implying we've revoke_and_ack'ed it), but
-	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
-	/// accept this HTLC. Implies AwaitingRemoteRevoke.
-	/// We have included this HTLC in our latest commitment_signed and are now just waiting on a
-	/// revoke_and_ack.
+	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
+	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
+	/// on the remote's revoke_and_ack to make this HTLC an irrevocable part of the state of the
+	/// channel (before it can then get forwarded and/or removed).
+	/// Implies AwaitingRemoteRevoke.
 	AwaitingAnnouncedRemoteRevoke(PendingHTLCStatus),
 	Committed,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
