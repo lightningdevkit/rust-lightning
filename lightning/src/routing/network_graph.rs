@@ -16,12 +16,11 @@ use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
-use std::cmp;
+use std::{cmp, fmt};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
-use std;
 use std::ops::Deref;
 
 /// Receives and validates network updates from peers,
@@ -224,8 +223,8 @@ pub struct DirectionalChannelInfo {
 	pub last_update_message: Option<msgs::ChannelUpdate>,
 }
 
-impl std::fmt::Display for DirectionalChannelInfo {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl fmt::Display for DirectionalChannelInfo {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "last_update {}, enabled {}, cltv_expiry_delta {}, htlc_minimum_msat {}, fees {:?}", self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fees)?;
 		Ok(())
 	}
@@ -261,8 +260,8 @@ pub struct ChannelInfo {
 	pub announcement_message: Option<msgs::ChannelAnnouncement>,
 }
 
-impl std::fmt::Display for ChannelInfo {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl fmt::Display for ChannelInfo {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
 		   log_bytes!(self.features.encode()), log_pubkey!(self.node_one), self.one_to_two, log_pubkey!(self.node_two), self.two_to_one)?;
 		Ok(())
@@ -389,8 +388,8 @@ pub struct NodeInfo {
 	pub announcement_info: Option<NodeAnnouncementInfo>
 }
 
-impl std::fmt::Display for NodeInfo {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl fmt::Display for NodeInfo {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "lowest_inbound_channel_fees: {:?}, channels: {:?}, announcement_info: {:?}",
 		   self.lowest_inbound_channel_fees, &self.channels[..], self.announcement_info)?;
 		Ok(())
@@ -474,8 +473,8 @@ impl Readable for NetworkGraph {
 	}
 }
 
-impl std::fmt::Display for NetworkGraph {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl fmt::Display for NetworkGraph {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "Network map\n[Channels]\n")?;
 		for (key, val) in self.channels.iter() {
 			write!(f, " {}: {}\n", key, val)?;
