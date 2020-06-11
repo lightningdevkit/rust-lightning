@@ -1,6 +1,5 @@
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::block::Block;
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
