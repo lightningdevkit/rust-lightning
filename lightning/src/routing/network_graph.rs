@@ -124,11 +124,11 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
 				let _ = self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx));
 			},
-			&msgs::HTLCFailChannelUpdate::ChannelClosed { ref short_channel_id, ref is_permanent } => {
-				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, &is_permanent);
+			&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } => {
+				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, is_permanent);
 			},
-			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, ref is_permanent } => {
-				self.network_graph.write().unwrap().fail_node(node_id, &is_permanent);
+			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent } => {
+				self.network_graph.write().unwrap().fail_node(node_id, is_permanent);
 			},
 		}
 	}
@@ -505,6 +505,14 @@ impl NetworkGraph {
 		None
 	}
 
+	/// Creates a new, empty, network graph.
+	pub fn new() -> NetworkGraph {
+		Self {
+			channels: BTreeMap::new(),
+			nodes: BTreeMap::new(),
+		}
+	}
+
 	/// For an already known node (from channel announcements), update its stored properties from a given node announcement
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
 	fn update_node_from_announcement(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
@@ -615,10 +623,10 @@ impl NetworkGraph {
 	/// If permanent, removes a channel from the local storage.
 	/// May cause the removal of nodes too, if this was their last channel.
 	/// If not permanent, makes channels unavailable for routing.
-	pub fn close_channel_from_update(&mut self, short_channel_id: &u64, is_permanent: &bool) {
-		if *is_permanent {
-			if let Some(chan) = self.channels.remove(short_channel_id) {
-				Self::remove_channel_in_nodes(&mut self.nodes, &chan, *short_channel_id);
+	pub fn close_channel_from_update(&mut self, short_channel_id: u64, is_permanent: bool) {
+		if is_permanent {
+			if let Some(chan) = self.channels.remove(&short_channel_id) {
+				Self::remove_channel_in_nodes(&mut self.nodes, &chan, short_channel_id);
 			}
 		} else {
 			if let Some(chan) = self.channels.get_mut(&short_channel_id) {
@@ -632,8 +640,8 @@ impl NetworkGraph {
 		}
 	}
 
-	fn fail_node(&mut self, _node_id: &PublicKey, is_permanent: &bool) {
-		if *is_permanent {
+	fn fail_node(&mut self, _node_id: &PublicKey, is_permanent: bool) {
+		if is_permanent {
 			// TODO: Wholly remove the node
 		} else {
 			// TODO: downgrade the node
