@@ -12,30 +12,6 @@
 
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 
-/// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
-///
-/// Default::default() provides sane defaults for most configurations
-/// (but currently with 0 relay fees!)
-#[derive(Clone, Debug)]
-pub struct UserConfig {
-	/// Channel config that we propose to our counterparty.
-	pub own_channel_config: ChannelHandshakeConfig,
-	/// Limits applied to our counterparty's proposed channel config settings.
-	pub peer_channel_config_limits: ChannelHandshakeLimits,
-	/// Channel config which affects behavior during channel lifetime.
-	pub channel_options: ChannelConfig,
-}
-
-impl Default for UserConfig {
-	fn default() -> Self {
-		UserConfig {
-			own_channel_config: ChannelHandshakeConfig::default(),
-			peer_channel_config_limits: ChannelHandshakeLimits::default(),
-			channel_options: ChannelConfig::default(),
-		}
-	}
-}
-
 /// Configuration we set when applicable.
 ///
 /// Default::default() provides sane defaults.
@@ -228,3 +204,27 @@ impl_writeable!(ChannelConfig, 8+1+1, {
 	announced_channel,
 	commit_upfront_shutdown_pubkey
 });
+
+/// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
+///
+/// Default::default() provides sane defaults for most configurations
+/// (but currently with 0 relay fees!)
+#[derive(Clone, Debug)]
+pub struct UserConfig {
+	/// Channel config that we propose to our counterparty.
+	pub own_channel_config: ChannelHandshakeConfig,
+	/// Limits applied to our counterparty's proposed channel config settings.
+	pub peer_channel_config_limits: ChannelHandshakeLimits,
+	/// Channel config which affects behavior during channel lifetime.
+	pub channel_options: ChannelConfig,
+}
+
+impl Default for UserConfig {
+	fn default() -> Self {
+		UserConfig {
+			own_channel_config: ChannelHandshakeConfig::default(),
+			peer_channel_config_limits: ChannelHandshakeLimits::default(),
+			channel_options: ChannelConfig::default(),
+		}
+	}
+}
