@@ -400,7 +400,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let route = match get_route(&our_id, &net_graph_msg_handler, &get_pubkey!(), None, &Vec::new(), value, 42, Arc::clone(&logger)) {
+				let route = match get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &get_pubkey!(), None, &Vec::new(), value, 42, Arc::clone(&logger)) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -417,7 +417,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let mut route = match get_route(&our_id, &net_graph_msg_handler, &get_pubkey!(), None, &Vec::new(), value, 42, Arc::clone(&logger)) {
+				let mut route = match get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &get_pubkey!(), None, &Vec::new(), value, 42, Arc::clone(&logger)) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
