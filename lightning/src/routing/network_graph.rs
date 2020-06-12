@@ -431,7 +431,7 @@ impl Readable for NodeInfo {
 /// Allows for updating user's network metadata.
 pub trait RouteFeePenalty {
 	/// Gets a channel's fee penalty based on its channel_id (as stored in a NetworkGraph object).
-	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64>;
+	fn get_channel_fee_penalty(&self, chan_id: u64) -> u64;
 	/// Informs metadata object that a route has successfully executed its payment.
 	fn route_succeeded(&mut self, route: Vec<RouteHop>);
 }
@@ -447,11 +447,11 @@ pub struct DefaultMetadata {
 }
 
 impl RouteFeePenalty for DefaultMetadata {
-	fn get_channel_fee_penalty(&self, chan_id: u64) -> Option<&u64> {
+	fn get_channel_fee_penalty(&self, chan_id: u64) -> u64 {
 		if self.failed_channels.get(&chan_id) == None {
-			return Some(&0);
+			return 0;
 		} else {
-			return Some(&u64::MAX);
+			return u64::MAX;
 		}
 	}
 	fn route_succeeded(&mut self, route: Vec<RouteHop>) {
@@ -477,12 +477,7 @@ impl RouteFeePenalty for DefaultMetadata {
 pub trait NetworkTracker<T: RouteFeePenalty = DefaultMetadata> {
 	/// Return score for a given channel by using user-defined channel_scorers
 	fn calculate_minimum_fee_penalty_for_channel(&self, chan_id: u64, network_metadata: T) -> u64 {
-		let chan_score = network_metadata.get_channel_fee_penalty(chan_id);
-		if chan_score != None {
-			return *chan_score.unwrap();
-		} else {
-			return 0;
-		}
+		return network_metadata.get_channel_fee_penalty(chan_id);
 	}
 }
 
