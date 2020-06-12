@@ -453,7 +453,7 @@ impl RouteFeePenalty for DefaultMetadata {
 		if self.failed_channels.get(&chan_id) == None {
 			return 0;
 		} else {
-			return u64::MAX;
+			return u64::max_value();
 		}
 	}
 
