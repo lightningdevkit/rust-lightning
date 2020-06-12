@@ -5,7 +5,7 @@ use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::secp256k1::key::PublicKey;
 
-use ln::router::Route;
+use routing::router::Route;
 use ln::chan_utils::HTLCType;
 
 use std;
@@ -43,7 +43,7 @@ macro_rules! log_bytes {
 pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
 impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-		for i in OutPoint::new(self.0.clone(), self.1).to_channel_id().iter() {
+		for i in (OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().iter() {
 			write!(f, "{:02x}", i)?;
 		}
 		Ok(())
@@ -132,7 +132,7 @@ impl<'a> std::fmt::Display for DebugSpendable<'a> {
 			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, .. } => {
 				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
 			}
-			&SpendableOutputDescriptor::DynamicOutputP2WPKH { ref outpoint, .. } => {
+			&SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, .. } => {
 				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
 			}
 		}
@@ -147,42 +147,42 @@ macro_rules! log_spendable {
 }
 
 macro_rules! log_internal {
-	($self: ident, $lvl:expr, $($arg:tt)+) => (
-		&$self.logger.log(&::util::logger::Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()));
+	($logger: expr, $lvl:expr, $($arg:tt)+) => (
+		$logger.log(&::util::logger::Record::new($lvl, format_args!($($arg)+), module_path!(), file!(), line!()));
 	);
 }
 
 macro_rules! log_error {
-	($self: ident, $($arg:tt)*) => (
+	($logger: expr, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off")))]
-		log_internal!($self, $crate::util::logger::Level::Error, $($arg)*);
+		log_internal!($logger, $crate::util::logger::Level::Error, $($arg)*);
 	)
 }
 
 macro_rules! log_warn {
-	($self: ident, $($arg:tt)*) => (
+	($logger: expr, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error")))]
-		log_internal!($self, $crate::util::logger::Level::Warn, $($arg)*);
+		log_internal!($logger, $crate::util::logger::Level::Warn, $($arg)*);
 	)
 }
 
 macro_rules! log_info {
-	($self: ident, $($arg:tt)*) => (
+	($logger: expr, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn")))]
-		log_internal!($self, $crate::util::logger::Level::Info, $($arg)*);
+		log_internal!($logger, $crate::util::logger::Level::Info, $($arg)*);
 	)
 }
 
 macro_rules! log_debug {
-	($self: ident, $($arg:tt)*) => (
+	($logger: expr, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info")))]
-		log_internal!($self, $crate::util::logger::Level::Debug, $($arg)*);
+		log_internal!($logger, $crate::util::logger::Level::Debug, $($arg)*);
 	)
 }
 
 macro_rules! log_trace {
-	($self: ident, $($arg:tt)*) => (
+	($logger: expr, $($arg:tt)*) => (
 		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug")))]
-		log_internal!($self, $crate::util::logger::Level::Trace, $($arg)*);
+		log_internal!($logger, $crate::util::logger::Level::Trace, $($arg)*);
 	)
 }

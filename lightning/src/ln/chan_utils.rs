@@ -5,7 +5,8 @@
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, SigHashType};
-use bitcoin::consensus::encode::{self, Decodable, Encodable};
+use bitcoin::consensus::encode::{Decodable, Encodable};
+use bitcoin::consensus::encode;
 use bitcoin::util::bip143;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -171,8 +172,11 @@ impl Readable for CounterpartyCommitmentSecrets {
 	}
 }
 
-/// Derives a per-commitment-transaction private key (eg an htlc key or payment key) from the base
-/// private key for that type of key and the per_commitment_point (available in TxCreationKeys)
+/// Derives a per-commitment-transaction private key (eg an htlc key or delayed_payment key)
+/// from the base secret and the per_commitment_point.
+///
+/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
+/// generated (ie our own).
 pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
@@ -184,7 +188,13 @@ pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_co
 	Ok(key)
 }
 
-pub(super) fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+/// Derives a per-commitment-transaction public key (eg an htlc key or a delayed_payment key)
+/// from the base point and the per_commitment_key. This is the public equivalent of
+/// derive_private_key - using only public keys to derive a public key instead of private keys.
+///
+/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
+/// generated (ie our own).
+pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
@@ -194,10 +204,11 @@ pub(super) fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, 
 	base_point.combine(&hashkey)
 }
 
-/// Derives a revocation key from its constituent parts.
+/// Derives a per-commitment-transaction revocation key from its constituent parts.
+///
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
-pub(super) fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
+pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
 	let revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &revocation_base_secret);
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
@@ -224,7 +235,13 @@ pub(super) fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Se
 	Ok(part_a)
 }
 
-pub(super) fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+/// Derives a per-commitment-transaction revocation public key from its constituent parts. This is
+/// the public equivalend of derive_private_revocation_key - using only public keys to derive a
+/// public key instead of private keys.
+///
+/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
+/// generated (ie our own).
+pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
 	let rev_append_commit_hash_key = {
 		let mut sha = Sha256::engine();
 		sha.input(&revocation_base_point.serialize());
@@ -262,11 +279,9 @@ pub struct TxCreationKeys {
 	pub(crate) b_htlc_key: PublicKey,
 	/// A's Payment Key (which isn't allowed to be spent from for some delay)
 	pub(crate) a_delayed_payment_key: PublicKey,
-	/// B's Payment Key
-	pub(crate) b_payment_key: PublicKey,
 }
 impl_writeable!(TxCreationKeys, 33*6,
-	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key, b_payment_key });
+	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key });
 
 /// One counterparty's public keys which do not change over the life of a channel.
 #[derive(Clone, PartialEq)]
@@ -275,13 +290,14 @@ pub struct ChannelPublicKeys {
 	/// on-chain channel lock-in 2-of-2 multisig output.
 	pub funding_pubkey: PublicKey,
 	/// The base point which is used (with derive_public_revocation_key) to derive per-commitment
-	/// revocation keys. The per-commitment revocation private key is then revealed by the owner of
-	/// a commitment transaction so that their counterparty can claim all available funds if they
-	/// broadcast an old state.
+	/// revocation keys. This is combined with the per-commitment-secret generated by the
+	/// counterparty to create a secret which the counterparty can reveal to revoke previous
+	/// states.
 	pub revocation_basepoint: PublicKey,
-	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
-	/// public key which receives immediately-spendable non-HTLC-encumbered funds.
-	pub payment_basepoint: PublicKey,
+	/// The public key which receives our immediately spendable primary channel balance in
+	/// remote-broadcasted commitment transactions. This key is static across every commitment
+	/// transaction.
+	pub payment_point: PublicKey,
 	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
 	/// public key which receives non-HTLC-encumbered funds which are only available for spending
 	/// after some delay (or can be claimed via the revocation path).
@@ -294,28 +310,28 @@ pub struct ChannelPublicKeys {
 impl_writeable!(ChannelPublicKeys, 33*5, {
 	funding_pubkey,
 	revocation_basepoint,
-	payment_basepoint,
+	payment_point,
 	delayed_payment_basepoint,
 	htlc_basepoint
 });
 
 
 impl TxCreationKeys {
-	pub(crate) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_payment_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
+	pub(crate) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
 			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)?,
 			a_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &a_htlc_base)?,
 			b_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &b_htlc_base)?,
 			a_delayed_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &a_delayed_payment_base)?,
-			b_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &b_payment_base)?,
 		})
 	}
 }
 
-/// Gets the "to_local" output redeemscript, ie the script which is time-locked or spendable by
-/// the revocation key
-pub(super) fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u16, delayed_payment_key: &PublicKey) -> Script {
+/// A script either spendable by the revocation
+/// key or the delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
+/// Encumbering a `to_local` output on a commitment transaction or 2nd-stage HTLC transactions.
+pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u16, delayed_payment_key: &PublicKey) -> Script {
 	Builder::new().push_opcode(opcodes::all::OP_IF)
 	              .push_slice(&revocation_key.serialize())
 	              .push_opcode(opcodes::all::OP_ELSE)
@@ -537,7 +553,6 @@ impl LocalCommitmentTransaction {
 					a_htlc_key: dummy_key.clone(),
 					b_htlc_key: dummy_key.clone(),
 					a_delayed_payment_key: dummy_key.clone(),
-					b_payment_key: dummy_key.clone(),
 				},
 			feerate_per_kw: 0,
 			per_htlc: Vec::new()

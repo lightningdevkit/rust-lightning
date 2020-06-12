@@ -35,31 +35,22 @@ impl EnforcingChannelKeys {
 impl EnforcingChannelKeys {
 	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
 	                                                               keys: &TxCreationKeys) {
-		let revocation_base = PublicKey::from_secret_key(secp_ctx, &self.inner.revocation_base_key());
-		let payment_base = PublicKey::from_secret_key(secp_ctx, &self.inner.payment_base_key());
-		let htlc_base = PublicKey::from_secret_key(secp_ctx, &self.inner.htlc_base_key());
-
 		let remote_points = self.inner.remote_channel_pubkeys.as_ref().unwrap();
 
 		let keys_expected = TxCreationKeys::new(secp_ctx,
 		                                        &keys.per_commitment_point,
 		                                        &remote_points.delayed_payment_basepoint,
 		                                        &remote_points.htlc_basepoint,
-		                                        &revocation_base,
-		                                        &payment_base,
-		                                        &htlc_base).unwrap();
+		                                        &self.inner.pubkeys().revocation_basepoint,
+		                                        &self.inner.pubkeys().htlc_basepoint).unwrap();
 		if keys != &keys_expected { panic!("derived different per-tx keys") }
 	}
 }
 
 impl ChannelKeys for EnforcingChannelKeys {
-	fn funding_key(&self) -> &SecretKey { self.inner.funding_key() }
-	fn revocation_base_key(&self) -> &SecretKey { self.inner.revocation_base_key() }
-	fn payment_base_key(&self) -> &SecretKey { self.inner.payment_base_key() }
-	fn delayed_payment_base_key(&self) -> &SecretKey { self.inner.delayed_payment_base_key() }
-	fn htlc_base_key(&self) -> &SecretKey { self.inner.htlc_base_key() }
 	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }
 	fn pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { self.inner.pubkeys() }
+	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
 	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u64, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
@@ -103,6 +94,14 @@ impl ChannelKeys for EnforcingChannelKeys {
 		}
 
 		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, local_csv, secp_ctx).unwrap())
+	}
+
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_justice_transaction(justice_tx, input, amount, per_commitment_key, htlc, on_remote_tx_csv, secp_ctx).unwrap())
+	}
+
+	fn sign_remote_htlc_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_remote_htlc_transaction(htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx).unwrap())
 	}
 
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {

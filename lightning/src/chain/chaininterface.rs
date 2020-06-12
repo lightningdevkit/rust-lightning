@@ -12,8 +12,6 @@ use bitcoin::util::hash::BitcoinHash;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{Txid, BlockHash};
 
-use util::logger::Logger;
-
 use std::sync::{Mutex, MutexGuard, Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashSet;
@@ -220,7 +218,7 @@ impl ChainWatchedUtil {
 /// parameters with static lifetimes). Other times you can afford a reference, which is more
 /// efficient, in which case BlockNotifierRef is a more appropriate type. Defining these type
 /// aliases prevents issues such as overly long function definitions.
-pub type BlockNotifierArc = Arc<BlockNotifier<'static, Arc<ChainListener>>>;
+pub type BlockNotifierArc<C> = Arc<BlockNotifier<'static, Arc<ChainListener>, C>>;
 
 /// BlockNotifierRef is useful when you want a BlockNotifier that points to ChainListeners
 /// with nonstatic lifetimes. This is useful for when static lifetimes are not needed. Nonstatic
@@ -229,7 +227,7 @@ pub type BlockNotifierArc = Arc<BlockNotifier<'static, Arc<ChainListener>>>;
 /// requires parameters with static lifetimes), in which case BlockNotifierArc is a more
 /// appropriate type. Defining these type aliases for common usages prevents issues such as
 /// overly long function definitions.
-pub type BlockNotifierRef<'a> = BlockNotifier<'a, &'a ChainListener>;
+pub type BlockNotifierRef<'a, C> = BlockNotifier<'a, &'a ChainListener, C>;
 
 /// Utility for notifying listeners about new blocks, and handling block rescans if new watch
 /// data is registered.
@@ -238,15 +236,15 @@ pub type BlockNotifierRef<'a> = BlockNotifier<'a, &'a ChainListener>;
 /// or a BlockNotifierRef for conciseness. See their documentation for more details, but essentially
 /// you should default to using a BlockNotifierRef, and use a BlockNotifierArc instead when you
 /// require ChainListeners with static lifetimes, such as when you're using lightning-net-tokio.
-pub struct BlockNotifier<'a, CL: Deref<Target = ChainListener + 'a> + 'a> {
+pub struct BlockNotifier<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> where C::Target: ChainWatchInterface {
 	listeners: Mutex<Vec<CL>>,
-	chain_monitor: Arc<ChainWatchInterface>,
+	chain_monitor: C,
 	phantom: PhantomData<&'a ()>,
 }
 
-impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a> BlockNotifier<'a, CL> {
+impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a, CL, C> where C::Target: ChainWatchInterface {
 	/// Constructs a new BlockNotifier without any listeners.
-	pub fn new(chain_monitor: Arc<ChainWatchInterface>) -> BlockNotifier<'a, CL> {
+	pub fn new(chain_monitor: C) -> BlockNotifier<'a, CL, C> {
 		BlockNotifier {
 			listeners: Mutex::new(Vec::new()),
 			chain_monitor,
@@ -316,7 +314,6 @@ pub struct ChainWatchInterfaceUtil {
 	network: Network,
 	watched: Mutex<ChainWatchedUtil>,
 	reentered: AtomicUsize,
-	logger: Arc<Logger>,
 }
 
 // We only expose PartialEq in test since its somewhat unclear exactly what it should do and we're
@@ -382,12 +379,11 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 
 impl ChainWatchInterfaceUtil {
 	/// Creates a new ChainWatchInterfaceUtil for the given network
-	pub fn new(network: Network, logger: Arc<Logger>) -> ChainWatchInterfaceUtil {
+	pub fn new(network: Network) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
-			network: network,
+			network,
 			watched: Mutex::new(ChainWatchedUtil::new()),
 			reentered: AtomicUsize::new(1),
-			logger: logger,
 		}
 	}
 
@@ -412,7 +408,7 @@ mod tests {
 	fn register_listener_test() {
 		let chanmon_cfgs = create_chanmon_cfgs(1);
 		let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
-		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor);
 		assert_eq!(block_notifier.listeners.lock().unwrap().len(), 0);
 		let listener = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
 		block_notifier.register_listener(listener);
@@ -426,7 +422,7 @@ mod tests {
 	fn unregister_single_listener_test() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor);
 		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
 		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
 		block_notifier.register_listener(listener1);
@@ -445,7 +441,7 @@ mod tests {
 	fn unregister_single_listener_ref_test() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor);
 		block_notifier.register_listener(&node_cfgs[0].chan_monitor.simple_monitor as &ChainListener);
 		block_notifier.register_listener(&node_cfgs[1].chan_monitor.simple_monitor as &ChainListener);
 		let vec = block_notifier.listeners.lock().unwrap();
@@ -462,7 +458,7 @@ mod tests {
 	fn unregister_multiple_of_the_same_listeners_test() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor.clone());
+		let block_notifier = BlockNotifier::new(node_cfgs[0].chain_monitor);
 		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
 		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
 		block_notifier.register_listener(listener1);

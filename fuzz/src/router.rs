@@ -8,9 +8,10 @@ use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
 use lightning::ln::msgs::RoutingMessageHandler;
-use lightning::ln::router::{Router, RouteHint};
+use lightning::routing::router::{get_route, RouteHint};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
+use lightning::routing::network_graph::{NetGraphMsgHandler, RoutingFees};
 
 use bitcoin::secp256k1::key::PublicKey;
 
@@ -156,7 +157,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	});
 
 	let our_pubkey = get_pubkey!();
-	let router = Router::new(our_pubkey.clone(), chain_monitor, Arc::clone(&logger));
+	let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor, Arc::clone(&logger));
 
 	loop {
 		match get_slice!(1)[0] {
@@ -166,22 +167,22 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				if addr_len > (37+1)*4 {
 					return;
 				}
-				let _ = router.handle_node_announcement(&decode_msg_with_len16!(msgs::NodeAnnouncement, 64, 288));
+				let _ = net_graph_msg_handler.handle_node_announcement(&decode_msg_with_len16!(msgs::NodeAnnouncement, 64, 288));
 			},
 			1 => {
-				let _ = router.handle_channel_announcement(&decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4));
+				let _ = net_graph_msg_handler.handle_channel_announcement(&decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4));
 			},
 			2 => {
-				let _ = router.handle_channel_update(&decode_msg!(msgs::ChannelUpdate, 128));
+				let _ = net_graph_msg_handler.handle_channel_update(&decode_msg!(msgs::ChannelUpdate, 128));
 			},
 			3 => {
 				match get_slice!(1)[0] {
 					0 => {
-						router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {msg: decode_msg!(msgs::ChannelUpdate, 128)});
+						net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {msg: decode_msg!(msgs::ChannelUpdate, 128)});
 					},
 					1 => {
 						let short_channel_id = slice_to_be64(get_slice!(8));
-						router.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {short_channel_id, is_permanent: false});
+						net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {short_channel_id, is_permanent: false});
 					},
 					_ => return,
 				}
@@ -217,15 +218,17 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						last_hops_vec.push(RouteHint {
 							src_node_id: get_pubkey!(),
 							short_channel_id: slice_to_be64(get_slice!(8)),
-							fee_base_msat: slice_to_be32(get_slice!(4)),
-							fee_proportional_millionths: slice_to_be32(get_slice!(4)),
+							fees: RoutingFees {
+								base_msat: slice_to_be32(get_slice!(4)),
+								proportional_millionths: slice_to_be32(get_slice!(4)),
+							},
 							cltv_expiry_delta: slice_to_be16(get_slice!(2)),
 							htlc_minimum_msat: slice_to_be64(get_slice!(8)),
 						});
 					}
 					&last_hops_vec[..]
 				};
-				let _ = router.get_route(&target, first_hops, last_hops, slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)));
+				let _ = get_route(&our_pubkey, &net_graph_msg_handler, &target, first_hops, last_hops, slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger));
 			},
 			_ => return,
 		}

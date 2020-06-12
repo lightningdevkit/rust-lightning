@@ -6,7 +6,6 @@
 use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
-use bitcoin::util::bip143;
 
 use bitcoin::hash_types::Txid;
 
@@ -16,15 +15,15 @@ use bitcoin::secp256k1;
 use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::channelmanager::PaymentPreimage;
-use ln::chan_utils::{HTLCType, LocalCommitmentTransaction};
+use ln::chan_utils;
+use ln::chan_utils::{TxCreationKeys, LocalCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
-use util::ser::{ReadableArgs, Readable, Writer, Writeable};
+use util::ser::{Readable, Writer, Writeable};
 use util::byte_utils;
 
 use std::collections::{HashMap, hash_map};
-use std::sync::Arc;
 use std::cmp;
 use std::ops::Deref;
 
@@ -93,8 +92,8 @@ impl Readable for ClaimTxBumpMaterial {
 	}
 }
 
-#[derive(PartialEq)]
-pub(super) enum InputDescriptors {
+#[derive(PartialEq, Clone, Copy)]
+pub(crate) enum InputDescriptors {
 	RevokedOfferedHTLC,
 	RevokedReceivedHTLC,
 	OfferedHTLC,
@@ -102,8 +101,55 @@ pub(super) enum InputDescriptors {
 	RevokedOutput, // either a revoked to_local output on commitment tx, a revoked HTLC-Timeout output or a revoked HTLC-Success output
 }
 
+impl Writeable for InputDescriptors {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		match self {
+			&InputDescriptors::RevokedOfferedHTLC => {
+				writer.write_all(&[0; 1])?;
+			},
+			&InputDescriptors::RevokedReceivedHTLC => {
+				writer.write_all(&[1; 1])?;
+			},
+			&InputDescriptors::OfferedHTLC => {
+				writer.write_all(&[2; 1])?;
+			},
+			&InputDescriptors::ReceivedHTLC => {
+				writer.write_all(&[3; 1])?;
+			}
+			&InputDescriptors::RevokedOutput => {
+				writer.write_all(&[4; 1])?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for InputDescriptors {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let input_descriptor = match <u8 as Readable>::read(reader)? {
+			0 => {
+				InputDescriptors::RevokedOfferedHTLC
+			},
+			1 => {
+				InputDescriptors::RevokedReceivedHTLC
+			},
+			2 => {
+				InputDescriptors::OfferedHTLC
+			},
+			3 => {
+				InputDescriptors::ReceivedHTLC
+			},
+			4 => {
+				InputDescriptors::RevokedOutput
+			}
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		Ok(input_descriptor)
+	}
+}
+
 macro_rules! subtract_high_prio_fee {
-	($self: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
+	($logger: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
 		{
 			$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority);
 			let mut fee = $used_feerate * ($predicted_weight as u64) / 1000;
@@ -114,17 +160,17 @@ macro_rules! subtract_high_prio_fee {
 					$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 					fee = $used_feerate * ($predicted_weight as u64) / 1000;
 					if $value <= fee {
-						log_error!($self, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
+						log_error!($logger, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
 							fee, $value);
 						false
 					} else {
-						log_warn!($self, "Used low priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
+						log_warn!($logger, "Used low priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
 							$value);
 						$value -= fee;
 						true
 					}
 				} else {
-					log_warn!($self, "Used medium priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
+					log_warn!($logger, "Used medium priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
 						$value);
 					$value -= fee;
 					true
@@ -194,7 +240,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	local_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	prev_local_commitment: Option<LocalCommitmentTransaction>,
 	prev_local_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
-	local_csv: u16,
+	on_local_tx_csv: u16,
 
 	key_storage: ChanSigner,
 
@@ -228,7 +274,6 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
 
 	secp_ctx: Secp256k1<secp256k1::All>,
-	logger: Arc<Logger>
 }
 
 impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
@@ -239,7 +284,7 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.prev_local_commitment.write(writer)?;
 		self.prev_local_htlc_sigs.write(writer)?;
 
-		self.local_csv.write(writer)?;
+		self.on_local_tx_csv.write(writer)?;
 
 		self.key_storage.write(writer)?;
 
@@ -278,8 +323,8 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTxHandler<ChanSigner> {
-	fn read<R: ::std::io::Read>(reader: &mut R, logger: Arc<Logger>) -> Result<Self, DecodeError> {
+impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigner> {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
 
 		let local_commitment = Readable::read(reader)?;
@@ -287,7 +332,7 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 		let prev_local_commitment = Readable::read(reader)?;
 		let prev_local_htlc_sigs = Readable::read(reader)?;
 
-		let local_csv = Readable::read(reader)?;
+		let on_local_tx_csv = Readable::read(reader)?;
 
 		let key_storage = Readable::read(reader)?;
 
@@ -340,19 +385,18 @@ impl<ChanSigner: ChannelKeys + Readable> ReadableArgs<Arc<Logger>> for OnchainTx
 			local_htlc_sigs,
 			prev_local_commitment,
 			prev_local_htlc_sigs,
-			local_csv,
+			on_local_tx_csv,
 			key_storage,
 			claimable_outpoints,
 			pending_claim_requests,
 			onchain_events_waiting_threshold_conf,
 			secp_ctx: Secp256k1::new(),
-			logger,
 		})
 	}
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(super) fn new(destination_script: Script, keys: ChanSigner, local_csv: u16, logger: Arc<Logger>) -> Self {
+	pub(super) fn new(destination_script: Script, keys: ChanSigner, on_local_tx_csv: u16) -> Self {
 
 		let key_storage = keys;
 
@@ -362,14 +406,13 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			local_htlc_sigs: None,
 			prev_local_commitment: None,
 			prev_local_htlc_sigs: None,
-			local_csv,
+			on_local_tx_csv,
 			key_storage,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 
 			secp_ctx: Secp256k1::new(),
-			logger,
 		}
 	}
 
@@ -419,13 +462,14 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn generate_claim_tx<F: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F) -> Option<(Option<u32>, u64, Transaction)>
-		where F::Target: FeeEstimator
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F, logger: L) -> Option<(Option<u32>, u64, Transaction)>
+		where F::Target: FeeEstimator,
+					L::Target: Logger,
 	{
 		if cached_claim_datas.per_input_material.len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 		let mut inputs = Vec::new();
 		for outp in cached_claim_datas.per_input_material.keys() {
-			log_trace!(self, "Outpoint {}:{}", outp.txid, outp.vout);
+			log_trace!(logger, "Outpoint {}:{}", outp.txid, outp.vout);
 			inputs.push(TxIn {
 				previous_output: *outp,
 				script_sig: Script::new(),
@@ -450,18 +494,18 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 					let new_fee = if $old_feerate < $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) {
 						let mut value = $amount;
-						if subtract_high_prio_fee!(self, $fee_estimator, value, $predicted_weight, used_feerate) {
+						if subtract_high_prio_fee!(logger, $fee_estimator, value, $predicted_weight, used_feerate) {
 							// Overflow check is done in subtract_high_prio_fee
 							$amount - value
 						} else {
-							log_trace!(self, "Can't new-estimation bump new claiming tx, amount {} is too small", $amount);
+							log_trace!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", $amount);
 							return None;
 						}
 					// ...else just increase the previous feerate by 25% (because that's a nice number)
 					} else {
 						let fee = $old_feerate * $predicted_weight / 750;
 						if $amount <= fee {
-							log_trace!(self, "Can't 25% bump new claiming tx, amount {} is too small", $amount);
+							log_trace!(logger, "Can't 25% bump new claiming tx, amount {} is too small", $amount);
 							return None;
 						}
 						fee
@@ -490,13 +534,13 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		let mut dynamic_fee = true;
 		for per_outp_material in cached_claim_datas.per_input_material.values() {
 			match per_outp_material {
-				&InputMaterial::Revoked { ref witness_script, ref is_htlc, ref amount, .. } => {
-					inputs_witnesses_weight += Self::get_witnesses_weight(if !is_htlc { &[InputDescriptors::RevokedOutput] } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { &[InputDescriptors::RevokedOfferedHTLC] } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { &[InputDescriptors::RevokedReceivedHTLC] } else { unreachable!() });
+				&InputMaterial::Revoked { ref input_descriptor, ref amount, .. } => {
+					inputs_witnesses_weight += Self::get_witnesses_weight(&[*input_descriptor]);
 					amt += *amount;
 				},
-				&InputMaterial::RemoteHTLC { ref preimage, ref amount, .. } => {
+				&InputMaterial::RemoteHTLC { ref preimage, ref htlc, .. } => {
 					inputs_witnesses_weight += Self::get_witnesses_weight(if preimage.is_some() { &[InputDescriptors::OfferedHTLC] } else { &[InputDescriptors::ReceivedHTLC] });
-					amt += *amount;
+					amt += htlc.amount_msat / 1000;
 				},
 				&InputMaterial::LocalHTLC { .. } => {
 					dynamic_fee = false;
@@ -521,7 +565,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					new_feerate = feerate;
 				} else { return None; }
 			} else {
-				if subtract_high_prio_fee!(self, fee_estimator, amt, predicted_weight, new_feerate) {
+				if subtract_high_prio_fee!(logger, fee_estimator, amt, predicted_weight, new_feerate) {
 					bumped_tx.output[0].value = amt;
 				} else { return None; }
 			}
@@ -529,39 +573,53 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
-					&InputMaterial::Revoked { ref witness_script, ref pubkey, ref key, ref is_htlc, ref amount } => {
-						let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-						let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-						let sig = self.secp_ctx.sign(&sighash, &key);
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-						if *is_htlc {
-							bumped_tx.input[i].witness.push(pubkey.unwrap().clone().serialize().to_vec());
-						} else {
-							bumped_tx.input[i].witness.push(vec!(1));
+					&InputMaterial::Revoked { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_remote_tx_csv } => {
+						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+
+							let witness_script = if let Some(ref htlc) = *htlc {
+								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key)
+							} else {
+								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_remote_tx_csv, &chan_keys.a_delayed_payment_key)
+							};
+
+							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, *on_remote_tx_csv, &self.secp_ctx) {
+								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+								if htlc.is_some() {
+									bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+								} else {
+									bumped_tx.input[i].witness.push(vec!(1));
+								}
+								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+							} else { return None; }
+							//TODO: panic ?
+
+							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_local" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 						}
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-						log_trace!(self, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if !is_htlc { "to_local" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::OfferedHTLC) { "offered" } else if HTLCType::scriptlen_to_htlctype(witness_script.len()) == Some(HTLCType::AcceptedHTLC) { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 					},
-					&InputMaterial::RemoteHTLC { ref witness_script, ref key, ref preimage, ref amount, ref locktime } => {
-						if !preimage.is_some() { bumped_tx.lock_time = *locktime }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-						let sighash_parts = bip143::SighashComponents::new(&bumped_tx);
-						let sighash = hash_to_message!(&sighash_parts.sighash_all(&bumped_tx.input[i], &witness_script, *amount)[..]);
-						let sig = self.secp_ctx.sign(&sighash, &key);
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-						if let &Some(preimage) = preimage {
-							bumped_tx.input[i].witness.push(preimage.clone().0.to_vec());
-						} else {
-							bumped_tx.input[i].witness.push(vec![]);
+					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref preimage, ref htlc } => {
+						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
+
+							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
+							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {
+								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+								if let &Some(preimage) = preimage {
+									bumped_tx.input[i].witness.push(preimage.0.to_vec());
+								} else {
+									// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
+									bumped_tx.input[i].witness.push(vec![]);
+								}
+								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+							}
+							log_trace!(logger, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
 						}
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-						log_trace!(self, "Going to broadcast Claim Transaction {} claiming remote {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
 					},
 					_ => unreachable!()
 				}
 			}
-			log_trace!(self, "...with timer {}", new_timer.unwrap());
+			log_trace!(logger, "...with timer {}", new_timer.unwrap());
 			assert!(predicted_weight >= bumped_tx.get_weight());
 			return Some((new_timer, new_feerate, bumped_tx))
 		} else {
@@ -572,7 +630,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						if let Some(htlc_tx) = htlc_tx {
 							let feerate = (amount - htlc_tx.output[0].value) * 1000 / htlc_tx.get_weight() as u64;
 							// Timer set to $NEVER given we can't bump tx without anchor outputs
-							log_trace!(self, "Going to broadcast Local HTLC-{} claiming HTLC output {} from {}...", if preimage.is_some() { "Success" } else { "Timeout" }, outp.vout, outp.txid);
+							log_trace!(logger, "Going to broadcast Local HTLC-{} claiming HTLC output {} from {}...", if preimage.is_some() { "Success" } else { "Timeout" }, outp.vout, outp.txid);
 							return Some((None, feerate, htlc_tx));
 						}
 						return None;
@@ -580,7 +638,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					&InputMaterial::Funding { ref funding_redeemscript } => {
 						let signed_tx = self.get_fully_signed_local_tx(funding_redeemscript).unwrap();
 						// Timer set to $NEVER given we can't bump tx without anchor outputs
-						log_trace!(self, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
+						log_trace!(logger, "Going to broadcast Local Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
 						return Some((None, self.local_commitment.as_ref().unwrap().feerate_per_kw, signed_tx));
 					}
 					_ => unreachable!()
@@ -590,11 +648,12 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		None
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F)
+	pub(super) fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
-		      F::Target: FeeEstimator
+		      F::Target: FeeEstimator,
+					L::Target: Logger,
 	{
-		log_trace!(self, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
+		log_trace!(logger, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
@@ -603,8 +662,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
 		for req in claimable_outpoints {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-			if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(self, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
-				log_trace!(self, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
+			if let Some(_) = self.claimable_outpoints.get(&req.outpoint) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoint.txid, req.outpoint.vout); } else {
+				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
 				if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
 					let mut single_input = HashMap::new();
 					single_input.insert(req.outpoint, req.witness_data);
@@ -623,16 +682,16 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for (soonest_timelock, claim) in new_claims.drain(..) {
 			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock, per_input_material: claim };
-			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
+			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
 				let txid = tx.txid();
 				for k in claim_material.per_input_material.keys() {
-					log_trace!(self, "Registering claiming request for {}:{}", k.txid, k.vout);
+					log_trace!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
 				self.pending_claim_requests.insert(txid, claim_material);
-				log_trace!(self, "Broadcast onchain {}", log_tx!(tx));
+				log_trace!(logger, "Broadcast onchain {}", log_tx!(tx));
 				broadcaster.broadcast_transaction(&tx);
 			}
 		}
@@ -748,10 +807,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 
 		// Build, bump and rebroadcast tx accordingly
-		log_trace!(self, "Bumping {} candidates", bump_candidates.len());
+		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
 		for (first_claim_txid, claim_material) in bump_candidates.iter() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
-				log_trace!(self, "Broadcast onchain {}", log_tx!(bump_tx));
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
+				log_trace!(logger, "Broadcast onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
 				if let Some(claim_material) = self.pending_claim_requests.get_mut(first_claim_txid) {
 					claim_material.height_timer = new_timer;
@@ -761,9 +820,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn block_disconnected<B: Deref, F: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F)
+	pub(super) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
-		      F::Target: FeeEstimator
+		      F::Target: FeeEstimator,
+					L::Target: Logger,
 	{
 		let mut bump_candidates = HashMap::new();
 		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
@@ -786,7 +846,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			}
 		}
 		for (_, claim_material) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
 				broadcaster.broadcast_transaction(&bump_tx);
@@ -824,7 +884,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	fn sign_latest_local_htlcs(&mut self) {
 		if let Some(ref local_commitment) = self.local_commitment {
-			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.local_csv, &self.secp_ctx) {
+			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.on_local_tx_csv, &self.secp_ctx) {
 				self.local_htlc_sigs = Some(Vec::new());
 				let ret = self.local_htlc_sigs.as_mut().unwrap();
 				for (htlc_idx, (local_sig, &(ref htlc, _))) in sigs.iter().zip(local_commitment.per_htlc.iter()).enumerate() {
@@ -840,7 +900,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 	fn sign_prev_local_htlcs(&mut self) {
 		if let Some(ref local_commitment) = self.prev_local_commitment {
-			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.local_csv, &self.secp_ctx) {
+			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, self.on_local_tx_csv, &self.secp_ctx) {
 				self.prev_local_htlc_sigs = Some(Vec::new());
 				let ret = self.prev_local_htlc_sigs.as_mut().unwrap();
 				for (htlc_idx, (local_sig, &(ref htlc, _))) in sigs.iter().zip(local_commitment.per_htlc.iter()).enumerate() {
@@ -892,7 +952,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				if let &Some(ref htlc_sigs) = &self.local_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
 					htlc_tx = Some(self.local_commitment.as_ref().unwrap()
-						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.local_csv));
+						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.on_local_tx_csv));
 				}
 			}
 		}
@@ -903,7 +963,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				if let &Some(ref htlc_sigs) = &self.prev_local_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
 					htlc_tx = Some(self.prev_local_commitment.as_ref().unwrap()
-						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.local_csv));
+						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.on_local_tx_csv));
 				}
 			}
 		}
