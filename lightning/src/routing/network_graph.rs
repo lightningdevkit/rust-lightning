@@ -434,6 +434,8 @@ pub trait RouteFeePenalty {
 	fn get_channel_fee_penalty(&self, chan_id: u64) -> u64;
 	/// Informs metadata object that a route has successfully executed its payment.
 	fn route_succeeded(&mut self, route: Vec<RouteHop>);
+	/// Informs metadata object that a route has failed to execute a payment.
+	fn route_failed(&mut self, route: Vec<RouteHop>, failed_hop: RouteHop);
 }
 
 /// A default metadata object that is used to implement the default functionality for the
@@ -454,6 +456,7 @@ impl RouteFeePenalty for DefaultMetadata {
 			return u64::MAX;
 		}
 	}
+
 	fn route_succeeded(&mut self, route: Vec<RouteHop>) {
 		for route_hop in route {
 			let chan_id = route_hop.short_channel_id;
@@ -467,6 +470,15 @@ impl RouteFeePenalty for DefaultMetadata {
 				} else {
 					self.failed_channels.remove(&chan_id);
 				}
+			}
+		}
+	}
+
+	fn route_failed(&mut self, route: Vec<RouteHop>, failed_hop: RouteHop) {
+		for route_hop in route {
+			if route_hop == failed_hop {
+				*self.failed_channels.entry(failed_hop.short_channel_id).or_insert(5) += 1;
+				break;
 			}
 		}
 	}
