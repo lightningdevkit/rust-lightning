@@ -28,7 +28,7 @@
 //! type ChainWatchInterface = dyn lightning::chain::chaininterface::ChainWatchInterface;
 //! type ChannelMonitor = lightning::ln::channelmonitor::SimpleManyChannelMonitor<lightning::chain::transaction::OutPoint, lightning::chain::keysinterface::InMemoryChannelKeys, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>, Arc<ChainWatchInterface>>;
 //! type ChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<ChannelMonitor, TxBroadcaster, FeeEstimator, Logger>;
-//! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator, ChainWatchInterface, Logger>;
+//! type PeerManager = lightning::ln::peers::handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator, ChainWatchInterface, Logger>;
 //!
 //! // Connect to node with pubkey their_node_id at addr:
 //! async fn connect_to_node(peer_manager: PeerManager, channel_monitor: Arc<ChannelMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
@@ -68,8 +68,8 @@ use tokio::{io, time};
 use tokio::sync::mpsc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use lightning::ln::peer_handler;
-use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
+use lightning::ln::peers::handler;
+use lightning::ln::peers::handler::SocketDescriptor as LnSocketTrait;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::util::logger::Logger;
 
@@ -124,7 +124,7 @@ impl Connection {
 			_ => panic!()
 		}
 	}
-	async fn schedule_read<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) where
+	async fn schedule_read<CMH, RMH, L>(peer_manager: Arc<handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) where
 			CMH: ChannelMessageHandler + 'static,
 			RMH: RoutingMessageHandler + 'static,
 			L: Logger + 'static + ?Sized {
@@ -237,7 +237,7 @@ impl Connection {
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_inbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> where
+pub fn setup_inbound<CMH, RMH, L>(peer_manager: Arc<handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, stream: TcpStream) -> impl std::future::Future<Output=()> where
 		CMH: ChannelMessageHandler + 'static,
 		RMH: RoutingMessageHandler + 'static,
 		L: Logger + 'static + ?Sized {
@@ -279,7 +279,7 @@ pub fn setup_inbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<So
 /// not need to poll the provided future in order to make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub fn setup_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> where
+pub fn setup_outbound<CMH, RMH, L>(peer_manager: Arc<handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: TcpStream) -> impl std::future::Future<Output=()> where
 		CMH: ChannelMessageHandler + 'static,
 		RMH: RoutingMessageHandler + 'static,
 		L: Logger + 'static + ?Sized {
@@ -351,7 +351,7 @@ pub fn setup_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<S
 /// make progress.
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
-pub async fn connect_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> where
+pub async fn connect_outbound<CMH, RMH, L>(peer_manager: Arc<handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> where
 		CMH: ChannelMessageHandler + 'static,
 		RMH: RoutingMessageHandler + 'static,
 		L: Logger + 'static + ?Sized {
@@ -402,7 +402,7 @@ impl SocketDescriptor {
 		Self { conn, id }
 	}
 }
-impl peer_handler::SocketDescriptor for SocketDescriptor {
+impl handler::SocketDescriptor for SocketDescriptor {
 	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
 		// To send data, we take a lock on our Connection to access the WriteHalf of the TcpStream,
 		// writing to it if there's room in the kernel buffer, or otherwise create a new Waker with
@@ -494,7 +494,7 @@ impl Hash for SocketDescriptor {
 mod tests {
 	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
-	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
+	use lightning::ln::peers::handler::{MessageHandler, PeerManager};
 	use lightning::util::events::*;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 

@@ -544,7 +544,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 		log_trace!(self.logger, "Enqueueing message of type {} to {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
 		match peer.encryptor {
-			PeerState::Connected(ref mut conduit) => peer.pending_outbound_buffer.push_back(conduit.encrypt(&encode_msg!($msg)[..])),
+			PeerState::Connected(ref mut conduit) => peer.pending_outbound_buffer.push_back(conduit.encrypt(&encoded_message[..])),
 			_ => panic!("peer must be connected!")
 		}
 		peers_needing_send.insert(descriptor);
@@ -563,7 +563,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 					let data_processing_decision = peer.encryptor.process_peer_data(data, &mut peer.pending_outbound_buffer);
 					match data_processing_decision {
 						PeerDataProcessingDecision::Disconnect(e) => {
-							log_trace!(self, "Invalid act message; disconnecting: {}", e);
+							log_trace!(self.logger, "Invalid act message; disconnecting: {}", e);
 							return Err(e);
 						}
 
@@ -577,12 +577,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 							// insert node id
 							match peers.node_id_to_descriptor.entry(peer.their_node_id.unwrap()) {
 								hash_map::Entry::Occupied(_) => {
-									log_trace!(self, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap()));
+									log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap()));
 									peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
 									return Err(PeerHandleError { no_connection_possible: false });
 								}
 								hash_map::Entry::Vacant(entry) => {
-									log_trace!(self, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
+									log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
 									entry.insert(peer_descriptor.clone())
 								}
 							};
@@ -590,47 +590,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						_ => {}
 					};
 
-					if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
+					if send_init_message {
+						let mut features = InitFeatures::known();
+						if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
+							features.clear_initial_routing_sync();
+						}
 
+						let resp = msgs::Init { features };
+						self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
+						send_init_message = false
+					}
+
+					let mut received_messages = vec![];
+					if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
 						let encryptor = &mut conduit.encryptor;
 						let decryptor = &mut conduit.decryptor;
-
-							macro_rules! try_potential_handleerror {
-								($thing: expr) => {
-									match $thing {
-										Ok(x) => x,
-										Err(e) => {
-											match e.action {
-												msgs::ErrorAction::DisconnectPeer { msg: _ } => {
-													//TODO: Try to push msg
-													log_trace!(self.logger, "Got Err handling message, disconnecting peer because {}", e.err);
-													return Err(PeerHandleError{ no_connection_possible: false });
-												},
-												msgs::ErrorAction::IgnoreError => {
-													log_trace!(self.logger, "Got Err handling message, ignoring because {}", e.err);
-													continue;
-												},
-												msgs::ErrorAction::SendErrorMessage { msg } => {
-													log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
-													self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &msg);
-													continue;
-												},
-											}
-										}
-									};
-								}
-							}
-
-						if send_init_message {
-							let mut features = InitFeatures::known();
-							if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-								features.clear_initial_routing_sync();
-							}
-
-							let resp = msgs::Init { features };
-							self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
-							send_init_message = false
-						}
 
 						for msg_data in decryptor {
 							let mut reader = ::std::io::Cursor::new(&msg_data[..]);
@@ -658,16 +632,43 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 								}
 							};
 
-										if let Err(handling_error) = self.handle_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), message){
-											match handling_error {
-												MessageHandlingError::PeerHandleError(e) => { return Err(e) },
-												MessageHandlingError::LightningError(e) => {
-													try_potential_handleerror!(Err(e));
-												},
-											}
+							received_messages.push(message);
+						}
+					}
+
+					for message in received_messages {
+						macro_rules! try_potential_handleerror {
+							($thing: expr) => {
+								match $thing {
+									Ok(x) => x,
+									Err(e) => {
+										match e.action {
+											msgs::ErrorAction::DisconnectPeer { msg: _ } => {
+												//TODO: Try to push msg
+												log_trace!(self.logger, "Got Err handling message, disconnecting peer because {}", e.err);
+												return Err(PeerHandleError{ no_connection_possible: false });
+											},
+											msgs::ErrorAction::IgnoreError => {
+												log_trace!(self.logger, "Got Err handling message, ignoring because {}", e.err);
+												continue;
+											},
+											msgs::ErrorAction::SendErrorMessage { msg } => {
+												log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
+												self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &msg);
+												continue;
+											},
 										}
 									}
-								}
+								};
+							}
+						}
+
+						if let Err(handling_error) = self.handle_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), message){
+							match handling_error {
+								MessageHandlingError::PeerHandleError(e) => { return Err(e) },
+								MessageHandlingError::LightningError(e) => {
+									try_potential_handleerror!(Err(e));
+								},
 							}
 						}
 					}
@@ -1267,7 +1268,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 #[cfg(test)]
 mod tests {
-	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
+	use ln::peers::handler::{PeerManager, MessageHandler, SocketDescriptor};
 	use ln::msgs;
 	use util::events;
 	use util::test_utils;
