@@ -762,7 +762,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, config)?;
-		let res = channel.get_open_channel(self.genesis_hash.clone(), &self.fee_estimator);
+		let res = channel.get_open_channel(self.genesis_hash.clone());
 
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state = self.channel_state.lock().unwrap();

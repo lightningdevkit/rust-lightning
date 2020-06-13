@@ -3432,9 +3432,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
 	// something in the handler for the message that prompted this message):
 
-	pub fn get_open_channel<F: Deref>(&self, chain_hash: BlockHash, fee_estimator: &F) -> msgs::OpenChannel
-		where F::Target: FeeEstimator
-	{
+	pub fn get_open_channel(&self, chain_hash: BlockHash) -> msgs::OpenChannel {
 		if !self.channel_outbound {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -3458,7 +3456,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
 			channel_reserve_satoshis: Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.our_htlc_minimum_msat,
-			feerate_per_kw: fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u32,
+			feerate_per_kw: self.feerate_per_kw as u32,
 			to_self_delay: self.our_to_self_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: local_keys.funding_pubkey,
@@ -4528,6 +4526,30 @@ mod tests {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
 	}
 
+	// Check that, during channel creation, we use the same feerate in the open channel message
+	// as we do in the Channel object creation itself.
+	#[test]
+	fn test_open_channel_msg_fee() {
+		let original_fee = 253;
+		let mut fee_est = TestFeeEstimator{fee_est: original_fee };
+		let secp_ctx = Secp256k1::new();
+		let mut seed = [0; 32];
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut seed);
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+
+		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		let node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
+
+		// Now change the fee so we can check that the fee in the open_channel message is the
+		// same as the old fee.
+		fee_est.fee_est = 500;
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
+		assert_eq!(open_channel_msg.feerate_per_kw as u64, original_fee);
+	}
+
 	#[test]
 	fn channel_reestablish_no_updates() {
 		let feeest = TestFeeEstimator{fee_est: 15000};
@@ -4547,7 +4569,7 @@ mod tests {
 		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash(), &&feeest);
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
