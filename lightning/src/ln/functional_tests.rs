@@ -408,10 +408,10 @@ fn test_1_conf_open() {
 	assert!(nodes[1].chain_monitor.does_match_tx(&tx));
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version; 1]);
+	nodes[1].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version as usize; 1]);
 	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id()));
 
-	nodes[0].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version; 1]);
+	nodes[0].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version as usize; 1]);
 	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
 

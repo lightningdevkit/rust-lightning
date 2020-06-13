@@ -183,7 +183,7 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	      L::Target: Logger,
         C::Target: ChainWatchInterface,
 {
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[u32]) {
+	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[usize]) {
 		let block_hash = header.bitcoin_hash();
 		{
 			let mut monitors = self.monitors.lock().unwrap();

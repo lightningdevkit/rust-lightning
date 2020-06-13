@@ -311,7 +311,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut posn = Vec::with_capacity(channel_txn.len());
 			for i in 0..channel_txn.len() {
 				txn.push(&channel_txn[i]);
-				posn.push(i as u32 + 1);
+				posn.push(i + 1);
 			}
 			$node.block_connected(&header, 1, &txn, &posn);
 			for i in 2..100 {

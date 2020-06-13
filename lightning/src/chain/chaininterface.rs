@@ -55,7 +55,7 @@ pub trait ChainWatchInterface: Sync + Send {
 
 	/// Gets the list of transaction indices within a given block that the ChainWatchInterface is
 	/// watching for.
-	fn filter_block(&self, block: &Block) -> Vec<u32>;
+	fn filter_block(&self, block: &Block) -> Vec<usize>;
 
 	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
 	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
@@ -86,7 +86,7 @@ pub trait ChainListener: Sync + Send {
 	///
 	/// This also means those counting confirmations using block_connected callbacks should watch
 	/// for duplicate headers and not count them towards confirmations!
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
+	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]);
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
 	/// Height must be the one of the block which was disconnected (not new height of the best chain)
@@ -280,7 +280,7 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 			let matched_indexes = self.chain_monitor.filter_block(block);
 			let mut matched_txn = Vec::new();
 			for index in matched_indexes.iter() {
-				matched_txn.push(&block.txdata[*index as usize]);
+				matched_txn.push(&block.txdata[*index]);
 			}
 			reentered = self.block_connected_checked(&block.header, height, matched_txn.as_slice(), matched_indexes.as_slice());
 		}
@@ -292,7 +292,7 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 	/// Returns true if notified listeners registered additional watch data (implying that the
 	/// block must be re-scanned and this function called again prior to further block_connected
 	/// calls, see ChainListener::block_connected for more info).
-	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
+	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) -> bool {
 		let last_seen = self.chain_monitor.reentered();
 
 		let listeners = self.listeners.lock().unwrap();
@@ -361,13 +361,13 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		Err(ChainError::NotSupported)
 	}
 
-	fn filter_block(&self, block: &Block) -> Vec<u32> {
+	fn filter_block(&self, block: &Block) -> Vec<usize> {
 		let mut matched_index = Vec::new();
 		{
 			let watched = self.watched.lock().unwrap();
 			for (index, transaction) in block.txdata.iter().enumerate() {
 				if self.does_match_tx_unguarded(transaction, &watched) {
-					matched_index.push(index as u32);
+					matched_index.push(index);
 				}
 			}
 		}

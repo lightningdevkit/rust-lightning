@@ -183,7 +183,7 @@ impl<'a> MoneyLossDetector<'a> {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(self.height);
 					txn.push(tx);
-					txn_idxs.push(idx as u32 + 1);
+					txn_idxs.push(idx + 1);
 				},
 				_ => {},
 			}

@@ -371,7 +371,7 @@ impl ChainWatchInterface for TestChainWatcher {
 	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
 	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
-	fn filter_block<'a>(&self, _block: &'a Block) -> Vec<u32> {
+	fn filter_block<'a>(&self, _block: &'a Block) -> Vec<usize> {
 		Vec::new()
 	}
 	fn reentered(&self) -> usize { 0 }
