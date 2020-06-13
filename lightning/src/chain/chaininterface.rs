@@ -53,9 +53,9 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// final two the output within the transaction.
 	fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
 
-	/// Gets the list of transactions and transaction indices that the ChainWatchInterface is
+	/// Gets the list of transaction indices within a given block that the ChainWatchInterface is
 	/// watching for.
-	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>);
+	fn filter_block(&self, block: &Block) -> Vec<u32>;
 
 	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
 	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
@@ -277,8 +277,12 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 	pub fn block_connected(&self, block: &Block, height: u32) {
 		let mut reentered = true;
 		while reentered {
-			let (matched, matched_index) = self.chain_monitor.filter_block(block);
-			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
+			let matched_indexes = self.chain_monitor.filter_block(block);
+			let mut matched_txn = Vec::new();
+			for index in matched_indexes.iter() {
+				matched_txn.push(&block.txdata[*index as usize]);
+			}
+			reentered = self.block_connected_checked(&block.header, height, matched_txn.as_slice(), matched_indexes.as_slice());
 		}
 	}
 
@@ -357,19 +361,17 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 		Err(ChainError::NotSupported)
 	}
 
-	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
-		let mut matched = Vec::new();
+	fn filter_block(&self, block: &Block) -> Vec<u32> {
 		let mut matched_index = Vec::new();
 		{
 			let watched = self.watched.lock().unwrap();
 			for (index, transaction) in block.txdata.iter().enumerate() {
 				if self.does_match_tx_unguarded(transaction, &watched) {
-					matched.push(transaction);
 					matched_index.push(index as u32);
 				}
 			}
 		}
-		(matched, matched_index)
+		matched_index
 	}
 
 	fn reentered(&self) -> usize {
