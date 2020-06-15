@@ -94,10 +94,10 @@ struct FuzzEstimator {
 	input: Arc<InputData>,
 }
 impl FeeEstimator for FuzzEstimator {
-	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
+	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
-			Some(slice) => cmp::max(slice_to_be16(slice) as u64, 253),
+			Some(slice) => cmp::max(slice_to_be16(slice) as u32, 253),
 			None => 253
 		}
 	}

@@ -2843,7 +2843,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// PeerManager::process_events afterwards.
 	/// Note: This API is likely to change!
 	#[doc(hidden)]
-	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
+	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u32) -> Result<(), APIError> {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let their_node_id;
 		let err: Result<(), _> = loop {

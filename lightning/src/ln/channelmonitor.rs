@@ -366,7 +366,7 @@ struct LocalSignedTx {
 	b_htlc_key: PublicKey,
 	delayed_payment_key: PublicKey,
 	per_commitment_point: PublicKey,
-	feerate_per_kw: u64,
+	feerate_per_kw: u32,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 }
 
@@ -1028,7 +1028,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 				writer.write_all(&$local_tx.delayed_payment_key.serialize())?;
 				writer.write_all(&$local_tx.per_commitment_point.serialize())?;
 
-				writer.write_all(&byte_utils::be64_to_array($local_tx.feerate_per_kw))?;
+				writer.write_all(&byte_utils::be32_to_array($local_tx.feerate_per_kw))?;
 				writer.write_all(&byte_utils::be64_to_array($local_tx.htlc_outputs.len() as u64))?;
 				for &(ref htlc_output, ref sig, ref htlc_source) in $local_tx.htlc_outputs.iter() {
 					serialize_htlc_in_commitment!(htlc_output);
@@ -2367,7 +2367,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 					let b_htlc_key = Readable::read(reader)?;
 					let delayed_payment_key = Readable::read(reader)?;
 					let per_commitment_point = Readable::read(reader)?;
-					let feerate_per_kw: u64 = Readable::read(reader)?;
+					let feerate_per_kw: u32 = Readable::read(reader)?;
 
 					let htlcs_len: u64 = Readable::read(reader)?;
 					let mut htlcs = Vec::with_capacity(cmp::min(htlcs_len as usize, MAX_ALLOC_SIZE / 128));

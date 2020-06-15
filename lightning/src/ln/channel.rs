@@ -310,16 +310,16 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	// revoke_and_ack is received and new commitment_signed is generated to be
 	// sent to the funder. Otherwise, the pending value is removed when receiving
 	// commitment_signed.
-	pending_update_fee: Option<u64>,
+	pending_update_fee: Option<u32>,
 	// update_fee() during ChannelState::AwaitingRemoteRevoke is hold in
 	// holdina_cell_update_fee then moved to pending_udpate_fee when revoke_and_ack
 	// is received. holding_cell_update_fee is updated when there are additional
 	// update_fee() during ChannelState::AwaitingRemoteRevoke.
-	holding_cell_update_fee: Option<u64>,
+	holding_cell_update_fee: Option<u32>,
 	next_local_htlc_id: u64,
 	next_remote_htlc_id: u64,
 	update_time_counter: u32,
-	feerate_per_kw: u64,
+	feerate_per_kw: u32,
 
 	#[cfg(debug_assertions)]
 	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
@@ -328,7 +328,7 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
 	max_commitment_tx_output_remote: ::std::sync::Mutex<(u64, u64)>,
 
-	last_sent_closing_fee: Option<(u64, u64, Signature)>, // (feerate, fee, our_sig)
+	last_sent_closing_fee: Option<(u32, u64, Signature)>, // (feerate, fee, our_sig)
 
 	funding_txo: Option<OutPoint>,
 
@@ -448,8 +448,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}
 
-	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u64) -> u64 {
-		cmp::max(at_open_background_feerate * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
+	fn derive_our_dust_limit_satoshis(at_open_background_feerate: u32) -> u64 {
+		cmp::max(at_open_background_feerate as u64 * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
 	}
 
 	// Constructors:
@@ -558,10 +558,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn check_remote_fee<F: Deref>(fee_estimator: &F, feerate_per_kw: u32) -> Result<(), ChannelError>
 		where F::Target: FeeEstimator
 	{
-		if (feerate_per_kw as u64) < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
+		if feerate_per_kw < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) {
 			return Err(ChannelError::Close("Peer's feerate much too low"));
 		}
-		if (feerate_per_kw as u64) > fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) * 2 {
+		if feerate_per_kw as u64 > fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64  * 2 {
 			return Err(ChannelError::Close("Peer's feerate much too high"));
 		}
 		Ok(())
@@ -670,12 +670,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment
 		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
-		if funders_amount_msat < background_feerate * COMMITMENT_TX_BASE_WEIGHT {
+		if funders_amount_msat < background_feerate as u64 * COMMITMENT_TX_BASE_WEIGHT {
 			return Err(ChannelError::Close("Insufficient funding amount for initial commitment"));
 		}
 
 		let to_local_msat = msg.push_msat;
-		let to_remote_msat = funders_amount_msat - background_feerate * COMMITMENT_TX_BASE_WEIGHT;
+		let to_remote_msat = funders_amount_msat - background_feerate as u64 * COMMITMENT_TX_BASE_WEIGHT;
 		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= remote_channel_reserve_satoshis * 1000 {
 			return Err(ChannelError::Close("Insufficient funding amount for initial commitment"));
 		}
@@ -750,7 +750,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
 
-			feerate_per_kw: msg.feerate_per_kw as u64,
+			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
 			their_dust_limit_satoshis: msg.dust_limit_satoshis,
 			our_dust_limit_satoshis: our_dust_limit_satoshis,
@@ -828,7 +828,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Note that below-dust HTLCs are included in the third return value, but not the second, and
 	/// sources are provided only for outbound HTLCs in the third return value.
 	#[inline]
-	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u64, logger: &L) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u32, logger: &L) -> (Transaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
 		let obscured_commitment_transaction_number = self.get_commitment_transaction_number_obscure_factor() ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
@@ -868,7 +868,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			($htlc: expr, $outbound: expr, $source: expr, $state_name: expr) => {
 				if $outbound == local { // "offered HTLC output"
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
-					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
+					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						txouts.push((TxOut {
 							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
@@ -880,7 +880,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					}
 				} else {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
-					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000) {
+					if $htlc.amount_msat / 1000 >= dust_limit_satoshis + (feerate_per_kw as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						txouts.push((TxOut { // "received HTLC output"
 							script_pubkey: chan_utils::get_htlc_redeemscript(&htlc_in_tx, &keys).to_v0_p2wsh(),
@@ -973,7 +973,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			max_commitment_tx_output.1 = cmp::max(max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee: u64 = feerate_per_kw * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 		let (value_to_self, value_to_remote) = if self.channel_outbound {
 			(value_to_self_msat / 1000 - total_fee as i64, value_to_remote_msat / 1000)
 		} else {
@@ -1150,7 +1150,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
-	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u64) -> Transaction {
+	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u32) -> Transaction {
 		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.their_to_self_delay } else { self.our_to_self_delay }, htlc, &keys.a_delayed_payment_key, &keys.revocation_key)
 	}
 
@@ -1693,7 +1693,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn commit_tx_fee_msat(&self, num_htlcs: usize) -> u64 {
 		// Note that we need to divide before multiplying to round properly,
 		// since the lowest denomination of bitcoin on-chain is the satoshi.
-		(COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * self.feerate_per_kw / 1000 * 1000
+		(COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * self.feerate_per_kw as u64 / 1000 * 1000
 	}
 
 	// Get the commitment tx fee for the local (i.e our) next commitment transaction
@@ -1986,7 +1986,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
 		if update_fee {
 			let num_htlcs = local_commitment_tx.1;
-			let total_fee: u64 = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+			let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 
 			let remote_reserve_we_require = Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(self.channel_value_satoshis);
 			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + remote_reserve_we_require {
@@ -2466,7 +2466,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// Adds a pending update to this channel. See the doc for send_htlc for
 	/// further details on the optionness of the return value.
 	/// You MUST call send_commitment prior to any other calls on this Channel
-	fn send_update_fee(&mut self, feerate_per_kw: u64) -> Option<msgs::UpdateFee> {
+	fn send_update_fee(&mut self, feerate_per_kw: u32) -> Option<msgs::UpdateFee> {
 		if !self.channel_outbound {
 			panic!("Cannot send fee from inbound channel");
 		}
@@ -2487,11 +2487,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		Some(msgs::UpdateFee {
 			channel_id: self.channel_id,
-			feerate_per_kw: feerate_per_kw as u32,
+			feerate_per_kw: feerate_per_kw,
 		})
 	}
 
-	pub fn send_update_fee_and_commit<L: Deref>(&mut self, feerate_per_kw: u64, logger: &L) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
+	pub fn send_update_fee_and_commit<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
 		match self.send_update_fee(feerate_per_kw) {
 			Some(update_fee) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
@@ -2652,7 +2652,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish"));
 		}
 		Channel::<ChanSigner>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
-		self.pending_update_fee = Some(msg.feerate_per_kw as u64);
+		self.pending_update_fee = Some(msg.feerate_per_kw);
 		self.update_time_counter += 1;
 		Ok(())
 	}
@@ -2870,7 +2870,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			proposed_feerate = self.feerate_per_kw;
 		}
 		let tx_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
-		let proposed_total_fee_satoshis = proposed_feerate * tx_weight / 1000;
+		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
 
 		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
 		let our_sig = self.local_keys
@@ -3032,7 +3032,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		macro_rules! propose_new_feerate {
 			($new_feerate: expr) => {
 				let closing_tx_max_weight = Self::get_closing_transaction_weight(&self.get_closing_scriptpubkey(), self.their_shutdown_scriptpubkey.as_ref().unwrap());
-				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate * closing_tx_max_weight / 1000, false);
+				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate as u64 * closing_tx_max_weight / 1000, false);
 				let our_sig = self.local_keys
 					.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction"))?;
@@ -3045,10 +3045,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		let proposed_sat_per_kw = msg.fee_satoshis * 1000 / closing_tx.get_weight() as u64;
+		let proposed_sat_per_kw = msg.fee_satoshis  * 1000 / closing_tx.get_weight() as u64;
 		if self.channel_outbound {
 			let our_max_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
-			if proposed_sat_per_kw > our_max_feerate {
+			if (proposed_sat_per_kw as u32) > our_max_feerate {
 				if let Some((last_feerate, _, _)) = self.last_sent_closing_fee {
 					if our_max_feerate <= last_feerate {
 						return Err(ChannelError::Close("Unable to come to consensus about closing feerate, remote wanted something higher than our Normal feerate"));
@@ -3058,7 +3058,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		} else {
 			let our_min_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-			if proposed_sat_per_kw < our_min_feerate {
+			if (proposed_sat_per_kw as u32) < our_min_feerate {
 				if let Some((last_feerate, _, _)) = self.last_sent_closing_fee {
 					if our_min_feerate >= last_feerate {
 						return Err(ChannelError::Close("Unable to come to consensus about closing feerate, remote wanted something lower than our Background feerate"));
@@ -3140,7 +3140,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	#[cfg(test)]
-	pub fn get_feerate(&self) -> u64 {
+	pub fn get_feerate(&self) -> u32 {
 		self.feerate_per_kw
 	}
 
@@ -3212,15 +3212,15 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// output value back into a transaction with the regular channel output:
 
 		// the fee cost of the HTLC-Success/HTLC-Timeout transaction:
-		let mut res = self.feerate_per_kw * cmp::max(HTLC_TIMEOUT_TX_WEIGHT, HTLC_SUCCESS_TX_WEIGHT) / 1000;
+		let mut res = self.feerate_per_kw as u64 * cmp::max(HTLC_TIMEOUT_TX_WEIGHT, HTLC_SUCCESS_TX_WEIGHT) / 1000;
 
 		if self.channel_outbound {
 			// + the marginal fee increase cost to us in the commitment transaction:
-			res += self.feerate_per_kw * COMMITMENT_TX_WEIGHT_PER_HTLC / 1000;
+			res += self.feerate_per_kw as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC / 1000;
 		}
 
 		// + the marginal cost of an input which spends the HTLC-Success/HTLC-Timeout output:
-		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
+		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) as u64 * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
 
 		res as u32
 	}
@@ -4481,10 +4481,10 @@ mod tests {
 	use rand::{thread_rng,Rng};
 
 	struct TestFeeEstimator {
-		fee_est: u64
+		fee_est: u32
 	}
 	impl FeeEstimator for TestFeeEstimator {
-		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
+		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
 			self.fee_est
 		}
 	}
@@ -4547,7 +4547,7 @@ mod tests {
 		// same as the old fee.
 		fee_est.fee_est = 500;
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
-		assert_eq!(open_channel_msg.feerate_per_kw as u64, original_fee);
+		assert_eq!(open_channel_msg.feerate_per_kw, original_fee);
 	}
 
 	#[test]
