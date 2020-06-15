@@ -1520,14 +1520,220 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	}
 }
 
-fn do_channel_reserve_test(test_recv: bool) {
+#[test]
+fn test_basic_channel_reserve() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
 
+	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let channel_reserve = chan_stat.channel_reserve_msat;
+
+	// The 2* and +1 are for the fee spike reserve.
+	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let commit_tx_fee = 2 * commit_tx_fee_msat(get_feerate!(nodes[0], chan.2), 1 + 1);
+	let max_can_send = 5000000 - channel_reserve - commit_tx_fee;
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), max_can_send + 1, TEST_FINAL_CLTV, &logger).unwrap();
+	let err = nodes[0].node.send_payment(&route, our_payment_hash, &None).err().unwrap();
+	match err {
+		PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
+			match fails[0] {
+				APIError::ChannelUnavailable{err} =>
+					assert_eq!(err, "Cannot send value that would put us under local channel reserve value"),
+				_ => panic!("Unexpected error variant"),
+			}
+		},
+		_ => panic!("Unexpected error variant"),
+	}
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
+
+	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send, max_can_send);
+}
+
+#[test]
+fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// Set the fee rate for the channel very high, to the point where the fundee
+	// sending any amount would result in a channel reserve violation. In this test
+	// we check that we would be prevented from sending an HTLC in this situation.
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	macro_rules! get_route_and_payment_hash {
+		($recv_value: expr) => {{
+			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
+			let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
+			let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes.first().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+			(route, payment_hash, payment_preimage)
+		}}
+	};
+
+	let (route, our_payment_hash, _) = get_route_and_payment_hash!(1000);
+	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+		assert_eq!(err, "Cannot send value that would put them under remote channel reserve value"));
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put them under remote channel reserve value".to_string(), 1);
+}
+
+#[test]
+fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// Set the fee rate for the channel very high, to the point where the funder
+	// receiving 1 update_add_htlc would result in them closing the channel due
+	// to channel reserve violation. This close could also happen if the fee went
+	// up a more realistic amount, but many HTLCs were outstanding at the time of
+	// the update_add_htlc.
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	macro_rules! get_route_and_payment_hash {
+		($recv_value: expr) => {{
+			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
+			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+			let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes.first().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+			(route, payment_hash, payment_preimage)
+		}}
+	};
+
+	let (route, payment_hash, _) = get_route_and_payment_hash!(1000);
+	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
+	let secp_ctx = Secp256k1::new();
+	let session_priv = SecretKey::from_slice(&{
+		let mut session_key = [0; 32];
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut session_key);
+		session_key
+	}).expect("RNG is bad!");
+
+	let cur_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &None, cur_height).unwrap();
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+	let msg = msgs::UpdateAddHTLC {
+		channel_id: chan.2,
+		htlc_id: 1,
+		amount_msat: htlc_msat + 1,
+		payment_hash: payment_hash,
+		cltv_expiry: htlc_cltv,
+		onion_routing_packet: onion_packet,
+	};
+
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &msg);
+	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
+	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot receive value that would put us under local channel reserve value".to_string(), 1);
+	assert_eq!(nodes[0].node.list_channels().len(), 0);
+	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
+	assert_eq!(err_msg.data, "Cannot receive value that would put us under local channel reserve value");
+	check_added_monitors!(nodes[0], 1);
+}
+
+#[test]
+fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1900, 1001, InitFeatures::known(), InitFeatures::known());
-	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1900, 1001, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let _ = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	macro_rules! get_route_and_payment_hash {
+		($recv_value: expr) => {{
+			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+			let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+			(route, payment_hash, payment_preimage)
+		}}
+	};
+
+	let feemsat = 239;
+	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
+	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let feerate = get_feerate!(nodes[0], chan.2);
+
+	// Add a 2* and +1 for the fee spike reserve.
+	let commit_tx_fee_2_htlc = 2*commit_tx_fee_msat(feerate, 2 + 1);
+	let recv_value_1 = (chan_stat.value_to_self_msat - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlc)/2;
+	let amt_msat_1 = recv_value_1 + total_routing_fee_msat;
+
+	// Add a pending HTLC.
+	let (route_1, our_payment_hash_1, _) = get_route_and_payment_hash!(amt_msat_1);
+	let payment_event_1 = {
+		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event_1.msgs[0]);
+
+	// Attempt to trigger a channel reserve violation --> payment failure.
+	let commit_tx_fee_2_htlcs = commit_tx_fee_msat(feerate, 2);
+	let recv_value_2 = chan_stat.value_to_self_msat - amt_msat_1 - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlcs + 1;
+	let amt_msat_2 = recv_value_2 + total_routing_fee_msat;
+	let (route_2, _, _) = get_route_and_payment_hash!(amt_msat_2);
+
+	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
+	let secp_ctx = Secp256k1::new();
+	let session_priv = SecretKey::from_slice(&{
+		let mut session_key = [0; 32];
+		let mut rng = thread_rng();
+		rng.fill_bytes(&mut session_key);
+		session_key
+	}).expect("RNG is bad!");
+
+	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route_2.paths[0], recv_value_2, &None, cur_height).unwrap();
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1);
+	let msg = msgs::UpdateAddHTLC {
+		channel_id: chan.2,
+		htlc_id: 1,
+		amount_msat: htlc_msat + 1,
+		payment_hash: our_payment_hash_1,
+		cltv_expiry: htlc_cltv,
+		onion_routing_packet: onion_packet,
+	};
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
+	// Check that the payment failed and the channel is closed in response to the malicious UpdateAdd.
+	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Remote HTLC add would put them under remote reserve value".to_string(), 1);
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
+	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
+	check_added_monitors!(nodes[1], 1);
+}
+
+fn commit_tx_fee_msat(feerate: u64, num_htlcs: u64) -> u64 {
+	(COMMITMENT_TX_BASE_WEIGHT + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate / 1000 * 1000
+}
+
+#[test]
+fn test_channel_reserve_holding_cell_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 190000, 1001, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 190000, 1001, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
 	let mut stat01 = get_channel_value_stat!(nodes[0], chan_1.2);
@@ -1556,7 +1762,8 @@ fn do_channel_reserve_test(test_recv: bool) {
 	}
 
 	let feemsat = 239; // somehow we know?
-	let total_fee_msat = (nodes.len() - 2) as u64 * 239;
+	let total_fee_msat = (nodes.len() - 2) as u64 * feemsat;
+	let feerate = get_feerate!(nodes[0], chan_1.2);
 
 	let recv_value_0 = stat01.their_max_htlc_value_in_flight_msat - total_fee_msat;
 
@@ -1570,16 +1777,19 @@ fn do_channel_reserve_test(test_recv: bool) {
 		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
 	}
 
-	let mut htlc_id = 0;
 	// channel reserve is bigger than their_max_htlc_value_in_flight_msat so loop to deplete
 	// nodes[0]'s wealth
 	loop {
 		let amt_msat = recv_value_0 + total_fee_msat;
-		if stat01.value_to_self_msat - amt_msat < stat01.channel_reserve_msat {
+		// 3 for the 3 HTLCs that will be sent, 2* and +1 for the fee spike reserve.
+		// Also, ensure that each payment has enough to be over the dust limit to
+		// ensure it'll be included in each commit tx fee calculation.
+		let commit_tx_fee_all_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1);
+		let ensure_htlc_amounts_above_dust_buffer = 3 * (stat01.their_dust_limit_msat + 1000);
+		if stat01.value_to_self_msat < stat01.channel_reserve_msat + commit_tx_fee_all_htlcs + ensure_htlc_amounts_above_dust_buffer + amt_msat {
 			break;
 		}
 		send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_0, recv_value_0);
-		htlc_id += 1;
 
 		let (stat01_, stat11_, stat12_, stat22_) = (
 			get_channel_value_stat!(nodes[0], chan_1.2),
@@ -1595,18 +1805,19 @@ fn do_channel_reserve_test(test_recv: bool) {
 		stat01 = stat01_; stat11 = stat11_; stat12 = stat12_; stat22 = stat22_;
 	}
 
-	{
-		let recv_value = stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat;
-		// attempt to get channel_reserve violation
-		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value + 1);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
-		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
-	}
-
-	// adding pending output
-	let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat)/2;
+	// adding pending output.
+	// 2* and +1 HTLCs on the commit tx fee for the fee spike reserve.
+	// The reason we're dividing by two here is as follows: the dividend is the total outbound liquidity
+	// after fees, the channel reserve, and the fee spike buffer are removed. We eventually want to
+	// divide this quantity into 3 portions, that will each be sent in an HTLC. This allows us
+	// to test channel channel reserve policy at the edges of what amount is sendable, i.e.
+	// cases where 1 msat over X amount will cause a payment failure, but anything less than
+	// that can be sent successfully. So, dividing by two is a somewhat arbitrary way of getting
+	// the amount of the first of these aforementioned 3 payments. The reason we split into 3 payments
+	// is to test the behavior of the holding cell with respect to channel reserve and commit tx fee
+	// policy.
+	let commit_tx_fee_2_htlcs = 2*commit_tx_fee_msat(feerate, 2 + 1);
+	let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs)/2;
 	let amt_msat_1 = recv_value_1 + total_fee_msat;
 
 	let (route_1, our_payment_hash_1, our_payment_preimage_1) = get_route_and_payment_hash!(recv_value_1);
@@ -1621,59 +1832,22 @@ fn do_channel_reserve_test(test_recv: bool) {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event_1.msgs[0]);
 
 	// channel reserve test with htlc pending output > 0
-	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat;
+	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs;
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
 			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
-	}
-
-	{
-		// test channel_reserve test on nodes[1] side
-		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
-
-		// Need to manually create update_add_htlc message to go around the channel reserve check in send_htlc()
-		let secp_ctx = Secp256k1::new();
-		let session_priv = SecretKey::from_slice(&{
-			let mut session_key = [0; 32];
-			let mut rng = thread_rng();
-			rng.fill_bytes(&mut session_key);
-			session_key
-		}).expect("RNG is bad!");
-
-		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], recv_value_2 + 1, &None, cur_height).unwrap();
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
-		let msg = msgs::UpdateAddHTLC {
-			channel_id: chan_1.2,
-			htlc_id,
-			amount_msat: htlc_msat,
-			payment_hash: our_payment_hash,
-			cltv_expiry: htlc_cltv,
-			onion_routing_packet: onion_packet,
-		};
-
-		if test_recv {
-			nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
-			// If we send a garbage message, the channel should get closed, making the rest of this test case fail.
-			assert_eq!(nodes[1].node.list_channels().len(), 1);
-			assert_eq!(nodes[1].node.list_channels().len(), 1);
-			let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-			assert_eq!(err_msg.data, "Remote HTLC add would put them under their reserve value");
-			check_added_monitors!(nodes[1], 1);
-			return;
-		}
 	}
 
 	// split the rest to test holding cell
-	let recv_value_21 = recv_value_2/2;
-	let recv_value_22 = recv_value_2 - recv_value_21 - total_fee_msat;
+	let commit_tx_fee_3_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1);
+	let additional_htlc_cost_msat = commit_tx_fee_3_htlcs - commit_tx_fee_2_htlcs;
+	let recv_value_21 = recv_value_2/2 - additional_htlc_cost_msat/2;
+	let recv_value_22 = recv_value_2 - recv_value_21 - total_fee_msat - additional_htlc_cost_msat;
 	{
 		let stat = get_channel_value_stat!(nodes[0], chan_1.2);
-		assert_eq!(stat.value_to_self_msat - (stat.pending_outbound_htlcs_amount_msat + recv_value_21 + recv_value_22 + total_fee_msat + total_fee_msat), stat.channel_reserve_msat);
+		assert_eq!(stat.value_to_self_msat - (stat.pending_outbound_htlcs_amount_msat + recv_value_21 + recv_value_22 + total_fee_msat + total_fee_msat + commit_tx_fee_3_htlcs), stat.channel_reserve_msat);
 	}
 
 	// now see if they go through on both sides
@@ -1690,7 +1864,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
 			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 3);
+		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
 	}
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(recv_value_22);
@@ -1705,6 +1879,7 @@ fn do_channel_reserve_test(test_recv: bool) {
 	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
+	// the pending htlc should be promoted to committed
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_revoke_and_ack);
 	check_added_monitors!(nodes[0], 1);
 	let commitment_update_2 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -1765,19 +1940,35 @@ fn do_channel_reserve_test(test_recv: bool) {
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_21, recv_value_21);
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_22, recv_value_22);
 
-	let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_21 + total_fee_msat) - (recv_value_22 + total_fee_msat);
+	let commit_tx_fee_0_htlcs = 2*commit_tx_fee_msat(feerate, 1);
+	let recv_value_3 = commit_tx_fee_2_htlcs - commit_tx_fee_0_htlcs - total_fee_msat;
+	{
+		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_3 + 1);
+		let err = nodes[0].node.send_payment(&route, our_payment_hash, &None).err().unwrap();
+		match err {
+			PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
+				match fails[0] {
+					APIError::ChannelUnavailable{err} =>
+						assert_eq!(err, "Cannot send value that would put us under local channel reserve value"),
+					_ => panic!("Unexpected error variant"),
+				}
+			},
+			_ => panic!("Unexpected error variant"),
+		}
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 3);
+	}
+
+	send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_3, recv_value_3);
+
+	let commit_tx_fee_1_htlc = 2*commit_tx_fee_msat(feerate, 1 + 1);
+	let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_21 + total_fee_msat) - (recv_value_22 + total_fee_msat) - (recv_value_3 + total_fee_msat);
 	let stat0 = get_channel_value_stat!(nodes[0], chan_1.2);
 	assert_eq!(stat0.value_to_self_msat, expected_value_to_self);
-	assert_eq!(stat0.value_to_self_msat, stat0.channel_reserve_msat);
+	assert_eq!(stat0.value_to_self_msat, stat0.channel_reserve_msat + commit_tx_fee_1_htlc);
 
 	let stat2 = get_channel_value_stat!(nodes[2], chan_2.2);
-	assert_eq!(stat2.value_to_self_msat, stat22.value_to_self_msat + recv_value_1 + recv_value_21 + recv_value_22);
-}
-
-#[test]
-fn channel_reserve_test() {
-	do_channel_reserve_test(false);
-	do_channel_reserve_test(true);
+	assert_eq!(stat2.value_to_self_msat, stat22.value_to_self_msat + recv_value_1 + recv_value_21 + recv_value_22 + recv_value_3);
 }
 
 #[test]
@@ -6244,23 +6435,31 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
 
-	let their_channel_reserve = get_channel_value_stat!(nodes[0], chan.2).channel_reserve_msat;
+	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let channel_reserve = chan_stat.channel_reserve_msat;
+	let feerate = get_feerate!(nodes[0], chan.2);
+	// The 2* and +1 are for the fee spike reserve.
+	let commit_tx_fee_outbound = 2 * commit_tx_fee_msat(feerate, 1 + 1);
 
+	let max_can_send = 5000000 - channel_reserve - commit_tx_fee_outbound;
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let logger = test_utils::TestLogger::new();
-	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &[], 5000000-their_channel_reserve, TEST_FINAL_CLTV, &logger).unwrap();
+	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
 	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
-	updates.update_add_htlcs[0].amount_msat = 5000000-their_channel_reserve+1;
+	// Even though channel-initiator senders are required to respect the fee_spike_reserve,
+	// at this time channel-initiatee receivers are not required to enforce that senders
+	// respect the fee_spike_reserve.
+	updates.update_add_htlcs[0].amount_msat = max_can_send + commit_tx_fee_outbound + 1;
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data, "Remote HTLC add would put them under their reserve value");
+	assert_eq!(err_msg.data, "Remote HTLC add would put them under remote reserve value");
 	check_added_monitors!(nodes[1], 1);
 }
 

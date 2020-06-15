@@ -2472,7 +2472,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		//encrypted with the same key. It's not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let (mut pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = &mut *channel_state_lock;
 
 		match channel_state.by_id.entry(msg.channel_id) {
@@ -2480,39 +2480,46 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
 				}
-				if !chan.get().is_usable() {
+
+				let create_pending_htlc_status = |chan: &Channel<ChanSigner>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+					// Ensure error_code has the UPDATE flag set, since by default we send a
+					// channel update along as part of failing the HTLC.
+					assert!((error_code & 0x1000) != 0);
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
-					if let PendingHTLCStatus::Forward(PendingHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
-						let chan_update = self.get_channel_update(chan.get());
-						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-							channel_id: msg.channel_id,
-							htlc_id: msg.htlc_id,
-							reason: if let Ok(update) = chan_update {
-								// TODO: Note that |20 is defined as "channel FROM the processing
-								// node has been disabled" (emphasis mine), which seems to imply
-								// that we can't return |20 for an inbound channel being disabled.
-								// This probably needs a spec update but should definitely be
-								// allowed.
-								onion_utils::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &{
+					match pending_forward_info {
+						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
+							let reason = if let Ok(upd) = self.get_channel_update(chan) {
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
 									let mut res = Vec::with_capacity(8 + 128);
-									res.extend_from_slice(&byte_utils::be16_to_array(update.contents.flags));
-									res.extend_from_slice(&update.encode_with_len()[..]);
+									res.extend_from_slice(&byte_utils::be16_to_array(upd.contents.flags));
+									res.extend_from_slice(&upd.encode_with_len()[..]);
 									res
 								}[..])
 							} else {
-								// This can only happen if the channel isn't in the fully-funded
-								// state yet, implying our counterparty is trying to route payments
-								// over the channel back to themselves (cause no one else should
-								// know the short_id is a lightning channel yet). We should have no
-								// problem just calling this unknown_next_peer
-								onion_utils::build_first_hop_failure_packet(&incoming_shared_secret, 0x4000|10, &[])
-							},
-						}));
+								// The only case where we'd be unable to
+								// successfully get a channel update is if the
+								// channel isn't in the fully-funded state yet,
+								// implying our counterparty is trying to route
+								// payments over the channel back to themselves
+								// (cause no one else should know the short_id
+								// is a lightning channel yet). We should have
+								// no problem just calling this
+								// unknown_next_peer (0x4000|10).
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
+							};
+							let msg = msgs::UpdateFailHTLC {
+								channel_id: msg.channel_id,
+								htlc_id: msg.htlc_id,
+								reason
+							};
+							PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg))
+						},
+						_ => pending_forward_info
 					}
-				}
-				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info), channel_state, chan);
+				};
+				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status), channel_state, chan);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
 		}

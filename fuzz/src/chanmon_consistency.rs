@@ -408,7 +408,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	loop {
 		macro_rules! send_payment {
-			($source: expr, $dest: expr) => { {
+			($source: expr, $dest: expr, $amt: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
 				if let Err(_) = $source.send_payment(&Route {
@@ -417,7 +417,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 5000000,
+						fee_msat: $amt,
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &None) {
@@ -425,7 +425,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					test_return!();
 				}
 			} };
-			($source: expr, $middle: expr, $dest: expr) => { {
+			($source: expr, $middle: expr, $dest: expr, $amt: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
 				if let Err(_) = $source.send_payment(&Route {
@@ -441,7 +441,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 5000000,
+						fee_msat: $amt,
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &None) {
@@ -644,12 +644,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				});
 				for event in events.drain(..) {
 					match event {
-						events::Event::PaymentReceived { payment_hash, payment_secret, .. } => {
+						events::Event::PaymentReceived { payment_hash, payment_secret, amt } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
 									assert!(nodes[$node].fail_htlc_backwards(&payment_hash, &payment_secret));
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), &payment_secret, 5_000_000));
+									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0), &payment_secret, amt));
 								}
 							}
 						},
@@ -691,12 +691,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
 				}
 			},
-			0x09 => send_payment!(nodes[0], (&nodes[1], chan_a)),
-			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a)),
-			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b)),
-			0x0c => send_payment!(nodes[2], (&nodes[1], chan_b)),
-			0x0d => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
-			0x0e => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
+			0x09 => send_payment!(nodes[0], (&nodes[1], chan_a), 5_000_000),
+			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a), 5_000_000),
+			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b), 5_000_000),
+			0x0c => send_payment!(nodes[2], (&nodes[1], chan_b), 5_000_000),
+			0x0d => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 5_000_000),
+			0x0e => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 5_000_000),
 			0x0f => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
@@ -781,6 +781,24 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			},
 			0x22 => send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
 			0x23 => send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
+			0x25 => send_payment!(nodes[0], (&nodes[1], chan_a), 10),
+			0x26 => send_payment!(nodes[1], (&nodes[0], chan_a), 10),
+			0x27 => send_payment!(nodes[1], (&nodes[2], chan_b), 10),
+			0x28 => send_payment!(nodes[2], (&nodes[1], chan_b), 10),
+			0x29 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 10),
+			0x2a => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 10),
+			0x2b => send_payment!(nodes[0], (&nodes[1], chan_a), 1_000),
+			0x2c => send_payment!(nodes[1], (&nodes[0], chan_a), 1_000),
+			0x2d => send_payment!(nodes[1], (&nodes[2], chan_b), 1_000),
+			0x2e => send_payment!(nodes[2], (&nodes[1], chan_b), 1_000),
+			0x2f => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 1_000),
+			0x30 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 1_000),
+			0x31 => send_payment!(nodes[0], (&nodes[1], chan_a), 100_000),
+			0x32 => send_payment!(nodes[1], (&nodes[0], chan_a), 100_000),
+			0x33 => send_payment!(nodes[1], (&nodes[2], chan_b), 100_000),
+			0x34 => send_payment!(nodes[2], (&nodes[1], chan_b), 100_000),
+			0x35 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 100_000),
+			0x36 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 100_000),
 			// 0x24 defined above
 			_ => test_return!(),
 		}
