@@ -585,7 +585,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 		//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs
 		let num_htlcs = commitment_tx.output.len() - 2;
-		let total_fee: u64 = feerate * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		let total_fee: u64 = feerate as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value);
 		actual_fee = channel_value - actual_fee;
 		assert_eq!(total_fee, actual_fee);
@@ -1722,8 +1722,8 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	check_added_monitors!(nodes[1], 1);
 }
 
-fn commit_tx_fee_msat(feerate: u64, num_htlcs: u64) -> u64 {
-	(COMMITMENT_TX_BASE_WEIGHT + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate / 1000 * 1000
+fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64) -> u64 {
+	(COMMITMENT_TX_BASE_WEIGHT + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate as u64 / 1000 * 1000
 }
 
 #[test]

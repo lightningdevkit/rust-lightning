@@ -54,7 +54,7 @@ pub struct ClaimTxBumpMaterial {
 	// much time for confirmation and we need to bump it.
 	height_timer: Option<u32>,
 	// Tracked in case of reorg to wipe out now-superflous bump material
-	feerate_previous: u64,
+	feerate_previous: u32,
 	// Soonest timelocks among set of outpoints claimed, used to compute
 	// a priority of not feerate
 	soonest_timelock: u32,
@@ -65,7 +65,7 @@ pub struct ClaimTxBumpMaterial {
 impl Writeable for ClaimTxBumpMaterial  {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.height_timer.write(writer)?;
-		writer.write_all(&byte_utils::be64_to_array(self.feerate_previous))?;
+		writer.write_all(&byte_utils::be32_to_array(self.feerate_previous))?;
 		writer.write_all(&byte_utils::be32_to_array(self.soonest_timelock))?;
 		writer.write_all(&byte_utils::be64_to_array(self.per_input_material.len() as u64))?;
 		for (outp, tx_material) in self.per_input_material.iter() {
@@ -151,14 +151,14 @@ impl Readable for InputDescriptors {
 macro_rules! subtract_high_prio_fee {
 	($logger: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
 		{
-			$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority);
-			let mut fee = $used_feerate * ($predicted_weight as u64) / 1000;
+			$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority).into();
+			let mut fee = $used_feerate as u64 * $predicted_weight / 1000;
 			if $value <= fee {
-				$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
-				fee = $used_feerate * ($predicted_weight as u64) / 1000;
-				if $value <= fee {
-					$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-					fee = $used_feerate * ($predicted_weight as u64) / 1000;
+				$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal).into();
+				fee = $used_feerate as u64 * $predicted_weight / 1000;
+				if $value <= fee.into() {
+					$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background).into();
+					fee = $used_feerate as u64 * $predicted_weight / 1000;
 					if $value <= fee {
 						log_error!($logger, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
 							fee, $value);
@@ -462,7 +462,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F, logger: L) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F, logger: L) -> Option<(Option<u32>, u32, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
@@ -490,20 +490,20 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		macro_rules! RBF_bump {
 			($amount: expr, $old_feerate: expr, $fee_estimator: expr, $predicted_weight: expr) => {
 				{
-					let mut used_feerate;
+					let mut used_feerate: u32;
 					// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 					let new_fee = if $old_feerate < $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) {
 						let mut value = $amount;
 						if subtract_high_prio_fee!(logger, $fee_estimator, value, $predicted_weight, used_feerate) {
 							// Overflow check is done in subtract_high_prio_fee
-							$amount - value
+							($amount - value)
 						} else {
 							log_trace!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", $amount);
 							return None;
 						}
 					// ...else just increase the previous feerate by 25% (because that's a nice number)
 					} else {
-						let fee = $old_feerate * $predicted_weight / 750;
+						let fee = $old_feerate as u64 * ($predicted_weight as u64) / 750;
 						if $amount <= fee {
 							log_trace!(logger, "Can't 25% bump new claiming tx, amount {} is too small", $amount);
 							return None;
@@ -511,8 +511,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						fee
 					};
 
-					let previous_fee = $old_feerate * $predicted_weight / 1000;
-					let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * $predicted_weight / 1000;
+					let previous_fee = $old_feerate as u64 * ($predicted_weight as u64) / 1000;
+					let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * ($predicted_weight as u64) / 1000;
 					// BIP 125 Opt-in Full Replace-by-Fee Signaling
 					// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
 					//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
@@ -521,7 +521,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					} else {
 						new_fee
 					};
-					Some((new_fee, new_fee * 1000 / $predicted_weight))
+					Some((new_fee, new_fee * 1000 / ($predicted_weight as u64)))
 				}
 			}
 		}
@@ -551,16 +551,16 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			}
 		}
 		if dynamic_fee {
-			let predicted_weight = bumped_tx.get_weight() + inputs_witnesses_weight;
+			let predicted_weight = (bumped_tx.get_weight() + inputs_witnesses_weight) as u64;
 			let mut new_feerate;
 			// If old feerate is 0, first iteration of this claim, use normal fee calculation
 			if cached_claim_datas.feerate_previous != 0 {
-				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight as u64) {
+				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight) {
 					// If new computed fee is superior at the whole claimable amount burn all in fees
-					if new_fee > amt {
+					if new_fee as u64 > amt {
 						bumped_tx.output[0].value = 0;
 					} else {
-						bumped_tx.output[0].value = amt - new_fee;
+						bumped_tx.output[0].value = amt - new_fee as u64;
 					}
 					new_feerate = feerate;
 				} else { return None; }
@@ -620,8 +620,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				}
 			}
 			log_trace!(logger, "...with timer {}", new_timer.unwrap());
-			assert!(predicted_weight >= bumped_tx.get_weight());
-			return Some((new_timer, new_feerate, bumped_tx))
+			assert!(predicted_weight >= bumped_tx.get_weight() as u64);
+			return Some((new_timer, new_feerate as u32, bumped_tx))
 		} else {
 			for (_, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
@@ -631,7 +631,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							let feerate = (amount - htlc_tx.output[0].value) * 1000 / htlc_tx.get_weight() as u64;
 							// Timer set to $NEVER given we can't bump tx without anchor outputs
 							log_trace!(logger, "Going to broadcast Local HTLC-{} claiming HTLC output {} from {}...", if preimage.is_some() { "Success" } else { "Timeout" }, outp.vout, outp.txid);
-							return Some((None, feerate, htlc_tx));
+							return Some((None, feerate as u32, htlc_tx));
 						}
 						return None;
 					},

@@ -18,7 +18,7 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String,
 		/// The feerate which was too high.
-		feerate: u64
+		feerate: u32
 	},
 	/// A malformed Route was provided (eg overflowed value, node id mismatch, overly-looped route,
 	/// too-many-hops, etc).

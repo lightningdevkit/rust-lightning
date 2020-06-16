@@ -52,7 +52,7 @@ use std::io::Cursor;
 
 struct FuzzEstimator {}
 impl FeeEstimator for FuzzEstimator {
-	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u64 {
+	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
 		253
 	}
 }

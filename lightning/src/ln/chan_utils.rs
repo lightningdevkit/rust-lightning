@@ -462,7 +462,7 @@ pub fn make_funding_redeemscript(a: &PublicKey, b: &PublicKey) -> Script {
 }
 
 /// panics if htlc.transaction_output_index.is_none()!
-pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u64, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, to_self_delay: u16, htlc: &HTLCOutputInCommitment, a_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
@@ -475,9 +475,9 @@ pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u64, to_self_del
 	});
 
 	let total_fee = if htlc.offered {
-			feerate_per_kw * HTLC_TIMEOUT_TX_WEIGHT / 1000
+			feerate_per_kw as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000
 		} else {
-			feerate_per_kw * HTLC_SUCCESS_TX_WEIGHT / 1000
+			feerate_per_kw as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000
 		};
 
 	let mut txouts: Vec<TxOut> = Vec::new();
@@ -513,7 +513,7 @@ pub struct LocalCommitmentTransaction {
 	pub local_keys: TxCreationKeys,
 	/// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
 	/// controlled by the channel initiator.
-	pub feerate_per_kw: u64,
+	pub feerate_per_kw: u32,
 	/// The HTLCs and remote htlc signatures which were included in this commitment transaction.
 	///
 	/// Note that this includes all HTLCs, including ones which were considered dust and not
@@ -561,7 +561,7 @@ impl LocalCommitmentTransaction {
 
 	/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
 	/// remote signature and both parties keys
-	pub(crate) fn new_missing_local_sig(unsigned_tx: Transaction, their_sig: Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u64, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
+	pub(crate) fn new_missing_local_sig(unsigned_tx: Transaction, their_sig: Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u32, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
 		if unsigned_tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
 		if unsigned_tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
 
