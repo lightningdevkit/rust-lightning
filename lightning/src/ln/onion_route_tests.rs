@@ -23,7 +23,7 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::ser::{Writeable, Writer};
 use util::config::UserConfig;
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -59,9 +59,12 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 {
 
 	// reset block height
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![],
+	};
 	for ix in 0..nodes.len() {
-		nodes[ix].block_notifier.block_connected_checked(&header, 1, &[], &[]);
+		nodes[ix].block_notifier.block_connected(&block, 1);
 	}
 
 	macro_rules! expect_event {
@@ -440,9 +443,12 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("expiry_too_soon", 0, &nodes, &route, &payment_hash, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		let block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
 
-		nodes[1].block_notifier.block_connected_checked(&header, height, &[], &[]);
+		nodes[1].block_notifier.block_connected(&block, height);
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, |_| {}, || {
@@ -451,9 +457,12 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		let block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
 
-		nodes[2].block_notifier.block_connected_checked(&header, height, &[], &[]);
+		nodes[2].block_notifier.block_connected(&block, height);
 	}, || {}, true, Some(17), None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, |_| {}, || {

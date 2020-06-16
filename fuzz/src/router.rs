@@ -8,7 +8,8 @@
 // licenses.
 
 use bitcoin::blockdata::script::{Script, Builder};
-use bitcoin::blockdata::block::Block;
+use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
@@ -84,7 +85,7 @@ impl ChainWatchInterface for DummyChainWatcher {
 	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
 	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
-	fn filter_block(&self, _block: &Block) -> Vec<usize> {
+	fn filter_block(&self, _header: &BlockHeader, _txdata: &[(usize, &Transaction)]) -> Vec<usize> {
 		Vec::new()
 	}
 	fn reentered(&self) -> usize { 0 }

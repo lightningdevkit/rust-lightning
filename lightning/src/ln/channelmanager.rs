@@ -18,8 +18,8 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -3062,9 +3062,9 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) {
+	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
 		let header_hash = header.block_hash();
-		log_trace!(self.logger, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
+		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
@@ -3074,7 +3074,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
-				let res = channel.block_connected(header, height, txn_matched, indexes_of_txn_matched);
+				let res = channel.block_connected(header, txdata, height);
 				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
@@ -3107,7 +3107,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					return false;
 				}
 				if let Some(funding_txo) = channel.get_funding_txo() {
-					for tx in txn_matched {
+					for &(_, tx) in txdata.iter() {
 						for inp in tx.input.iter() {
 							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
 								log_trace!(self.logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));

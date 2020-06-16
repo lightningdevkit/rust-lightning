@@ -1756,11 +1756,11 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	};
 
 	if confirm_a_first {
-		confirm_transaction(&nodes[0].block_notifier, &nodes[0].chain_monitor, &funding_tx, funding_tx.version);
+		confirm_transaction(&nodes[0].block_notifier, &funding_tx);
 		nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
 	} else {
 		assert!(!restore_b_before_conf);
-		confirm_transaction(&nodes[1].block_notifier, &nodes[1].chain_monitor, &funding_tx, funding_tx.version);
+		confirm_transaction(&nodes[1].block_notifier, &funding_tx);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -1772,7 +1772,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	if !restore_b_before_conf {
-		confirm_transaction(&nodes[1].block_notifier, &nodes[1].chain_monitor, &funding_tx, funding_tx.version);
+		confirm_transaction(&nodes[1].block_notifier, &funding_tx);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
@@ -1785,12 +1785,12 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	let (channel_id, (announcement, as_update, bs_update)) = if !confirm_a_first {
 		nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id()));
 
-		confirm_transaction(&nodes[0].block_notifier, &nodes[0].chain_monitor, &funding_tx, funding_tx.version);
+		confirm_transaction(&nodes[0].block_notifier, &funding_tx);
 		let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
 		(channel_id, create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked))
 	} else {
 		if restore_b_before_conf {
-			confirm_transaction(&nodes[1].block_notifier, &nodes[1].chain_monitor, &funding_tx, funding_tx.version);
+			confirm_transaction(&nodes[1].block_notifier, &funding_tx);
 		}
 		let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[0], &nodes[1]);
 		(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &funding_locked))

@@ -27,7 +27,7 @@ use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable, Readable};
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
 
@@ -44,24 +44,38 @@ use std::mem;
 use std::collections::HashMap;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
-pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: i32) {
-	assert!(chain.does_match_tx(tx));
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as usize; 1]);
+pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b>, tx: &Transaction) {
+	let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+	let dummy_tx_count = tx.version as usize;
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![dummy_tx; dummy_tx_count],
+	};
+	block.txdata.push(tx.clone());
+	notifier.block_connected(&block, 1);
 	for i in 2..CHAN_CONFIRM_DEPTH {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		notifier.block_connected_checked(&header, i, &vec![], &[0; 0]);
+		block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+		notifier.block_connected(&block, i);
 	}
 }
 
-pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
-	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	notifier.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
+pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
+	let mut block = Block {
+		header: BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![],
+	};
+	notifier.block_connected(&block, height + 1);
 	for i in 2..depth + 1 {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		notifier.block_connected_checked(&header, height + i, &Vec::new(), &Vec::new());
+		block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+		notifier.block_connected(&block, height + i);
 	}
-	header.block_hash()
+	block.header.block_hash()
 }
 
 pub struct TestChanMonCfg {
@@ -82,7 +96,7 @@ pub struct NodeCfg<'a> {
 }
 
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
-	pub block_notifier: chaininterface::BlockNotifierRef<'a, &'c chaininterface::ChainWatchInterfaceUtil>,
+	pub block_notifier: chaininterface::BlockNotifierRef<'a>,
 	pub chain_monitor: &'c chaininterface::ChainWatchInterfaceUtil,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
 	pub chan_monitor: &'b test_utils::TestChannelMonitor<'c>,
@@ -373,7 +387,7 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 }
 
 pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_recv: &'a Node<'b, 'c, 'c>, node_conf: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
-	confirm_transaction(&node_conf.block_notifier, &node_conf.chain_monitor, &tx, tx.version);
+	confirm_transaction(&node_conf.block_notifier, &tx);
 	node_recv.node.handle_funding_locked(&node_conf.node.get_our_node_id(), &get_event_msg!(node_conf, MessageSendEvent::SendFundingLocked, node_recv.node.get_our_node_id()));
 }
 
@@ -399,7 +413,7 @@ pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(node_recv
 
 pub fn create_chan_between_nodes_with_value_confirm<'a, 'b, 'c, 'd>(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
 	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx);
-	confirm_transaction(&node_a.block_notifier, &node_a.chain_monitor, &tx, tx.version);
+	confirm_transaction(&node_a.block_notifier, &tx);
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
@@ -1108,7 +1122,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let payment_count = Rc::new(RefCell::new(0));
 
 	for i in 0..node_count {
-		let block_notifier = chaininterface::BlockNotifier::new(cfgs[i].chain_monitor);
+		let block_notifier = chaininterface::BlockNotifier::new();
 		block_notifier.register_listener(&cfgs[i].chan_monitor.simple_monitor as &chaininterface::ChainListener);
 		block_notifier.register_listener(&chan_mgrs[i] as &chaininterface::ChainListener);
 		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_monitor, cfgs[i].logger);

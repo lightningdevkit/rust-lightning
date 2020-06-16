@@ -183,15 +183,13 @@ impl<'a> MoneyLossDetector<'a> {
 	}
 
 	fn connect_block(&mut self, all_txn: &[Transaction]) {
-		let mut txn = Vec::with_capacity(all_txn.len());
-		let mut txn_idxs = Vec::with_capacity(all_txn.len());
+		let mut txdata = Vec::with_capacity(all_txn.len());
 		for (idx, tx) in all_txn.iter().enumerate() {
 			let txid = tx.txid();
 			match self.txids_confirmed.entry(txid) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(self.height);
-					txn.push(tx);
-					txn_idxs.push(idx + 1);
+					txdata.push((idx + 1, tx));
 				},
 				_ => {},
 			}
@@ -200,8 +198,8 @@ impl<'a> MoneyLossDetector<'a> {
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
 		self.height += 1;
 		self.blocks_connected += 1;
-		self.manager.block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
-		(*self.monitor).block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
+		self.manager.block_connected(&header, &txdata, self.height as u32);
+		(*self.monitor).block_connected(&header, &txdata, self.height as u32);
 		if self.header_hashes.len() > self.height {
 			self.header_hashes[self.height] = header.block_hash();
 		} else {
