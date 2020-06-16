@@ -390,77 +390,62 @@ impl ChainWatchInterfaceUtil {
 
 #[cfg(test)]
 mod tests {
-	use ln::functional_test_utils::{create_chanmon_cfgs, create_node_cfgs};
+	use bitcoin::blockdata::block::BlockHeader;
+	use bitcoin::blockdata::transaction::Transaction;
 	use super::{BlockNotifier, ChainListener};
 	use std::ptr;
 
+	struct TestChainListener(u8);
+
+	impl ChainListener for TestChainListener {
+		fn block_connected(&self, _header: &BlockHeader, _txdata: &[(usize, &Transaction)], _height: u32) {}
+		fn block_disconnected(&self, _header: &BlockHeader, _disconnected_height: u32) {}
+	}
+
 	#[test]
 	fn register_listener_test() {
-		let chanmon_cfgs = create_chanmon_cfgs(1);
-		let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new();
 		assert_eq!(block_notifier.listeners.lock().unwrap().len(), 0);
-		let listener = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
-		block_notifier.register_listener(listener);
+		let listener = &TestChainListener(0);
+		block_notifier.register_listener(listener as &ChainListener);
 		let vec = block_notifier.listeners.lock().unwrap();
 		assert_eq!(vec.len(), 1);
-		let item = vec.first().clone().unwrap();
-		assert!(ptr::eq(&(**item), &(*listener)));
+		let item = vec.first().unwrap();
+		assert!(ptr::eq(&(**item), listener));
 	}
 
 	#[test]
 	fn unregister_single_listener_test() {
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new();
-		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
-		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
-		block_notifier.register_listener(listener1);
-		block_notifier.register_listener(listener2);
+		let listener1 = &TestChainListener(1);
+		let listener2 = &TestChainListener(2);
+		block_notifier.register_listener(listener1 as &ChainListener);
+		block_notifier.register_listener(listener2 as &ChainListener);
 		let vec = block_notifier.listeners.lock().unwrap();
 		assert_eq!(vec.len(), 2);
 		drop(vec);
 		block_notifier.unregister_listener(listener1);
 		let vec = block_notifier.listeners.lock().unwrap();
 		assert_eq!(vec.len(), 1);
-		let item = vec.first().clone().unwrap();
-		assert!(ptr::eq(&(**item), &(*listener2)));
-	}
-
-	#[test]
-	fn unregister_single_listener_ref_test() {
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let block_notifier = BlockNotifier::new();
-		block_notifier.register_listener(&node_cfgs[0].chan_monitor.simple_monitor as &ChainListener);
-		block_notifier.register_listener(&node_cfgs[1].chan_monitor.simple_monitor as &ChainListener);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 2);
-		drop(vec);
-		block_notifier.unregister_listener(&node_cfgs[0].chan_monitor.simple_monitor);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 1);
-		let item = vec.first().clone().unwrap();
-		assert!(ptr::eq(&(**item), &(*&node_cfgs[1].chan_monitor.simple_monitor)));
+		let item = vec.first().unwrap();
+		assert!(ptr::eq(&(**item), listener2));
 	}
 
 	#[test]
 	fn unregister_multiple_of_the_same_listeners_test() {
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let block_notifier = BlockNotifier::new();
-		let listener1 = &node_cfgs[0].chan_monitor.simple_monitor as &ChainListener;
-		let listener2 = &node_cfgs[1].chan_monitor.simple_monitor as &ChainListener;
-		block_notifier.register_listener(listener1);
-		block_notifier.register_listener(listener1);
-		block_notifier.register_listener(listener2);
+		let listener1 = &TestChainListener(1);
+		let listener2 = &TestChainListener(2);
+		block_notifier.register_listener(listener1 as &ChainListener);
+		block_notifier.register_listener(listener1 as &ChainListener);
+		block_notifier.register_listener(listener2 as &ChainListener);
 		let vec = block_notifier.listeners.lock().unwrap();
 		assert_eq!(vec.len(), 3);
 		drop(vec);
 		block_notifier.unregister_listener(listener1);
 		let vec = block_notifier.listeners.lock().unwrap();
 		assert_eq!(vec.len(), 1);
-		let item = vec.first().clone().unwrap();
-		assert!(ptr::eq(&(**item), &(*listener2)));
+		let item = vec.first().unwrap();
+		assert!(ptr::eq(&(**item), listener2));
 	}
 }
