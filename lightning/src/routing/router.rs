@@ -7,7 +7,7 @@ use bitcoin::secp256k1::key::PublicKey;
 
 use ln::channelmanager;
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError,ErrorAction,LightningError};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
@@ -168,7 +168,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
+	if final_value_msat > MAX_VALUE_MSAT {
 		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
