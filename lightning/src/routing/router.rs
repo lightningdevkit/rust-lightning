@@ -144,7 +144,7 @@ struct DummyDirectionalChannelInfo {
 }
 
 
-/// Gets a route from us (as specified in the provided NetworkGraph) to the given target node.
+/// Gets a route from us to the given target node.
 ///
 /// Extra routing hops between known nodes and the target will be used if they are included in
 /// last_hops.
