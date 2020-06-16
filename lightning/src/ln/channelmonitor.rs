@@ -39,7 +39,8 @@ use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
+use ln::onchaintx::OnchainTxHandler;
+use ln::onchain_utils::InputDescriptors;
 use chain::chaininterface::{ChainListener, ChainWatchInterface, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
@@ -2582,7 +2583,8 @@ mod tests {
 	use chain::transaction::OutPoint;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use ln::channelmonitor::ChannelMonitor;
-	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
+	use ln::onchain_utils::InputDescriptors;
+	use ln::onchain_utils;
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, HolderCommitmentTransaction};
 	use util::test_utils::TestLogger;
@@ -2774,7 +2776,7 @@ mod tests {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
 			}
 		}
-		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + onchain_utils::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -2798,7 +2800,7 @@ mod tests {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
 			}
 		}
-		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + onchain_utils::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -2820,7 +2822,7 @@ mod tests {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
 			}
 		}
-		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + onchain_utils::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.

@@ -32,6 +32,7 @@ pub mod peer_channel_encryptor;
 pub(crate) mod peer_channel_encryptor;
 
 mod channel;
+mod onchain_utils;
 mod onion_utils;
 mod wire;
 
