@@ -461,9 +461,7 @@ impl RouteFeePenalty for DefaultMetadata {
 		for route_hop in route {
 			let chan_id = route_hop.short_channel_id;
 			let successes_needed = self.failed_channels.get(&chan_id);
-			if successes_needed == None {
-				self.failed_channels.insert(chan_id, 5);
-			} else {
+			if successes_needed != None {
 				let dec_successes_needed = successes_needed.unwrap() - 1;
 				if dec_successes_needed > 0 {
 					self.failed_channels.insert(chan_id, dec_successes_needed);
