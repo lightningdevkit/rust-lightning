@@ -221,10 +221,10 @@ pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_hand
 		// $directional_info.
 		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $chan_features: expr, $starting_fee_msat: expr ) => {
 			//TODO: Explore simply adding fee to hit htlc_minimum_msat
-			if $starting_fee_msat as u64 + final_value_msat >= $directional_info.htlc_minimum_msat + net_metadata.get_channel_fee_penalty($chan_id.clone()) {
+			if $starting_fee_msat as u64 + final_value_msat >= $directional_info.htlc_minimum_msat {
 				let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fees.proportional_millionths as u64);
 				if let Some(new_fee) = proportional_fee_millions.and_then(|part| {
-						($directional_info.fees.base_msat as u64).checked_add(part / 1000000) })
+						($directional_info.fees.base_msat as u64).checked_add(net_metadata.get_channel_fee_penalty($chan_id.clone()) + part/1000000) })
 				{
 					let mut total_fee = $starting_fee_msat as u64;
 					let hm_entry = dist.entry(&$src_node_id);
