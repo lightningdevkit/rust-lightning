@@ -48,8 +48,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 use std::{mem, io};
 
-use rand::{thread_rng, Rng};
-
 use ln::functional_test_utils::*;
 
 #[test]
@@ -1613,15 +1611,8 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let (route, payment_hash, _) = get_route_and_payment_hash!(1000);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
-	let session_priv = SecretKey::from_slice(&{
-		let mut session_key = [0; 32];
-		let mut rng = thread_rng();
-		rng.fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
-
+	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &None, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
@@ -1692,15 +1683,8 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
-	let session_priv = SecretKey::from_slice(&{
-		let mut session_key = [0; 32];
-		let mut rng = thread_rng();
-		rng.fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
-
+	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
-
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route_2.paths[0], recv_value_2, &None, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1);
@@ -3176,13 +3160,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		let (_, payment_hash) = get_payment_preimage_hash!(nodes[1]);
 
 		let secp_ctx = Secp256k1::new();
-		let session_priv = {
-			let mut session_key = [0; 32];
-			let mut rng = thread_rng();
-			rng.fill_bytes(&mut session_key);
-			SecretKey::from_slice(&session_key).expect("RNG is bad!")
-		};
-
+		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 		let current_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 50_000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -5480,9 +5458,7 @@ fn test_key_derivation_params() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 
 	// We manually create the node configuration to backup the seed.
-	let mut rng = thread_rng();
-	let mut seed = [0; 32];
-	rng.fill_bytes(&mut seed);
+	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[0].chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator);
 	let node = NodeCfg { chain_monitor: &chanmon_cfgs[0].chain_monitor, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chan_monitor, keys_manager, node_seed: seed };
@@ -6475,13 +6451,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let logger = test_utils::TestLogger::new();
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-
-	let session_priv = SecretKey::from_slice(&{
-		let mut session_key = [0; 32];
-		let mut rng = thread_rng();
-		rng.fill_bytes(&mut session_key);
-		session_key
-	}).expect("RNG is bad!");
+	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &[], 3999999, TEST_FINAL_CLTV, &logger).unwrap();

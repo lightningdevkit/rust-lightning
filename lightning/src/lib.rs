@@ -19,7 +19,6 @@
 #![allow(ellipsis_inclusive_range_patterns)]
 
 extern crate bitcoin;
-#[cfg(test)] extern crate rand;
 #[cfg(test)] extern crate hex;
 
 #[macro_use]

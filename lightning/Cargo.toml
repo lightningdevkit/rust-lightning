@@ -28,4 +28,3 @@ features = ["bitcoinconsensus"]
 
 [dev-dependencies]
 hex = "0.3"
-rand = "0.4"

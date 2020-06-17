@@ -2544,7 +2544,6 @@ mod tests {
 	use util::test_utils::TestLogger;
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
-	use rand::{thread_rng,Rng};
 	use std::sync::Arc;
 	use chain::keysinterface::InMemoryChannelKeys;
 
@@ -2558,10 +2557,8 @@ mod tests {
 
 		let mut preimages = Vec::new();
 		{
-			let mut rng  = thread_rng();
-			for _ in 0..20 {
-				let mut preimage = PaymentPreimage([0; 32]);
-				rng.fill_bytes(&mut preimage.0[..]);
+			for i in 0..20 {
+				let preimage = PaymentPreimage([i; 32]);
 				let hash = PaymentHash(Sha256::hash(&preimage.0[..]).into_inner());
 				preimages.push((preimage, hash));
 			}
