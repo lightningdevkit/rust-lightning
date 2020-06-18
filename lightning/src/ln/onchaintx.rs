@@ -22,10 +22,10 @@ use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
-use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, ClaimRequest};
+use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils::HolderCommitmentTransaction;
-use ln::onchain_utils::PackageTemplate;
+use ln::onchain_utils::{OnchainRequest, PackageTemplate};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -52,42 +52,6 @@ enum OnchainEvent {
 	/// the outpoint to be sure to resurect it back to the claim tx if reorgs happen.
 	ContentiousOutpoint {
 		package: PackageTemplate,
-	}
-}
-
-/// Higher-level cache structure needed to re-generate bumped claim txn if needed
-#[derive(Clone, PartialEq)]
-pub struct ClaimTxBumpMaterial {
-	// At every block tick, used to check if pending claiming tx is taking too
-	// much time for confirmation and we need to bump it.
-	height_timer: Option<u32>,
-	// Tracked in case of reorg to wipe out now-superflous bump material
-	feerate_previous: u32,
-	// Soonest timelocks among set of outpoints claimed, used to compute
-	// a priority of not feerate
-	soonest_timelock: u32,
-	// Template (list of outpoint and set of data needed to generate transaction digest
-	// and satisfy witness program).
-	package_template: PackageTemplate,
-}
-
-impl Writeable for ClaimTxBumpMaterial  {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.height_timer.write(writer)?;
-		writer.write_all(&byte_utils::be32_to_array(self.feerate_previous))?;
-		writer.write_all(&byte_utils::be32_to_array(self.soonest_timelock))?;
-		self.package_template.write(writer)?;
-		Ok(())
-	}
-}
-
-impl Readable for ClaimTxBumpMaterial {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let height_timer = Readable::read(reader)?;
-		let feerate_previous = Readable::read(reader)?;
-		let soonest_timelock = Readable::read(reader)?;
-		let package_template = Readable::read(reader)?;
-		Ok(Self { height_timer, feerate_previous, soonest_timelock, package_template })
 	}
 }
 
@@ -199,9 +163,9 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	// us and is immutable until all outpoint of the claimable set are post-anti-reorg-delay solved.
 	// Entry is cache of elements need to generate a bumped claiming transaction (see ClaimTxBumpMaterial)
 	#[cfg(test)] // Used in functional_test to verify sanitization
-	pub pending_claim_requests: HashMap<Txid, ClaimTxBumpMaterial>,
+	pub pending_claim_requests: HashMap<Txid, OnchainRequest>,
 	#[cfg(not(test))]
-	pending_claim_requests: HashMap<Txid, ClaimTxBumpMaterial>,
+	pending_claim_requests: HashMap<Txid, OnchainRequest>,
 
 	// Used to link outpoints claimed in a connected block to a pending claim request.
 	// Key is outpoint than monitor parsing has detected we have keys/scripts to claim
@@ -232,9 +196,9 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.key_storage.write(writer)?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.pending_claim_requests.len() as u64))?;
-		for (ref ancestor_claim_txid, claim_tx_data) in self.pending_claim_requests.iter() {
+		for (ref ancestor_claim_txid, request) in self.pending_claim_requests.iter() {
 			ancestor_claim_txid.write(writer)?;
-			claim_tx_data.write(writer)?;
+			request.write(writer)?;
 		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.claimable_outpoints.len() as u64))?;
@@ -372,18 +336,18 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F, logger: L) -> Option<(Option<u32>, u32, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_request: &OnchainRequest, fee_estimator: F, logger: L) -> Option<(Option<u32>, u64, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		if cached_claim_datas.package_template.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
+		if cached_request.content.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
 		macro_rules! RBF_bump {
 			($amount: expr, $old_feerate: expr, $fee_estimator: expr, $predicted_weight: expr) => {
 				{
 					let mut used_feerate: u32;
 					// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
-					let new_fee = if $old_feerate < $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) {
+					let new_fee = if $old_feerate < $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 {
 						let mut value = $amount;
 						if subtract_high_prio_fee!(logger, $fee_estimator, value, $predicted_weight, used_feerate) {
 							// Overflow check is done in subtract_high_prio_fee
@@ -419,16 +383,16 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
-		let new_timer = Some(Self::get_height_timer(height, cached_claim_datas.soonest_timelock));
-		let mut amt = cached_claim_datas.package_template.package_amounts();
+		let new_timer = Some(Self::get_height_timer(height, cached_request.absolute_timelock));
+		let mut amt = cached_request.content.package_amounts();
 		let mut dynamic_fee = true;
 		if amt == 0 { dynamic_fee = false; }
 		if dynamic_fee {
-			let predicted_weight = cached_claim_datas.package_template.package_weight(&self.destination_script) as u64;
+			let predicted_weight = cached_request.content.package_weight(&self.destination_script) as u64;
 			let mut new_feerate;
 			// If old feerate is 0, first iteration of this claim, use normal fee calculation
-			if cached_claim_datas.feerate_previous != 0 {
-				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_claim_datas.feerate_previous, fee_estimator, predicted_weight) {
+			if cached_request.feerate_previous != 0 {
+				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_request.feerate_previous, fee_estimator, predicted_weight as u64) {
 					// If new computed fee is superior at the whole claimable amount burn all in fees
 					if new_fee > amt {
 						amt = 0;
@@ -443,66 +407,55 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			}
 			assert!(new_feerate != 0);
 
-			let transaction = cached_claim_datas.package_template.package_finalize(self, amt, self.destination_script.clone(), &logger).unwrap();
+			let transaction = cached_request.content.package_finalize(self, amt, self.destination_script.clone(), &logger).unwrap();
 			log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
 			assert!(predicted_weight >= transaction.get_weight() as u64);
-			return Some((new_timer, new_feerate as u32, transaction))
+			return Some((new_timer, new_feerate, transaction))
 		} else {
-			if let Some(transaction) = cached_claim_datas.package_template.package_finalize(self, amt, self.destination_script.clone(), &logger) {
-				return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw, transaction));
+			if let Some(transaction) = cached_request.content.package_finalize(self, amt, self.destination_script.clone(), &logger) {
+				return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw as u64, transaction));
 			}
 		}
 		None
 	}
 
-	pub(super) fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub(super) fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<OnchainRequest>, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		log_trace!(logger, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
-		let mut new_claims = Vec::new();
-		let mut aggregated_templates = Vec::with_capacity(1);
-		let mut aggregated_soonest = ::std::u32::MAX;
+		log_trace!(logger, "Block at height {} connected with {} claim requests", height, requests.len());
+		let mut preprocessed_requests = Vec::with_capacity(requests.len());
+		let mut aggregated_request = OnchainRequest::default();
 
 		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
-		for req in claimable_outpoints {
+		for req in requests {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-			if let Some(_) = self.claimable_outpoints.get(req.package_template.outpoints()[0]) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.package_template.outpoints()[0].txid, req.package_template.outpoints()[0].vout); } else {
+			if let Some(_) = self.claimable_outpoints.get(req.content.outpoints()[0]) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.content.outpoints()[0].txid, req.content.outpoints()[0].vout); } else {
 				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.absolute_timelock, height + CLTV_SHARED_CLAIM_BUFFER);
-				if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable { // Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
-					new_claims.push((req.absolute_timelock, req.package_template));
+				if req.absolute_timelock <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregation {
+					// Don't aggregate if outpoint absolute timelock is soon or marked as non-aggregable
+					preprocessed_requests.push(req);
 				} else {
-					//XXX: do better
-					if aggregated_templates.len() == 0 {
-						aggregated_templates.push(req.package_template);
-					} else {
-						aggregated_templates.first_mut().unwrap().package_merge(req.package_template);
-					}
-					if req.absolute_timelock < aggregated_soonest {
-						aggregated_soonest = req.absolute_timelock;
-					}
+					aggregated_request.request_merge(req);
 				}
 			}
 		}
-		if let Some(aggregated_template) = aggregated_templates.pop() {
-			new_claims.push((aggregated_soonest, aggregated_template));
-		}
+		preprocessed_requests.push(aggregated_request);
 
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
-		for (soonest_timelock, package) in new_claims.drain(..) {
-			let mut claim_material = ClaimTxBumpMaterial { height_timer: None, feerate_previous: 0, soonest_timelock, package_template: package };
-			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
-				claim_material.height_timer = new_timer;
-				claim_material.feerate_previous = new_feerate;
+		for mut req in preprocessed_requests {
+			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &req, &*fee_estimator, &*logger) {
+				req.height_timer = new_timer;
+				req.feerate_previous = new_feerate;
 				let txid = tx.txid();
-				for k in claim_material.package_template.outpoints() {
+				for k in req.content.outpoints() {
 					log_trace!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
-				self.pending_claim_requests.insert(txid, claim_material);
+				self.pending_claim_requests.insert(txid, req);
 				log_trace!(logger, "Broadcast onchain {}", log_tx!(tx));
 				broadcaster.broadcast_transaction(&tx);
 			}
@@ -515,15 +468,15 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			for inp in &tx.input {
 				if let Some(first_claim_txid_height) = self.claimable_outpoints.get(&inp.previous_output) {
 					// If outpoint has claim request pending on it...
-					if let Some(claim_material) = self.pending_claim_requests.get_mut(&first_claim_txid_height.0) {
+					if let Some(request) = self.pending_claim_requests.get_mut(&first_claim_txid_height.0) {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
 						let mut set_equality = true;
-						if claim_material.package_template.outpoints().len() != tx.input.len() {
+						if request.content.outpoints().len() != tx.input.len() {
 							set_equality = false;
 						} else {
-							for (claim_inp, tx_inp) in claim_material.package_template.outpoints().iter().zip(tx.input.iter()) {
+							for (claim_inp, tx_inp) in request.content.outpoints().iter().zip(tx.input.iter()) {
 								if **claim_inp != tx_inp.previous_output {
 									set_equality = false;
 								}
@@ -554,18 +507,18 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						} else { // If false, generate new claim request with update outpoint set
 							let mut at_least_one_drop = false;
 							for input in tx.input.iter() {
-								if let Some(package) = claim_material.package_template.package_split(&input.previous_output) {
+								if let Some(package) = request.content.package_split(&input.previous_output) {
 									claimed_outputs_material.push(package);
 									at_least_one_drop = true;
 								}
 								// If there are no outpoints left to claim in this request, drop it entirely after ANTI_REORG_DELAY.
-								if claim_material.package_template.outpoints().is_empty() {
+								if request.content.outpoints().is_empty() {
 									clean_claim_request_after_safety_delay!();
 								}
 							}
 							//TODO: recompute soonest_timelock to avoid wasting a bit on fees
 							if at_least_one_drop {
-								bump_candidates.insert(first_claim_txid_height.0.clone(), claim_material.clone());
+								bump_candidates.insert(first_claim_txid_height.0.clone(), request.clone());
 							}
 						}
 						break; //No need to iterate further, either tx is our or their
@@ -596,8 +549,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 					OnchainEvent::Claim { claim_request } => {
 						// We may remove a whole set of claim outpoints here, as these one may have
 						// been aggregated in a single tx and claimed so atomically
-						if let Some(bump_material) = self.pending_claim_requests.remove(&claim_request) {
-							for outpoint in bump_material.package_template.outpoints() {
+						if let Some(request) = self.pending_claim_requests.remove(&claim_request) {
+							for outpoint in request.content.outpoints() {
 								self.claimable_outpoints.remove(&outpoint);
 							}
 						}
@@ -610,23 +563,23 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 
 		// Check if any pending claim request must be rescheduled
-		for (first_claim_txid, ref claim_data) in self.pending_claim_requests.iter() {
-			if let Some(h) = claim_data.height_timer {
+		for (first_claim_txid, ref request) in self.pending_claim_requests.iter() {
+			if let Some(h) = request.height_timer {
 				if h == height {
-					bump_candidates.insert(*first_claim_txid, (*claim_data).clone());
+					bump_candidates.insert(*first_claim_txid, (*request).clone());
 				}
 			}
 		}
 
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
-		for (first_claim_txid, claim_material) in bump_candidates.iter() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
+		for (first_claim_txid, request) in bump_candidates.iter() {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &*fee_estimator, &*logger) {
 				log_trace!(logger, "Broadcast onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
-				if let Some(claim_material) = self.pending_claim_requests.get_mut(first_claim_txid) {
-					claim_material.height_timer = new_timer;
-					claim_material.feerate_previous = new_feerate;
+				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
+					request.height_timer = new_timer;
+					request.feerate_previous = new_feerate;
 				}
 			}
 		}
@@ -645,11 +598,11 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				match ev {
 					OnchainEvent::ContentiousOutpoint { package } => {
 						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&package.outpoints()[0]) {
-							if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
-								claim_material.package_template.package_merge(package);
+							if let Some(request) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
+								request.content.package_merge(package);
 								// Using a HashMap guarantee us than if we have multiple outpoints getting
 								// resurrected only one bump claim tx is going to be broadcast
-								bump_candidates.insert(ancestor_claimable_txid.clone(), claim_material.clone());
+								bump_candidates.insert(ancestor_claimable_txid.clone(), request.clone());
 							}
 						}
 					},
@@ -657,15 +610,15 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				}
 			}
 		}
-		for (_, claim_material) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
-				claim_material.height_timer = new_timer;
-				claim_material.feerate_previous = new_feerate;
+		for (_, request) in bump_candidates.iter_mut() {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &*fee_estimator, &*logger) {
+				request.height_timer = new_timer;
+				request.feerate_previous = new_feerate;
 				broadcaster.broadcast_transaction(&bump_tx);
 			}
 		}
-		for (ancestor_claim_txid, claim_material) in bump_candidates.drain() {
-			self.pending_claim_requests.insert(ancestor_claim_txid.0, claim_material);
+		for (ancestor_claim_txid, request) in bump_candidates.drain() {
+			self.pending_claim_requests.insert(ancestor_claim_txid.0, request);
 		}
 		//TODO: if we implement cross-block aggregated claim transaction we need to refresh set of outpoints and regenerate tx but
 		// right now if one of the outpoint get disconnected, just erase whole pending claim request.
