@@ -25,7 +25,7 @@ use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils::HolderCommitmentTransaction;
-use ln::onchain_utils::{OnchainRequest, PackageTemplate};
+use ln::onchain_utils::{OnchainRequest, PackageTemplate, BumpStrategy};
 use ln::onchain_utils;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
 use chain::keysinterface::ChannelKeys;
@@ -312,9 +312,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Some(Self::get_height_timer(height, cached_request.absolute_timelock));
 		let amt = cached_request.content.package_amounts();
-		let mut dynamic_fee = true;
-		if amt == 0 { dynamic_fee = false; }
-		if dynamic_fee {
+		if cached_request.bump_strategy == BumpStrategy::RBF {
 			let predicted_weight = cached_request.content.package_weight(&self.destination_script);
 			if let Some((output_value, new_feerate)) = onchain_utils::compute_output_value(predicted_weight, amt, cached_request.feerate_previous, &fee_estimator, &logger) {
 				assert!(new_feerate != 0);
