@@ -21,6 +21,7 @@
 pub mod channelmanager;
 pub mod channelmonitor;
 pub mod msgs;
+pub mod onchain_utils;
 pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;
@@ -32,7 +33,6 @@ pub mod peer_channel_encryptor;
 pub(crate) mod peer_channel_encryptor;
 
 mod channel;
-mod onchain_utils;
 mod onion_utils;
 mod wire;
 

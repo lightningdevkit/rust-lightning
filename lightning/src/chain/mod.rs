@@ -12,3 +12,4 @@
 pub mod chaininterface;
 pub mod transaction;
 pub mod keysinterface;
+pub mod utxointerface;
