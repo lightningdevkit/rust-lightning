@@ -26,7 +26,8 @@ use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils::HolderCommitmentTransaction;
 use ln::onchain_utils::{OnchainRequest, PackageTemplate};
-use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
+use ln::onchain_utils;
+use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
 use util::ser::{Readable, Writer, Writeable};
@@ -52,41 +53,6 @@ enum OnchainEvent {
 	/// the outpoint to be sure to resurect it back to the claim tx if reorgs happen.
 	ContentiousOutpoint {
 		package: PackageTemplate,
-	}
-}
-
-macro_rules! subtract_high_prio_fee {
-	($logger: ident, $fee_estimator: expr, $value: expr, $predicted_weight: expr, $used_feerate: expr) => {
-		{
-			$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority).into();
-			let mut fee = $used_feerate as u64 * $predicted_weight / 1000;
-			if $value <= fee {
-				$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal).into();
-				fee = $used_feerate as u64 * $predicted_weight / 1000;
-				if $value <= fee.into() {
-					$used_feerate = $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background).into();
-					fee = $used_feerate as u64 * $predicted_weight / 1000;
-					if $value <= fee {
-						log_error!($logger, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
-							fee, $value);
-						false
-					} else {
-						log_warn!($logger, "Used low priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
-							$value);
-						$value -= fee;
-						true
-					}
-				} else {
-					log_warn!($logger, "Used medium priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
-						$value);
-					$value -= fee;
-					true
-				}
-			} else {
-				$value -= fee;
-				true
-			}
-		}
 	}
 }
 
@@ -342,75 +308,22 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	{
 		if cached_request.content.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
-		macro_rules! RBF_bump {
-			($amount: expr, $old_feerate: expr, $fee_estimator: expr, $predicted_weight: expr) => {
-				{
-					let mut used_feerate: u32;
-					// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
-					let new_fee = if $old_feerate < $fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 {
-						let mut value = $amount;
-						if subtract_high_prio_fee!(logger, $fee_estimator, value, $predicted_weight, used_feerate) {
-							// Overflow check is done in subtract_high_prio_fee
-							($amount - value)
-						} else {
-							log_trace!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", $amount);
-							return None;
-						}
-					// ...else just increase the previous feerate by 25% (because that's a nice number)
-					} else {
-						let fee = $old_feerate as u64 * ($predicted_weight as u64) / 750;
-						if $amount <= fee {
-							log_trace!(logger, "Can't 25% bump new claiming tx, amount {} is too small", $amount);
-							return None;
-						}
-						fee
-					};
-
-					let previous_fee = $old_feerate as u64 * ($predicted_weight as u64) / 1000;
-					let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * ($predicted_weight as u64) / 1000;
-					// BIP 125 Opt-in Full Replace-by-Fee Signaling
-					// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
-					//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
-					let new_fee = if new_fee < previous_fee + min_relay_fee {
-						new_fee + previous_fee + min_relay_fee - new_fee
-					} else {
-						new_fee
-					};
-					Some((new_fee, new_fee * 1000 / ($predicted_weight as u64)))
-				}
-			}
-		}
-
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Some(Self::get_height_timer(height, cached_request.absolute_timelock));
-		let mut amt = cached_request.content.package_amounts();
+		let amt = cached_request.content.package_amounts();
 		let mut dynamic_fee = true;
 		if amt == 0 { dynamic_fee = false; }
 		if dynamic_fee {
-			let predicted_weight = cached_request.content.package_weight(&self.destination_script) as u64;
-			let mut new_feerate;
-			// If old feerate is 0, first iteration of this claim, use normal fee calculation
-			if cached_request.feerate_previous != 0 {
-				if let Some((new_fee, feerate)) = RBF_bump!(amt, cached_request.feerate_previous, fee_estimator, predicted_weight as u64) {
-					// If new computed fee is superior at the whole claimable amount burn all in fees
-					if new_fee > amt {
-						amt = 0;
-					} else {
-						amt = amt - new_fee;
-					}
-					new_feerate = feerate;
-				} else { return None; }
-			} else {
-				if subtract_high_prio_fee!(logger, fee_estimator, amt, predicted_weight, new_feerate) {
-				} else { return None; }
-			}
-			assert!(new_feerate != 0);
+			let predicted_weight = cached_request.content.package_weight(&self.destination_script);
+			if let Some((output_value, new_feerate)) = onchain_utils::compute_output_value(predicted_weight, amt, cached_request.feerate_previous, &fee_estimator, &logger) {
+				assert!(new_feerate != 0);
 
-			let transaction = cached_request.content.package_finalize(self, amt, self.destination_script.clone(), &logger).unwrap();
-			log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
-			assert!(predicted_weight >= transaction.get_weight() as u64);
-			return Some((new_timer, new_feerate, transaction))
+				let transaction = cached_request.content.package_finalize(self, output_value, self.destination_script.clone(), &logger).unwrap();
+				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
+				assert!(predicted_weight >= transaction.get_weight());
+				return Some((new_timer, new_feerate, transaction))
+			}
 		} else {
 			if let Some(transaction) = cached_request.content.package_finalize(self, amt, self.destination_script.clone(), &logger) {
 				return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw as u64, transaction));
