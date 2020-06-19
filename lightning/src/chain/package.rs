@@ -817,6 +817,40 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 	Some((new_fee, new_fee * 1000 / (predicted_weight as u64)))
 }
 
+/// A struct to describe a bumping output with the amount and witness weight. It is used by
+/// OnchainTxHandler to build a CPFP transaction to drag a local commitment transaction.
+#[derive(Clone, PartialEq)]
+pub struct BumpingOutput {
+	amount: u64,
+	witness_weight: u64,
+}
+
+impl BumpingOutput {
+	pub(crate) fn new(amount: u64, witness_weight: u64) -> Self {
+		BumpingOutput {
+			amount,
+			witness_weight,
+		}
+	}
+}
+
+impl Writeable for BumpingOutput {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.amount.write(writer)?;
+		self.witness_weight.write(writer)?;
+		Ok(())
+	}
+}
+
+impl Readable for BumpingOutput {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(BumpingOutput {
+			amount: Readable::read(reader)?,
+			witness_weight: Readable::read(reader)?,
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use chain::package::{CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT};

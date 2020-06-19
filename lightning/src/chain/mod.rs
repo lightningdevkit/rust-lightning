@@ -25,6 +25,7 @@ pub mod chainmonitor;
 pub mod channelmonitor;
 pub mod transaction;
 pub mod keysinterface;
+pub mod utxointerface;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
 
