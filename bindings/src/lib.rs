@@ -26,6 +26,7 @@ mod adaptors;
 
 mod channelmanager;
 mod peermanager;
+mod blocknotifier;
 mod error;
 mod handle;
 

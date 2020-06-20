@@ -1,6 +1,7 @@
 use std::{
     convert::{TryFrom},
-    fmt::{Formatter}
+    fmt::{Formatter},
+    io::{Error}
 };
 
 use bitcoin::{
@@ -16,16 +17,14 @@ use lightning::{
     routing::router::{Route},
     util::ser::{Readable, Writeable},
     util::events::Event,
-    chain::transaction::OutPoint
+    chain::transaction::OutPoint,
+    ln::channelmanager::PaymentPreimage,
+    util::ser::Writer
 };
 use crate::{
     FFIResult,
     is_null::IsNull
 };
-use lightning::ln::channelmanager::PaymentPreimage;
-use std::io::{Error, Read};
-use lightning::ln::msgs::DecodeError;
-use lightning::util::ser::Writer;
 
 #[derive(Debug, Clone)]
 #[repr(C)]

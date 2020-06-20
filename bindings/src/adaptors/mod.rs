@@ -13,7 +13,7 @@ use bitcoin::secp256k1;
 use lightning::{
     chain::chaininterface::{BroadcasterInterface, FeeEstimator, ConfirmationTarget, ChainWatchInterface, ChainError},
     util::logger::{Logger, Record, Level},
-    util::ser::{Writeable, Writer},
+    util::ser::{Writer},
     ln::peer_handler::SocketDescriptor,
     ln::msgs::ErrorAction,
     chain::chaininterface::ChainWatchInterfaceUtil,
