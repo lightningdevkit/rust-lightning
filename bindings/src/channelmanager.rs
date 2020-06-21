@@ -97,7 +97,7 @@ pub(crate) fn construct_channel_manager(
     get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
     cur_block_height: usize,
 
-) -> Result<FFIArcChannelManager, secp256k1::Error> {
+) -> FFIArcChannelManager {
     let network = ffi_network.to_network();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let mut seed: [u8; 32] = unsafe_block!("it points to valid length buffer" => seed.as_ref()).clone().bytes;
@@ -176,7 +176,7 @@ ffi! {
                 log_ref,
                 get_est_sat_per_1000_weight_ptr,
                 cur_block_height,
-            )?;
+            );
         unsafe_block!("We know chan_man is not null by wrapper macro. And we know `Out` is writable" => chan_man.init(HandleShared::alloc(chan_man_raw)));
         FFIResult::ok()
     }
