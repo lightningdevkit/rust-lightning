@@ -165,11 +165,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *target == *our_node_id {
-		return Err(LightningError{err: "Cannot generate a route to ourselves", action: ErrorAction::IgnoreError});
+		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
 	if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
-		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis", action: ErrorAction::IgnoreError});
+		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
 	// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
@@ -209,7 +209,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone()));
 		}
 		if first_hop_targets.is_empty() {
-			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us", action: ErrorAction::IgnoreError});
+			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
 		}
 	}
 
@@ -374,7 +374,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 
 				let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
 					Some(hop) => hop.3,
-					None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination", action: ErrorAction::IgnoreError}),
+					None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination".to_owned(), action: ErrorAction::IgnoreError}),
 				};
 				res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
 				res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
@@ -395,7 +395,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		}
 	}
 
-	Err(LightningError{err: "Failed to find a path to the given destination", action: ErrorAction::IgnoreError})
+	Err(LightningError{err: "Failed to find a path to the given destination".to_owned(), action: ErrorAction::IgnoreError})
 }
 
 #[cfg(test)]

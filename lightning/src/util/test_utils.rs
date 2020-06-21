@@ -240,15 +240,15 @@ impl TestRoutingMessageHandler {
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
 		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {

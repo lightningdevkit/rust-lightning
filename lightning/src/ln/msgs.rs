@@ -461,7 +461,7 @@ pub enum ErrorAction {
 /// An Err type for failure to process messages.
 pub struct LightningError {
 	/// A human-readable message describing the error
-	pub err: &'static str,
+	pub err: String,
 	/// The action which should be taken against the offending peer.
 	pub action: ErrorAction,
 }
@@ -701,7 +701,7 @@ impl fmt::Display for DecodeError {
 
 impl fmt::Debug for LightningError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_str(self.err)
+		f.write_str(self.err.as_str())
 	}
 }
 

@@ -11,6 +11,7 @@ use bitcoin::secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::byte_utils;
+use bitcoin::hashes::hex::ToHex;
 
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
@@ -139,7 +140,7 @@ impl PeerChannelEncryptor {
 
 		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
 		if !chacha.decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]) {
-			return Err(LightningError{err: "Bad MAC", action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
+			return Err(LightningError{err: "Bad MAC".to_owned(), action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
 		}
 		Ok(())
 	}
@@ -193,11 +194,11 @@ impl PeerChannelEncryptor {
 		assert_eq!(act.len(), 50);
 
 		if act[0] != 0 {
-			return Err(LightningError{err: "Unknown handshake version number", action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
+			return Err(LightningError{err: format!("Unknown handshake version number {}", act[0]), action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
 		}
 
 		let their_pub = match PublicKey::from_slice(&act[1..34]) {
-			Err(_) => return Err(LightningError{err: "Invalid public key", action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
+			Err(_) => return Err(LightningError{err: format!("Invalid public key {}", &act[1..34].to_hex()), action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
 			Ok(key) => key,
 		};
 
@@ -330,14 +331,14 @@ impl PeerChannelEncryptor {
 							panic!("Requested act at wrong step");
 						}
 						if act_three[0] != 0 {
-							return Err(LightningError{err: "Unknown handshake version number", action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
+							return Err(LightningError{err: format!("Unknown handshake version number {}", act_three[0]), action: msgs::ErrorAction::DisconnectPeer{ msg: None }});
 						}
 
 						let mut their_node_id = [0; 33];
 						PeerChannelEncryptor::decrypt_with_ad(&mut their_node_id, 1, &temp_k2.unwrap(), &bidirectional_state.h, &act_three[1..50])?;
 						self.their_node_id = Some(match PublicKey::from_slice(&their_node_id) {
 							Ok(key) => key,
-							Err(_) => return Err(LightningError{err: "Bad node_id from peer", action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
+							Err(_) => return Err(LightningError{err: format!("Bad node_id from peer, {}", &their_node_id.to_hex()), action: msgs::ErrorAction::DisconnectPeer{ msg: None }}),
 						});
 
 						let mut sha = Sha256::engine();
