@@ -689,30 +689,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	/// Constructs a new ChannelManager to hold several channels and route between them.
-	///
-	/// This is the main "logic hub" for all channel-related actions, and implements
-	/// ChannelMessageHandler.
-	///
-	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
-	///
-	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	///
-	/// Users must provide the current blockchain height from which to track onchain channel
-	/// funding outpoints and send payments with reliable timelocks.
-	///
-	/// Users need to notify the new ChannelManager when a new block is connected or
-	/// disconnected using its `block_connected` and `block_disconnected` methods.
-	/// However, rather than calling these methods directly, the user should register
-	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
-	/// `block_(dis)connected` methods, which will notify all registered listeners in one
-	/// go.
-	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
+    /// Construct a `ChannelManager`. This is functionally equivalent to `ChannelManager::new`
+    /// The only difference is that it takes genesis `BlockHash` instead of Network object.
+    /// It may be useful if you want to work with blockchains other than those known by `Network`
+    /// But be careful if you are working with something besides bitcoin, we are not responsible
+    /// for differences of protocol in those chains. Use at your own risk.
+	pub fn new_with_genesis_hash(genesis_hash: BlockHash, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
 		let secp_ctx = Secp256k1::new();
 
 		ChannelManager {
 			default_configuration: config.clone(),
-			genesis_hash: genesis_block(network).header.bitcoin_hash(),
+			genesis_hash,
 			fee_estimator: fee_est,
 			monitor,
 			tx_broadcaster,
@@ -741,6 +728,28 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 			logger,
 		}
+	}
+
+	/// Constructs a new ChannelManager to hold several channels and route between them.
+	///
+	/// This is the main "logic hub" for all channel-related actions, and implements
+	/// ChannelMessageHandler.
+	///
+	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
+	///
+	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
+	///
+	/// Users must provide the current blockchain height from which to track onchain channel
+	/// funding outpoints and send payments with reliable timelocks.
+	///
+	/// Users need to notify the new ChannelManager when a new block is connected or
+	/// disconnected using its `block_connected` and `block_disconnected` methods.
+	/// However, rather than calling these methods directly, the user should register
+	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
+	/// `block_(dis)connected` methods, which will notify all registered listeners in one
+	/// go.
+	pub fn new(network: Network, fee_est: F, monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
+        ChannelManager::new_with_genesis_hash(genesis_block(network).header.bitcoin_hash(), fee_est, monitor, tx_broadcaster, logger, keys_manager, config, current_blockchain_height)
 	}
 
 	/// Creates a new outbound channel to the given remote node and with the given value.

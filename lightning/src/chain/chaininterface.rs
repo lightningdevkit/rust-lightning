@@ -9,7 +9,6 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::util::hash::BitcoinHash;
-use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use std::sync::{Mutex, MutexGuard, Arc};
@@ -18,6 +17,7 @@ use std::collections::HashSet;
 use std::ops::Deref;
 use std::marker::PhantomData;
 use std::ptr;
+use bitcoin::Network;
 
 /// Used to give chain error details upstream
 #[derive(Clone)]
@@ -311,7 +311,7 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 ///
 /// Keeping a local copy of this in a ChainWatchInterface implementor is likely useful.
 pub struct ChainWatchInterfaceUtil {
-	network: Network,
+	genesis_hash: BlockHash,
 	watched: Mutex<ChainWatchedUtil>,
 	reentered: AtomicUsize,
 }
@@ -322,7 +322,7 @@ pub struct ChainWatchInterfaceUtil {
 #[cfg(test)]
 impl PartialEq for ChainWatchInterfaceUtil {
 	fn eq(&self, o: &Self) -> bool {
-		self.network == o.network &&
+		self.genesis_hash == o.genesis_hash &&
 		*self.watched.lock().unwrap() == *o.watched.lock().unwrap()
 	}
 }
@@ -351,7 +351,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 	}
 
 	fn get_chain_utxo(&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
+		if genesis_hash != self.genesis_hash {
 			return Err(ChainError::NotWatched);
 		}
 		Err(ChainError::NotSupported)
@@ -378,13 +378,20 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 }
 
 impl ChainWatchInterfaceUtil {
-	/// Creates a new ChainWatchInterfaceUtil for the given network
-	pub fn new(network: Network) -> ChainWatchInterfaceUtil {
+	/// Creates a new ChainWatchInterfaceUtil for the given genesis block hash.
+	pub fn new_with_genesis_hash(genesis_hash: BlockHash) -> ChainWatchInterfaceUtil {
 		ChainWatchInterfaceUtil {
-			network,
+			genesis_hash,
 			watched: Mutex::new(ChainWatchedUtil::new()),
 			reentered: AtomicUsize::new(1),
 		}
+	}
+
+	/// Creates a new ChainWatchInterfaceUtil for the given network
+	pub fn new(network: Network) -> ChainWatchInterfaceUtil {
+        ChainWatchInterfaceUtil::new_with_genesis_hash(
+			genesis_block(network).header.bitcoin_hash()
+		)
 	}
 
 	/// Checks if a given transaction matches the current filter.
