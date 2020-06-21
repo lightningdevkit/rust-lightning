@@ -22,7 +22,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, mem};
@@ -344,7 +344,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
+		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
 			backing: keysinterface::KeysManager::new(seed, network, now.as_secs(), now.subsec_nanos()),
 			override_session_priv: Mutex::new(None),

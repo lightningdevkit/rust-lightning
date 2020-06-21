@@ -1216,8 +1216,6 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
-	use rand::{thread_rng, Rng};
-
 	use std;
 	use std::sync::{Arc, Mutex};
 	use std::sync::atomic::Ordering;
@@ -1271,18 +1269,11 @@ mod tests {
 
 	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger>> {
 		let mut peers = Vec::new();
-		let mut rng = thread_rng();
-		let mut ephemeral_bytes = [0; 32];
-		rng.fill_bytes(&mut ephemeral_bytes);
-
 		for i in 0..peer_count {
-			let node_id = {
-				let mut key_slice = [0;32];
-				rng.fill_bytes(&mut key_slice);
-				SecretKey::from_slice(&key_slice).unwrap()
-			};
+			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
+			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler };
-			let peer = PeerManager::new(msg_handler, node_id, &ephemeral_bytes, &cfgs[i].logger);
+			let peer = PeerManager::new(msg_handler, node_secret, &ephemeral_bytes, &cfgs[i].logger);
 			peers.push(peer);
 		}
 

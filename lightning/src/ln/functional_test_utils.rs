@@ -29,8 +29,6 @@ use bitcoin::hash_types::BlockHash;
 
 use bitcoin::secp256k1::key::PublicKey;
 
-use rand::{thread_rng,Rng};
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Mutex, RwLock};
@@ -1071,11 +1069,9 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 
 pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMonCfg>) -> Vec<NodeCfg<'a>> {
 	let mut nodes = Vec::new();
-	let mut rng = thread_rng();
 
 	for i in 0..node_count {
-		let mut seed = [0; 32];
-		rng.fill_bytes(&mut seed);
+		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 		let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[i].chain_monitor, &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
 		nodes.push(NodeCfg { chain_monitor: &chanmon_cfgs[i].chain_monitor, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chan_monitor, keys_manager, node_seed: seed });

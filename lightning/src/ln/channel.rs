@@ -4478,7 +4478,6 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::{Txid, WPubkeyHash};
 	use std::sync::Arc;
-	use rand::{thread_rng,Rng};
 
 	struct TestFeeEstimator {
 		fee_est: u32
@@ -4533,9 +4532,7 @@ mod tests {
 		let original_fee = 253;
 		let mut fee_est = TestFeeEstimator{fee_est: original_fee };
 		let secp_ctx = Secp256k1::new();
-		let mut seed = [0; 32];
-		let mut rng = thread_rng();
-		rng.fill_bytes(&mut seed);
+		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
@@ -4555,9 +4552,7 @@ mod tests {
 		let feeest = TestFeeEstimator{fee_est: 15000};
 		let logger = test_utils::TestLogger::new();
 		let secp_ctx = Secp256k1::new();
-		let mut seed = [0; 32];
-		let mut rng = thread_rng();
-		rng.fill_bytes(&mut seed);
+		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
