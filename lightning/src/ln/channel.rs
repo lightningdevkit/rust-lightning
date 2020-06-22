@@ -1755,8 +1755,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.commit_tx_fee_msat(their_acked_htlcs + addl_htlcs)
 	}
 
-	pub fn update_add_htlc<F>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F) -> Result<(), ChannelError>
-	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus {
+	pub fn update_add_htlc<F, L: Deref>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F, logger: &L) -> Result<(), ChannelError>
+	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus, L::Target: Logger {
 		// We can't accept HTLCs sent after we've sent a shutdown.
 		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
 		if local_sent_shutdown {
@@ -1845,6 +1845,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			if pending_remote_value_msat - msg.amount_msat - chan_reserve_msat < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
 				// the HTLC, i.e. its status is already set to failing.
+				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation");
 				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		} else {
