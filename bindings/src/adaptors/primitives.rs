@@ -284,12 +284,14 @@ impl Writeable for FFIEvents {
         for e in &self.events {
             match e {
                 Event::FundingGenerationReady {ref temporary_channel_id, ref channel_value_satoshis, ref output_script, ref user_channel_id} => {
+                    0u8.write(writer)?;
                     temporary_channel_id.write(writer)?;
                     channel_value_satoshis.write(writer)?;
                     output_script.write(writer)?;
                     user_channel_id.write(writer)?
                 }
                 Event::PendingHTLCsForwardable { ref time_forwardable } => {
+                    5u8.write(writer)?;
                     let milli = time_forwardable.as_millis() as u64;
                     milli.write(writer)?;
                 },
