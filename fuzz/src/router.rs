@@ -1,6 +1,5 @@
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::block::Block;
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
@@ -76,8 +75,8 @@ impl ChainWatchInterface for DummyChainWatcher {
 	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
 	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
-	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
-		(Vec::new(), Vec::new())
+	fn filter_block(&self, _block: &Block) -> Vec<usize> {
+		Vec::new()
 	}
 	fn reentered(&self) -> usize { 0 }
 
@@ -228,7 +227,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					}
 					&last_hops_vec[..]
 				};
-				let _ = get_route(&our_pubkey, &net_graph_msg_handler, &target, first_hops, last_hops, slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger));
+				let _ = get_route(&our_pubkey, &net_graph_msg_handler.network_graph.read().unwrap(), &target, first_hops, last_hops, slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger));
 			},
 			_ => return,
 		}

@@ -5,11 +5,10 @@
 
 use bitcoin::secp256k1::key::PublicKey;
 
-use chain::chaininterface::ChainWatchInterface;
 use ln::channelmanager;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError,ErrorAction,LightningError};
-use routing::network_graph::{NetGraphMsgHandler, RoutingFees};
+use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
@@ -145,7 +144,7 @@ struct DummyDirectionalChannelInfo {
 }
 
 
-/// Gets a route from us (as specified in the provided NetGraphMsgHandler) to the given target node.
+/// Gets a route from us (as specified in the provided NetworkGraph) to the given target node.
 ///
 /// Extra routing hops between known nodes and the target will be used if they are included in
 /// last_hops.
@@ -161,8 +160,8 @@ struct DummyDirectionalChannelInfo {
 /// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 /// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 /// *is* checked as they may change based on the receiving node.
-pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHandler<C, L>, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>,
-	last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where C::Target: ChainWatchInterface, L::Target: Logger {
+pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>,
+	last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *target == *our_node_id {
@@ -188,7 +187,6 @@ pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_hand
 		}
 	};
 
-	let network = net_graph_msg_handler.network_graph.read().unwrap();
 	let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
 	let mut dist = HashMap::with_capacity(network.get_nodes().len());
 
@@ -403,8 +401,8 @@ pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_hand
 #[cfg(test)]
 mod tests {
 	use chain::chaininterface;
-	use routing::router::{NetGraphMsgHandler, RoutingFees};
-	use routing::router::{get_route, RouteHint};
+	use routing::router::{get_route, RouteHint, RoutingFees};
+	use routing::network_graph::NetGraphMsgHandler;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	   NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate};
@@ -816,7 +814,7 @@ mod tests {
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node6_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(6)), 0);
 
 		// Simple route to 3 via 2
-		let route = get_route(&our_id, &net_graph_msg_handler, &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
 		assert_eq!(route.paths[0][0].pubkey, node2);
@@ -859,7 +857,7 @@ mod tests {
 		});
 
 		// If all the channels require some features we don't understand, route should fail
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler, &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)) {
+		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!(); }
 
@@ -875,7 +873,7 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler, &node3, Some(&our_chans),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, Some(&our_chans),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
 		assert_eq!(route.paths[0][0].pubkey, node8);
@@ -939,7 +937,7 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler, &node3, Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
 		assert_eq!(route.paths[0][0].pubkey, node8);
@@ -966,7 +964,7 @@ mod tests {
 		// the node_announcement.
 
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
-		let route = get_route(&our_id, &net_graph_msg_handler, &node1, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node1, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 3);
 
 		assert_eq!(route.paths[0][0].pubkey, node2);
@@ -1002,7 +1000,7 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler, &node3, Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
 		assert_eq!(route.paths[0][0].pubkey, node8);
@@ -1047,7 +1045,7 @@ mod tests {
 			});
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
-		let route = get_route(&our_id, &net_graph_msg_handler, &node7, None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 5);
 
 		assert_eq!(route.paths[0][0].pubkey, node2);
@@ -1099,7 +1097,7 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler, &node7, Some(&our_chans), &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, Some(&our_chans), &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
 		assert_eq!(route.paths[0][0].pubkey, node4);
@@ -1119,7 +1117,7 @@ mod tests {
 		last_hops[0].fees.base_msat = 1000;
 
 		// Revert to via 6 as the fee on 8 goes up
-		let route = get_route(&our_id, &net_graph_msg_handler, &node7, None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 4);
 
 		assert_eq!(route.paths[0][0].pubkey, node2);
@@ -1153,7 +1151,7 @@ mod tests {
 		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
 
 		// ...but still use 8 for larger payments as 6 has a variable feerate
-		let route = get_route(&our_id, &net_graph_msg_handler, &node7, None, &last_hops, 2000, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 2000, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 5);
 
 		assert_eq!(route.paths[0][0].pubkey, node2);

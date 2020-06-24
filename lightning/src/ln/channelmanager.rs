@@ -2274,7 +2274,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
 		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo(), monitor_update) {
+		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo().0, monitor_update) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					// Note that we reply with the new channel_id in error messages if we gave up on the
@@ -2963,7 +2963,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
+	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) {
 		let header_hash = header.bitcoin_hash();
 		log_trace!(self.logger, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
 		let _ = self.total_consistency_lock.read().unwrap();

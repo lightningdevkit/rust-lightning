@@ -25,7 +25,6 @@ use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
 use std::{cmp, fmt};
 use std::io::Read;
-use std::result::Result;
 
 use util::events;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};

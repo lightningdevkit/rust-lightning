@@ -31,7 +31,7 @@ use bitcoin::secp256k1::key::PublicKey;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Mutex, RwLock};
+use std::sync::Mutex;
 use std::mem;
 use std::collections::HashMap;
 
@@ -39,7 +39,7 @@ pub const CHAN_CONFIRM_DEPTH: u32 = 100;
 pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
 	assert!(chain.does_match_tx(tx));
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id; 1]);
+	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as usize; 1]);
 	for i in 2..CHAN_CONFIRM_DEPTH {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		notifier.block_connected_checked(&header, i, &vec![], &[0; 0]);
@@ -103,7 +103,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
 				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-					self.chain_monitor, self.logger, RwLock::new(network_graph_deser)
+					self.chain_monitor, self.logger, network_graph_deser
 				);
 				let mut chan_progress = 0;
 				loop {
@@ -148,7 +148,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			{
 				let mut channel_monitors = HashMap::new();
 				for monitor in deserialized_monitors.iter_mut() {
-					channel_monitors.insert(monitor.get_funding_txo(), monitor);
+					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
 				}
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
@@ -167,7 +167,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let chain_watch = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 			let channel_monitor = test_utils::TestChannelMonitor::new(&chain_watch, self.tx_broadcaster.clone(), &self.logger, &feeest);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo(), deserialized_monitor) {
+				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
 				}
 			}
@@ -951,7 +951,7 @@ pub const TEST_FINAL_CLTV: u32 = 32;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
-	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -964,7 +964,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let logger = test_utils::TestLogger::new();
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {

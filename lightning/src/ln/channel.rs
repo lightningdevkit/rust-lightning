@@ -3299,7 +3299,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
 		let mut timed_out_htlcs = Vec::new();
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
@@ -3350,6 +3350,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 								}
 							}
 						}
+						if height > 0xff_ff_ff || (*index_in_block) > 0xff_ff_ff {
+							panic!("Block was bogus - either height 16 million or had > 16 million transactions");
+						}
+						assert!(txo_idx <= 0xffff); // txo_idx is a (u16 as usize), so this is just listed here for completeness
 						self.funding_tx_confirmations = 1;
 						self.short_channel_id = Some(((height as u64)          << (5*8)) |
 						                             ((*index_in_block as u64) << (2*8)) |
