@@ -448,6 +448,13 @@ pub struct DefaultMetadata {
 	failed_channels: BTreeMap<u64, u64>,
 }
 
+impl DefaultMetadata {
+	/// Instantiates an instance of DefaultMetadata
+	pub fn new() -> DefaultMetadata {
+		DefaultMetadata { failed_channels: std::collections::BTreeMap::new() }
+	}
+}
+
 impl RouteFeePenalty for DefaultMetadata {
 	fn get_channel_fee_penalty(&self, chan_id: u64) -> u64 {
 		if self.failed_channels.get(&chan_id) == None {
