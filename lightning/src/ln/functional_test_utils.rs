@@ -6,7 +6,7 @@ use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use routing::router::{Route, get_route};
-use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, DefaultMetadata};
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -953,7 +953,8 @@ pub const TEST_FINAL_CLTV: u32 = 32;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
-	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+	let default_metadata = DefaultMetadata::new();
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -966,7 +967,8 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let logger = test_utils::TestLogger::new();
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+	let default_metadata = DefaultMetadata::new();
+	let route = get_route(&origin_node.node.get_our_node_id(), net_graph_msg_handler, &expected_route.last().unwrap().node.get_our_node_id(), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {

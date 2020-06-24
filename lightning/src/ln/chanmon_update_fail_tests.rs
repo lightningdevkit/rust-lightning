@@ -10,6 +10,7 @@ use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
 use routing::router::get_route;
+use routing::network_graph::DefaultMetadata;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 
@@ -34,7 +35,8 @@ fn test_simple_monitor_permanent_update_fail() {
 
 	*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::PermanentFailure);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+	let default_metadata = DefaultMetadata::new();
+	let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable {..}, {});
 	check_added_monitors!(nodes[0], 2);
 
@@ -71,7 +73,8 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -118,7 +121,8 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	{
 		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -184,7 +188,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	{
 		*nodes[0].chan_monitor.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -515,7 +520,8 @@ fn test_monitor_update_fail_cs() {
 	let (payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -604,7 +610,8 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let (payment_preimage_1, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -655,7 +662,8 @@ fn test_monitor_update_raa_while_paused() {
 	let (payment_preimage_1, our_payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, our_payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -664,7 +672,8 @@ fn test_monitor_update_raa_while_paused() {
 	let (payment_preimage_2, our_payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
-		let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[1].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[1].node.send_payment(&route, our_payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[1], 1);
 	}
@@ -756,7 +765,8 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -783,7 +793,8 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (_, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[2].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -832,7 +843,8 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		// Try to route another payment backwards from 2 to make sure 1 holds off on responding
 		let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[0]);
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
-		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_4, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 
@@ -1086,7 +1098,8 @@ fn raa_no_response_awaiting_raa_state() {
 	// generation during RAA while in monitor-update-failed state.
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
@@ -1140,7 +1153,8 @@ fn raa_no_response_awaiting_raa_state() {
 	// commitment transaction states) whereas here we can explicitly check for it.
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
 		check_added_monitors!(nodes[0], 0);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1232,7 +1246,8 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1328,7 +1343,8 @@ fn monitor_failed_no_reestablish_response() {
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1402,7 +1418,8 @@ fn first_message_on_recv_ordering() {
 	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1427,7 +1444,8 @@ fn first_message_on_recv_ordering() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1507,7 +1525,8 @@ fn test_monitor_update_fail_claim() {
 	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
-		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 	}
@@ -1592,7 +1611,8 @@ fn test_monitor_update_on_pending_forwards() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
-		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[2].node.get_our_node_id(), net_graph_msg_handler, &nodes[0].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[2], 1);
 	}
@@ -1655,7 +1675,8 @@ fn monitor_update_claim_fail_no_response() {
 	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let default_metadata = DefaultMetadata::new();
+		let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes[1].node.get_our_node_id(), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -1820,7 +1841,8 @@ fn test_path_paused_mpp() {
 
 	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
 	let payment_secret = PaymentSecret([0xdb; 32]);
-	let mut route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler, &nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
+	let default_metadata = DefaultMetadata::new();
+	let mut route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler, &nodes[3].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger, default_metadata).unwrap();
 
 	// Set us up to take multiple routes, one 0 -> 1 -> 3 and one 0 -> 2 -> 3:
 	let path = route.paths[0].clone();
