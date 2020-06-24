@@ -442,7 +442,7 @@ pub trait RouteFeePenalty {
 /// NetworkTracker trait. A user could  make their own Metadata object and extend the
 /// functionality of it by implementing other functions/traits for their metadata.
 pub struct DefaultMetadata {
-	/// A lits of failed channels. Maps channel_id (as specified in the NetworkGraph object) to
+	/// A list of failed channels. Maps channel_id (as specified in the NetworkGraph object) to
 	/// the number of successful routes to participate before being removed from the list. All
 	/// channels in failed_channels are assumed to have a penalty of u64::max.
 	failed_channels: BTreeMap<u64, u64>,
@@ -460,14 +460,13 @@ impl RouteFeePenalty for DefaultMetadata {
 	fn route_succeeded(&mut self, route: Vec<RouteHop>) {
 		for route_hop in route {
 			let chan_id = route_hop.short_channel_id;
-			let successes_needed = self.failed_channels.get(&chan_id);
-			if successes_needed != None {
-				let dec_successes_needed = successes_needed.unwrap() - 1;
-				if dec_successes_needed > 0 {
-					self.failed_channels.insert(chan_id, dec_successes_needed);
-				} else {
-					self.failed_channels.remove(&chan_id);
-				}
+			let mut can_remove = false;
+			if let Some(successes_needed) = self.failed_channels.get_mut(&chan_id) {
+				*successes_needed = *successes_needed - 1;
+				can_remove = *successes_needed == 0;
+			}
+			if can_remove {
+				self.failed_channels.remove(&chan_id);
 			}
 		}
 	}

@@ -161,8 +161,8 @@ struct DummyDirectionalChannelInfo {
 /// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 /// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 /// *is* checked as they may change based on the receiving node.
-pub fn get_route<C: Deref, L: Deref>(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHandler<C, L>, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>,
-	last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32, logger: L, net_metadata: impl RouteFeePenalty) -> Result<Route, LightningError> where C::Target: ChainWatchInterface, L::Target: Logger {
+pub fn get_route<C: Deref, L: Deref, N: RouteFeePenalty>(our_node_id: &PublicKey, net_graph_msg_handler: &NetGraphMsgHandler<C, L>, target: &PublicKey, first_hops: Option<&[channelmanager::ChannelDetails]>,
+	last_hops: &[RouteHint], final_value_msat: u64, final_cltv: u32, logger: L, net_metadata: N) -> Result<Route, LightningError> where C::Target: ChainWatchInterface, L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *target == *our_node_id {
