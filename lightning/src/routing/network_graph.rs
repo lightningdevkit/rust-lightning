@@ -443,7 +443,7 @@ pub trait RouteFeePenalty {
 /// functionality of it by implementing other functions/traits for their metadata.
 pub struct DefaultMetadata {
 	/// A list of failed channels. Maps channel_id (as specified in the NetworkGraph object) to
-	/// the number of successful routes to participate before being removed from the list. All
+	/// the number of consecutive failed routes a given channel ID has participated in. All
 	/// channels in failed_channels are assumed to have a penalty of u64::max.
 	failed_channels: BTreeMap<u64, u64>,
 }
@@ -464,24 +464,22 @@ impl RouteFeePenalty for DefaultMetadata {
 		}
 	}
 
+	/// If a route succeeds, remove any channels that successfully exeucted a payment off 
+	/// the failed channels list
 	fn route_succeeded(&mut self, route: Vec<RouteHop>) {
 		for route_hop in route {
 			let chan_id = route_hop.short_channel_id;
-			let mut can_remove = false;
-			if let Some(successes_needed) = self.failed_channels.get_mut(&chan_id) {
-				*successes_needed = *successes_needed - 1;
-				can_remove = *successes_needed == 0;
-			}
-			if can_remove {
+			if self.failed_channels.contains_key(&chan_id) {
 				self.failed_channels.remove(&chan_id);
 			}
 		}
 	}
 
+	/// If a route fails, increment a failure count for the channels on the route.
 	fn route_failed(&mut self, route: Vec<RouteHop>, failed_hop: RouteHop) {
 		for route_hop in route {
 			if route_hop == failed_hop {
-				*self.failed_channels.entry(failed_hop.short_channel_id).or_insert(5) += 1;
+				*self.failed_channels.entry(failed_hop.short_channel_id).or_insert(1) += 1;
 				break;
 			}
 		}
