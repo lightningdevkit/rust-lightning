@@ -244,7 +244,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 								channel_features: $chan_features.clone(),
 								fee_msat: 0,
 								cltv_expiry_delta: 0,
-						})
+							},
+						)
 					});
 					if $src_node_id != *our_node_id {
 						// Ignore new_fee for channel-from-us as we assume all channels-from-us
