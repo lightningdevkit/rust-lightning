@@ -39,14 +39,6 @@ use crate::{
     utils::into_fixed_buffer,
 };
 
-#[inline]
-pub fn slice_to_be32(v: &[u8]) -> u32 {
-    ((v[0] as u32) << 8*3) |
-        ((v[1] as u32) << 8*2) |
-        ((v[2] as u32) << 8*1) |
-        ((v[3] as u32) << 8*0)
-}
-
 pub type FFIManyChannelMonitor = SimpleManyChannelMonitor<OutPoint, InMemoryChannelKeys, Arc<FFIBroadCaster>, Arc<FFIFeeEstimator>, Arc<FFILogger>, Arc<FFIChainWatchInterface>>;
 pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<KeysManager>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
 pub type FFIArcChannelManagerHandle<'a> = HandleShared<'a, FFIArcChannelManager>;

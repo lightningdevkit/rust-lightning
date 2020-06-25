@@ -196,7 +196,7 @@ pub mod chain_watch_interface_fn {
     pub type InstallWatchTxPtr = extern "cdecl" fn(*const Bytes32, script_pub_key: *const FFIScript);
     pub type InstallWatchOutpointPtr = extern "cdecl" fn(outpoint: *const FFIOutPoint, out_script: *const FFIScript);
     pub type WatchAllTxnPtr = extern "cdecl" fn();
-    pub type GetChainUtxoPtr = extern "cdecl" fn(genesis_hash: *const Bytes32, unspent_tx_output_identifier: u64, err: *mut FFIChainError, script: *mut FFITxOut);
+    pub type GetChainUtxoPtr = extern "cdecl" fn(genesis_hash: *const Bytes32, unspent_tx_output_identifier: u64, err: *mut FFIChainError, script_ptr: *mut u8, script_len: *mut usize, amount_satoshis: *mut u64);
 }
 
 #[repr(C)]
@@ -247,14 +247,25 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         (self.watch_all_txn_ptr)()
     }
     fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-        let err = std::ptr::null_mut();
-        let tx_out = std::ptr::null_mut();
-        (self.get_chain_utxo_ptr)(&genesis_hash.into(), unspent_tx_output_identifier, err, tx_out);
-        if err.is_null() {
-            let tx_out: FFITxOut = unsafe_block!("We know the caller has set the value into the tx_out" => (*tx_out).clone());
-            Ok((tx_out.script_pubkey.to_script(), tx_out.value))
+        match self.util.get_chain_utxo(genesis_hash, unspent_tx_output_identifier) {
+            Err(ChainError::NotWatched) => {
+                return Err(ChainError::NotWatched);
+            },
+            _ =>  {},
         }
-        else {
+        let err = std::ptr::null_mut();
+        // the length can be anything as long as it is enough to put the scriptPubKey.
+        // probably this is a bit overkill but who cares.
+        let mut script = [0u8; 128];
+        let script_len = std::ptr::null_mut();
+        let amount_satoshis = std::ptr::null_mut();
+        (self.get_chain_utxo_ptr)(&genesis_hash.into(), unspent_tx_output_identifier, err, script.as_mut_ptr(), script_len, amount_satoshis);
+        if err.is_null() {
+            let script_bytes: &[u8]  = unsafe_block!("We know the caller has set the value into the script_ptr, script_len" => &script[..(*script_len)]);
+            let amount: u64 = unsafe_block!("We know the caller has set the value into the amount_satoshis" => *amount_satoshis);
+            let s = bitcoin::consensus::deserialize(script_bytes).expect("Failed to parse scriptpubkey");
+            Ok((s, amount))
+        } else {
             let e = unsafe_block!("we know the error is not a null pointer" => (*err).clone());
             Err(e.into())
         }
