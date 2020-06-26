@@ -31,8 +31,8 @@ lazy_static! {
 
 fn construct_socket_desc (
     index: usize,
-    send_data_ptr: Ref<socket_descriptor_fn::SendData>,
-    disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
+    send_data_ptr: Option<socket_descriptor_fn::SendData>,
+    disconnect_socket_ptr: Option<socket_descriptor_fn::DisconnectSocket>,
 ) -> FFISocketDescriptor {
     let send_data_ref = unsafe_block!("" =>  send_data_ptr.as_ref());
     let disconnect_socket_ref = unsafe_block!("" =>  disconnect_socket_ptr.as_ref());
@@ -48,11 +48,11 @@ ffi! {
         cfg: Ref<UserConfig>,
 
         chan_man: FFIArcChannelManagerHandle,
-        install_watch_tx_ptr: Ref<chain_watch_interface_fn::InstallWatchTxPtr>,
-        install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
-        watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
-        get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
-        log_ptr: Ref<ffilogger_fn::LogExtern>,
+        install_watch_tx_ptr: Option<chain_watch_interface_fn::InstallWatchTxPtr>,
+        install_watch_outpoint_ptr: Option<chain_watch_interface_fn::InstallWatchOutpointPtr>,
+        watch_all_txn_ptr: Option<chain_watch_interface_fn::WatchAllTxnPtr>,
+        get_chain_utxo_ptr: Option<chain_watch_interface_fn::GetChainUtxoPtr>,
+        log_ptr: Option<ffilogger_fn::LogExtern>,
 
         our_node_secret_ptr: Ref<Bytes32>,
         our_node_id_ptr: Ref<Bytes33>,
@@ -99,8 +99,8 @@ ffi! {
 
     fn new_inbound_connection(
         index: usize,
-        send_data_ptr: Ref<socket_descriptor_fn::SendData>,
-        disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
+        send_data_ptr: Option<socket_descriptor_fn::SendData>,
+        disconnect_socket_ptr: Option<socket_descriptor_fn::DisconnectSocket>,
         handle: FFIArcPeerManagerHandle
         ) -> FFIResult {
         let socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
@@ -111,8 +111,8 @@ ffi! {
 
     fn new_outbound_connection(
         index: usize,
-        send_data_ptr: Ref<socket_descriptor_fn::SendData>,
-        disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
+        send_data_ptr: Option<socket_descriptor_fn::SendData>,
+        disconnect_socket_ptr: Option<socket_descriptor_fn::DisconnectSocket>,
         their_node_id: Ref<Bytes33>,
         handle: FFIArcPeerManagerHandle,
         initial_send: Out<[u8; 50]>
@@ -136,8 +136,8 @@ ffi! {
 
     fn write_buffer_space_avail(
         index: usize,
-        send_data_ptr: Ref<socket_descriptor_fn::SendData>,
-        disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
+        send_data_ptr: Optionf<socket_descriptor_fn::SendData>,
+        disconnect_socket_ptr: Option<socket_descriptor_fn::DisconnectSocket>,
         handle: FFIArcPeerManagerHandle
     ) -> FFIResult {
         let mut socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
@@ -148,8 +148,8 @@ ffi! {
 
     fn read_event(
         index: usize,
-        send_data_ptr: Ref<socket_descriptor_fn::SendData>,
-        disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
+        send_data_ptr: Option<socket_descriptor_fn::SendData>,
+        disconnect_socket_ptr: Option<socket_descriptor_fn::DisconnectSocket>,
         data_ref: Ref<FFIBytes>,
         should_pause_read: Out<Bool>,
         handle: FFIArcPeerManagerHandle
@@ -170,8 +170,8 @@ ffi! {
 
     fn socket_disconnected(
         index: usize,
-        send_data_ptr: Ref<socket_descriptor_fn::SendData>,
-        disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
+        send_data_ptr: Option<socket_descriptor_fn::SendData>,
+        disconnect_socket_ptr: Option<socket_descriptor_fn::DisconnectSocket>,
         handle: FFIArcPeerManagerHandle) -> FFIResult {
         let mut socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
         let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());

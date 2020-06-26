@@ -137,14 +137,14 @@ ffi! {
         network_ref: Ref<FFINetwork>,
         cfg: Ref<UserConfig>,
 
-        install_watch_tx_ptr: Ref<chain_watch_interface_fn::InstallWatchTxPtr>,
-        install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
-        watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
-        get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
+        install_watch_tx_ptr: Option<chain_watch_interface_fn::InstallWatchTxPtr>,
+        install_watch_outpoint_ptr: Option<chain_watch_interface_fn::InstallWatchOutpointPtr>,
+        watch_all_txn_ptr: Option<chain_watch_interface_fn::WatchAllTxnPtr>,
+        get_chain_utxo_ptr: Option<chain_watch_interface_fn::GetChainUtxoPtr>,
 
-        broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
-        log_ptr: Ref<ffilogger_fn::LogExtern>,
-        get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
+        broadcast_transaction_ptr: Option<broadcaster_fn::BroadcastTransactionPtr>,
+        log_ptr: Option<ffilogger_fn::LogExtern>,
+        get_est_sat_per_1000_weight_ptr: Option<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
         cur_block_height: usize,
         chan_man: Out<FFIArcChannelManagerHandle>) -> FFIResult {
 
