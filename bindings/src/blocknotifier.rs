@@ -18,11 +18,11 @@ ffi! {
 
     fn create_block_notifier(
         network_ref: FFINetwork,
-        log_ptr: Option<ffilogger_fn::LogExtern>,
-        install_watch_tx_ptr: Option<chain_watch_interface_fn::InstallWatchTxPtr>,
-        install_watch_outpoint_ptr: Option<chain_watch_interface_fn::InstallWatchOutpointPtr>,
-        watch_all_txn_ptr: Option<chain_watch_interface_fn::WatchAllTxnPtr>,
-        get_chain_utxo_ptr: Option<chain_watch_interface_fn::GetChainUtxoPtr>,
+        log_ptr: Ref<ffilogger_fn::LogExtern>,
+        install_watch_tx_ptr: Ref<chain_watch_interface_fn::InstallWatchTxPtr>,
+        install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
+        watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
+        get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
         handle: Out<FFIBlockNotifierHandle>
     ) -> FFIResult {
         let network = network_ref.to_network();
