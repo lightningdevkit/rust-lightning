@@ -215,13 +215,12 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 		let mut reentered = true;
 		while reentered {
 			let matched_indexes = self.chain_monitor.filter_block(header, txdata);
-			let matched_txn: Vec<_> = matched_indexes.iter().map(|index| txdata[*index].1).collect();
+			let matched_txn: Vec<_> = matched_indexes.iter().map(|index| txdata[*index]).collect();
 			let last_seen = self.chain_monitor.reentered();
-			let block_hash = header.block_hash();
 			{
 				let mut monitors = self.monitors.lock().unwrap();
 				for monitor in monitors.values_mut() {
-					let txn_outputs = monitor.block_connected(&matched_txn, height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+					let txn_outputs = monitor.block_connected(header, &matched_txn, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
 					for (ref txid, ref outputs) in txn_outputs {
 						for (idx, output) in outputs.iter().enumerate() {
@@ -235,10 +234,9 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let block_hash = header.block_hash();
 		let mut monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values_mut() {
-			monitor.block_disconnected(disconnected_height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 		}
 	}
 }
@@ -1892,12 +1890,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
 	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
 	/// on-chain.
-	fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
+	fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txn_matched: &[(usize, &Transaction)], height: u32, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		for tx in txn_matched {
+		for &(_, tx) in txn_matched {
 			let mut output_val = 0;
 			for out in tx.output.iter() {
 				if out.value > 21_000_000_0000_0000 { panic!("Value-overflowing transaction provided to block connected"); }
@@ -1906,10 +1904,12 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
+		let block_hash = header.block_hash();
 		log_trace!(logger, "Block {} at height {} connected with {} txn matched", block_hash, height, txn_matched.len());
+
 		let mut watch_outputs = Vec::new();
 		let mut claimable_outpoints = Vec::new();
-		for tx in txn_matched {
+		for &(_, tx) in txn_matched {
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
 				// commitment transactions and HTLC transactions will all only ever have one input,
@@ -1986,7 +1986,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		self.onchain_tx_handler.block_connected(txn_matched, claimable_outpoints, height, &*broadcaster, &*fee_estimator, &*logger);
 
-		self.last_block_hash = block_hash.clone();
+		self.last_block_hash = block_hash;
 		for &(ref txid, ref output_scripts) in watch_outputs.iter() {
 			self.outputs_to_watch.insert(txid.clone(), output_scripts.iter().map(|o| o.script_pubkey.clone()).collect());
 		}
@@ -1994,12 +1994,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		watch_outputs
 	}
 
-	fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L)
+	fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
+		let block_hash = header.block_hash();
 		log_trace!(logger, "Block {} at height {} disconnected", block_hash, height);
+
 		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
 			//We may discard:
 			//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
@@ -2008,7 +2010,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
-		self.last_block_hash = block_hash.clone();
+		self.last_block_hash = block_hash;
 	}
 
 	fn would_broadcast_at_height<L: Deref>(&self, height: u32, logger: &L) -> bool where L::Target: Logger {
