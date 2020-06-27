@@ -25,7 +25,8 @@ use util::config::UserConfig;
 
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hashes::HashEngine;
+use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 use bitcoin::util::bip143;
 use bitcoin::util::address::Address;
 use bitcoin::util::bip32::{ChildNumber, ExtendedPubKey, ExtendedPrivKey};
@@ -1551,6 +1552,179 @@ fn test_basic_channel_reserve() {
 	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
 
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send, max_can_send);
+}
+
+#[test]
+fn test_fee_spike_violation_fails_htlc() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let logger = test_utils::TestLogger::new();
+
+	macro_rules! get_route_and_payment_hash {
+		($recv_value: expr) => {{
+			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
+			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+			let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+			(route, payment_hash, payment_preimage)
+		}}
+	};
+
+	let (route, payment_hash, _) = get_route_and_payment_hash!(3460001);
+	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
+	let secp_ctx = Secp256k1::new();
+	let session_priv = SecretKey::from_slice(&[42; 32]).expect("RNG is bad!");
+
+	let cur_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &None, cur_height).unwrap();
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+	let msg = msgs::UpdateAddHTLC {
+		channel_id: chan.2,
+		htlc_id: 0,
+		amount_msat: htlc_msat,
+		payment_hash: payment_hash,
+		cltv_expiry: htlc_cltv,
+		onion_routing_packet: onion_packet,
+	};
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
+
+	// Now manually create the commitment_signed message corresponding to the update_add
+	// nodes[0] just sent. In the code for construction of this message, "local" refers
+	// to the sender of the message, and "remote" refers to the receiver.
+
+	let feerate_per_kw = get_feerate!(nodes[0], chan.2);
+
+	// Get the EnforcingChannelKeys for each channel, which will be used to (1) get the keys
+	// needed to sign the new commitment tx and (2) sign the new commitment tx.
+	let (local_revocation_basepoint, local_htlc_basepoint, local_payment_point, local_chan_commitment_seed) = {
+		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
+		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let chan_keys = local_chan.get_local_keys();
+		let pubkeys = chan_keys.pubkeys();
+		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point, *chan_keys.commitment_seed())
+	};
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_payment_point, remote_chan_commitment_seed) = {
+		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
+		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let chan_keys = remote_chan.get_local_keys();
+		let pubkeys = chan_keys.pubkeys();
+		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point, *chan_keys.commitment_seed())
+	};
+
+	// Assemble the set of keys we can use for signatures for our commitment_signed message.
+	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+	let commitment_secret = {
+		let res = chan_utils::build_commitment_secret(&remote_chan_commitment_seed, INITIAL_COMMITMENT_NUMBER - 1);
+		SecretKey::from_slice(&res).unwrap()
+	};
+	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &commitment_secret);
+	let commit_tx_keys = chan_utils::TxCreationKeys::new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
+		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
+
+	// Build the remote commitment transaction so we can sign it, and then later use the
+	// signature for the commitment_signed message.
+	let local_chan_balance = 1313;
+	let static_payment_pk = local_payment_point.serialize();
+	let remote_commit_tx_output = TxOut {
+				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
+				                             .push_slice(&WPubkeyHash::hash(&static_payment_pk)[..])
+				                             .into_script(),
+		value: local_chan_balance as u64
+	};
+
+	let local_commit_tx_output = TxOut {
+		script_pubkey: chan_utils::get_revokeable_redeemscript(&commit_tx_keys.revocation_key,
+				                                               BREAKDOWN_TIMEOUT,
+				                                               &commit_tx_keys.a_delayed_payment_key).to_v0_p2wsh(),
+				value: 95000,
+	};
+
+	let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
+		offered: false,
+		amount_msat: 3460001,
+		cltv_expiry: htlc_cltv,
+		payment_hash: payment_hash,
+		transaction_output_index: Some(1),
+	};
+
+	let htlc_output = TxOut {
+		script_pubkey: chan_utils::get_htlc_redeemscript(&accepted_htlc_info, &commit_tx_keys).to_v0_p2wsh(),
+		value: 3460001 / 1000
+	};
+
+	let commit_tx_obscure_factor = {
+		let mut sha = Sha256::engine();
+		let remote_payment_point = &remote_payment_point.serialize();
+		sha.input(&local_payment_point.serialize());
+		sha.input(remote_payment_point);
+		let res = Sha256::from_engine(sha).into_inner();
+
+		((res[26] as u64) << 5*8) |
+		((res[27] as u64) << 4*8) |
+		((res[28] as u64) << 3*8) |
+		((res[29] as u64) << 2*8) |
+		((res[30] as u64) << 1*8) |
+		((res[31] as u64) << 0*8)
+	};
+	let commitment_number = 1;
+	let obscured_commitment_transaction_number = commit_tx_obscure_factor ^ commitment_number;
+	let lock_time = ((0x20 as u32) << 8*3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32);
+	let input = TxIn {
+		previous_output: BitcoinOutPoint { txid: chan.3.txid(), vout: 0 },
+		script_sig: Script::new(),
+		sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32),
+		witness: Vec::new(),
+	};
+
+	let commit_tx = Transaction {
+		version: 2,
+		lock_time,
+		input: vec![input],
+		output: vec![remote_commit_tx_output, htlc_output, local_commit_tx_output],
+	};
+	let res = {
+		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
+		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
+		let local_chan_keys = local_chan.get_local_keys();
+		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &commit_tx_keys, &[&accepted_htlc_info],
+		BREAKDOWN_TIMEOUT, &secp_ctx).unwrap()
+	};
+
+	let commit_signed_msg = msgs::CommitmentSigned {
+		channel_id: chan.2,
+		signature: res.0,
+		htlc_signatures: res.1
+	};
+
+	// Send the commitment_signed message to the nodes[1].
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commit_signed_msg);
+	let _ = nodes[1].node.get_and_clear_pending_msg_events();
+
+	// Send the RAA to nodes[1].
+	let per_commitment_secret = chan_utils::build_commitment_secret(&local_chan_commitment_seed, INITIAL_COMMITMENT_NUMBER);
+	let next_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&local_chan_commitment_seed, INITIAL_COMMITMENT_NUMBER - 2)).unwrap();
+	let next_per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &next_secret);
+	let raa_msg = msgs::RevokeAndACK{ channel_id: chan.2, per_commitment_secret, next_per_commitment_point};
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa_msg);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	// Make sure the HTLC failed in the way we expect.
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fail_htlcs, .. }, .. } => {
+			assert_eq!(update_fail_htlcs.len(), 1);
+			update_fail_htlcs[0].clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	nodes[1].logger.assert_log("lightning::ln::channel".to_string(), "Attempting to fail HTLC due to fee spike buffer violation".to_string(), 1);
+
+	check_added_monitors!(nodes[1], 2);
 }
 
 #[test]
