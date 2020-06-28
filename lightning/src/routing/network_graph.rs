@@ -90,8 +90,8 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
-		let checked_utxo = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
-			Ok((script_pubkey, _value)) => {
+		let utxo_value = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
+			Ok((script_pubkey, value)) => {
 				let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
 				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
 				                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
@@ -102,11 +102,11 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				}
 				//TODO: Check if value is worth storing, use it to inform routing, and compare it
 				//to the new HTLC max field in channel_update
-				true
+				Some(value)
 			},
 			Err(ChainError::NotSupported) => {
 				// Tentatively accept, potentially exposing us to DoS attacks
-				false
+				None
 			},
 			Err(ChainError::NotWatched) => {
 				return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.contents.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
@@ -115,7 +115,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
 			},
 		};
-		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, checked_utxo, Some(&self.secp_ctx));
+		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, utxo_value, Some(&self.secp_ctx));
 		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		result
 	}
@@ -257,6 +257,8 @@ pub struct ChannelInfo {
 	pub node_two: PublicKey,
 	/// Details about the second direction of a channel
 	pub two_to_one: Option<DirectionalChannelInfo>,
+	/// The channel capacity as seen on-chain, if chain lookup is available.
+	pub capacity_sats: Option<u64>,
 	/// An initial announcement of the channel
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -278,6 +280,7 @@ impl_writeable!(ChannelInfo, 0, {
 	one_to_two,
 	node_two,
 	two_to_one,
+	capacity_sats,
 	announcement_message
 });
 
@@ -555,7 +558,7 @@ impl NetworkGraph {
 	/// which is probably result of a reorg. In that case, we update channel info only if the
 	/// utxo was checked, otherwise stick to the existing update, to prevent DoS risks.
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
-	fn update_channel_from_announcement(&mut self, msg: &msgs::ChannelAnnouncement, checked_utxo: bool, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
+	fn update_channel_from_announcement(&mut self, msg: &msgs::ChannelAnnouncement, utxo_value: Option<u64>, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		if let Some(sig_verifier) = secp_ctx {
 			let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 			secp_verify_sig!(sig_verifier, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
@@ -572,6 +575,7 @@ impl NetworkGraph {
 				one_to_two: None,
 				node_two: msg.contents.node_id_2.clone(),
 				two_to_one: None,
+				capacity_sats: utxo_value,
 				announcement_message: if should_relay { Some(msg.clone()) } else { None },
 			};
 
@@ -580,7 +584,7 @@ impl NetworkGraph {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
 				//exactly how...
-				if checked_utxo {
+				if utxo_value.is_some() {
 					// Either our UTXO provider is busted, there was a reorg, or the UTXO provider
 					// only sometimes returns results. In any case remove the previous entry. Note
 					// that the spec expects us to "blacklist" the node_ids involved, but we can't
