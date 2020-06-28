@@ -52,6 +52,9 @@ ffi! {
         install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
         watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
         get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
+        filter_block_ptr: Ref<chain_watch_interface_fn::FilterBlock>,
+        reentered_ptr: Ref<chain_watch_interface_fn::ReEntered>,
+
         log_ptr: Ref<ffilogger_fn::LogExtern>,
 
         our_node_secret_ptr: Ref<Bytes32>,
@@ -74,6 +77,9 @@ ffi! {
         let install_watch_outpoint_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_outpoint_ptr.as_ref());
         let watch_all_txn_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => watch_all_txn_ptr.as_ref());
         let get_chain_utxo_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => get_chain_utxo_ptr.as_ref());
+        let filter_block_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => filter_block_ptr.as_ref());
+        let reentered_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => reentered_ptr.as_ref());
+
         let logger_arc = Arc::new(FFILogger { log_ptr: *log_ref });
         let chain_watch_interface_arc =
             Arc::new(FFIChainWatchInterface::new(
@@ -81,6 +87,8 @@ ffi! {
                 *install_watch_outpoint_ref,
                 *watch_all_txn_ref,
                 *get_chain_utxo_ref,
+                *filter_block_ref,
+                *reentered_ref,
                 network.to_network(),
                 logger_arc.clone()
             ));

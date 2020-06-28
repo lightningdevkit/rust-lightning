@@ -83,6 +83,8 @@ pub(crate) fn construct_channel_manager(
     install_watch_outpoint: &chain_watch_interface_fn::InstallWatchOutpointPtr,
     watch_all_txn: &chain_watch_interface_fn::WatchAllTxnPtr,
     get_chain_utxo: &chain_watch_interface_fn::GetChainUtxoPtr,
+    filter_block: &chain_watch_interface_fn::FilterBlock,
+    reentered: &chain_watch_interface_fn::ReEntered,
 
     broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
     log_ref: &ffilogger_fn::LogExtern,
@@ -98,11 +100,13 @@ pub(crate) fn construct_channel_manager(
 
     let chain_watch_interface_arc =
         Arc::new(FFIChainWatchInterface::new(
-             *install_watch_tx,
+            *install_watch_tx,
             *install_watch_outpoint,
             *watch_all_txn,
             *get_chain_utxo,
-                network,
+            *filter_block,
+            *reentered,
+            network,
             logger_arc.clone()
         ));
 
@@ -141,6 +145,8 @@ ffi! {
         install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
         watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
         get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
+        filter_block_ptr: Ref<chain_watch_interface_fn::FilterBlock>,
+        reentered_ptr: Ref<chain_watch_interface_fn::ReEntered>,
 
         broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
         log_ptr: Ref<ffilogger_fn::LogExtern>,
@@ -154,15 +160,21 @@ ffi! {
         let install_watch_outpoint_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_outpoint_ptr.as_ref());
         let watch_all_txn_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => watch_all_txn_ptr.as_ref());
         let get_chain_utxo_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => get_chain_utxo_ptr.as_ref());
+        let filter_block_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => filter_block_ptr.as_ref());
+        let reentered_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => reentered_ptr.as_ref());
+
         let chan_man_raw =
             construct_channel_manager(
                 seed,
                 network,
                 cfg,
+
                 install_watch_tx_ref,
                 install_watch_outpoint_ref,
                 watch_all_txn_ref,
                 get_chain_utxo_ref,
+                filter_block_ref,
+                reentered_ref,
 
                 broadcast_transaction_ptr,
                 log_ref,

@@ -197,6 +197,8 @@ pub mod chain_watch_interface_fn {
     pub type InstallWatchOutpointPtr = extern "cdecl" fn(outpoint: *const FFIOutPoint, out_script: *const FFIScript);
     pub type WatchAllTxnPtr = extern "cdecl" fn();
     pub type GetChainUtxoPtr = extern "cdecl" fn(genesis_hash: *const Bytes32, unspent_tx_output_identifier: u64, err: *mut FFIChainError, script_ptr: *mut u8, script_len: *mut usize, amount_satoshis: *mut u64);
+    pub type FilterBlock = extern "cdecl" fn(block_ptr: *const u8, block_len: usize, matched_index_ptr: *mut u8, matched_inedx_len: *mut usize);
+    pub type ReEntered = extern "cdecl" fn() -> usize;
 }
 
 #[repr(C)]
@@ -205,7 +207,8 @@ pub struct FFIChainWatchInterface {
     pub install_watch_outpoint_ptr: chain_watch_interface_fn::InstallWatchOutpointPtr,
     pub watch_all_txn_ptr: chain_watch_interface_fn::WatchAllTxnPtr,
     pub get_chain_utxo_ptr: chain_watch_interface_fn::GetChainUtxoPtr,
-    util: ChainWatchInterfaceUtil
+    pub filter_block_ptr: chain_watch_interface_fn::FilterBlock,
+    pub reentered_ptr: chain_watch_interface_fn::ReEntered
 }
 impl FFIChainWatchInterface {
     pub fn new(
@@ -213,6 +216,8 @@ impl FFIChainWatchInterface {
         install_watch_outpoint: chain_watch_interface_fn::InstallWatchOutpointPtr,
         watch_all_txn: chain_watch_interface_fn::WatchAllTxnPtr,
         get_chain_utxo: chain_watch_interface_fn::GetChainUtxoPtr,
+        filter_block: chain_watch_interface_fn::FilterBlock,
+        reentered: chain_watch_interface_fn::ReEntered,
         network: Network,
         logger: Arc<dyn Logger>
     ) -> FFIChainWatchInterface {
@@ -221,21 +226,20 @@ impl FFIChainWatchInterface {
             install_watch_outpoint_ptr: install_watch_outpoint,
             watch_all_txn_ptr: watch_all_txn,
             get_chain_utxo_ptr: get_chain_utxo,
-            util: ChainWatchInterfaceUtil::new(network)
+            filter_block_ptr: filter_block,
+            reentered_ptr:reentered
         }
     }
 }
 
 impl ChainWatchInterface for FFIChainWatchInterface {
     fn install_watch_tx(&self, txid: &Txid, script_pub_key: &Script) {
-        self.util.install_watch_tx(txid, script_pub_key);
         let spk_vec = bitcoin_serialize(script_pub_key);
         let ffi_spk = FFIScript::from(spk_vec.as_slice());
         let txid: Bytes32 = txid.clone().into();
         (self.install_watch_tx_ptr)(&txid as *const _, &ffi_spk as *const _)
     }
     fn install_watch_outpoint(&self, outpoint: (Txid, u32), out_script: &Script) {
-        self.util.install_watch_outpoint(outpoint, out_script);
         let txid: Bytes32 = outpoint.0.into();
         let ffi_outpoint = FFIOutPoint { txid: txid, index: outpoint.1 as u16 };
         let out_script_vec = bitcoin_serialize(out_script);
@@ -243,16 +247,9 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         (self.install_watch_outpoint_ptr)(&ffi_outpoint as *const _, &ffi_outscript as *const _)
     }
     fn watch_all_txn(&self) {
-        self.util.watch_all_txn();
         (self.watch_all_txn_ptr)()
     }
     fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-        match self.util.get_chain_utxo(genesis_hash, unspent_tx_output_identifier) {
-            Err(ChainError::NotWatched) => {
-                return Err(ChainError::NotWatched);
-            },
-            _ =>  {},
-        }
         let err = std::ptr::null_mut();
         // the length can be anything as long as it is enough to put the scriptPubKey.
         // probably this is a bit overkill but who cares.
@@ -270,11 +267,30 @@ impl ChainWatchInterface for FFIChainWatchInterface {
             Err(e.into())
         }
     }
+
     fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
-        self.util.filter_block(block)
+        let block_bytes = bitcoin_serialize(block);
+        // the minimum weight for one tx is 440. So the max number of tx in one block is 9090.
+        // so the max size of the buffer we have to prepare is.
+        // `2 + (9090 * 4) = 36362`.
+        let mut matched_tx_index = [0u8; 36864];
+        let mut matched_tx_index_len_ptr: &mut usize = todo!();
+        println!("coinbase tx in rl {:?}", block.txdata[0]);
+        (self.filter_block_ptr)(block_bytes.as_ptr(), block_bytes.len(), matched_tx_index.as_mut_ptr(), matched_tx_index_len_ptr as *mut _);
+        if (matched_tx_index_len_ptr.clone() == usize::MAX) {
+            panic!("FFI failure. the caller must set the actual serialized length of the tx-indexes in filter_block");
+        }
+        let mut matched_tx_index: &[u8] = unsafe_block!("We know the caller has set the value for serialized tx index" => &matched_tx_index[..(*matched_tx_index_len_ptr)]);
+        let matched_tx_indexes: Vec<u32> = lightning::util::ser::Readable::read(&mut std::io::Cursor::new(matched_tx_index)).unwrap();
+        let mut matched_txs = Vec::with_capacity(matched_tx_indexes.len());
+        for i in matched_tx_indexes.iter() {
+            matched_txs.push(&block.txdata[i.clone() as usize]);
+        }
+        (matched_txs, matched_tx_indexes)
     }
+
     fn reentered(&self) -> usize {
-        self.util.reentered()
+        (self.reentered_ptr)()
     }
 }
 

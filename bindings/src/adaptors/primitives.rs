@@ -280,7 +280,7 @@ pub struct FFIEvents {
 
 impl Writeable for FFIEvents {
     fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-        (self.events.len() as u16).write(writer);
+        (self.events.len() as u16).write(writer)?;
         for e in &self.events {
             match e {
                 Event::FundingGenerationReady {ref temporary_channel_id, ref channel_value_satoshis, ref output_script, ref user_channel_id} => {
