@@ -29,11 +29,11 @@ GEN_TEST UpdateFee test_msg ""
 GEN_TEST UpdateFulfillHTLC test_msg ""
 
 GEN_TEST ChannelAnnouncement test_msg_exact ""
-GEN_TEST ChannelUpdate test_msg_exact ""
 GEN_TEST NodeAnnouncement test_msg_exact ""
 
 GEN_TEST UpdateAddHTLC test_msg_hole ", 85, 33"
 GEN_TEST ErrorMessage test_msg_hole ", 32, 2"
+GEN_TEST ChannelUpdate test_msg_hole ", 108, 1"
 
 GEN_TEST Init test_msg_simple ""
 GEN_TEST OnionHopData test_msg_simple ""

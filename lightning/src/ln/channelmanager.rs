@@ -34,7 +34,7 @@ use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
 use ln::onion_utils;
-use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
+use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
 use chain::keysinterface::{ChannelKeys, KeysInterface, KeysManager, InMemoryChannelKeys};
 use util::config::UserConfig;
 use util::{byte_utils, events};
@@ -1186,7 +1186,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
 						}
 						else if code == 0x1000 | 20 {
-							res.extend_from_slice(&byte_utils::be16_to_array(chan_update.contents.flags));
+							// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+							res.extend_from_slice(&byte_utils::be16_to_array(0));
 						}
 						res.extend_from_slice(&chan_update.encode_with_len()[..]);
 					}
@@ -1212,9 +1213,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			chain_hash: self.genesis_hash,
 			short_channel_id: short_channel_id,
 			timestamp: chan.get_update_time_counter(),
-			flags: (!were_node_one) as u16 | ((!chan.is_live() as u16) << 1),
+			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
 			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
+			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
 			fee_base_msat: chan.get_our_fee_base_msat(&self.fee_estimator),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
@@ -2494,7 +2496,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							let reason = if let Ok(upd) = self.get_channel_update(chan) {
 								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
 									let mut res = Vec::with_capacity(8 + 128);
-									res.extend_from_slice(&byte_utils::be16_to_array(upd.contents.flags));
+									// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+									res.extend_from_slice(&byte_utils::be16_to_array(0));
 									res.extend_from_slice(&upd.encode_with_len()[..]);
 									res
 								}[..])

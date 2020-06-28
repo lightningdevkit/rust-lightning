@@ -172,12 +172,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let _ = net_graph_msg_handler.handle_channel_announcement(&decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4));
 			},
 			2 => {
-				let _ = net_graph_msg_handler.handle_channel_update(&decode_msg!(msgs::ChannelUpdate, 128));
+				let _ = net_graph_msg_handler.handle_channel_update(&decode_msg!(msgs::ChannelUpdate, 136));
 			},
 			3 => {
 				match get_slice!(1)[0] {
 					0 => {
-						net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {msg: decode_msg!(msgs::ChannelUpdate, 128)});
+						net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {msg: decode_msg!(msgs::ChannelUpdate, 136)});
 					},
 					1 => {
 						let short_channel_id = slice_to_be64(get_slice!(8));

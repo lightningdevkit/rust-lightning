@@ -405,7 +405,7 @@ mod tests {
 	use routing::router::{get_route, RouteHint, RoutingFees};
 	use routing::network_graph::NetGraphMsgHandler;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs::{ErrorAction, LightningError, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
+	use ln::msgs::{ErrorAction, LightningError, OptionalField, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	   NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate};
 	use ln::channelmanager;
 	use util::test_utils;
@@ -604,6 +604,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -618,6 +619,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: u16::max_value(),
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: u32::max_value(),
 			fee_proportional_millionths: u32::max_value(),
 			excess_data: Vec::new()
@@ -629,6 +631,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -644,6 +647,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: u16::max_value(),
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: u32::max_value(),
 			fee_proportional_millionths: u32::max_value(),
 			excess_data: Vec::new()
@@ -655,6 +659,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -671,6 +676,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (3 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -682,6 +688,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: (3 << 8) | 2,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 100,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -696,6 +703,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (4 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 1000000,
 			excess_data: Vec::new()
@@ -707,6 +715,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: (4 << 8) | 2,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -720,6 +729,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (13 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 2000000,
 			excess_data: Vec::new()
@@ -731,6 +741,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: (13 << 8) | 2,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -745,6 +756,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (6 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -756,6 +768,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: (6 << 8) | 2,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -769,6 +782,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (11 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -780,6 +794,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: (11 << 8) | 2,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -796,6 +811,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (7 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 1000000,
 			excess_data: Vec::new()
@@ -807,6 +823,7 @@ mod tests {
 			flags: 1,
 			cltv_expiry_delta: (7 << 8) | 2,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -841,6 +858,7 @@ mod tests {
 			flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -852,6 +870,7 @@ mod tests {
 			flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -899,6 +918,7 @@ mod tests {
 			flags: 0, // to enable
 			cltv_expiry_delta: (4 << 8) | 1,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 1000000,
 			excess_data: Vec::new()
@@ -910,6 +930,7 @@ mod tests {
 			flags: 0, // to enable
 			cltv_expiry_delta: u16::max_value(),
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: u32::max_value(),
 			fee_proportional_millionths: u32::max_value(),
 			excess_data: Vec::new()

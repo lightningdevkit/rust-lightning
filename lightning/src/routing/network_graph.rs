@@ -11,7 +11,7 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, OptionalField};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
@@ -215,6 +215,8 @@ pub struct DirectionalChannelInfo {
 	pub cltv_expiry_delta: u16,
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
+	/// The maximum value which may be relayed to the next hop via the channel.
+	pub htlc_maximum_msat: Option<u64>,
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
 	/// Most recent update for the channel received from the network
@@ -236,6 +238,7 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 	enabled,
 	cltv_expiry_delta,
 	htlc_minimum_msat,
+	htlc_maximum_msat,
 	fees,
 	last_update_message
 });
@@ -681,6 +684,7 @@ impl NetworkGraph {
 							last_update: msg.contents.timestamp,
 							cltv_expiry_delta: msg.contents.cltv_expiry_delta,
 							htlc_minimum_msat: msg.contents.htlc_minimum_msat,
+							htlc_maximum_msat: if let OptionalField::Present(max_value) = msg.contents.htlc_maximum_msat { Some(max_value) } else { None },
 							fees: RoutingFees {
 								base_msat: msg.contents.fee_base_msat,
 								proportional_millionths: msg.contents.fee_proportional_millionths,
@@ -774,7 +778,7 @@ mod tests {
 	use chain::chaininterface;
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use ln::msgs::{OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
 	use util::test_utils;
 	use util::logger::Logger;
@@ -1156,6 +1160,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 10000,
 			fee_proportional_millionths: 20,
 			excess_data: Vec::new()
@@ -1290,6 +1295,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 144,
 				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
 				excess_data: Vec::new()
@@ -1417,6 +1423,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 144,
 				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
 				excess_data: Vec::new()
@@ -1453,6 +1460,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 144,
 				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
 				excess_data: [1; 3].to_vec()

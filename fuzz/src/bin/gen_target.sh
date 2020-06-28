@@ -31,12 +31,12 @@ GEN_TEST msg_update_fee msg_targets::
 GEN_TEST msg_update_fulfill_htlc msg_targets::
 
 GEN_TEST msg_channel_announcement msg_targets::
-GEN_TEST msg_channel_update msg_targets::
 GEN_TEST msg_node_announcement msg_targets::
 
 GEN_TEST msg_update_add_htlc msg_targets::
 GEN_TEST msg_error_message msg_targets::
-GEN_TEST msg_onion_hop_data msg_targets::
+GEN_TEST msg_channel_update msg_targets::
 
+GEN_TEST msg_onion_hop_data msg_targets::
 GEN_TEST msg_ping msg_targets::
 GEN_TEST msg_pong msg_targets::
