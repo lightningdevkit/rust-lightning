@@ -1566,7 +1566,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	macro_rules! get_route_and_payment_hash {
 		($recv_value: expr) => {{
 			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
-			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
 			let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 			(route, payment_hash, payment_preimage)
 		}}
