@@ -184,9 +184,9 @@ enum HTLCUpdateAwaitingACK {
 /// move on to ShutdownComplete, at which point most calls into this channel are disallowed.
 enum ChannelState {
 	/// Implies we have (or are prepared to) send our open_channel/accept_channel message
-	OurInitSent = (1 << 0),
+	OurInitSent = 1 << 0,
 	/// Implies we have received their open_channel/accept_channel message
-	TheirInitSent = (1 << 1),
+	TheirInitSent = 1 << 1,
 	/// We have sent funding_created and are awaiting a funding_signed to advance to FundingSent.
 	/// Note that this is nonsense for an inbound channel as we immediately generate funding_signed
 	/// upon receipt of funding_created, so simply skip this state.
@@ -197,35 +197,35 @@ enum ChannelState {
 	FundingSent = 8,
 	/// Flag which can be set on FundingSent to indicate they sent us a funding_locked message.
 	/// Once both TheirFundingLocked and OurFundingLocked are set, state moves on to ChannelFunded.
-	TheirFundingLocked = (1 << 4),
+	TheirFundingLocked = 1 << 4,
 	/// Flag which can be set on FundingSent to indicate we sent them a funding_locked message.
 	/// Once both TheirFundingLocked and OurFundingLocked are set, state moves on to ChannelFunded.
-	OurFundingLocked = (1 << 5),
+	OurFundingLocked = 1 << 5,
 	ChannelFunded = 64,
 	/// Flag which is set on ChannelFunded and FundingSent indicating remote side is considered
 	/// "disconnected" and no updates are allowed until after we've done a channel_reestablish
 	/// dance.
-	PeerDisconnected = (1 << 7),
+	PeerDisconnected = 1 << 7,
 	/// Flag which is set on ChannelFunded, FundingCreated, and FundingSent indicating the user has
 	/// told us they failed to update our ChannelMonitor somewhere and we should pause sending any
 	/// outbound messages until they've managed to do so.
-	MonitorUpdateFailed = (1 << 8),
+	MonitorUpdateFailed = 1 << 8,
 	/// Flag which implies that we have sent a commitment_signed but are awaiting the responding
 	/// revoke_and_ack message. During this time period, we can't generate new commitment_signed
 	/// messages as then we will be unable to determine which HTLCs they included in their
 	/// revoke_and_ack implicit ACK, so instead we have to hold them away temporarily to be sent
 	/// later.
 	/// Flag is set on ChannelFunded.
-	AwaitingRemoteRevoke = (1 << 9),
+	AwaitingRemoteRevoke = 1 << 9,
 	/// Flag which is set on ChannelFunded or FundingSent after receiving a shutdown message from
 	/// the remote end. If set, they may not add any new HTLCs to the channel, and we are expected
 	/// to respond with our own shutdown message when possible.
-	RemoteShutdownSent = (1 << 10),
+	RemoteShutdownSent = 1 << 10,
 	/// Flag which is set on ChannelFunded or FundingSent after sending a shutdown message. At this
 	/// point, we may not add any new HTLCs to the channel.
 	/// TODO: Investigate some kind of timeout mechanism by which point the remote end must provide
 	/// us their shutdown.
-	LocalShutdownSent = (1 << 11),
+	LocalShutdownSent = 1 << 11,
 	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
 	/// to drop us, but we store this anyway.
 	ShutdownComplete = 4096,
