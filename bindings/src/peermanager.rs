@@ -22,7 +22,7 @@ use crate::{
 };
 use crate::channelmanager::FFIArcChannelManagerHandle;
 
-type FFISimpleArcPeerManager = PeerManager<FFISocketDescriptor, Arc<FFIArcChannelManager>, Arc<FFILogger>>;
+type FFISimpleArcPeerManager = PeerManager<FFISocketDescriptor, Arc<FFIArcChannelManager>, Arc<NetGraphMsgHandler<Arc<FFIChainWatchInterface>, Arc<FFILogger>>>, Arc<FFILogger>>;
 type FFIArcPeerManagerHandle<'a> = HandleShared<'a, FFISimpleArcPeerManager>;
 
 lazy_static! {

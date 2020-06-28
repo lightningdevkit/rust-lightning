@@ -28,7 +28,7 @@ ffi! {
         let mut events =  Vec::with_capacity(5);
 
         let txid = bitcoin::consensus::deserialize(&hex::decode("4141414141414141414141414141414141414141414141414141414141414142").unwrap()).unwrap();
-        let funding_txo= OutPoint::new(txid, 1);
+        let funding_txo = OutPoint{ txid, index: 1};
         let user_channel_id = 1111;
         events.push(Event::FundingBroadcastSafe {funding_txo, user_channel_id} );
 
@@ -54,13 +54,15 @@ ffi! {
         let output = TxOut {value: 255, script_pubkey: bitcoin::blockdata::script::Script::new() };
         let static_output = SpendableOutputDescriptor::StaticOutput {outpoint, output: output.clone()};
 
-        let key = bitcoin::secp256k1::key::SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()).unwrap();
+        let per_commitment_point = bitcoin::secp256k1::key::PublicKey::from_slice(&hex::decode("02aca35d6de21baefaf65db590611fabd42ed4d52683c36caff58761d309314f65").unwrap()).unwrap();
+        let remote_revocation_pubkey = bitcoin::secp256k1::key::PublicKey::from_slice(&hex::decode("02812cb18bf5c19374b34419095a09aa0b0d5559a24ce0ef558845230b0a096161").unwrap()).unwrap();
         let dynamic_output_p2wsh = SpendableOutputDescriptor::DynamicOutputP2WSH {
             outpoint,
-            key,
-            witness_script: bitcoin::blockdata::script::Script::new(),
+            per_commitment_point,
             to_self_delay: 144,
-            output
+            key_derivation_params: (3, 4),
+            output,
+            remote_revocation_pubkey
         };
         let outputs = vec![static_output, dynamic_output_p2wsh];
         events.push(Event::SpendableOutputs {outputs});

@@ -84,7 +84,7 @@ impl From<ConfirmationTarget> for FFIConfirmationTarget {
 
 pub mod fee_estimator_fn {
     use super::{FFIConfirmationTarget};
-    pub type GetEstSatPer1000WeightPtr = extern "cdecl" fn (FFIConfirmationTarget) -> u64;
+    pub type GetEstSatPer1000WeightPtr = extern "cdecl" fn (FFIConfirmationTarget) -> u32;
 }
 
 #[repr(C)]
@@ -94,7 +94,7 @@ pub struct FFIFeeEstimator {
 }
 
 impl FeeEstimator for FFIFeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u64 {
+	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
         (self.get_est_sat_per_1000_weight_ptr)(confirmation_target.into())
     }
 }
@@ -197,7 +197,7 @@ pub mod chain_watch_interface_fn {
     pub type InstallWatchOutpointPtr = extern "cdecl" fn(outpoint: *const FFIOutPoint, out_script: *const FFIScript);
     pub type WatchAllTxnPtr = extern "cdecl" fn();
     pub type GetChainUtxoPtr = extern "cdecl" fn(genesis_hash: *const Bytes32, unspent_tx_output_identifier: u64, err: *mut FFIChainError, script_ptr: *mut u8, script_len: *mut usize, amount_satoshis: *mut u64);
-    pub type FilterBlock = extern "cdecl" fn(block_ptr: *const u8, block_len: usize, matched_index_ptr: *mut u8, matched_inedx_len: *mut usize);
+    pub type FilterBlock = extern "cdecl" fn(block_ptr: *const u8, block_len: usize, matched_index_ptr: *mut usize, matched_inedx_len: *mut usize);
     pub type ReEntered = extern "cdecl" fn() -> usize;
 }
 
@@ -268,25 +268,18 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         }
     }
 
-    fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
+    fn filter_block<'a>(&self, block: &'a Block) -> Vec<usize> {
         let block_bytes = bitcoin_serialize(block);
         // the minimum weight for one tx is 440. So the max number of tx in one block is 9090.
-        // so the max size of the buffer we have to prepare is.
-        // `2 + (9090 * 4) = 36362`.
-        let mut matched_tx_index = [0u8; 36864];
-        let mut matched_tx_index_len_ptr: &mut usize = todo!();
+        let mut matched_tx_index = [0; 9091];
+        let mut matched_tx_index_len_ptr: &mut usize = &mut usize::MAX;
         println!("coinbase tx in rl {:?}", block.txdata[0]);
         (self.filter_block_ptr)(block_bytes.as_ptr(), block_bytes.len(), matched_tx_index.as_mut_ptr(), matched_tx_index_len_ptr as *mut _);
         if (matched_tx_index_len_ptr.clone() == usize::MAX) {
             panic!("FFI failure. the caller must set the actual serialized length of the tx-indexes in filter_block");
         }
-        let mut matched_tx_index: &[u8] = unsafe_block!("We know the caller has set the value for serialized tx index" => &matched_tx_index[..(*matched_tx_index_len_ptr)]);
-        let matched_tx_indexes: Vec<u32> = lightning::util::ser::Readable::read(&mut std::io::Cursor::new(matched_tx_index)).unwrap();
-        let mut matched_txs = Vec::with_capacity(matched_tx_indexes.len());
-        for i in matched_tx_indexes.iter() {
-            matched_txs.push(&block.txdata[i.clone() as usize]);
-        }
-        (matched_txs, matched_tx_indexes)
+        let mut matched_tx_indexes: &[usize] = unsafe_block!("We know the caller has set the value for serialized tx index" => &matched_tx_index[..(*matched_tx_index_len_ptr)]);
+        matched_tx_indexes.to_vec()
     }
 
     fn reentered(&self) -> usize {
@@ -410,6 +403,8 @@ impl From<FFILightningError> for LightningError {
     }
 }
 
+// --- routing stuff ---
+/// TODO: enable to pass routing handler from outside.
 pub mod routing_msg_descriptor_fn {
     use super::*;
     use crate::adaptors::primitives::Bytes33;

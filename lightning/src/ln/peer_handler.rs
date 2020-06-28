@@ -196,7 +196,8 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
 		L::Target: Logger {
-	message_handler: MessageHandler<CM, RM>,
+	/// MessageHandler for this PeerManager
+	pub message_handler: MessageHandler<CM, RM>,
 	peers: Mutex<PeerHolder<Descriptor>>,
 	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,

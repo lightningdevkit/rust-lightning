@@ -273,7 +273,7 @@ ffi! {
         FFIResult::ok()
     }
 
-    fn update_fee(channel_id: Ref<[u8; 32]>, feerate_per_kw: u64, handle: FFIArcChannelManagerHandle) -> FFIResult {
+    fn update_fee(channel_id: Ref<[u8; 32]>, feerate_per_kw: u32, handle: FFIArcChannelManagerHandle) -> FFIResult {
         let chan_man: &FFIArcChannelManager = unsafe_block!("We know handle points to valid channel_manager" => handle.as_ref());
         let channel_id: &[u8;32] = unsafe_block!("" => channel_id.as_ref());
         chan_man.update_fee(channel_id.clone(), feerate_per_kw)?;
