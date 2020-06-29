@@ -1194,6 +1194,7 @@ mod tests {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
+		unsigned_channel_update.timestamp += 10;
 
 		unsigned_channel_update.short_channel_id += 1;
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
