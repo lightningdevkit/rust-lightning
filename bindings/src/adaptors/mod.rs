@@ -273,7 +273,6 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         // the minimum weight for one tx is 440. So the max number of tx in one block is 9090.
         let mut matched_tx_index = [0; 9091];
         let mut matched_tx_index_len_ptr: &mut usize = &mut usize::MAX;
-        println!("coinbase tx in rl {:?}", block.txdata[0]);
         (self.filter_block_ptr)(block_bytes.as_ptr(), block_bytes.len(), matched_tx_index.as_mut_ptr(), matched_tx_index_len_ptr as *mut _);
         if (matched_tx_index_len_ptr.clone() == usize::MAX) {
             panic!("FFI failure. the caller must set the actual serialized length of the tx-indexes in filter_block");
