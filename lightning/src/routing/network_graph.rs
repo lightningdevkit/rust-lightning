@@ -11,7 +11,7 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, OptionalField};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, OptionalField, MAX_VALUE_MSAT};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
@@ -666,6 +666,19 @@ impl NetworkGraph {
 		match self.channels.get_mut(&msg.contents.short_channel_id) {
 			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(channel) => {
+				if let OptionalField::Present(htlc_maximum_msat) = msg.contents.htlc_maximum_msat {
+					if htlc_maximum_msat > MAX_VALUE_MSAT {
+						return Err(LightningError{err: "htlc_maximum_msat is larger than maximum possible msats".to_owned(), action: ErrorAction::IgnoreError});
+					}
+
+					if let Some(capacity_sats) = channel.capacity_sats {
+						// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
+						// Don't query UTXO set here to reduce DoS risks.
+						if htlc_maximum_msat > capacity_sats * 1000 {
+							return Err(LightningError{err: "htlc_maximum_msat is larger than channel capacity".to_owned(), action: ErrorAction::IgnoreError});
+						}
+					}
+				}
 				macro_rules! maybe_update_channel_info {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
@@ -783,7 +796,8 @@ mod tests {
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 	use ln::msgs::{OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
+		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate,
+		MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
@@ -1118,7 +1132,11 @@ mod tests {
 
 	#[test]
 	fn handling_channel_update() {
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let secp_ctx = Secp256k1::new();
+		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let chain_monitor = Arc::new(test_utils::TestChainWatcher::new());
+		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor.clone(), Arc::clone(&logger));
+
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
@@ -1129,8 +1147,16 @@ mod tests {
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let short_channel_id = 0;
 		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let amount_sats = 1000_000;
+
 		{
 			// Announce a channel we will update
+			let good_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
+			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
+			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
+			   .push_opcode(opcodes::all::OP_PUSHNUM_2)
+			   .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+			*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script.clone(), amount_sats));
 			let unsigned_announcement = UnsignedChannelAnnouncement {
 				features: ChannelFeatures::empty(),
 				chain_hash,
@@ -1218,6 +1244,31 @@ mod tests {
 		};
 		unsigned_channel_update.short_channel_id = short_channel_id;
 
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than maximum possible msats")
+		};
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
+
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity")
+		};
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
 
 		// Even though previous update was not relayed further, we still accepted it,
 		// so we now won't accept update before the previous one.
