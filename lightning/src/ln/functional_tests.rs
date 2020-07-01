@@ -1599,29 +1599,29 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	let feerate_per_kw = get_feerate!(nodes[0], chan.2);
 
+	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
 	// Get the EnforcingChannelKeys for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
-	let (local_revocation_basepoint, local_htlc_basepoint, local_payment_point, local_chan_commitment_seed) = {
+	let (local_revocation_basepoint, local_htlc_basepoint, local_payment_point, local_secret, local_secret2) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_keys = local_chan.get_local_keys();
 		let pubkeys = chan_keys.pubkeys();
-		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point, *chan_keys.commitment_seed())
+		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
+		 chan_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER), chan_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - 2))
 	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_payment_point, remote_chan_commitment_seed) = {
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_payment_point, remote_secret1) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
 		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_keys = remote_chan.get_local_keys();
 		let pubkeys = chan_keys.pubkeys();
-		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point, *chan_keys.commitment_seed())
+		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
+		 chan_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - 1))
 	};
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
-	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
-	let commitment_secret = {
-		let res = chan_utils::build_commitment_secret(&remote_chan_commitment_seed, INITIAL_COMMITMENT_NUMBER - 1);
-		SecretKey::from_slice(&res).unwrap()
-	};
+	let commitment_secret = SecretKey::from_slice(&remote_secret1).unwrap();
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &commitment_secret);
 	let commit_tx_keys = chan_utils::TxCreationKeys::new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
 		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
@@ -1706,8 +1706,8 @@ fn test_fee_spike_violation_fails_htlc() {
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
 
 	// Send the RAA to nodes[1].
-	let per_commitment_secret = chan_utils::build_commitment_secret(&local_chan_commitment_seed, INITIAL_COMMITMENT_NUMBER);
-	let next_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&local_chan_commitment_seed, INITIAL_COMMITMENT_NUMBER - 2)).unwrap();
+	let per_commitment_secret = local_secret;
+	let next_secret = SecretKey::from_slice(&local_secret2).unwrap();
 	let next_per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &next_secret);
 	let raa_msg = msgs::RevokeAndACK{ channel_id: chan.2, per_commitment_secret, next_per_commitment_point};
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa_msg);
@@ -8125,11 +8125,12 @@ fn test_counterparty_raa_skip_no_crash() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
-	let commitment_seed = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&channel_id).unwrap().local_keys.commitment_seed().clone();
+	let mut guard = nodes[0].node.channel_state.lock().unwrap();
+	let local_keys = &guard.by_id.get_mut(&channel_id).unwrap().local_keys;
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-		&SecretKey::from_slice(&chan_utils::build_commitment_secret(&commitment_seed, INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
-	let per_commitment_secret = chan_utils::build_commitment_secret(&commitment_seed, INITIAL_COMMITMENT_NUMBER);
+		&SecretKey::from_slice(&local_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+	let per_commitment_secret = local_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
 		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });
