@@ -95,8 +95,8 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 
 			if let Some(ref chain_source) = self.chain_source {
 				for (txid, outputs) in txn_outputs.drain(..) {
-					for (idx, output) in outputs.iter().enumerate() {
-						chain_source.register_output(&OutPoint { txid, index: idx as u16 }, &output.script_pubkey);
+					for (idx, output) in outputs.iter() {
+						chain_source.register_output(&OutPoint { txid, index: *idx as u16 }, &output.script_pubkey);
 					}
 				}
 			}
@@ -152,8 +152,8 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 			if let Some(ref chain_source) = self.chain_source {
 				chain_source.register_tx(&funding_txo.0.txid, &funding_txo.1);
 				for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
-					for (idx, script_pubkey) in outputs.iter().enumerate() {
-						chain_source.register_output(&OutPoint { txid: *txid, index: idx as u16 }, &script_pubkey);
+					for (idx, script_pubkey) in outputs.iter() {
+						chain_source.register_output(&OutPoint { txid: *txid, index: *idx as u16 }, script_pubkey);
 					}
 				}
 			}
