@@ -222,8 +222,8 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 				let txn_outputs = monitor.block_connected(txn_matched, height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger, &*self.utxo_pool);
 
 				for (ref txid, ref outputs) in txn_outputs {
-					for (idx, output) in outputs.iter().enumerate() {
-						self.chain_monitor.install_watch_outpoint((txid.clone(), idx as u32), &output.script_pubkey);
+					for (idx, script) in outputs.iter() {
+						self.chain_monitor.install_watch_outpoint((txid.clone(), *idx), &script.script_pubkey);
 					}
 				}
 			}
@@ -274,8 +274,8 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 			self.chain_monitor.install_watch_tx(&funding_txo.0.txid, &funding_txo.1);
 			self.chain_monitor.install_watch_outpoint((funding_txo.0.txid, funding_txo.0.index as u32), &funding_txo.1);
 			for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
-				for (idx, script) in outputs.iter().enumerate() {
-					self.chain_monitor.install_watch_outpoint((*txid, idx as u32), script);
+				for (idx, script) in outputs.iter() {
+					self.chain_monitor.install_watch_outpoint((txid.clone(), *idx), &script);
 				}
 			}
 		}
@@ -679,7 +679,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// interface knows about the TXOs that we want to be notified of spends of. We could probably
 	// be smart and derive them from the above storage fields, but its much simpler and more
 	// Obviously Correct (tm) if we just keep track of them explicitly.
-	outputs_to_watch: HashMap<Txid, Vec<Script>>,
+	outputs_to_watch: HashMap<Txid, Vec<(u32, Script)>>,
 
 	#[cfg(test)]
 	pub onchain_tx_handler: OnchainTxHandler<ChanSigner>,
@@ -1000,10 +1000,11 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 		}
 
 		(self.outputs_to_watch.len() as u64).write(writer)?;
-		for (txid, output_scripts) in self.outputs_to_watch.iter() {
+		for (txid, idx_scripts) in self.outputs_to_watch.iter() {
 			txid.write(writer)?;
-			(output_scripts.len() as u64).write(writer)?;
-			for script in output_scripts.iter() {
+			(idx_scripts.len() as u64).write(writer)?;
+			for (idx, script) in idx_scripts.iter() {
+				idx.write(writer)?;
 				script.write(writer)?;
 			}
 		}
@@ -1292,7 +1293,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// transaction), which we must learn about spends of via block_connected().
 	///
 	/// (C-not exported) because we have no HashMap bindings
-	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<Script>> {
+	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, Script)>> {
 		&self.outputs_to_watch
 	}
 
@@ -1305,7 +1306,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub fn get_monitored_outpoints(&self) -> Vec<(Txid, u32, &Script)> {
 		let mut res = Vec::with_capacity(self.counterparty_commitment_txn_on_chain.len() * 2);
 		for (ref txid, &(_, ref outputs)) in self.counterparty_commitment_txn_on_chain.iter() {
-			for (idx, output) in outputs.iter().enumerate() {
+		for (idx, output) in outputs.iter().enumerate() {
 				res.push(((*txid).clone(), idx as u32, output));
 			}
 		}
@@ -1354,8 +1355,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
-	/// revoked counterparty commitment tx
-	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<OnchainRequest>, (Txid, Vec<TxOut>)) where L::Target: Logger {
+	/// revoked remote commitment tx
+	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<OnchainRequest>, (Txid, Vec<(u32, TxOut)>)) where L::Target: Logger {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut claimable_outpoints = Vec::new();
@@ -1410,7 +1411,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			if !claimable_outpoints.is_empty() || per_commitment_option.is_some() { // ie we're confident this is actually ours
 				// We're definitely a counterparty commitment transaction!
 				log_trace!(logger, "Got broadcast of revoked counterparty commitment transaction, going to generate general spend tx with {} inputs", claimable_outpoints.len());
-				watch_outputs.append(&mut tx.output.clone());
+				for (idx, outp) in tx.output.iter().enumerate() {
+					watch_outputs.push((idx as u32, outp.clone()));
+				}
 				self.counterparty_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 
 				macro_rules! check_htlc_fails {
@@ -1457,7 +1460,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			// already processed the block, resulting in the counterparty_commitment_txn_on_chain entry
 			// not being generated by the above conditional. Thus, to be safe, we go ahead and
 			// insert it here.
-			watch_outputs.append(&mut tx.output.clone());
+			for (idx, outp) in tx.output.iter().enumerate() {
+				watch_outputs.push((idx as u32, outp.clone()));
+			}
 			self.counterparty_commitment_txn_on_chain.insert(commitment_txid, (commitment_number, tx.output.iter().map(|output| { output.script_pubkey.clone() }).collect()));
 
 			log_trace!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
@@ -1546,7 +1551,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Attempts to claim a counterparty HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<OnchainRequest>, Option<(Txid, Vec<TxOut>)>) where L::Target: Logger {
+	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<OnchainRequest>, Option<(Txid, Vec<(u32, TxOut)>)>) where L::Target: Logger {
 		let htlc_txid = tx.txid();
 		if tx.input.len() != 1 || tx.output.len() != 1 || tx.input[0].witness.len() != 5 {
 			return (Vec::new(), None)
@@ -1568,10 +1573,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		log_trace!(logger, "Remote HTLC broadcast {}:{}", htlc_txid, 0);
 		let malleable_justice_tx = PackageTemplate::build_malleable_justice_tx(per_commitment_point, per_commitment_key, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, InputDescriptors::RevokedOutput, htlc_txid, 0, tx.output[0].value, None, self.counterparty_tx_cache.on_counterparty_tx_csv);
 		let claimable_outpoints = vec!(OnchainRequest { aggregation: true, bump_strategy: BumpStrategy::RBF, feerate_previous: 0, height_timer: None, absolute_timelock: height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, height_original: height, content: malleable_justice_tx });
-		(claimable_outpoints, Some((htlc_txid, tx.output.clone())))
+		let outputs = vec![(0, tx.output[0].clone())];
+		(claimable_outpoints, Some((htlc_txid, outputs)))
 	}
 
-	fn broadcast_by_holder_state(&self, commitment_tx: &Transaction, holder_tx: &HolderSignedTx, height: u32) -> (Vec<OnchainRequest>, Vec<TxOut>, Option<(Script, PublicKey, PublicKey)>) {
+	fn broadcast_by_holder_state(&self, commitment_tx: &Transaction, holder_tx: &HolderSignedTx, height: u32) -> (Vec<OnchainRequest>, Vec<(u32, TxOut)>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 		let mut watch_outputs = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
@@ -1589,7 +1595,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					}
 				} else { None }, htlc.amount_msat, holder_tx.txid, transaction_output_index);
 				claim_requests.push(OnchainRequest { aggregation: false, bump_strategy: BumpStrategy::CPFP, feerate_previous: 0, height_timer: None, absolute_timelock: height, height_original: height, content: holder_htlc_tx });
-				watch_outputs.push(commitment_tx.output[transaction_output_index as usize].clone());
+				watch_outputs.push((transaction_output_index, commitment_tx.output[transaction_output_index as usize].clone()));
 			}
 		}
 
@@ -1599,7 +1605,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in holder_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<OnchainRequest>, (Txid, Vec<TxOut>)) where L::Target: Logger {
+	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<OnchainRequest>, (Txid, Vec<(u32, TxOut)>)) where L::Target: Logger {
 		let commitment_txid = tx.txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -1743,7 +1749,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Eventually this should be pub and, roughly, implement ChainListener, however this requires
 	/// &mut self, as well as returns new spendable outputs and outpoints to watch for spending of
 	/// on-chain.
-	fn block_connected<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L, utxo_pool: U)-> Vec<(Txid, Vec<TxOut>)>
+	fn block_connected<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, txn_matched: &[&Transaction], height: u32, block_hash: &BlockHash, broadcaster: B, fee_estimator: F, logger: L, utxo_pool: U)-> Vec<(Txid, Vec<(u32, TxOut)>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -1839,8 +1845,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		self.onchain_tx_handler.block_connected(txn_matched, claimable_outpoints, height, &*broadcaster, &*fee_estimator, &*logger, &*utxo_pool);
 
 		self.last_block_hash = block_hash.clone();
-		for &(ref txid, ref output_scripts) in watch_outputs.iter() {
-			self.outputs_to_watch.insert(txid.clone(), output_scripts.iter().map(|o| o.script_pubkey.clone()).collect());
+		for &(ref txid, ref idx_scripts) in watch_outputs.iter() {
+			self.outputs_to_watch.insert(txid.clone(), idx_scripts.iter().map(|o| (o.0, o.1.script_pubkey.clone())).collect());
 		}
 
 		watch_outputs
@@ -2361,13 +2367,13 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
-		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<Vec<Script>>())));
+		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<Script>>())));
 		for _ in 0..outputs_to_watch_len {
 			let txid = Readable::read(reader)?;
 			let outputs_len: u64 = Readable::read(reader)?;
-			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / mem::size_of::<Script>()));
+			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<u32>() + mem::size_of::<Script>())));
 			for _ in 0..outputs_len {
-				outputs.push(Readable::read(reader)?);
+				outputs.push((Readable::read(reader)?, Readable::read(reader)?));
 			}
 			if let Some(_) = outputs_to_watch.insert(txid, outputs) {
 				return Err(DecodeError::InvalidValue);
