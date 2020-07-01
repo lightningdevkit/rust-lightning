@@ -213,6 +213,7 @@ macro_rules! array_struct{
     }
 }
 
+/// Length-prefixed script.
 array_struct!(FFIScript);
 impl FFIScript {
     pub fn to_script(&self) -> Script {

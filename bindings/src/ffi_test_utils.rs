@@ -6,10 +6,11 @@ use hex;
 use crate::adaptors::primitives::FFIEvents;
 use crate::utils::into_fixed_buffer;
 use crate::Out;
-use lightning::ln::channelmanager::{PaymentHash, PaymentSecret, PaymentPreimage};
+use lightning::ln::channelmanager::{PaymentHash, PaymentSecret, PaymentPreimage, ChannelDetails};
 use bitcoin_hashes::core::time::Duration;
 use lightning::chain::keysinterface::SpendableOutputDescriptor;
 use bitcoin::TxOut;
+use lightning::ln::features::InitFeatures;
 
 
 // These tests should be used for asserting that the wrapper can receive expected items from rust.
@@ -70,6 +71,28 @@ ffi! {
         let mut e = FFIEvents{ events };
         let buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => buf_out.as_uninit_bytes_mut(buf_len));
         into_fixed_buffer(&mut e, buf, &mut actual_len)
+    }
+    fn test_channel_details_serialization(buf_out: Out<u8>, buf_len: usize, actual_len: Out<usize>) -> FFIResult {
+        let mut ret = Vec::with_capacity(1);
+        let id_ref= &hex::decode("4141414141414141414141414141414141414141414141414141414141414142").unwrap();
+        let mut id = [0u8;32];
+        id.copy_from_slice(id_ref);
+        let remote_network_id = bitcoin::secp256k1::key::PublicKey::from_slice(&hex::decode("02aca35d6de21baefaf65db590611fabd42ed4d52683c36caff58761d309314f65").unwrap()).unwrap();
+        let counterparty_features = InitFeatures::known();
+        let detail = ChannelDetails{
+            channel_id: id,
+            short_channel_id: Some(3),
+            remote_network_id,
+            counterparty_features: counterparty_features,
+            channel_value_satoshis: 5454,
+            user_id: 2223,
+            outbound_capacity_msat: 2828,
+            inbound_capacity_msat: 9292,
+            is_live: false
+        };
+        ret.push(detail);
+        let buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => buf_out.as_uninit_bytes_mut(buf_len));
+        into_fixed_buffer(&mut ret, buf, &mut actual_len)
     }
 
 }
