@@ -278,14 +278,14 @@ macro_rules! unwrap_send_err {
 		match &$res {
 			&Err(PaymentSendFailure::AllFailedRetrySafe(ref fails)) if $all_failed => {
 				assert_eq!(fails.len(), 1);
-				match &fails[0] {
+				match fails[0] {
 					$type => { $check },
 					_ => panic!(),
 				}
 			},
 			&Err(PaymentSendFailure::PartialFailure(ref fails)) if !$all_failed => {
 				assert_eq!(fails.len(), 1);
-				match &fails[0] {
+				match fails[0] {
 					Err($type) => { $check },
 					_ => panic!(),
 				}
@@ -972,7 +972,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	}
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(origin_node);
-	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 }
 

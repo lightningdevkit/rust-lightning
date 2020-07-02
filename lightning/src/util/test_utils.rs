@@ -22,6 +22,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
+use regex;
+
 use std::time::Duration;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -303,17 +305,17 @@ impl TestLogger {
 
 	pub fn assert_log_contains(&self, module: String, line: String, count: usize) {
         let log_entries = self.lines.lock().unwrap();
-        let l = log_entries.iter().find_map(|((m, l), c)| {
-            if m == &module && l.contains(line.as_str()) { Some(c) } else { None }
-		});
+        let l = log_entries.iter().find(|&(&(ref m, ref l), _c)| {
+            m == &module && l.contains(line.as_str())
+		}).map(|(&(ref _m, ref _l),c) | { c });
 		assert_eq!(l.unwrap(), &count)
 	}
 
 	pub fn assert_log_regex(&self, module: String, line: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
-		let l = log_entries.iter().find_map(|((m, l), c)| {
-			if m == &module && line.is_match(l) { Some(c) } else { None }
-		});
+		let l = log_entries.iter().find(|&(&(ref m, ref l), _c)| {
+			m == &module && line.is_match(&l)
+		}).map(|(&(ref _m, ref _l),c) | { c });
 		assert_eq!(l.unwrap(), &count)
 	}
 }

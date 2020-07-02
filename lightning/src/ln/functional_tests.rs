@@ -43,6 +43,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Secp256k1, Message};
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
+use regex;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
 use std::sync::{Arc, Mutex};
@@ -1322,7 +1324,7 @@ fn holding_cell_htlc_counting() {
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable { err },
+		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("Cannot push more than their max accepted HTLCs")));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
@@ -1542,7 +1544,7 @@ fn test_basic_channel_reserve() {
 	match err {
 		PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 			match &fails[0] {
-				APIError::ChannelUnavailable{err} =>
+				&APIError::ChannelUnavailable{ref err} =>
 					assert!(err.contains("Cannot send value that would put us under local channel reserve value")),
 				_ => panic!("Unexpected error variant"),
 			}
@@ -1752,7 +1754,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	};
 
 	let (route, our_payment_hash, _) = get_route_and_payment_hash!(1000);
-	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send value that would put them under remote channel reserve value"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put them under remote channel reserve value".to_string(), 1);
@@ -1930,7 +1932,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0 + 1);
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
@@ -1994,7 +1996,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs;
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("Cannot send value that would put us under local channel reserve value")));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
@@ -2020,7 +2022,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// test with outbound holding cell amount > 0
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("Cannot send value that would put us under local channel reserve value")));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
@@ -2107,7 +2109,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		match err {
 			PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 				match &fails[0] {
-					APIError::ChannelUnavailable{err} =>
+					&APIError::ChannelUnavailable{ref err} =>
 						assert!(err.contains("Cannot send value that would put us under local channel reserve value")),
 					_ => panic!("Unexpected error variant"),
 				}
@@ -6404,7 +6406,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 	route.paths[0][0].fee_msat = 100;
 
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot send less than their minimum HTLC value")));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send less than their minimum HTLC value".to_string(), 1);
@@ -6424,7 +6426,7 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let logger = test_utils::TestLogger::new();
 	let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 	route.paths[0][0].fee_msat = 0;
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send 0-msat HTLC"));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -6470,7 +6472,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], 100000000, 500000001, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::RouteError { err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::RouteError { ref err },
 		assert_eq!(err, &"Channel CLTV overflowed?"));
 }
 
@@ -6514,7 +6516,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot push more than their max accepted HTLCs")));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -6538,7 +6540,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], max_in_flight+1, TEST_FINAL_CLTV, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
