@@ -783,7 +783,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	// Utilities to derive keys:
 
 	fn build_local_commitment_secret(&self, idx: u64) -> SecretKey {
-		let res = chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), idx);
+		let res = self.local_keys.commitment_secret(idx);
 		SecretKey::from_slice(&res).unwrap()
 	}
 
@@ -2021,7 +2021,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1));
-		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), self.cur_local_commitment_transaction_number + 1);
+		let per_commitment_secret = self.local_keys.commitment_secret(self.cur_local_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_our_commitment = false;
@@ -2660,7 +2660,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
 		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
-		let per_commitment_secret = chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), self.cur_local_commitment_transaction_number + 2);
+		let per_commitment_secret = self.local_keys.commitment_secret(self.cur_local_commitment_transaction_number + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret,
@@ -2743,7 +2743,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.next_remote_commitment_number > 0 {
 			match msg.data_loss_protect {
 				OptionalField::Present(ref data_loss) => {
-					if chan_utils::build_commitment_secret(self.local_keys.commitment_seed(), INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1) != data_loss.your_last_per_commitment_secret {
+					if self.local_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1) != data_loss.your_last_per_commitment_secret {
 						return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided"));
 					}
 					if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {

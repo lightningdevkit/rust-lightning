@@ -48,7 +48,7 @@ impl EnforcingChannelKeys {
 }
 
 impl ChannelKeys for EnforcingChannelKeys {
-	fn commitment_seed(&self) -> &[u8; 32] { self.inner.commitment_seed() }
+	fn commitment_secret(&self, idx: u64) -> [u8; 32] { self.inner.commitment_secret(idx) }
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
