@@ -300,6 +300,22 @@ impl TestLogger {
 		let log_entries = self.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&(module, line)), Some(&count));
 	}
+
+	pub fn assert_log_contains(&self, module: String, line: String, count: usize) {
+        let log_entries = self.lines.lock().unwrap();
+        let l = log_entries.iter().find_map(|((m, l), c)| {
+            if m == &module && l.contains(line.as_str()) { Some(c) } else { None }
+		});
+		assert_eq!(l.unwrap(), &count)
+	}
+
+	pub fn assert_log_regex(&self, module: String, line: regex::Regex, count: usize) {
+		let log_entries = self.lines.lock().unwrap();
+		let l = log_entries.iter().find_map(|((m, l), c)| {
+			if m == &module && line.is_match(l) { Some(c) } else { None }
+		});
+		assert_eq!(l.unwrap(), &count)
+	}
 }
 
 impl Logger for TestLogger {

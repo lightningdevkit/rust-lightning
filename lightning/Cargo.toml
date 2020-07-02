@@ -28,3 +28,4 @@ features = ["bitcoinconsensus"]
 
 [dev-dependencies]
 hex = "0.3"
+regex = "1.3.9"

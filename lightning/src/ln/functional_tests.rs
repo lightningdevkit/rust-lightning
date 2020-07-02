@@ -77,10 +77,11 @@ fn test_insane_channel_opens() {
 		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &message_mutator(open_channel_message.clone()));
 		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
+		let expected_regex = regex::Regex::new(expected_error_str).unwrap();
 		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[0] {
 			match action {
 				&ErrorAction::SendErrorMessage { .. } => {
-					nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), expected_error_str.to_string(), 1);
+					nodes[1].logger.assert_log_regex("lightning::ln::channelmanager".to_string(), expected_regex, 1);
 				},
 				_ => panic!("unexpected event!"),
 			}
@@ -91,23 +92,23 @@ fn test_insane_channel_opens() {
 	use ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
 	// Test all mutations that would make the channel open message insane
-	insane_open_helper("funding value > 2^24", |mut msg| { msg.funding_satoshis = MAX_FUNDING_SATOSHIS; msg });
+	insane_open_helper(format!("funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS, MAX_FUNDING_SATOSHIS).as_str(), |mut msg| { msg.funding_satoshis = MAX_FUNDING_SATOSHIS; msg });
 
 	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.funding_satoshis + 1; msg });
 
-	insane_open_helper("push_msat larger than funding value", |mut msg| { msg.push_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
+	insane_open_helper(r"push_msat \d+ was larger than funding value \d+", |mut msg| { msg.push_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
 
 	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.dust_limit_satoshis = msg.funding_satoshis + 1 ; msg });
 
-	insane_open_helper("Bogus; channel reserve is less than dust limit", |mut msg| { msg.dust_limit_satoshis = msg.channel_reserve_satoshis + 1; msg });
+	insane_open_helper(r"Bogus; channel reserve\(\d+\) is less than dust limit \(\d+\)", |mut msg| { msg.dust_limit_satoshis = msg.channel_reserve_satoshis + 1; msg });
 
-	insane_open_helper("Minimum htlc value is full channel value", |mut msg| { msg.htlc_minimum_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
+	insane_open_helper(r"Minimum htlc value \(\d+\) is full channel value \(\d+\)", |mut msg| { msg.htlc_minimum_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
 
 	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| { msg.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1; msg });
 
 	insane_open_helper("0 max_accpted_htlcs makes for a useless channel", |mut msg| { msg.max_accepted_htlcs = 0; msg });
 
-	insane_open_helper("max_accpted_htlcs > 483", |mut msg| { msg.max_accepted_htlcs = 484; msg });
+	insane_open_helper("max_accpted_htlcs was 484. it must not be larger than 483", |mut msg| { msg.max_accepted_htlcs = 484; msg });
 }
 
 #[test]
@@ -1270,7 +1271,7 @@ fn fake_network_test() {
 	route_over_limit(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
 
 	//TODO: Test that routes work again here as we've been notified that the channel is full
 
@@ -1324,7 +1325,7 @@ fn holding_cell_htlc_counting() {
 		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable { err },
 			assert!(err.contains("Cannot push more than their max accepted HTLCs")));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
+		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
 	}
 
 	// This should also be true if we try to forward a payment.
@@ -1542,14 +1543,14 @@ fn test_basic_channel_reserve() {
 		PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 			match &fails[0] {
 				APIError::ChannelUnavailable{err} =>
-					assert_eq!(err, "Cannot send value that would put us under local channel reserve value"),
+					assert!(err.contains("Cannot send value that would put us under local channel reserve value")),
 				_ => panic!("Unexpected error variant"),
 			}
 		},
 		_ => panic!("Unexpected error variant"),
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 1);
 
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send, max_can_send);
 }
@@ -1930,9 +1931,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0 + 1);
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept (10000000)"));
+			assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
 	}
 
 	// channel reserve is bigger than their_max_htlc_value_in_flight_msat so loop to deplete
@@ -1994,7 +1995,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
+			assert!(err.contains("Cannot send value that would put us under local channel reserve value")));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
@@ -2020,9 +2021,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	{
 		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-			assert_eq!(err, "Cannot send value that would put us under local channel reserve value"));
+			assert!(err.contains("Cannot send value that would put us under local channel reserve value")));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 2);
 	}
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(recv_value_22);
@@ -2107,14 +2108,14 @@ fn test_channel_reserve_holding_cell_htlcs() {
 			PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 				match &fails[0] {
 					APIError::ChannelUnavailable{err} =>
-						assert_eq!(err, "Cannot send value that would put us under local channel reserve value"),
+						assert!(err.contains("Cannot send value that would put us under local channel reserve value")),
 					_ => panic!("Unexpected error variant"),
 				}
 			},
 			_ => panic!("Unexpected error variant"),
 		}
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 3);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us under local channel reserve value".to_string(), 3);
 	}
 
 	send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_3, recv_value_3);
@@ -6404,9 +6405,9 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	route.paths[0][0].fee_msat = 100;
 
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-		assert_eq!(err, "Cannot send less than their minimum HTLC value"));
+		assert!(err.contains("Cannot send less than their minimum HTLC value")));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send less than their minimum HTLC value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send less than their minimum HTLC value".to_string(), 1);
 }
 
 #[test]
@@ -6427,7 +6428,7 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 		assert_eq!(err, "Cannot send 0-msat HTLC"));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send 0-msat HTLC".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send 0-msat HTLC".to_string(), 1);
 }
 
 #[test]
@@ -6514,10 +6515,10 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-		assert_eq!(err, "Cannot push more than their max accepted HTLCs"));
+		assert!(err.contains("Cannot push more than their max accepted HTLCs")));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
 }
 
 #[test]
@@ -6538,10 +6539,10 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], max_in_flight+1, TEST_FINAL_CLTV, &logger).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { err },
-		assert_eq!(err, "Cannot send value that would put us over the max HTLC value in flight our peer will accept"));
+		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
 
 	send_payment(&nodes[0], &[&nodes[1]], max_in_flight, max_in_flight);
 }
@@ -6573,7 +6574,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data, "Remote side tried to send less than our minimum HTLC value");
+	assert!(err_msg.data.contains("Remote side tried to send less than our minimum HTLC value"));
 	check_added_monitors!(nodes[1], 1);
 }
 
@@ -6653,7 +6654,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data, "Remote tried to push more than our max accepted HTLCs");
+	assert!(err_msg.data.contains("Remote tried to push more than our max accepted HTLCs"));
 	check_added_monitors!(nodes[1], 1);
 }
 
@@ -6678,7 +6679,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data,"Remote HTLC add would put them over our max HTLC value");
+	assert!(err_msg.data.contains("Remote HTLC add would put them over our max HTLC value"));
 	check_added_monitors!(nodes[1], 1);
 }
 
@@ -6752,7 +6753,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 
 	assert!(nodes[1].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[1], true).unwrap();
-	assert_eq!(err_msg.data, "Remote skipped HTLC ID");
+	assert!(err_msg.data.contains("Remote skipped HTLC ID"));
 	check_added_monitors!(nodes[1], 1);
 }
 
@@ -6785,7 +6786,7 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
-	assert_eq!(err_msg.data, "Remote tried to fulfill/fail HTLC before it had been committed");
+	assert!(regex::Regex::new(r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -6818,7 +6819,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
-	assert_eq!(err_msg.data, "Remote tried to fulfill/fail HTLC before it had been committed");
+	assert!(regex::Regex::new(r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -6852,7 +6853,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
-	assert_eq!(err_msg.data, "Remote tried to fulfill/fail HTLC before it had been committed");
+	assert!(regex::Regex::new(r"Remote tried to fulfill/fail HTLC \(\d+\) before it had been committed").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -6934,7 +6935,7 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
-	assert_eq!(err_msg.data, "Remote tried to fulfill HTLC with an incorrect preimage");
+	assert!(regex::Regex::new(r"Remote tried to fulfill HTLC \(\d+\) with an incorrect preimage").unwrap().is_match(err_msg.data.as_str()));
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -7328,7 +7329,7 @@ fn test_upfront_shutdown_script() {
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	// Test we enforce upfront_scriptpbukey if by providing a diffrent one at closing that  we disconnect peer
 	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
-	assert_eq!(check_closed_broadcast!(nodes[2], true).unwrap().data, "Got shutdown request with a scriptpubkey which did not match their previous scriptpubkey");
+    assert!(regex::Regex::new(r"Got shutdown request with a scriptpubkey \([A-Fa-f0-9]+\) which did not match their previous scriptpubkey.").unwrap().is_match(check_closed_broadcast!(nodes[2], true).unwrap().data.as_str()));
 	check_added_monitors!(nodes[2], 1);
 
 	// We test that in case of peer committing upfront to a script, if it doesn't change at closing, we sign
@@ -7409,7 +7410,7 @@ fn test_user_configurable_csv_delay() {
 	let keys_manager: Arc<KeysInterface<ChanKeySigner = EnforcingChannelKeys>> = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet));
 	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
 		match error {
-			APIError::APIMisuseError { err } => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
+			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false) }
@@ -7420,7 +7421,7 @@ fn test_user_configurable_csv_delay() {
 	open_channel.to_self_delay = 200;
 	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
 		match error {
-			ChannelError::Close(err) => { assert_eq!(err, "Configured with an unreasonable our_to_self_delay putting user funds at risks"); },
+			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
@@ -7434,7 +7435,7 @@ fn test_user_configurable_csv_delay() {
 	if let MessageSendEvent::HandleError { ref action, .. } = nodes[0].node.get_and_clear_pending_msg_events()[0] {
 		match action {
 			&ErrorAction::SendErrorMessage { ref msg } => {
-				assert_eq!(msg.data,"They wanted our payments to be delayed by a needlessly long period");
+				assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. upper limit: \d+\. actual: \d+").unwrap().is_match(msg.data.as_str()));
 			},
 			_ => { assert!(false); }
 		}
@@ -7446,7 +7447,7 @@ fn test_user_configurable_csv_delay() {
 	open_channel.to_self_delay = 200;
 	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
 		match error {
-			ChannelError::Close(err) => { assert_eq!(err, "They wanted our payments to be delayed by a needlessly long period"); },
+			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. upper limit: \d+\. actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
