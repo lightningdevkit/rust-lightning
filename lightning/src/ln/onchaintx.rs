@@ -939,7 +939,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(super) fn get_fully_signed_copy_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			let local_commitment = local_commitment.clone();
@@ -979,7 +979,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		htlc_tx
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	pub(super) fn unsafe_get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
 		let latest_had_sigs = self.local_htlc_sigs.is_some();
 		let prev_had_sigs = self.prev_local_htlc_sigs.is_some();
