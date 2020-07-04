@@ -4,7 +4,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH}
 };
 
-use bitcoin::{secp256k1, BlockHeader, Transaction};
 use lightning::{
     util::{
         config::UserConfig,
@@ -20,7 +19,6 @@ use lightning::{
     },
     routing::router::Route,
     ln::channelmanager::{PaymentSecret, PaymentPreimage},
-    chain::chaininterface::ChainListener
 };
 
 use crate::{

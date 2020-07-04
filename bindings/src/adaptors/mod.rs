@@ -16,7 +16,6 @@ use lightning::{
     util::ser::{Writer},
     ln::peer_handler::SocketDescriptor,
     ln::msgs::ErrorAction,
-    chain::chaininterface::ChainWatchInterfaceUtil,
     ln::msgs::{ErrorMessage, RoutingMessageHandler, HTLCFailChannelUpdate, ChannelAnnouncement, NodeAnnouncement, LightningError, ChannelUpdate}
 };
 
@@ -274,7 +273,7 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         let mut matched_tx_index = [0; 9091];
         let mut matched_tx_index_len_ptr: &mut usize = &mut usize::MAX;
         (self.filter_block_ptr)(block_bytes.as_ptr(), block_bytes.len(), matched_tx_index.as_mut_ptr(), matched_tx_index_len_ptr as *mut _);
-        if (matched_tx_index_len_ptr.clone() == usize::MAX) {
+        if matched_tx_index_len_ptr.clone() == usize::MAX {
             panic!("FFI failure. the caller must set the actual serialized length of the tx-indexes in filter_block");
         }
         let mut matched_tx_indexes: &[usize] = unsafe_block!("We know the caller has set the value for serialized tx index" => &matched_tx_index[..(*matched_tx_index_len_ptr)]);
@@ -396,7 +395,7 @@ impl From<FFILightningError> for LightningError {
     fn from(v: FFILightningError) -> Self {
         let err = unsafe_block!("We know error msg is non-null c string" => CStr::from_ptr(v.err.as_ptr()) );
         LightningError {
-            err: err.to_str().unwrap(),
+            err: err.to_str().unwrap().to_owned(),
             action: v.action.into()
         }
     }
