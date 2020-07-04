@@ -175,10 +175,8 @@ pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: D
         L::Target: Logger,
         C::Target: ChainWatchInterface,
 {
-	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
+	/// The monitors
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
-	#[cfg(not(test))]
-	monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	chain_monitor: C,
 	broadcaster: T,
 	logger: L,
