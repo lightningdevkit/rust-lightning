@@ -285,6 +285,12 @@ ffi! {
         into_fixed_buffer(&mut e, buf, &mut actual_channels_len)
     }
 
+    fn serialize_channel_manager(buf_out: Out<u8>, buf_len: usize, actual_len: Out<usize>, handle: FFIArcChannelManagerHandle) -> FFIResult {
+        let buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => buf_out.as_uninit_bytes_mut(buf_len));
+        let mut chan_man: &FFIArcChannelManager = unsafe_block!("We know handle points to valid channel_manager" => handle.as_ref());
+        into_fixed_buffer(&mut chan_man, buf, &mut actual_len)
+    }
+
     fn release_ffi_channel_manager(handle: FFIArcChannelManagerHandle) -> FFIResult {
         unsafe_block!("The upstream caller guarantees the handle will not be accessed after being freed" => FFIArcChannelManagerHandle::dealloc(handle, |mut handle| {
             FFIResult::ok()
