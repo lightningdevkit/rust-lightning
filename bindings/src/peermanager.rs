@@ -58,7 +58,6 @@ ffi! {
         log_ptr: Ref<ffilogger_fn::LogExtern>,
 
         our_node_secret_ptr: Ref<Bytes32>,
-        our_node_id_ptr: Ref<Bytes33>,
         handle: Out<FFIArcPeerManagerHandle>
     ) -> FFIResult {
         let network = unsafe_block!("" => *network_ref.as_ref());
@@ -68,11 +67,6 @@ ffi! {
             let o = unsafe_block!("" => our_node_secret_ptr.as_ref());
             o.clone().into()
         };
-        let our_node_id: secp256k1::PublicKey = {
-            let o = unsafe_block!("" => our_node_id_ptr.as_ref());
-            o.clone().into()
-        };
-
         let install_watch_tx_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_tx_ptr.as_ref());
         let install_watch_outpoint_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_outpoint_ptr.as_ref());
         let watch_all_txn_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => watch_all_txn_ptr.as_ref());
@@ -99,7 +93,6 @@ ffi! {
 
         let seed = unsafe_block!("It points to valid length buffer" => seed.as_ref());
         let peer_man =
-
             FFISimpleArcPeerManager::new(msg_handler, our_node_secret.clone(), &seed.bytes, logger_arc);
         unsafe_block!("" => handle.init(FFIArcPeerManagerHandle::alloc(peer_man)));
         FFIResult::ok()
