@@ -7,8 +7,9 @@ use std::{
 };
 
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::{blockdata::transaction::Transaction, blockdata::script::Script, blockdata::block::Block, consensus::serialize as bitcoin_serialize, Network};
+use bitcoin::{blockdata::transaction::Transaction, blockdata::script::Script, blockdata::block::Block, consensus::serialize as bitcoin_serialize, consensus::deserialize as bitcoin_deserialize, Network};
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::{Secp256k1, Signing};
 
 use lightning::{
     chain::chaininterface::{BroadcasterInterface, FeeEstimator, ConfirmationTarget, ChainWatchInterface, ChainError},
@@ -22,6 +23,12 @@ use lightning::{
 pub mod primitives;
 use primitives::*;
 use std::sync::Arc;
+use lightning::chain::keysinterface::{ChannelKeys, InMemoryChannelKeys, KeysInterface};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::Error::InvalidMessage;
+use bitcoin::util::key::Error::Secp256k1 as Secp256k1Error;
+use lightning::util::ser::Readable;
+use lightning::ln::msgs::DecodeError;
 
 type Cstr = NonNull<i8>;
 
@@ -282,6 +289,145 @@ impl ChainWatchInterface for FFIChainWatchInterface {
 
     fn reentered(&self) -> usize {
         (self.reentered_ptr)()
+    }
+}
+
+#[repr(C)]
+pub struct FFIChannelKeys {
+    funding_key: [u8; 32],
+    revocation_base_key: [u8; 32],
+    payment_key: [u8; 32],
+    delayed_payment_base_key: [u8; 32],
+    htlc_base_key: [u8; 32],
+    commitment_seed: [u8; 32],
+    channel_value_satoshis: u64,
+    key_derivation_params_1: u64,
+    key_derivation_params_2: u64,
+}
+
+impl FFIChannelKeys {
+    fn to_in_memory_channel_keys<C: Signing>(&self, ctx: &Secp256k1<C>) -> InMemoryChannelKeys {
+        InMemoryChannelKeys::new(
+            ctx,
+            secp256k1::key::SecretKey::from_slice(&self.funding_key).unwrap(),
+            secp256k1::key::SecretKey::from_slice(&self.revocation_base_key).unwrap(),
+            secp256k1::key::SecretKey::from_slice(&self.payment_key).unwrap(),
+            secp256k1::key::SecretKey::from_slice(&self.delayed_payment_base_key).unwrap(),
+            secp256k1::key::SecretKey::from_slice(&self.htlc_base_key).unwrap(),
+                self.commitment_seed,
+            self.channel_value_satoshis,
+            (self.key_derivation_params_1, self.key_derivation_params_2)
+        )
+    }
+}
+
+impl Readable for FFIChannelKeys {
+    fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+        let funding_key = Readable::read(reader)?;
+        let revocation_base_key = Readable::read(reader)?;
+        let payment_key = Readable::read(reader)?;
+        let delayed_payment_base_key = Readable::read(reader)?;
+        let htlc_base_key = Readable::read(reader)?;
+        let commitment_seed = Readable::read(reader)?;
+        let channel_value_satoshis = Readable::read(reader)?;
+        let key_derivation_params_1 = Readable::read(reader)?;
+        let key_derivation_params_2 = Readable::read(reader)?;
+        Ok (FFIChannelKeys{
+            funding_key,
+            revocation_base_key,
+            payment_key,
+            delayed_payment_base_key,
+            htlc_base_key,
+            commitment_seed,
+            channel_value_satoshis,
+            key_derivation_params_1,
+            key_derivation_params_2,
+        })
+    }
+}
+
+pub mod keys_interface_fn {
+    use super::{Bytes32, FFIChannelKeys, Bool};
+    pub type GetNodeSecret = extern "cdecl" fn (*mut [u8; 32]);
+    pub type GetDestinationScript = extern "cdecl" fn (script_ptr: *mut u8, script_len: *mut usize);
+    pub type GetShutdownPubKey = extern "cdecl" fn (pk_ptr: *mut [u8; 33]);
+    pub type GetChannelKeys = extern "cdecl" fn (inbound: Bool, satoshis: u64, ffi_channel_keys_ptr: *mut [u8; 216]);
+    pub type GetOnionRand = extern "cdecl" fn (secret: *mut [u8; 32], prng_seed: *mut [u8; 32]);
+    pub type GetChannelId = extern "cdecl" fn(channel_id: *mut [u8; 32]);
+}
+
+pub struct FFIKeysInterface {
+    pub get_node_secret_ptr: keys_interface_fn::GetNodeSecret,
+    pub get_destination_script_ptr: keys_interface_fn::GetDestinationScript,
+    pub get_shutdown_pubkey_ptr: keys_interface_fn::GetShutdownPubKey,
+    pub get_channel_keys_ptr: keys_interface_fn::GetChannelKeys,
+    pub get_onion_rand_ptr: keys_interface_fn::GetOnionRand,
+    pub get_channel_id_ptr: keys_interface_fn::GetChannelId,
+    secp_ctx: Secp256k1<secp256k1::SignOnly>,
+}
+
+impl FFIKeysInterface {
+    pub fn new(
+        get_node_secret_ptr: keys_interface_fn::GetNodeSecret,
+        get_destination_script_ptr: keys_interface_fn::GetDestinationScript,
+        get_shutdown_pubkey_ptr: keys_interface_fn::GetShutdownPubKey,
+        get_channel_keys_ptr: keys_interface_fn::GetChannelKeys,
+        get_onion_rand_ptr: keys_interface_fn::GetOnionRand,
+        get_channel_id_ptr: keys_interface_fn::GetChannelId
+    ) -> Self {
+        FFIKeysInterface {
+            get_node_secret_ptr,
+            get_destination_script_ptr,
+            get_shutdown_pubkey_ptr,
+            get_channel_keys_ptr,
+            get_onion_rand_ptr,
+            get_channel_id_ptr,
+            secp_ctx: Secp256k1::signing_only()
+        }
+    }
+}
+
+impl KeysInterface for FFIKeysInterface {
+    type ChanKeySigner = InMemoryChannelKeys;
+
+    fn get_node_secret(&self) -> SecretKey {
+        let mut secret = [0u8; 32];
+        (self.get_node_secret_ptr)(&mut secret as *mut _);
+        SecretKey::from_slice(&secret).unwrap()
+    }
+
+    fn get_destination_script(&self) -> Script {
+        let mut script_ptr = [0u8; 512];
+        let mut script_len: &mut usize = &mut usize::MAX;
+        (self.get_destination_script_ptr)(script_ptr.as_mut_ptr(), script_len as *mut _);
+        let s = bitcoin::consensus::Decodable::consensus_decode(&script_ptr[..(*script_len)]).expect("Failed to deserialize script");
+        s
+    }
+
+    fn get_shutdown_pubkey(&self) -> PublicKey {
+        let mut pk = [0u8; 33];
+        (self.get_shutdown_pubkey_ptr)(&mut pk as *mut _);
+        PublicKey::from_slice(&pk).unwrap()
+    }
+
+    fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner {
+        let mut channel_keys_b = [0u8; 216];
+        (self.get_channel_keys_ptr)(if inbound { Bool::True } else { Bool::False }, channel_value_satoshis, &mut channel_keys_b as *mut _);
+        let ffi_channel_keys: FFIChannelKeys = Readable::read(&mut channel_keys_b.as_ref()).expect("Failed to deserialize channel keys");
+        ffi_channel_keys.to_in_memory_channel_keys(&self.secp_ctx)
+    }
+
+    fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
+        let mut secret = [0; 32];
+        let mut prng_seed = [0; 32];
+        (self.get_onion_rand_ptr)(&mut secret as *mut _, &mut prng_seed as *mut _);
+        (SecretKey::from_slice(&secret).unwrap(), prng_seed)
+    }
+
+    fn get_channel_id(&self) -> [u8; 32] {
+        let mut channel_id = [0; 32];
+        (self.get_channel_id_ptr)(&mut channel_id as *mut _);
+        channel_id
     }
 }
 

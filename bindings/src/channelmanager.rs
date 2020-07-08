@@ -14,7 +14,7 @@ use lightning::{
         channelmonitor::SimpleManyChannelMonitor
     },
     chain::{
-        keysinterface::{KeysManager, InMemoryChannelKeys},
+        keysinterface::{InMemoryChannelKeys},
         transaction::OutPoint
     },
     routing::router::Route,
@@ -38,7 +38,7 @@ use crate::{
 };
 
 pub type FFIManyChannelMonitor = SimpleManyChannelMonitor<OutPoint, InMemoryChannelKeys, Arc<FFIBroadCaster>, Arc<FFIFeeEstimator>, Arc<FFILogger>, Arc<FFIChainWatchInterface>>;
-pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<KeysManager>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
+pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
 pub type FFIArcChannelManagerHandle<'a> = HandleShared<'a, FFIArcChannelManager>;
 
 fn fail_htlc_backwards_inner(payment_hash: Ref<Bytes32>, payment_secret: &Option<PaymentSecret>, handle: FFIArcChannelManagerHandle) -> Result<bool, FFIResult> {
@@ -73,7 +73,6 @@ fn send_payment_inner(handle: FFIArcChannelManagerHandle, route_ref: Ref<FFIRout
 }
 
 pub(crate) fn construct_channel_manager(
-    seed: Ref<Bytes32>,
     ffi_network: FFINetwork,
     cfg: Ref<UserConfig>,
 
@@ -84,6 +83,8 @@ pub(crate) fn construct_channel_manager(
     filter_block: &chain_watch_interface_fn::FilterBlock,
     reentered: &chain_watch_interface_fn::ReEntered,
 
+    keys_interface: Arc<FFIKeysInterface>,
+
     broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
     log_ref: &ffilogger_fn::LogExtern,
     get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
@@ -92,7 +93,6 @@ pub(crate) fn construct_channel_manager(
 ) -> FFIArcChannelManager {
     let network = ffi_network.to_network();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let mut seed: [u8; 32] = unsafe_block!("it points to valid length buffer" => seed.as_ref()).clone().bytes;
 
     let logger_arc = Arc::new( FFILogger{ log_ptr: *log_ref } );
 
@@ -114,7 +114,6 @@ pub(crate) fn construct_channel_manager(
     let fee_est_fn_ref = unsafe_block!("" => get_est_sat_per_1000_weight_ptr.as_ref());
     let fee_est = FFIFeeEstimator{ get_est_sat_per_1000_weight_ptr: *fee_est_fn_ref };
 
-    let keyman = Arc::new(KeysManager::new(&seed, network, now.as_secs(), now.subsec_nanos()));
     let cfg = unsafe_block!("" => cfg.as_ref());
 
     let monitor =
@@ -126,7 +125,7 @@ pub(crate) fn construct_channel_manager(
         monitor,
         broadcaster,
         logger_arc,
-        keyman,
+        keys_interface,
         cfg.clone(),
         cur_block_height
     )
@@ -135,7 +134,6 @@ pub(crate) fn construct_channel_manager(
 ffi! {
 
     fn create_channel_manager(
-        seed: Ref<Bytes32>,
         network_ref: Ref<FFINetwork>,
         cfg: Ref<UserConfig>,
 
@@ -145,6 +143,13 @@ ffi! {
         get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
         filter_block_ptr: Ref<chain_watch_interface_fn::FilterBlock>,
         reentered_ptr: Ref<chain_watch_interface_fn::ReEntered>,
+
+        get_node_secret_ptr: Ref<keys_interface_fn::GetNodeSecret>,
+        get_destination_script_ptr: Ref<keys_interface_fn::GetDestinationScript>,
+        get_shutdown_key_ptr: Ref<keys_interface_fn::GetShutdownPubKey>,
+        get_channel_keys_ptr: Ref<keys_interface_fn::GetChannelKeys>,
+        get_onion_rand_ptr: Ref<keys_interface_fn::GetOnionRand>,
+        get_channel_id_ptr: Ref<keys_interface_fn::GetChannelId>,
 
         broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
         log_ptr: Ref<ffilogger_fn::LogExtern>,
@@ -161,9 +166,23 @@ ffi! {
         let filter_block_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => filter_block_ptr.as_ref());
         let reentered_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => reentered_ptr.as_ref());
 
+        let get_node_secret_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_node_secret_ptr.as_ref());
+        let get_destination_script_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_destination_script_ptr.as_ref());
+        let get_shutdown_key_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_shutdown_key_ptr.as_ref());
+        let get_channel_keys_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_channel_keys_ptr.as_ref());
+        let get_onion_rand_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_onion_rand_ptr.as_ref());
+        let get_channel_id_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_channel_id_ptr.as_ref());
+        let keys_interface = FFIKeysInterface::new(
+            *get_node_secret_ref,
+            *get_destination_script_ref,
+            *get_shutdown_key_ref,
+            *get_channel_keys_ref,
+            *get_onion_rand_ref,
+            *get_channel_id_ref,
+        );
+
         let chan_man_raw =
             construct_channel_manager(
-                seed,
                 network,
                 cfg,
 
@@ -173,6 +192,8 @@ ffi! {
                 get_chain_utxo_ref,
                 filter_block_ref,
                 reentered_ref,
+
+                Arc::new(keys_interface),
 
                 broadcast_transaction_ptr,
                 log_ref,
