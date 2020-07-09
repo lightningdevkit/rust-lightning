@@ -10,6 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
+use chain;
 use chain::chaininterface;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
@@ -80,8 +81,28 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, he
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
-	node.block_notifier.block_connected(block, height)
+	use chain::WatchEventProvider;
+	use chain::chaininterface::ChainListener;
+
+	let watch_events = node.chan_monitor.simple_monitor.release_pending_watch_events();
+	process_chain_watch_events(&watch_events);
+
+	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+	loop {
+		node.chan_monitor.simple_monitor.block_connected(&block.header, &txdata, height);
+
+		let watch_events = node.chan_monitor.simple_monitor.release_pending_watch_events();
+		process_chain_watch_events(&watch_events);
+
+		if watch_events.is_empty() {
+			break;
+		}
+	}
+
+	node.node.block_connected(&block.header, &txdata, height);
 }
+
+fn process_chain_watch_events(_events: &Vec<chain::WatchEvent>) {}
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.block_notifier.block_disconnected(header, height)

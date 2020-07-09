@@ -417,9 +417,6 @@ fn test_1_conf_open() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
-	assert!(nodes[0].chain_monitor.does_match_tx(&tx));
-	assert!(nodes[1].chain_monitor.does_match_tx(&tx));
-
 	let block = Block {
 		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![tx],
@@ -2785,8 +2782,8 @@ fn claim_htlc_outputs_single_tx() {
 
 #[test]
 fn test_htlc_on_chain_success() {
-	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
-	// ChainWatchInterface and pass the preimage backward accordingly. So here we test that ChannelManager is
+	// Test that in case of a unilateral close onchain, we detect the state of output and pass
+	// the preimage backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// We test with two HTLCs simultaneously as that was not handled correctly in the past.
 	// A --------------------> B ----------------------> C (preimage)
@@ -2964,8 +2961,8 @@ fn test_htlc_on_chain_success() {
 
 #[test]
 fn test_htlc_on_chain_timeout() {
-	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
-	// ChainWatchInterface and timeout the HTLC backward accordingly. So here we test that ChannelManager is
+	// Test that in case of a unilateral close onchain, we detect the state of output and
+	// timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// A ------------------> B ----------------------> C (timeout)
 	//    B's commitment tx 		C's commitment tx
@@ -5177,8 +5174,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 #[test]
 fn test_onchain_to_onchain_claim() {
-	// Test that in case of channel closure, we detect the state of output thanks to
-	// ChainWatchInterface and claim HTLC on downstream peer's remote commitment tx.
+	// Test that in case of channel closure, we detect the state of output and claim HTLC
+	// on downstream peer's remote commitment tx.
 	// First, have C claim an HTLC against its own latest commitment transaction.
 	// Then, broadcast these to B, which should update the monitor downstream on the A<->B
 	// channel.
