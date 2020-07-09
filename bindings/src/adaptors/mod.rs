@@ -256,21 +256,21 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         (self.watch_all_txn_ptr)()
     }
     fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-        let err = std::ptr::null_mut();
+        println!("Querying chain utxo by shortChannelId {}. ", unspent_tx_output_identifier);
+        let mut err = &mut FFIChainError::UnInitialized;
         // the length can be anything as long as it is enough to put the scriptPubKey.
         // probably this is a bit overkill but who cares.
         let mut script = [0u8; 128];
-        let script_len = std::ptr::null_mut();
-        let amount_satoshis = std::ptr::null_mut();
-        (self.get_chain_utxo_ptr)(&genesis_hash.into(), unspent_tx_output_identifier, err, script.as_mut_ptr(), script_len, amount_satoshis);
-        if err.is_null() {
+        let mut script_len = &mut usize::MAX;
+        let mut amount_satoshis = &mut u64::MAX;
+        (self.get_chain_utxo_ptr)(&genesis_hash.into(), unspent_tx_output_identifier, err as *mut FFIChainError, script.as_mut_ptr(), script_len as *mut _, amount_satoshis as *mut _);
+        if *err == FFIChainError::UnInitialized {
             let script_bytes: &[u8]  = unsafe_block!("We know the caller has set the value into the script_ptr, script_len" => &script[..(*script_len)]);
             let amount: u64 = unsafe_block!("We know the caller has set the value into the amount_satoshis" => *amount_satoshis);
             let s = bitcoin::consensus::deserialize(script_bytes).expect("Failed to parse scriptpubkey");
             Ok((s, amount))
         } else {
-            let e = unsafe_block!("we know the error is not a null pointer" => (*err).clone());
-            Err(e.into())
+            Err(err.clone().into())
         }
     }
 

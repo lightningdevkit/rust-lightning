@@ -228,8 +228,8 @@ pub struct FFITxOut {
     pub script_pubkey: FFIScript,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(u32)]
 pub enum FFIChainError {
     /// Client doesn't support UTXO lookup (but the chain hash matches our genesis block hash)
     NotSupported,
@@ -237,6 +237,7 @@ pub enum FFIChainError {
     NotWatched,
     /// Tx doesn't exist or is unconfirmed
     UnknownTx,
+    UnInitialized,
 }
 
 impl From<FFIChainError> for ChainError {
@@ -245,6 +246,7 @@ impl From<FFIChainError> for ChainError {
             FFIChainError::NotSupported => ChainError::NotSupported,
             FFIChainError::NotWatched => ChainError::NotWatched,
             FFIChainError::UnknownTx => ChainError::UnknownTx,
+            FFIChainError::UnInitialized => panic!("We should never try to convert uninitialized FFIChainError into ChainError")
         }
     }
 }
