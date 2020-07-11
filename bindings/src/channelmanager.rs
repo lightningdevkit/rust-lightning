@@ -292,6 +292,12 @@ ffi! {
         FFIResult::ok()
     }
 
+    fn claim_funds_without_secret(payment_preimage: Ref<Bytes32>, expected_amount: u64, handle: FFIArcChannelManagerHandle, result: Out<Bool>) -> FFIResult {
+        let r = claim_funds_inner(payment_preimage, None, expected_amount, handle);
+        unsafe_block!("We know out parameter is writable" => result.init(r.into()));
+        FFIResult::ok()
+    }
+
     fn update_fee(channel_id: Ref<[u8; 32]>, feerate_per_kw: u32, handle: FFIArcChannelManagerHandle) -> FFIResult {
         let chan_man: &FFIArcChannelManager = unsafe_block!("We know handle points to valid channel_manager" => handle.as_ref());
         let channel_id: &[u8;32] = unsafe_block!("" => channel_id.as_ref());
