@@ -195,9 +195,20 @@ impl Readable for SpendableOutputDescriptor {
 // TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
 pub trait ChannelKeys : Send+Clone {
-	/// Gets the commitment seed for a specific commitment number
-	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards
-	fn commitment_secret(&self, idx: u64) -> [u8; 32];
+	/// Gets the per-commitment point for a specific commitment number
+	///
+	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
+	fn get_per_commitment_point<T: secp256k1::Signing + secp256k1::Verification>(&self, idx: u64, secp_ctx: &Secp256k1<T>) -> PublicKey;
+	/// Gets the commitment secret for a specific commitment number as part of the revocation process
+	///
+	/// An external signer implementation should error here if the commitment was already signed
+	/// and should refuse to sign it in the future.
+	///
+	/// May be called more than once for the same index.
+	///
+	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
+	/// TODO: return a Result so we can signal a validation error
+	fn release_commitment_secret(&self, idx: u64) -> [u8; 32];
 	/// Gets the local channel public keys and basepoints
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets arbitrary identifiers describing the set of keys which are provided back to you in
@@ -217,6 +228,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// Create a signature for a local commitment transaction. This will only ever be called with
 	/// the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
 	/// that it will not be called multiple times.
+	/// An external signer implementation should check that the commitment has not been revoked.
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
@@ -405,7 +417,12 @@ impl InMemoryChannelKeys {
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
-	fn commitment_secret(&self, idx: u64) -> [u8; 32] {
+	fn get_per_commitment_point<T: secp256k1::Signing + secp256k1::Verification>(&self, idx: u64, secp_ctx: &Secp256k1<T>) -> PublicKey {
+		let commitment_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&self.commitment_seed, idx)).unwrap();
+		PublicKey::from_secret_key(secp_ctx, &commitment_secret)
+	}
+
+	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
 	}
 
