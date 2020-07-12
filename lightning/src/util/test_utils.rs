@@ -18,7 +18,7 @@ use chain::keysinterface;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
-use util::enforcing_trait_impls::EnforcingChannelKeys;
+use util::enforcing_trait_impls::{EnforcingChannelKeys, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, ReadableArgs, Writer, Writeable};
@@ -35,7 +35,7 @@ use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 use regex;
 
 use std::time::Duration;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, mem};
 use std::collections::{HashMap, HashSet};
@@ -422,6 +422,7 @@ pub struct TestKeysInterface {
 	backing: keysinterface::KeysManager,
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
+	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
 }
 
 impl keysinterface::KeysInterface for TestKeysInterface {
@@ -431,7 +432,9 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
 	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
-		EnforcingChannelKeys::new(self.backing.get_channel_keys(inbound, channel_value_satoshis))
+		let keys = self.backing.get_channel_keys(inbound, channel_value_satoshis);
+		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
+		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -449,10 +452,22 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		self.backing.get_secure_random_bytes()
 	}
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, msgs::DecodeError> {
-		EnforcingChannelKeys::read(&mut std::io::Cursor::new(reader))
+	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::ChanKeySigner, msgs::DecodeError> {
+		let mut reader = std::io::Cursor::new(buffer);
+
+		let inner: InMemoryChannelKeys = Readable::read(&mut reader)?;
+		let revoked_commitment = self.make_revoked_commitment_cell(inner.commitment_seed);
+
+		let last_commitment_number = Readable::read(&mut reader)?;
+
+		Ok(EnforcingChannelKeys {
+			inner,
+			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
+			revoked_commitment,
+		})
 	}
 }
+
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
@@ -461,10 +476,22 @@ impl TestKeysInterface {
 			backing: keysinterface::KeysManager::new(seed, network, now.as_secs(), now.subsec_nanos()),
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
+			revoked_commitments: Mutex::new(HashMap::new()),
 		}
 	}
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, user_id_1: u64, user_id_2: u64) -> EnforcingChannelKeys {
-		EnforcingChannelKeys::new(self.backing.derive_channel_keys(channel_value_satoshis, user_id_1, user_id_2))
+		let keys = self.backing.derive_channel_keys(channel_value_satoshis, user_id_1, user_id_2);
+		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
+		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment)
+	}
+
+	fn make_revoked_commitment_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<u64>> {
+		let mut revoked_commitments = self.revoked_commitments.lock().unwrap();
+		if !revoked_commitments.contains_key(&commitment_seed) {
+			revoked_commitments.insert(commitment_seed, Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)));
+		}
+		let cell = revoked_commitments.get(&commitment_seed).unwrap();
+		Arc::clone(cell)
 	}
 }
 
