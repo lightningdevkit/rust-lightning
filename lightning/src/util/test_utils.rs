@@ -22,6 +22,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
+use regex;
+
 use std::time::Duration;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -240,15 +242,15 @@ impl TestRoutingMessageHandler {
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
 		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
@@ -299,6 +301,30 @@ impl TestLogger {
 	pub fn assert_log(&self, module: String, line: String, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&(module, line)), Some(&count));
+	}
+
+	/// Search for the number of occurrence of the logged lines which
+	/// 1. belongs to the specified module and
+	/// 2. contains `line` in it.
+	/// And asserts if the number of occurrences is the same with the given `count`
+	pub fn assert_log_contains(&self, module: String, line: String, count: usize) {
+		let log_entries = self.lines.lock().unwrap();
+		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
+			m == &module && l.contains(line.as_str())
+		}).map(|(_, c) | { c }).sum();
+		assert_eq!(l, count)
+	}
+
+    /// Search for the number of occurrences of logged lines which
+    /// 1. belong to the specified module and
+    /// 2. match the given regex pattern.
+    /// Assert that the number of occurrences equals the given `count`
+	pub fn assert_log_regex(&self, module: String, pattern: regex::Regex, count: usize) {
+		let log_entries = self.lines.lock().unwrap();
+		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
+			m == &module && pattern.is_match(&l)
+		}).map(|(_, c) | { c }).sum();
+		assert_eq!(l, count)
 	}
 }
 
