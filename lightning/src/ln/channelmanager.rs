@@ -2745,10 +2745,21 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 				let were_node_one = announcement.node_id_1 == our_node_id;
 				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
-						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
-					let chan_err: ChannelError = ChannelError::Close("Bad announcement_signatures node_signature".to_owned());
-					try_chan_entry!(self, Err(chan_err), channel_state, chan);
+				{
+					let their_node_key = if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 };
+					let their_bitcoin_key = if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 };
+					match (self.secp_ctx.verify(&msghash, &msg.node_signature, their_node_key),
+						   self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, their_bitcoin_key)) {
+						(Err(e), _) => {
+							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify node_signature: {:?}. Maybe using different node_secret for transport and routing msg? UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}", e, &announcement, their_node_key));
+							try_chan_entry!(self, Err(chan_err), channel_state, chan);
+						},
+						(_, Err(e)) => {
+							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify bitcoin_signature: {:?}. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})", e, &announcement, their_bitcoin_key));
+							try_chan_entry!(self, Err(chan_err), channel_state, chan);
+						},
+						_ => {}
+					}
 				}
 
 				let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
