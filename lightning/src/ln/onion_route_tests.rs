@@ -64,7 +64,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 		txdata: vec![],
 	};
 	for ix in 0..nodes.len() {
-		nodes[ix].block_notifier.block_connected(&block, 1);
+		connect_block(&nodes[ix], &block, 1);
 	}
 
 	macro_rules! expect_event {
@@ -448,7 +448,7 @@ fn test_onion_failure() {
 			txdata: vec![],
 		};
 
-		nodes[1].block_notifier.block_connected(&block, height);
+		connect_block(&nodes[1], &block, height);
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, |_| {}, || {
@@ -462,7 +462,7 @@ fn test_onion_failure() {
 			txdata: vec![],
 		};
 
-		nodes[2].block_notifier.block_connected(&block, height);
+		connect_block(&nodes[2], &block, height);
 	}, || {}, true, Some(17), None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, |_| {}, || {

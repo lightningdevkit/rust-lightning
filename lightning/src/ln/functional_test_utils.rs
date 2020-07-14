@@ -46,7 +46,6 @@ use std::collections::HashMap;
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
 
 pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
-	let notifier = &node.block_notifier;
 	let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 	let dummy_tx_count = tx.version as usize;
 	let mut block = Block {
@@ -54,31 +53,38 @@ pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Tran
 		txdata: vec![dummy_tx; dummy_tx_count],
 	};
 	block.txdata.push(tx.clone());
-	notifier.block_connected(&block, 1);
+	connect_block(node, &block, 1);
 	for i in 2..CHAN_CONFIRM_DEPTH {
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
-		notifier.block_connected(&block, i);
+		connect_block(node, &block, i);
 	}
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
-	let notifier = &node.block_notifier;
 	let mut block = Block {
 		header: BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	notifier.block_connected(&block, height + 1);
+	connect_block(node, &block, height + 1);
 	for i in 2..depth + 1 {
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
-		notifier.block_connected(&block, height + i);
+		connect_block(node, &block, height + i);
 	}
 	block.header.block_hash()
+}
+
+pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
+	node.block_notifier.block_connected(block, height)
+}
+
+pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
+	node.block_notifier.block_disconnected(header, height)
 }
 
 pub struct TestChanMonCfg {

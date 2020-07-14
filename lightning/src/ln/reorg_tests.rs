@@ -61,7 +61,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_1_commitment_txn[1], node_1_commitment_txn[0]);
 
 		// Give node 2 node 1's transactions and get its response (claiming the HTLC instead).
-		nodes[2].block_notifier.block_connected(&Block { header, txdata: node_1_commitment_txn.clone() }, CHAN_CONFIRM_DEPTH + 1);
+		connect_block(&nodes[2], &Block { header, txdata: node_1_commitment_txn.clone() }, CHAN_CONFIRM_DEPTH + 1);
 		check_added_monitors!(nodes[2], 1);
 		check_closed_broadcast!(nodes[2], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -72,7 +72,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
 
 		// Confirm node 1's commitment txn (and HTLC-Timeout) on node 1
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: node_1_commitment_txn.clone() }, CHAN_CONFIRM_DEPTH + 1);
+		connect_block(&nodes[1], &Block { header, txdata: node_1_commitment_txn.clone() }, CHAN_CONFIRM_DEPTH + 1);
 
 		// ...but return node 1's commitment tx in case claim is set and we're preparing to reorg
 		vec![node_1_commitment_txn[0].clone(), node_2_commitment_txn[0].clone()]
@@ -85,7 +85,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_2_commitment_txn[1], node_2_commitment_txn[0]);
 
 		// Give node 1 node 2's commitment transaction and get its response (timing the HTLC out)
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_2_commitment_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![node_2_commitment_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 		let node_1_commitment_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_1_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Timeout, ChannelManger: 1 local commitment tx, 1 Offered HTLC-Timeout
 		assert_eq!(node_1_commitment_txn[1].output.len(), 2); // to-local and Offered HTLC (to-remote is dust)
@@ -94,7 +94,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_1_commitment_txn[0], node_2_commitment_txn[0]);
 
 		// Confirm node 2's commitment txn (and node 1's HTLC-Timeout) on node 1
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_2_commitment_txn[0].clone(), node_1_commitment_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![node_2_commitment_txn[0].clone(), node_1_commitment_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 		// ...but return node 2's commitment tx (and claim) in case claim is set and we're preparing to reorg
 		node_2_commitment_txn
 	};
@@ -110,7 +110,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
-		nodes[1].block_notifier.block_connected(&block, i);
+		connect_block(&nodes[1], &block, i);
 		blocks.push(block.clone());
 	}
 	check_added_monitors!(nodes[1], 0);
@@ -119,14 +119,14 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	if claim {
 		// Now reorg back to CHAN_CONFIRM_DEPTH and confirm node 2's broadcasted transactions:
 		for (height, block) in (CHAN_CONFIRM_DEPTH + 1..CHAN_CONFIRM_DEPTH + ANTI_REORG_DELAY - 1).zip(blocks.iter()).rev() {
-			nodes[1].block_notifier.block_disconnected(&block.header, height);
+			disconnect_block(&nodes[1], &block.header, height);
 		}
 
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: claim_txn,
 		};
-		nodes[1].block_notifier.block_connected(&block, CHAN_CONFIRM_DEPTH + 1);
+		connect_block(&nodes[1], &block, CHAN_CONFIRM_DEPTH + 1);
 
 		// ChannelManager only polls ManyChannelMonitor::get_and_clear_pending_monitor_events when we
 		// probe it for events, so we probe non-message events here (which should still end up empty):
@@ -137,7 +137,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
-		nodes[1].block_notifier.block_connected(&block, CHAN_CONFIRM_DEPTH + ANTI_REORG_DELAY);
+		connect_block(&nodes[1], &block, CHAN_CONFIRM_DEPTH + ANTI_REORG_DELAY);
 		expect_pending_htlcs_forwardable!(nodes[1]);
 	}
 
