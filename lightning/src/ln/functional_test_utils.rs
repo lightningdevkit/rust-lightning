@@ -44,7 +44,9 @@ use std::mem;
 use std::collections::HashMap;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
-pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b>, tx: &Transaction) {
+
+pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
+	let notifier = &node.block_notifier;
 	let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 	let dummy_tx_count = tx.version as usize;
 	let mut block = Block {
@@ -62,7 +64,8 @@ pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifi
 	}
 }
 
-pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
+pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
+	let notifier = &node.block_notifier;
 	let mut block = Block {
 		header: BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
@@ -387,7 +390,7 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 }
 
 pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_recv: &'a Node<'b, 'c, 'c>, node_conf: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
-	confirm_transaction(&node_conf.block_notifier, &tx);
+	confirm_transaction(node_conf, tx);
 	node_recv.node.handle_funding_locked(&node_conf.node.get_our_node_id(), &get_event_msg!(node_conf, MessageSendEvent::SendFundingLocked, node_recv.node.get_our_node_id()));
 }
 
@@ -413,7 +416,7 @@ pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(node_recv
 
 pub fn create_chan_between_nodes_with_value_confirm<'a, 'b, 'c, 'd>(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, tx: &Transaction) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
 	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx);
-	confirm_transaction(&node_a.block_notifier, &tx);
+	confirm_transaction(node_a, tx);
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
