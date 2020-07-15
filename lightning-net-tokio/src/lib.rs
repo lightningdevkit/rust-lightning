@@ -90,7 +90,7 @@ struct Connection {
 	event_notify: mpsc::Sender<()>,
 	// Because our PeerManager is templated by user-provided types, and we can't (as far as I can
 	// tell) have a const RawWakerVTable built out of templated functions, we need some indirection
-	// between being woken up with write-ready and calling PeerManager::write_buffer_spce_avail.
+	// between being woken up with write-ready and calling PeerManager::write_buffer_space_avail.
 	// This provides that indirection, with a Sender which gets handed to the PeerManager Arc on
 	// the schedule_read stack.
 	//
