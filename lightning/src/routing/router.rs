@@ -15,6 +15,7 @@ use util::logger::Logger;
 use std::cmp;
 use std::collections::{HashMap,BinaryHeap};
 use std::ops::Deref;
+use std::io::Error;
 
 /// A hop in a route
 #[derive(Clone, PartialEq)]
@@ -115,6 +116,35 @@ pub struct RouteHint {
 	pub cltv_expiry_delta: u16,
 	/// The minimum value, in msat, which must be relayed to the next hop.
 	pub htlc_minimum_msat: u64,
+}
+
+impl_writeable!(RouteHint, 33 + 8 + 4*2 + 2 + 8, {
+	src_node_id,
+	short_channel_id,
+	fees,
+	cltv_expiry_delta,
+	htlc_minimum_msat
+});
+
+impl Writeable for Vec<RouteHint> {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		(self.len() as u64).write(writer)?;
+		for hint in self {
+			hint.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for Vec<RouteHint> {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let hint_count: u64 = Readable::read(reader)?;
+		let mut hints = Vec::with_capacity(hint_count as usize);
+		for _ in 0..hint_count {
+			hints.push(Readable::read(reader)?);
+		}
+		Ok(hints)
+	}
 }
 
 #[derive(Eq, PartialEq)]

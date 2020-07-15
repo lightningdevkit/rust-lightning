@@ -207,7 +207,8 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 	peer_counter_low: AtomicUsize,
 	peer_counter_high: AtomicUsize,
 
-	logger: L,
+	/// This has been made to public so that we can use it in send_payment ffi call.
+	pub logger: L,
 }
 
 enum MessageHandlingError {

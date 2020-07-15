@@ -468,6 +468,14 @@ pub struct LightningError {
 	pub action: ErrorAction,
 }
 
+impl fmt::Display for LightningError {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		f.write_str(self.err.as_str())
+	}
+}
+
+impl std::error::Error for LightningError {}
+
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
 #[derive(PartialEq, Clone)]
@@ -659,6 +667,7 @@ pub use self::fuzzy_internal_msgs::*;
 #[cfg(not(feature = "fuzztarget"))]
 pub(crate) use self::fuzzy_internal_msgs::*;
 use std::panic::{RefUnwindSafe, UnwindSafe};
+use bitcoin::hashes::core::fmt::{Formatter};
 
 #[derive(Clone)]
 pub(crate) struct OnionPacket {
