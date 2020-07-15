@@ -20,7 +20,10 @@ use crate::{
     adaptors::primitives::{Bytes32, FFIBytes, Bytes33},
     utils::into_fixed_buffer
 };
-use crate::channelmanager::FFIArcChannelManagerHandle;
+use crate::channelmanager::{FFIArcChannelManagerHandle};
+use lightning::routing::router::{get_route, RouteHint};
+use lightning::ln::channelmanager::PaymentHash;
+use lightning::util::ser::Readable;
 
 type FFISimpleArcPeerManager = PeerManager<FFISocketDescriptor, Arc<FFIArcChannelManager>, Arc<NetGraphMsgHandler<Arc<FFIChainWatchInterface>, Arc<FFILogger>>>, Arc<FFILogger>>;
 type FFIArcPeerManagerHandle<'a> = HandleShared<'a, FFISimpleArcPeerManager>;
@@ -39,7 +42,6 @@ fn construct_socket_desc (
     let socket = FFISocketDescriptor { index, send_data_ptr: *send_data_ref, disconnect_socket_ptr: *disconnect_socket_ref };
     socket
 }
-
 
 ffi! {
     fn create_peer_manager(
@@ -82,9 +84,7 @@ ffi! {
                 *watch_all_txn_ref,
                 *get_chain_utxo_ref,
                 *filter_block_ref,
-                *reentered_ref,
-                network.to_network(),
-                logger_arc.clone()
+                *reentered_ref
             ));
         let route_handler = NetGraphMsgHandler::new(chain_watch_interface_arc, logger_arc.clone());
         let chan_man = unsafe_block!("It must point to valid ChannelManager" => chan_man.as_arc());
@@ -185,6 +185,29 @@ ffi! {
         let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
         let mut node_ids = peer_man.get_peer_node_ids();
         into_fixed_buffer(&mut node_ids, buf, &mut actual_node_ids_len)
+    }
+
+    fn send_payment_with_peer_manager(
+        their_node_id: Ref<Bytes33>,
+        payment_hash_ref: Ref<Bytes32>,
+        last_hops_ref: Ref<FFIBytes>,
+        final_value_msat: u64,
+        final_cltv: u32,
+        peerman_handle: FFIArcPeerManagerHandle,
+        chanman_handle: FFIArcChannelManagerHandle
+    ) -> FFIResult {
+        let chan_man: &FFIArcChannelManager = unsafe_block!("We know handle points to valid ChannelManager" => chanman_handle.as_ref());
+        let their_node_id = unsafe_block!("" => their_node_id.as_ref());
+        let their_node_id: secp256k1::PublicKey = their_node_id.clone().try_into()?;
+        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know the handle points to valid PeerManager" => peerman_handle.as_ref());
+        let graph = peer_man.message_handler.route_handler.network_graph.read().unwrap();
+        let hops = chan_man.list_usable_channels();
+        let last_hops = unsafe_block!("data lives as long as this function and it points to valid value" => last_hops_ref.as_ref());
+        let last_hops: Vec<RouteHint> = Readable::read(&mut last_hops.as_ref()).expect("Failed to deserialize last_hops");
+        let route = get_route(&chan_man.get_our_node_id(), &graph, &their_node_id, Some(&hops), last_hops.as_ref(), final_value_msat, final_cltv, peer_man.logger.clone())?;
+        let payment_hash: PaymentHash = unsafe_block!("We know it points to valid hash data" => payment_hash_ref.as_ref()).clone().into();
+        chan_man.send_payment(&route, payment_hash, &None)?;
+        FFIResult::ok()
     }
 
     fn release_peer_manager(handle: FFIArcPeerManagerHandle) -> FFIResult {

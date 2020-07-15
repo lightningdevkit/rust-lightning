@@ -104,8 +104,6 @@ pub(crate) fn construct_channel_manager(
             *get_chain_utxo,
             *filter_block,
             *reentered,
-            network,
-            logger_arc.clone()
         ));
 
     let broadcast_ref = unsafe_block!("" => broadcast_transaction_ptr.as_ref());

@@ -1,7 +1,6 @@
 use crate::error::FFIResult;
 use lightning::util::events::Event;
 use lightning::chain::transaction::OutPoint;
-use bitcoin::hash_types::Txid;
 use hex;
 use crate::adaptors::primitives::FFIEvents;
 use crate::utils::into_fixed_buffer;

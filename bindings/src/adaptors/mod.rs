@@ -7,7 +7,7 @@ use std::{
 };
 
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::{blockdata::transaction::Transaction, blockdata::script::Script, blockdata::block::Block, consensus::serialize as bitcoin_serialize, consensus::deserialize as bitcoin_deserialize, Network};
+use bitcoin::{blockdata::transaction::Transaction, blockdata::script::Script, blockdata::block::Block, consensus::serialize as bitcoin_serialize, Network};
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{Secp256k1, Signing};
 
@@ -23,10 +23,8 @@ use lightning::{
 pub mod primitives;
 use primitives::*;
 use std::sync::Arc;
-use lightning::chain::keysinterface::{ChannelKeys, InMemoryChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1::Error::InvalidMessage;
-use bitcoin::util::key::Error::Secp256k1 as Secp256k1Error;
 use lightning::util::ser::Readable;
 use lightning::ln::msgs::DecodeError;
 
@@ -224,8 +222,6 @@ impl FFIChainWatchInterface {
         get_chain_utxo: chain_watch_interface_fn::GetChainUtxoPtr,
         filter_block: chain_watch_interface_fn::FilterBlock,
         reentered: chain_watch_interface_fn::ReEntered,
-        network: Network,
-        logger: Arc<dyn Logger>
     ) -> FFIChainWatchInterface {
         FFIChainWatchInterface{
             install_watch_tx_ptr: install_watch_tx,
@@ -347,7 +343,7 @@ impl Readable for FFIChannelKeys {
 }
 
 pub mod keys_interface_fn {
-    use super::{Bytes32, FFIChannelKeys, Bool};
+    use super::Bool;
     pub type GetNodeSecret = extern "cdecl" fn (*mut [u8; 32]);
     pub type GetDestinationScript = extern "cdecl" fn (script_ptr: *mut u8, script_len: *mut usize);
     pub type GetShutdownPubKey = extern "cdecl" fn (pk_ptr: *mut [u8; 33]);

@@ -48,8 +48,6 @@ ffi! {
                 *get_chain_utxo_ref,
                 *filter_block_ref,
                 *reentered_ref,
-                network,
-                logger_arc.clone()
             ));
         let block_notifier = FFIBlockNotifier::new(chain_watch_interface_arc);
         unsafe_block!("We know handle is not null by wrapper macro. And we know `Out` is writable" => handle.init(HandleShared::alloc(block_notifier)));

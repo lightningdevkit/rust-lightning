@@ -1,15 +1,3 @@
-macro_rules! assert_match {
-    ($bind:pat = $bind_from:expr) => {
-        assert_match!($bind = $bind_from => ())
-    };
-    ($bind:pat = $bind_from:expr => $with:expr) => {
-        match $bind_from {
-            $bind => $with,
-            _ => panic!("assertion failed: unexpected value `{:?}`", $bind_from),
-        }
-    };
-}
-
 pub mod static_assert {
     use std::panic::UnwindSafe;
 
