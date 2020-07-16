@@ -41,7 +41,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, Hold
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
-use chain::chaininterface::{ChainListener, ChainWatchInterface, ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{ChainListener, ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
@@ -147,6 +147,11 @@ pub enum ChannelMonitorUpdateErr {
 	/// Note that even when you fail a holder commitment transaction update, you must store the
 	/// update to ensure you can claim from it in case of a duplicate copy of this ChannelMonitor
 	/// broadcasts it (e.g distributed channel-monitor deployment)
+	///
+	/// In case of distributed watchtowers deployment, the new version must be written to disk, as
+	/// state may have been stored but rejected due to a block forcing a commitment broadcast. This
+	/// storage is used to claim outputs of rejected state confirmed onchain by another watchtower,
+	/// lagging behind on block processing.
 	PermanentFailure,
 }
 
@@ -191,16 +196,14 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 /// `OutPoint` as the key, which will give you a ManyChannelMonitor implementation.
 ///
 /// (C-not exported) due to an unconstrained generic in `Key`
-pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref>
+pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref>
 	where T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
-        C::Target: ChainWatchInterface,
 {
 	/// The monitors
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	watch_events: Mutex<WatchEventQueue>,
-	chain_monitor: C,
 	broadcaster: T,
 	logger: L,
 	fee_estimator: F
@@ -267,12 +270,11 @@ impl WatchEventQueue {
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, C: Deref + Sync + Send>
-	ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
+	ChainListener for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
 {
 	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
 		let mut watch_events = self.watch_events.lock().unwrap();
@@ -299,19 +301,17 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
+impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
 {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(chain_monitor: C, broadcaster: T, logger: L, feeest: F) -> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C> {
+	pub fn new(broadcaster: T, logger: L, feeest: F) -> SimpleManyChannelMonitor<Key, ChanSigner, T, F, L> {
 		let res = SimpleManyChannelMonitor {
 			monitors: Mutex::new(HashMap::new()),
 			watch_events: Mutex::new(WatchEventQueue::new()),
-			chain_monitor,
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
@@ -356,11 +356,10 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 	}
 }
 
-impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, C: Deref + Sync + Send> ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint, ChanSigner, T, F, L, C>
+impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send> ManyChannelMonitor for SimpleManyChannelMonitor<OutPoint, ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
 {
 	type Keys = ChanSigner;
 
@@ -387,11 +386,10 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> events::EventsProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		let mut pending_events = Vec::new();
@@ -402,11 +400,10 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: De
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref, C: Deref> chain::WatchEventProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
+impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> chain::WatchEventProvider for SimpleManyChannelMonitor<Key, ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
-        C::Target: ChainWatchInterface,
 {
 	fn release_pending_watch_events(&self) -> Vec<chain::WatchEvent> {
 		self.watch_events.lock().unwrap().dequeue_events()
@@ -958,13 +955,6 @@ pub trait ManyChannelMonitor: Send + Sync {
 	fn add_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitor<Self::Keys>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Updates a monitor for the given `funding_txo`.
-	///
-	/// TODO(jkczyz): Determine where this should go from e73036c6845fd3cc16479a1b497db82a5ebb3897.
-	///
-	/// In case of distributed watchtowers deployment, even if an Err is return, the new version
-	/// must be written to disk, as state may have been stored but rejected due to a block forcing
-	/// a commitment broadcast. This storage is used to claim outputs of rejected state confirmed
-	/// onchain by another watchtower, lagging behind on block processing.
 	fn update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Used by ChannelManager to get list of HTLC resolved onchain and which needed to be updated

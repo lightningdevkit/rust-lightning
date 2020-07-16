@@ -48,11 +48,11 @@ At a high level, some of the common interfaces fit together as follows:
  |    (as                      ------------------       ----------------------
  |    ChannelMessageHandler)-> | ChannelManager | ----> | ManyChannelMonitor |
  v               /             ------------------       ----------------------
---------------- /                ^         (as EventsProvider)   ^
-| PeerManager |-                 |              \     /         /
----------------                  |        -------\---/----------
- |              -----------------------  /        \ /
- |              | ChainWatchInterface | -          v
+--------------- /                          (as EventsProvider)
+| PeerManager |-                                \     /
+---------------                                  \   /
+ |              -----------------------           \ /
+ |              | ChainWatchInterface |            v
  |              -----------------------        ---------
  |                            |                | Event |
 (as RoutingMessageHandler)    v                ---------
