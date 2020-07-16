@@ -39,6 +39,7 @@ pub enum Kind {
     /// When this is the last error, the caller should try to increase the buffer size and call the function again.
     BufferTooSmall,
     InternalError,
+    PaymentSendFailure,
 }
 
 impl<E> From<E> for FFIResult
@@ -167,6 +168,12 @@ impl FFIResult {
         self.kind == Kind::InternalError
     }
 
+    pub (super) fn payment_send_failure() -> Self {
+        FFIResult { kind: Kind::PaymentSendFailure, id: next_err_id() }
+    }
+
+    pub fn is_payment_send_failure(&self) -> bool { self.kind == Kind::PaymentSendFailure }
+
     /// Attempt to get a human-readable error message for a result.
     /// If the result is successful then this method returns `None`.
     pub fn as_err(&self) -> Option<&'static str> {
@@ -177,6 +184,7 @@ impl FFIResult {
             Kind::DeserializationFailure => Some("Failed to deserialize byte array passed to ffi"),
             Kind::InternalError => Some("An internal error occured"),
             Kind::BufferTooSmall => Some("buffer was too small"),
+            Kind::PaymentSendFailure => Some("send_payment has failed")
         }
     }
 

@@ -21,8 +21,8 @@ use crate::{
     utils::into_fixed_buffer
 };
 use crate::channelmanager::{FFIArcChannelManagerHandle};
-use lightning::routing::router::{get_route, RouteHint};
-use lightning::ln::channelmanager::PaymentHash;
+use lightning::routing::router::{get_route, RouteHint, Route};
+use lightning::ln::channelmanager::{PaymentHash, PaymentSecret};
 use lightning::util::ser::Readable;
 
 type FFISimpleArcPeerManager = PeerManager<FFISocketDescriptor, Arc<FFIArcChannelManager>, Arc<NetGraphMsgHandler<Arc<FFIChainWatchInterface>, Arc<FFILogger>>>, Arc<FFILogger>>;
@@ -41,6 +41,34 @@ fn construct_socket_desc (
     let disconnect_socket_ref = unsafe_block!("" =>  disconnect_socket_ptr.as_ref());
     let socket = FFISocketDescriptor { index, send_data_ptr: *send_data_ref, disconnect_socket_ptr: *disconnect_socket_ref };
     socket
+}
+
+fn send_payment_inner(
+    their_node_id: Ref<Bytes33>,
+    payment_hash_ref: Ref<Bytes32>,
+    last_hops_ref: Ref<FFIBytes>,
+    final_value_msat: u64,
+    final_cltv: u32,
+    maybe_payment_secret: &Option<PaymentSecret>,
+    peerman_handle: FFIArcPeerManagerHandle,
+    chanman_handle: FFIArcChannelManagerHandle
+) -> FFIResult {
+    let their_node_id = unsafe_block!("" => their_node_id.as_ref());
+    let their_node_id: secp256k1::PublicKey = their_node_id.clone().try_into()?;
+    let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know the handle points to valid PeerManager" => peerman_handle.as_ref());
+    let chan_man = unsafe_block!("It must point to valid ChannelManager" => chanman_handle.as_arc());
+    let graph = peer_man.message_handler.route_handler.network_graph.read().unwrap();
+    let hops = chan_man.list_usable_channels();
+    let last_hops = unsafe_block!("data lives as long as this function and it points to valid value" => last_hops_ref.as_ref());
+    let last_hops: Vec<RouteHint> = Readable::read(&mut last_hops.as_ref()).expect("Failed to deserialize last_hops");
+    let mut route = get_route(&chan_man.get_our_node_id(), &graph, &their_node_id, Some(&hops), last_hops.as_ref(), final_value_msat, final_cltv, peer_man.logger.clone())?;
+    if (maybe_payment_secret.is_none())
+    {
+        route = Route { paths: route.paths[0..1].to_vec() }
+    }
+    let payment_hash: PaymentHash = unsafe_block!("We know it points to valid hash data" => payment_hash_ref.as_ref()).clone().into();
+    chan_man.send_payment(&route, payment_hash, maybe_payment_secret)?;
+    FFIResult::ok()
 }
 
 ffi! {
@@ -187,7 +215,7 @@ ffi! {
         into_fixed_buffer(&mut node_ids, buf, &mut actual_node_ids_len)
     }
 
-    fn send_payment_with_peer_manager(
+    fn send_non_mpp_payment_with_peer_manager(
         their_node_id: Ref<Bytes33>,
         payment_hash_ref: Ref<Bytes32>,
         last_hops_ref: Ref<FFIBytes>,
@@ -196,18 +224,21 @@ ffi! {
         peerman_handle: FFIArcPeerManagerHandle,
         chanman_handle: FFIArcChannelManagerHandle
     ) -> FFIResult {
-        let chan_man: &FFIArcChannelManager = unsafe_block!("We know handle points to valid ChannelManager" => chanman_handle.as_ref());
-        let their_node_id = unsafe_block!("" => their_node_id.as_ref());
-        let their_node_id: secp256k1::PublicKey = their_node_id.clone().try_into()?;
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know the handle points to valid PeerManager" => peerman_handle.as_ref());
-        let graph = peer_man.message_handler.route_handler.network_graph.read().unwrap();
-        let hops = chan_man.list_usable_channels();
-        let last_hops = unsafe_block!("data lives as long as this function and it points to valid value" => last_hops_ref.as_ref());
-        let last_hops: Vec<RouteHint> = Readable::read(&mut last_hops.as_ref()).expect("Failed to deserialize last_hops");
-        let route = get_route(&chan_man.get_our_node_id(), &graph, &their_node_id, Some(&hops), last_hops.as_ref(), final_value_msat, final_cltv, peer_man.logger.clone())?;
-        let payment_hash: PaymentHash = unsafe_block!("We know it points to valid hash data" => payment_hash_ref.as_ref()).clone().into();
-        chan_man.send_payment(&route, payment_hash, &None)?;
-        FFIResult::ok()
+        send_payment_inner(their_node_id, payment_hash_ref, last_hops_ref, final_value_msat, final_cltv, &None, peerman_handle, chanman_handle)
+    }
+
+    fn send_mpp_payment_with_peer_manager(
+        their_node_id: Ref<Bytes33>,
+        payment_hash_ref: Ref<Bytes32>,
+        last_hops_ref: Ref<FFIBytes>,
+        final_value_msat: u64,
+        final_cltv: u32,
+        payment_secret_ref: Ref<Bytes32>,
+        peerman_handle: FFIArcPeerManagerHandle,
+        chanman_handle: FFIArcChannelManagerHandle
+    ) -> FFIResult {
+        let payment_secret: PaymentSecret = unsafe_block!("We know the pointer points to valid payment secret and it lives as long as this function" => payment_secret_ref.as_ref()).clone().into();
+        send_payment_inner(their_node_id, payment_hash_ref, last_hops_ref, final_value_msat, final_cltv, &Some(payment_secret), peerman_handle, chanman_handle)
     }
 
     fn release_peer_manager(handle: FFIArcPeerManagerHandle) -> FFIResult {
