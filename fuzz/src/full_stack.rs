@@ -25,7 +25,8 @@ use bitcoin::hashes::HashEngine as TraitImportEngine;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
-use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil};
+use lightning::chain;
+use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
@@ -146,7 +147,7 @@ type ChannelMan = ChannelManager<
 	EnforcingChannelKeys,
 	Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
-type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<ChainWatchInterfaceUtil>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
+type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan>,
@@ -332,7 +333,6 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		Err(_) => return,
 	};
 
-	let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin));
 	let broadcast = Arc::new(TestBroadcaster{});
 	let monitor = Arc::new(channelmonitor::SimpleManyChannelMonitor::new(broadcast.clone(), Arc::clone(&logger), fee_est.clone()));
 
@@ -343,7 +343,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
 	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0));
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
-	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(watch.clone(), Arc::clone(&logger)));
+	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(None, Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {

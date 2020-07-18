@@ -7,8 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use chain;
 use chain::chaininterface;
-use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface};
+use chain::chaininterface::ConfirmationTarget;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::channelmonitor;
@@ -22,12 +23,11 @@ use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::BlockHash;
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
@@ -393,27 +393,27 @@ impl TestKeysInterface {
 	}
 }
 
-pub struct TestChainWatcher {
-	pub utxo_ret: Mutex<Result<(Script, u64), ChainError>>,
+pub struct TestChainSource {
+	pub genesis_hash: BlockHash,
+	pub utxo_ret: Mutex<Result<TxOut, chain::AccessError>>,
 }
 
-impl TestChainWatcher {
-	pub fn new() -> Self {
-		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
-		Self { utxo_ret: Mutex::new(Ok((script, u64::max_value()))) }
+impl TestChainSource {
+	pub fn new(network: Network) -> Self {
+		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		Self {
+			genesis_hash: genesis_block(network).block_hash(),
+			utxo_ret: Mutex::new(Ok(TxOut { value: u64::max_value(), script_pubkey })),
+		}
 	}
 }
 
-impl ChainWatchInterface for TestChainWatcher {
-	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
-	fn watch_all_txn(&self) { }
-	fn filter_block(&self, _header: &BlockHeader, _txdata: &[(usize, &Transaction)]) -> Vec<usize> {
-		Vec::new()
-	}
-	fn reentered(&self) -> usize { 0 }
+impl chain::Access for TestChainSource {
+	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, chain::AccessError> {
+		if self.genesis_hash != *genesis_hash {
+			return Err(chain::AccessError::UnknownChain);
+		}
 
-	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		self.utxo_ret.lock().unwrap().clone()
 	}
 }

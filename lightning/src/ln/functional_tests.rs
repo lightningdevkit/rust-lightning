@@ -13,7 +13,7 @@
 
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
-use chain::chaininterface::{ChainListener, ChainWatchInterfaceUtil, BlockNotifier};
+use chain::chaininterface::{ChainListener, BlockNotifier};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
@@ -5748,7 +5748,7 @@ fn test_key_derivation_params() {
 	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator);
-	let node = NodeCfg { chain_monitor: &chanmon_cfgs[0].chain_monitor, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chan_monitor, keys_manager, node_seed: seed };
+	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chan_monitor, keys_manager, node_seed: seed };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
 	node_cfgs.insert(0, node);
@@ -7470,7 +7470,7 @@ fn test_data_loss_protect() {
 	let logger;
 	let fee_estimator;
 	let tx_broadcaster;
-	let chain_monitor;
+	let chain_source;
 	let monitor;
 	let node_state_0;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7494,7 +7494,7 @@ fn test_data_loss_protect() {
 	// Restore node A from previous state
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let mut chan_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0)).unwrap().1;
-	chain_monitor = ChainWatchInterfaceUtil::new(Network::Testnet);
+	chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
@@ -7515,7 +7515,7 @@ fn test_data_loss_protect() {
 	nodes[0].node = &node_state_0;
 	assert!(monitor.add_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor).is_ok());
 	nodes[0].chan_monitor = &monitor;
-	nodes[0].chain_monitor = &chain_monitor;
+	nodes[0].chain_source = &chain_source;
 
 	nodes[0].block_notifier = BlockNotifier::new();
 	nodes[0].block_notifier.register_listener(&nodes[0].chan_monitor.simple_monitor);

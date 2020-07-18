@@ -51,9 +51,9 @@ At a high level, some of the common interfaces fit together as follows:
 --------------- /                          (as EventsProvider)
 | PeerManager |-                                \     /
 ---------------                                  \   /
- |              -----------------------           \ /
- |              | ChainWatchInterface |            v
- |              -----------------------        ---------
+ |                    -----------------           \ /
+ |                    | chain::Access |            v
+ |                    -----------------        ---------
  |                            |                | Event |
 (as RoutingMessageHandler)    v                ---------
   \                   --------------------

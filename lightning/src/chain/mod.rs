@@ -10,13 +10,37 @@
 //! Structs and traits which allow other parts of rust-lightning to interact with the blockchain.
 
 use bitcoin::blockdata::script::Script;
-use bitcoin::hash_types::Txid;
+use bitcoin::blockdata::transaction::TxOut;
+use bitcoin::hash_types::{BlockHash, Txid};
 
 use chain::transaction::OutPoint;
 
 pub mod chaininterface;
 pub mod transaction;
 pub mod keysinterface;
+
+/// The `Access` trait defines behavior for accessing chain data and state, such as blocks and
+/// UTXOs.
+pub trait Access: Send + Sync {
+	/// Returns the transaction output of a funding transaction encoded by [`short_channel_id`].
+	/// Returns an error if `genesis_hash` is for a different chain or if such a transaction output
+	/// is unknown.
+	///
+	/// [`short_channel_id`]: https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#definition-of-short_channel_id
+	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, AccessError>;
+}
+
+/// An error when accessing the chain via [`Access`].
+///
+/// [`Access`]: trait.Access.html
+#[derive(Clone)]
+pub enum AccessError {
+	/// The requested chain is unknown.
+	UnknownChain,
+
+	/// The requested transaction doesn't exist or hasn't confirmed.
+	UnknownTx,
+}
 
 /// An interface for providing [`WatchEvent`]s.
 ///
