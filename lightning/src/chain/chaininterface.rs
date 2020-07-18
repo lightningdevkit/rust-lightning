@@ -16,60 +16,13 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::network::constants::Network;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::Txid;
 
-use std::sync::{Mutex, MutexGuard, Arc};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, Arc};
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::marker::PhantomData;
 use std::ptr;
-
-/// Used to give chain error details upstream
-#[derive(Clone)]
-pub enum ChainError {
-	/// Client doesn't support UTXO lookup (but the chain hash matches our genesis block hash)
-	NotSupported,
-	/// Chain isn't the one watched
-	NotWatched,
-	/// Tx doesn't exist or is unconfirmed
-	UnknownTx,
-}
-
-/// An interface to request notification of certain scripts as they appear the
-/// chain.
-///
-/// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
-/// called from inside the library in response to ChainListener events, P2P events, or timer
-/// events).
-pub trait ChainWatchInterface: Sync + Send {
-	/// Provides a txid/random-scriptPubKey-in-the-tx which much be watched for.
-	fn install_watch_tx(&self, txid: &Txid, script_pub_key: &Script);
-
-	/// Provides an outpoint which must be watched for, providing any transactions which spend the
-	/// given outpoint.
-	fn install_watch_outpoint(&self, outpoint: (Txid, u32), out_script: &Script);
-
-	/// Indicates that a listener needs to see all transactions.
-	fn watch_all_txn(&self);
-
-	/// Gets the script and value in satoshis for a given unspent transaction output given a
-	/// short_channel_id (aka unspent_tx_output_identier). For BTC/tBTC channels the top three
-	/// bytes are the block height, the next 3 the transaction index within the block, and the
-	/// final two the output within the transaction.
-	fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
-
-	/// Gets the list of transaction indices within a given block that the ChainWatchInterface is
-	/// watching for.
-	fn filter_block(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)]) -> Vec<usize>;
-
-	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
-	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
-	/// determine whether they need to re-filter a given block.
-	fn reentered(&self) -> usize;
-}
 
 /// An interface to send a transaction to the Bitcoin network.
 pub trait BroadcasterInterface: Sync + Send {
@@ -284,107 +237,6 @@ impl<'a, CL: Deref + 'a> BlockNotifier<'a, CL>
 		for listener in listeners.iter() {
 			listener.block_disconnected(&header, disconnected_height);
 		}
-	}
-}
-
-/// Utility to capture some common parts of ChainWatchInterface implementors.
-///
-/// Keeping a local copy of this in a ChainWatchInterface implementor is likely useful.
-pub struct ChainWatchInterfaceUtil {
-	network: Network,
-	watched: Mutex<ChainWatchedUtil>,
-	reentered: AtomicUsize,
-}
-
-// We only expose PartialEq in test since its somewhat unclear exactly what it should do and we're
-// only comparing a subset of fields (essentially just checking that the set of things we're
-// watching is the same).
-#[cfg(test)]
-impl PartialEq for ChainWatchInterfaceUtil {
-	fn eq(&self, o: &Self) -> bool {
-		self.network == o.network &&
-		*self.watched.lock().unwrap() == *o.watched.lock().unwrap()
-	}
-}
-
-/// Register listener
-impl ChainWatchInterface for ChainWatchInterfaceUtil {
-	fn install_watch_tx(&self, txid: &Txid, script_pub_key: &Script) {
-		let mut watched = self.watched.lock().unwrap();
-		if watched.register_tx(txid, script_pub_key) {
-			self.reentered.fetch_add(1, Ordering::Relaxed);
-		}
-	}
-
-	fn install_watch_outpoint(&self, outpoint: (Txid, u32), out_script: &Script) {
-		let mut watched = self.watched.lock().unwrap();
-		if watched.register_outpoint(outpoint, out_script) {
-			self.reentered.fetch_add(1, Ordering::Relaxed);
-		}
-	}
-
-	fn watch_all_txn(&self) {
-		let mut watched = self.watched.lock().unwrap();
-		if watched.watch_all() {
-			self.reentered.fetch_add(1, Ordering::Relaxed);
-		}
-	}
-
-	fn get_chain_utxo(&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-		if genesis_hash != genesis_block(self.network).header.block_hash() {
-			return Err(ChainError::NotWatched);
-		}
-		Err(ChainError::NotSupported)
-	}
-
-	fn filter_block(&self, _header: &BlockHeader, txdata: &[(usize, &Transaction)]) -> Vec<usize> {
-		let mut matched_index = Vec::new();
-		let mut matched_txids = HashSet::new();
-		{
-			let watched = self.watched.lock().unwrap();
-			for (index, transaction) in txdata.iter().enumerate() {
-				// A tx matches the filter if it either matches the filter directly (via
-				// does_match_tx_unguarded) or if it is a descendant of another matched
-				// transaction within the same block, which we check for in the loop.
-				let mut matched = self.does_match_tx_unguarded(transaction.1, &watched);
-				for input in transaction.1.input.iter() {
-					if matched || matched_txids.contains(&input.previous_output.txid) {
-						matched = true;
-						break;
-					}
-				}
-				if matched {
-					matched_txids.insert(transaction.1.txid());
-					matched_index.push(index);
-				}
-			}
-		}
-		matched_index
-	}
-
-	fn reentered(&self) -> usize {
-		self.reentered.load(Ordering::Relaxed)
-	}
-}
-
-impl ChainWatchInterfaceUtil {
-	/// Creates a new ChainWatchInterfaceUtil for the given network
-	pub fn new(network: Network) -> ChainWatchInterfaceUtil {
-		ChainWatchInterfaceUtil {
-			network,
-			watched: Mutex::new(ChainWatchedUtil::new()),
-			reentered: AtomicUsize::new(1),
-		}
-	}
-
-	/// Checks if a given transaction matches the current filter.
-	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
-		let watched = self.watched.lock().unwrap();
-		self.does_match_tx_unguarded (tx, &watched)
-	}
-
-	fn does_match_tx_unguarded(&self, tx: &Transaction, watched: &MutexGuard<ChainWatchedUtil>) -> bool {
-		watched.does_match_tx(tx)
 	}
 }
 

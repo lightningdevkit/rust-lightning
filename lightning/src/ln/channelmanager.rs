@@ -3734,7 +3734,6 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 /// 4) Reconnect blocks on your ChannelMonitors.
 /// 5) Move the ChannelMonitors into your local ManyChannelMonitor.
 /// 6) Disconnect/connect blocks on the ChannelManager.
-/// 7) Register the new ChannelManager with your ChainWatchInterface.
 pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
