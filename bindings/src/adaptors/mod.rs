@@ -22,7 +22,6 @@ use lightning::{
 
 pub mod primitives;
 use primitives::*;
-use std::sync::Arc;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use lightning::util::ser::Readable;
@@ -253,16 +252,18 @@ impl ChainWatchInterface for FFIChainWatchInterface {
     }
     fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
         println!("Querying chain utxo by shortChannelId {}. ", unspent_tx_output_identifier);
-        let mut err = &mut FFIChainError::UnInitialized;
+        let err = &mut FFIChainError::UnInitialized;
         // the length can be anything as long as it is enough to put the scriptPubKey.
         // probably this is a bit overkill but who cares.
         let mut script = [0u8; 128];
-        let mut script_len = &mut usize::MAX;
-        let mut amount_satoshis = &mut u64::MAX;
+        let script_len = &mut usize::MAX;
+        let amount_satoshis = &mut u64::MAX;
         (self.get_chain_utxo_ptr)(&genesis_hash.into(), unspent_tx_output_identifier, err as *mut FFIChainError, script.as_mut_ptr(), script_len as *mut _, amount_satoshis as *mut _);
         if *err == FFIChainError::UnInitialized {
-            let script_bytes: &[u8]  = unsafe_block!("We know the caller has set the value into the script_ptr, script_len" => &script[..(*script_len)]);
-            let amount: u64 = unsafe_block!("We know the caller has set the value into the amount_satoshis" => *amount_satoshis);
+            assert!(*amount_satoshis != u64::MAX);
+            assert!(*script_len != usize::MAX);
+            let script_bytes: &[u8] = &script[..(*script_len)];
+            let amount: u64 = *amount_satoshis;
             let s = bitcoin::consensus::deserialize(script_bytes).expect("Failed to parse scriptpubkey");
             Ok((s, amount))
         } else {
@@ -274,12 +275,12 @@ impl ChainWatchInterface for FFIChainWatchInterface {
         let block_bytes = bitcoin_serialize(block);
         // the minimum weight for one tx is 440. So the max number of tx in one block is 9090.
         let mut matched_tx_index = [0; 9091];
-        let mut matched_tx_index_len_ptr: &mut usize = &mut usize::MAX;
+        let matched_tx_index_len_ptr: &mut usize = &mut usize::MAX;
         (self.filter_block_ptr)(block_bytes.as_ptr(), block_bytes.len(), matched_tx_index.as_mut_ptr(), matched_tx_index_len_ptr as *mut _);
         if matched_tx_index_len_ptr.clone() == usize::MAX {
             panic!("FFI failure. the caller must set the actual serialized length of the tx-indexes in filter_block");
         }
-        let mut matched_tx_indexes: &[usize] = unsafe_block!("We know the caller has set the value for serialized tx index" => &matched_tx_index[..(*matched_tx_index_len_ptr)]);
+        let matched_tx_indexes: &[usize] = &matched_tx_index[..(*matched_tx_index_len_ptr)];
         matched_tx_indexes.to_vec()
     }
 
@@ -394,7 +395,7 @@ impl KeysInterface for FFIKeysInterface {
 
     fn get_destination_script(&self) -> Script {
         let mut script_ptr = [0u8; 512];
-        let mut script_len: &mut usize = &mut usize::MAX;
+        let script_len: &mut usize = &mut usize::MAX;
         (self.get_destination_script_ptr)(script_ptr.as_mut_ptr(), script_len as *mut _);
         let s = bitcoin::consensus::Decodable::consensus_decode(&script_ptr[..(*script_len)]).expect("Failed to deserialize script");
         s
@@ -598,31 +599,31 @@ impl Writer for VecWriter {
 }
 
 impl RoutingMessageHandler for FFIRoutingMsgHandler {
-    fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError> {
+    fn handle_node_announcement(&self, _msg: &NodeAnnouncement) -> Result<bool, LightningError> {
         unimplemented!()
     }
 
-    fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, LightningError> {
+    fn handle_channel_announcement(&self, _msg: &ChannelAnnouncement) -> Result<bool, LightningError> {
         unimplemented!()
     }
 
-    fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, LightningError> {
+    fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> {
         unimplemented!()
     }
 
-    fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate) {
+    fn handle_htlc_fail_channel_update(&self, _update: &HTLCFailChannelUpdate) {
         unimplemented!()
     }
 
-    fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
+    fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
         unimplemented!()
     }
 
-    fn get_next_node_announcements(&self, starting_point: Option<&secp256k1::PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
+    fn get_next_node_announcements(&self, _starting_point: Option<&secp256k1::PublicKey>, _batch_amount: u8) -> Vec<NodeAnnouncement> {
         unimplemented!()
     }
 
-    fn should_request_full_sync(&self, node_id: &secp256k1::PublicKey) -> bool {
+    fn should_request_full_sync(&self, _node_id: &secp256k1::PublicKey) -> bool {
         unimplemented!()
     }
 }

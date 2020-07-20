@@ -49,9 +49,9 @@ where
     }
 
     unsafe_fn!("The pointer must be nonnull" => 
-    pub fn as_arc(&self) -> Arc<T> {
-        Arc::from_raw(self.0)
-    }
+        pub fn as_arc(&self) -> Arc<T> {
+            Arc::from_raw(self.0)
+        }
     );
 
     unsafe_fn!("There are no other live references and the handle won't be used again" =>

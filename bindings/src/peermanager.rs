@@ -55,14 +55,16 @@ fn send_payment_inner(
 ) -> FFIResult {
     let their_node_id = unsafe_block!("" => their_node_id.as_ref());
     let their_node_id: secp256k1::PublicKey = their_node_id.clone().try_into()?;
-    let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know the handle points to valid PeerManager" => peerman_handle.as_ref());
+    let peer_man: &FFISimpleArcPeerManager = peerman_handle.as_ref();
     let chan_man = unsafe_block!("It must point to valid ChannelManager" => chanman_handle.as_arc());
     let graph = peer_man.message_handler.route_handler.network_graph.read().unwrap();
     let hops = chan_man.list_usable_channels();
     let last_hops = unsafe_block!("data lives as long as this function and it points to valid value" => last_hops_ref.as_ref());
     let last_hops: Vec<RouteHint> = Readable::read(&mut last_hops.as_ref()).expect("Failed to deserialize last_hops");
-    let mut route = get_route(&chan_man.get_our_node_id(), &graph, &their_node_id, Some(&hops), last_hops.as_ref(), final_value_msat, final_cltv, peer_man.logger.clone())?;
-    if (maybe_payment_secret.is_none())
+    let our_node_id = chan_man.get_our_node_id();
+    println!("parameter to get_rotue is our_node_id: {:?} \n final_value_msat: {:?} \n final_cltv: {:?}", &our_node_id, final_value_msat, final_cltv);
+    let mut route = get_route(&our_node_id, &graph, &their_node_id, Some(&hops), last_hops.as_ref(), final_value_msat, final_cltv, peer_man.logger.clone())?;
+    if maybe_payment_secret.is_none()
     {
         route = Route { paths: route.paths[0..1].to_vec() }
     }
@@ -74,7 +76,6 @@ fn send_payment_inner(
 ffi! {
     fn create_peer_manager(
         seed: Ref<Bytes32>,
-        network_ref: Ref<FFINetwork>,
         cfg: Ref<UserConfig>,
 
         chan_man: FFIArcChannelManagerHandle,
@@ -90,7 +91,6 @@ ffi! {
         our_node_secret_ptr: Ref<Bytes32>,
         handle: Out<FFIArcPeerManagerHandle>
     ) -> FFIResult {
-        let network = unsafe_block!("" => *network_ref.as_ref());
         let log_ref = unsafe_block!("" => log_ptr.as_ref());
 
         let our_node_secret: secp256k1::SecretKey =  {
@@ -133,7 +133,7 @@ ffi! {
         handle: FFIArcPeerManagerHandle
         ) -> FFIResult {
         let socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         peer_man.new_inbound_connection(socket)?;
         FFIResult::ok()
     }
@@ -147,7 +147,7 @@ ffi! {
         initial_send: Out<[u8; 50]>
     ) -> FFIResult {
         let socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         let their_node_id = unsafe_block!("" => their_node_id.as_ref());
         let their_node_id: secp256k1::PublicKey = their_node_id.clone().try_into()?;
         let act_one = peer_man.new_outbound_connection(their_node_id, socket)?;
@@ -158,7 +158,7 @@ ffi! {
     }
 
     fn timer_tick_occured(handle: FFIArcPeerManagerHandle) -> FFIResult {
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         peer_man.timer_tick_occured();
         FFIResult::ok()
     }
@@ -170,7 +170,7 @@ ffi! {
         handle: FFIArcPeerManagerHandle
     ) -> FFIResult {
         let mut socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         peer_man.write_buffer_space_avail(&mut socket)?;
         FFIResult::ok()
     }
@@ -184,7 +184,7 @@ ffi! {
         handle: FFIArcPeerManagerHandle
     ) -> FFIResult {
         let mut socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         let data = unsafe_block!("data lives as long as this function and it points to valid value" => data_ref.as_ref());
         let should_pause = peer_man.read_event(&mut socket, data.as_ref())?;
         unsafe_block!("We know it points to valid u8" => should_pause_read.init(if should_pause { Bool::True } else { Bool::False }));
@@ -192,7 +192,7 @@ ffi! {
     }
 
     fn process_events(handle: FFIArcPeerManagerHandle) -> FFIResult {
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         peer_man.process_events();
         FFIResult::ok()
     }
@@ -203,14 +203,14 @@ ffi! {
         disconnect_socket_ptr: Ref<socket_descriptor_fn::DisconnectSocket>,
         handle: FFIArcPeerManagerHandle) -> FFIResult {
         let mut socket = construct_socket_desc(index, send_data_ptr, disconnect_socket_ptr);
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         peer_man.socket_disconnected(&socket);
         FFIResult::ok()
     }
 
     fn get_peer_node_ids(buf_out: Out<u8>, buf_len: usize, actual_node_ids_len: Out<usize>, handle: FFIArcPeerManagerHandle) -> FFIResult {
         let buf = unsafe_block!("The buffer lives as long as `get_peer_node_ids`, the length is within the buffer and the buffer won't be read before initialization" => buf_out.as_uninit_bytes_mut(buf_len));
-        let peer_man: &FFISimpleArcPeerManager = unsafe_block!("We know handle points to valid PeerManager" => handle.as_ref());
+        let peer_man: &FFISimpleArcPeerManager = handle.as_ref();
         let mut node_ids = peer_man.get_peer_node_ids();
         into_fixed_buffer(&mut node_ids, buf, &mut actual_node_ids_len)
     }

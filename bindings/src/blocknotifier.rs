@@ -8,7 +8,6 @@ use crate::{
     channelmanager::{FFIArcChannelManagerHandle, FFIArcChannelManager},
     adaptors::{chain_watch_interface_fn, FFIChainWatchInterface}
 };
-use crate::adaptors::{FFINetwork, ffilogger_fn, FFILogger};
 use bitcoin::BlockHeader;
 
 type FFIBlockNotifier = BlockNotifier<'static, Arc<dyn ChainListener>, Arc<FFIChainWatchInterface>>;
@@ -17,9 +16,6 @@ type FFIBlockNotifierHandle<'a> = HandleShared<'a, FFIBlockNotifier>;
 ffi! {
 
     fn create_block_notifier(
-        network_ref: FFINetwork,
-        log_ptr: Ref<ffilogger_fn::LogExtern>,
-
         install_watch_tx_ptr: Ref<chain_watch_interface_fn::InstallWatchTxPtr>,
         install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
         watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
@@ -29,9 +25,6 @@ ffi! {
 
         handle: Out<FFIBlockNotifierHandle>
     ) -> FFIResult {
-        let network = network_ref.to_network();
-        let log_ref = unsafe_block!("" => log_ptr.as_ref());
-        let logger_arc = Arc::new( FFILogger{ log_ptr: *log_ref } );
 
         let install_watch_tx_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_tx_ptr.as_ref());
         let install_watch_outpoint_ref = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_outpoint_ptr.as_ref());
@@ -59,7 +52,7 @@ ffi! {
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
         let chan_man: Arc<FFIArcChannelManager> = unsafe_block!("We know the handle points to valid channel_manager" => channel_manager.as_arc());
-        let block_notifier: &FFIBlockNotifier = unsafe_block!("We know the handle pointers to valid block notifier" => handle.as_ref());
+        let block_notifier: &FFIBlockNotifier = handle.as_ref();
         block_notifier.register_listener(chan_man);
         FFIResult::ok()
     }
@@ -69,7 +62,7 @@ ffi! {
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
         let chan_man: Arc<FFIArcChannelManager> = unsafe_block!("We know the handle points to valid channel_manager" => channel_manager.as_arc());
-        let block_notifier: &FFIBlockNotifier = unsafe_block!("We know the handle pointers to valid block notifier" => handle.as_ref());
+        let block_notifier: &FFIBlockNotifier = handle.as_ref();
         block_notifier.unregister_listener(chan_man);
         FFIResult::ok()
     }
@@ -79,7 +72,7 @@ ffi! {
         block_len: usize,
         height: u32,
         handle: FFIBlockNotifierHandle) -> FFIResult {
-        let block_notifier: &FFIBlockNotifier = unsafe_block!("We know the handle pointers to valid block notifier" => handle.as_ref());
+        let block_notifier: &FFIBlockNotifier = handle.as_ref();
         let block_bytes = unsafe_block!("block_ptr points to valid buffer of block_len length" => block_ptr.as_bytes(block_len));
         let block = bitcoin::consensus::deserialize(block_bytes)?;
         block_notifier.block_connected(&block, height);
@@ -92,7 +85,7 @@ ffi! {
         height: u32,
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
-        let block_notifier: &FFIBlockNotifier = unsafe_block!("We know the handle pointers to valid block notifier" => handle.as_ref());
+        let block_notifier: &FFIBlockNotifier = handle.as_ref();
 
         let block_header_bytes: &[u8] = unsafe_block!("We know it points to valid buffer of specified length" => block_header_ptr.as_bytes(block_header_len));
         let block_header: BlockHeader = bitcoin::consensus::encode::deserialize(block_header_bytes)?;

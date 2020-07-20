@@ -8,7 +8,6 @@ use bitcoin::{
     hash_types::{Txid, BlockHash},
     blockdata::script::Script,
     hashes::Hash,
-    Transaction,
     secp256k1
 };
 use lightning::{
@@ -267,15 +266,6 @@ array_struct!(FFIBlock);
 
 // General purpose byte array which has to cross ffi-boundary
 array_struct!(FFIBytes);
-
-/// For `ChainWatchInterface::filter_block`
-impl TryFrom<FFIBytes> for (Vec<&Transaction>, Vec<u32>) {
-    type Error = FFIResult;
-
-    fn try_from(bytes: FFIBytes) -> Result<Self, Self::Error> {
-        unimplemented!()
-    }
-}
 
 pub struct FFIEvents {
     pub events: Vec<Event>,
