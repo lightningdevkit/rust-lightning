@@ -468,6 +468,8 @@ impl PeerChannelEncryptor {
 
 #[cfg(test)]
 mod tests {
+	use super::LN_MAX_MSG_LEN;
+
 	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 	use hex;
@@ -713,5 +715,39 @@ mod tests {
 				assert_eq!(res, hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
 			}
 		}
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to encrypt message longer than 65535 bytes!")]
+	fn max_message_len_encryption() {
+		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
+		let msg = [4u8; LN_MAX_MSG_LEN + 1];
+		outbound_peer.encrypt_message(&msg);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to decrypt message longer than 65535 + 16 bytes!")]
+	fn max_message_len_decryption() {
+		let mut inbound_peer;
+
+		{
+			// transport-responder successful handshake
+			let our_node_id = SecretKey::from_slice(&hex::decode("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
+			let our_ephemeral = SecretKey::from_slice(&hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
+
+			inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+
+			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+
+			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
+			// test vector doesn't specify the initiator static key, but it's the same as the one
+			// from transport-initiator successful handshake
+			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
+		}
+
+		// MSG should not exceed LN_MAX_MSG_LEN + 16
+		let msg = [4u8; LN_MAX_MSG_LEN + 17];
+		inbound_peer.decrypt_message(&msg).unwrap();
 	}
 }

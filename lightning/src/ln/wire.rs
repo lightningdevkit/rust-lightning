@@ -21,7 +21,7 @@ use util::ser::{Readable, Writeable, Writer};
 /// "The maximum size of any Lightning message MUST NOT exceed 65535 bytes.
 /// A maximum size of 65535 simplifies testing, makes memory management easier,
 /// and helps mitigate memory-exhaustion attacks."
-pub const LN_MAX_MSG_LEN: usize = 65535;
+pub const LN_MAX_MSG_LEN: usize = std::u16::MAX as usize; // Must be equal to 65535
 
 /// A Lightning message returned by [`read`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`ln::msgs`] or otherwise the message type if unknown.
@@ -317,6 +317,12 @@ mod tests {
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).
 	const ENCODED_PONG: [u8; 6] = [0u8, 19u8, 0u8, 2u8, 0u8, 0u8];
+
+	#[test]
+	fn max_msg_len() {
+		assert_eq!(LN_MAX_MSG_LEN, 65535);
+		assert_eq!(LN_MAX_MSG_LEN, std::u16::MAX as usize);
+	}
 
 	#[test]
 	fn read_empty_buffer() {
