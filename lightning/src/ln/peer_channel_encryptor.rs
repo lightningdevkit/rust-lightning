@@ -421,7 +421,7 @@ impl PeerChannelEncryptor {
 				*rn += 1;
 				Ok(byte_utils::slice_to_be16(&res))
 			},
-			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
+			_ => panic!("Tried to decrypt a message prior to noise handshake completion"),
 		}
 	}
 
@@ -429,7 +429,7 @@ impl PeerChannelEncryptor {
 	/// panics if msg.len() > 65535 + 16
 	pub fn decrypt_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, LightningError> {
 		if msg.len() > LN_MAX_MSG_LEN + 16 {
-			panic!("Attempted to encrypt message longer than 65535 bytes!");
+			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
 		}
 
 		match self.noise_state {
@@ -441,7 +441,7 @@ impl PeerChannelEncryptor {
 
 				Ok(res)
 			},
-			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
+			_ => panic!("Tried to decrypt a message prior to noise handshake completion"),
 		}
 	}
 
