@@ -81,9 +81,9 @@ impl Writer for VecWriter {
 	}
 }
 
-struct TestChannelMonitor {
+struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	pub chain_monitor: Arc<channelmonitor::ChainMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
@@ -93,10 +93,10 @@ struct TestChannelMonitor {
 	pub latest_monitors: Mutex<HashMap<OutPoint, (u64, Vec<u8>)>>,
 	pub should_update_manager: atomic::AtomicBool,
 }
-impl TestChannelMonitor {
+impl TestChainMonitor {
 	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>) -> Self {
 		Self {
-			simple_monitor: Arc::new(channelmonitor::SimpleManyChannelMonitor::new(broadcaster, logger.clone(), feeest)),
+			chain_monitor: Arc::new(channelmonitor::ChainMonitor::new(broadcaster, logger.clone(), feeest)),
 			logger,
 			update_ret: Mutex::new(Ok(())),
 			latest_monitors: Mutex::new(HashMap::new()),
@@ -104,7 +104,7 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl chain::Watch for TestChannelMonitor {
+impl chain::Watch for TestChainMonitor {
 	type Keys = EnforcingChannelKeys;
 
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
@@ -114,7 +114,7 @@ impl chain::Watch for TestChannelMonitor {
 			panic!("Already had monitor pre-watch_channel");
 		}
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
-		assert!(self.simple_monitor.watch_channel(funding_txo, monitor).is_ok());
+		assert!(self.chain_monitor.watch_channel(funding_txo, monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
@@ -135,7 +135,7 @@ impl chain::Watch for TestChannelMonitor {
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		return self.simple_monitor.release_pending_monitor_events();
+		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
 
@@ -191,7 +191,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! make_node {
 		($node_id: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let monitor = Arc::new(TestChannelMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
+			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
@@ -206,7 +206,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let chain_monitor = Arc::new(TestChannelMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
+			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
@@ -235,7 +235,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				channel_monitors: monitor_refs,
 			};
 
-			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
+			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
 		} }
 	}
 

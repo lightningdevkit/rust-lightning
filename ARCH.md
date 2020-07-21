@@ -39,24 +39,24 @@ At a high level, some of the common interfaces fit together as follows:
                      -----------------  | UserConfig |
          --------------------       |   --------------
   /------| MessageSendEvent |       |   |     ----------------
- |       --------------------       |   |     | FeeEstimator |
- |   (as MessageSendEventsProvider) |   |     ----------------
- |                         ^        |   |    /          |      ------------------------
- |                          \       |   |   /      ---------> | BroadcasterInterface |
- |                           \      |   |  /      /     |     ------------------------
- |                            \     v   v v      /      v        ^
- |    (as                      ------------------       ----------------
- |    ChannelMessageHandler)-> | ChannelManager | ----> | chain::Watch |
- v               /             ------------------       ----------------
---------------- /                          (as EventsProvider)
-| PeerManager |-                                \     /
----------------                                  \   /
- |                    -----------------           \ /
- |                    | chain::Access |            v
- |                    -----------------        ---------
- |                            |                | Event |
-(as RoutingMessageHandler)    v                ---------
-  \                   --------------------
-   -----------------> | NetGraphMsgHandler |
-                      --------------------
+ |       --------------------       |   |     | FeeEstimator | <-----------------------
+ |   (as MessageSendEventsProvider) |   |     ----------------                         \
+ |                         ^        |   |    /                 ------------------------ |
+ |                          \       |   |   /      ---------> | BroadcasterInterface |  |
+ |                           \      |   |  /      /           ------------------------  |
+ |                            \     v   v v      /                          ^           |
+ |    (as                      ------------------       ----------------    |           |
+ |    ChannelMessageHandler)-> | ChannelManager | ----> | chain::Watch |    |           |
+ v               /             ------------------       ----------------    |           |
+--------------- /                  (as EventsProvider)         ^            |           |
+| PeerManager |-                             \                 |            |           |
+---------------                               \                | (is-a)     |           |
+ |                    -----------------        \       _----------------   /           /
+ |                    | chain::Access |         \     / | ChainMonitor |---------------
+ |                    -----------------          \   /  ----------------
+ |                            |                   \ /
+(as RoutingMessageHandler)    v                    v
+  \                   --------------------     ---------
+   -----------------> | NetGraphMsgHandler |   | Event |
+                      --------------------     ---------
 ```

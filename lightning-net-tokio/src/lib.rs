@@ -35,12 +35,12 @@
 //! type FeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator;
 //! type Logger = dyn lightning::util::logger::Logger;
 //! type ChainAccess = dyn lightning::chain::Access;
-//! type ChannelMonitor = lightning::ln::channelmonitor::SimpleManyChannelMonitor<lightning::chain::transaction::OutPoint, lightning::chain::keysinterface::InMemoryChannelKeys, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>>;
-//! type ChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<ChannelMonitor, TxBroadcaster, FeeEstimator, Logger>;
-//! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChannelMonitor, TxBroadcaster, FeeEstimator, ChainAccess, Logger>;
+//! type ChainMonitor = lightning::ln::channelmonitor::ChainMonitor<lightning::chain::transaction::OutPoint, lightning::chain::keysinterface::InMemoryChannelKeys, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>>;
+//! type ChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor, TxBroadcaster, FeeEstimator, Logger>;
+//! type PeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, ChainAccess, Logger>;
 //!
 //! // Connect to node with pubkey their_node_id at addr:
-//! async fn connect_to_node(peer_manager: PeerManager, channel_monitor: Arc<ChannelMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
+//! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
 //!     let (sender, mut receiver) = mpsc::channel(2);
 //!     lightning_net_tokio::connect_outbound(peer_manager, sender, their_node_id, addr).await;
 //!     loop {
@@ -48,14 +48,14 @@
 //!         for _event in channel_manager.get_and_clear_pending_events().drain(..) {
 //!             // Handle the event!
 //!         }
-//!         for _event in channel_monitor.get_and_clear_pending_events().drain(..) {
+//!         for _event in chain_monitor.get_and_clear_pending_events().drain(..) {
 //!             // Handle the event!
 //!         }
 //!     }
 //! }
 //!
 //! // Begin reading from a newly accepted socket and talk to the peer:
-//! async fn accept_socket(peer_manager: PeerManager, channel_monitor: Arc<ChannelMonitor>, channel_manager: ChannelManager, socket: TcpStream) {
+//! async fn accept_socket(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, socket: TcpStream) {
 //!     let (sender, mut receiver) = mpsc::channel(2);
 //!     lightning_net_tokio::setup_inbound(peer_manager, sender, socket);
 //!     loop {
@@ -63,7 +63,7 @@
 //!         for _event in channel_manager.get_and_clear_pending_events().drain(..) {
 //!             // Handle the event!
 //!         }
-//!         for _event in channel_monitor.get_and_clear_pending_events().drain(..) {
+//!         for _event in chain_monitor.get_and_clear_pending_events().drain(..) {
 //!             // Handle the event!
 //!         }
 //!     }
