@@ -28,6 +28,7 @@ use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
+use lightning::chain;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ChainListener, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
@@ -103,21 +104,21 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
+impl chain::Watch for TestChannelMonitor {
 	type Keys = EnforcingChannelKeys;
 
-	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
-			panic!("Already had monitor pre-add_monitor");
+			panic!("Already had monitor pre-watch_channel");
 		}
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
-		assert!(self.simple_monitor.add_monitor(funding_txo, monitor).is_ok());
+		assert!(self.simple_monitor.watch_channel(funding_txo, monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let mut map_entry = match map_lock.entry(funding_txo) {
 			hash_map::Entry::Occupied(entry) => entry,
@@ -133,8 +134,8 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		return self.simple_monitor.get_and_clear_pending_monitor_events();
+	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		return self.simple_monitor.release_pending_monitor_events();
 	}
 }
 
@@ -205,7 +206,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let monitor = Arc::new(TestChannelMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
+			let chain_monitor = Arc::new(TestChannelMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
@@ -217,7 +218,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
 				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&monitor_ser)).expect("Failed to read monitor").1);
-				monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
+				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();
 			for (outpoint, monitor) in monitors.iter_mut() {
@@ -227,14 +228,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let read_args = ChannelManagerReadArgs {
 				keys_manager,
 				fee_estimator: fee_est.clone(),
-				monitor: monitor.clone(),
+				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
 				channel_monitors: monitor_refs,
 			};
 
-			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
+			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
 		} }
 	}
 

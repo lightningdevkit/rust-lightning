@@ -6,7 +6,7 @@ need to use are `ChannelManager` and `ChannelMonitor`. `ChannelManager` holds mu
 channels, routes payments between them, and exposes a simple API to make and receive
 payments. Individual `ChannelMonitor`s monitor the on-chain state of a channel, punish
 counterparties if they misbehave, and force-close channels if they contain unresolved
-HTLCs which are near expiration. The `ManyChannelMonitor` API provides a way for you to
+HTLCs which are near expiration. The `chain::Watch` interface provides a way for you to
 receive `ChannelMonitorUpdate`s from `ChannelManager` and persist them to disk before the
 channel steps forward.
 
@@ -45,9 +45,9 @@ At a high level, some of the common interfaces fit together as follows:
  |                          \       |   |   /      ---------> | BroadcasterInterface |
  |                           \      |   |  /      /     |     ------------------------
  |                            \     v   v v      /      v        ^
- |    (as                      ------------------       ----------------------
- |    ChannelMessageHandler)-> | ChannelManager | ----> | ManyChannelMonitor |
- v               /             ------------------       ----------------------
+ |    (as                      ------------------       ----------------
+ |    ChannelMessageHandler)-> | ChannelManager | ----> | chain::Watch |
+ v               /             ------------------       ----------------
 --------------- /                          (as EventsProvider)
 | PeerManager |-                                \     /
 ---------------                                  \   /

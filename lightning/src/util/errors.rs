@@ -42,7 +42,7 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String
 	},
-	/// An attempt to call add/update_monitor returned an Err (ie you did this!), causing the
+	/// An attempt to call watch/update_channel returned an Err (ie you did this!), causing the
 	/// attempted action to fail.
 	MonitorUpdateFailed,
 }

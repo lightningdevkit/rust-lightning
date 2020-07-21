@@ -11,10 +11,11 @@
 //! nodes for functional tests.
 
 use chain;
+use chain::Watch;
 use chain::chaininterface;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
-use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
+use ln::channelmonitor::ChannelMonitor;
 use routing::router::{Route, get_route};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use ln::features::InitFeatures;
@@ -209,7 +210,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					default_config: UserConfig::default(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
-					monitor: self.chan_monitor,
+					chain_monitor: self.chan_monitor,
 					tx_broadcaster: self.tx_broadcaster.clone(),
 					logger: &test_utils::TestLogger::new(),
 					channel_monitors,
@@ -218,7 +219,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 			let channel_monitor = test_utils::TestChannelMonitor::new(self.tx_broadcaster.clone(), &self.logger, &feeest);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
+				if let Err(_) = channel_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
 				}
 			}

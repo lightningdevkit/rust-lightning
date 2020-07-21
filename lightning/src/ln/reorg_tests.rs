@@ -128,7 +128,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		};
 		connect_block(&nodes[1], &block, CHAN_CONFIRM_DEPTH + 1);
 
-		// ChannelManager only polls ManyChannelMonitor::get_and_clear_pending_monitor_events when we
+		// ChannelManager only polls chain::Watch::release_pending_monitor_events when we
 		// probe it for events, so we probe non-message events here (which should still end up empty):
 		assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
 	} else {
