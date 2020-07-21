@@ -36,4 +36,4 @@ mod chanmon_update_fail_tests;
 #[cfg(test)]
 mod reorg_tests;
 
-pub use self::wire::LN_MAX_MSG_LEN;
+pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;

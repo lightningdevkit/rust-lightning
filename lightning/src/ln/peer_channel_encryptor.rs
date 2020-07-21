@@ -1,6 +1,5 @@
 use ln::msgs::LightningError;
 use ln::msgs;
-use ln::wire::LN_MAX_MSG_LEN;
 
 use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -12,6 +11,11 @@ use bitcoin::secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::byte_utils;
+
+/// Maximum Lightning message data length according to
+/// [BOLT-8](https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification)
+/// and [BOLT-1](https://github.com/lightningnetwork/lightning-rfc/blob/master/01-messaging.md#lightning-message-format):
+pub const LN_MAX_MSG_LEN: usize = ::std::u16::MAX as usize; // Must be equal to 65535
 
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
@@ -696,6 +700,12 @@ mod tests {
 				assert_eq!(res, hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
 			}
 		}
+	}
+
+	#[test]
+	fn max_msg_len_limit_value() {
+		assert_eq!(LN_MAX_MSG_LEN, 65535);
+		assert_eq!(LN_MAX_MSG_LEN, ::std::u16::MAX as usize);
 	}
 
 	#[test]
