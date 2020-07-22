@@ -165,11 +165,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *target == *our_node_id {
-		return Err(LightningError{err: "Cannot generate a route to ourselves", action: ErrorAction::IgnoreError});
+		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
 	if final_value_msat > 21_000_000 * 1_0000_0000 * 1000 {
-		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis", action: ErrorAction::IgnoreError});
+		return Err(LightningError{err: "Cannot generate a route of more value than all existing satoshis".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
 	// We do a dest-to-source Dijkstra's sorting by each node's distance from the destination
@@ -209,7 +209,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone()));
 		}
 		if first_hop_targets.is_empty() {
-			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us", action: ErrorAction::IgnoreError});
+			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
 		}
 	}
 
@@ -374,7 +374,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 
 				let new_entry = match dist.remove(&res.last().unwrap().pubkey) {
 					Some(hop) => hop.3,
-					None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination", action: ErrorAction::IgnoreError}),
+					None => return Err(LightningError{err: "Failed to find a non-fee-overflowing path to the given destination".to_owned(), action: ErrorAction::IgnoreError}),
 				};
 				res.last_mut().unwrap().fee_msat = new_entry.fee_msat;
 				res.last_mut().unwrap().cltv_expiry_delta = new_entry.cltv_expiry_delta;
@@ -395,7 +395,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		}
 	}
 
-	Err(LightningError{err: "Failed to find a path to the given destination", action: ErrorAction::IgnoreError})
+	Err(LightningError{err: "Failed to find a path to the given destination".to_owned(), action: ErrorAction::IgnoreError})
 }
 
 #[cfg(test)]
@@ -881,7 +881,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
 		assert_eq!(route.paths[0][1].pubkey, node3);
 		assert_eq!(route.paths[0][1].short_channel_id, 13);
@@ -945,7 +945,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
 		assert_eq!(route.paths[0][1].pubkey, node3);
 		assert_eq!(route.paths[0][1].short_channel_id, 13);
@@ -1008,7 +1008,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
 		assert_eq!(route.paths[0][1].pubkey, node3);
 		assert_eq!(route.paths[0][1].short_channel_id, 13);
@@ -1082,8 +1082,8 @@ mod tests {
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 100);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::new()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 		let our_chans = vec![channelmanager::ChannelDetails {
@@ -1105,14 +1105,14 @@ mod tests {
 		assert_eq!(route.paths[0][0].fee_msat, 0);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::new()); // No feature flags will meet the relevant-to-channel conversion
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
 		assert_eq!(route.paths[0][1].pubkey, node7);
 		assert_eq!(route.paths[0][1].short_channel_id, 8);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &Vec::new()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		last_hops[0].fees.base_msat = 1000;
 
@@ -1147,8 +1147,8 @@ mod tests {
 		assert_eq!(route.paths[0][3].short_channel_id, 10);
 		assert_eq!(route.paths[0][3].fee_msat, 100);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::new()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		// ...but still use 8 for larger payments as 6 has a variable feerate
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 2000, 42, Arc::clone(&logger)).unwrap();
@@ -1188,7 +1188,7 @@ mod tests {
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 2000);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::new()); // We dont pass flags in from invoices yet
-		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::new()); // We can't learn any flags from invoices, sadly
+		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 }

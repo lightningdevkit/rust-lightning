@@ -9,7 +9,7 @@ pub enum APIError {
 	/// are documented, but generally indicates some precondition of a function was violated.
 	APIMisuseError {
 		/// A human-readable error message
-		err: &'static str
+		err: String
 	},
 	/// Due to a high feerate, we were unable to complete the request.
 	/// For example, this may be returned if the feerate implies we cannot open a channel at the
@@ -31,7 +31,7 @@ pub enum APIError {
 	/// peer, channel at capacity, channel shutting down, etc.
 	ChannelUnavailable {
 		/// A human-readable error message
-		err: &'static str
+		err: String
 	},
 	/// An attempt to call add/update_monitor returned an Err (ie you did this!), causing the
 	/// attempted action to fail.

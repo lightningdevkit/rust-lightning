@@ -51,6 +51,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::marker::{Sync, Send};
 use std::ops::Deref;
+use bitcoin::hashes::hex::ToHex;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -192,14 +193,14 @@ struct MsgHandleErrInternal {
 }
 impl MsgHandleErrInternal {
 	#[inline]
-	fn send_err_msg_no_close(err: &'static str, channel_id: [u8; 32]) -> Self {
+	fn send_err_msg_no_close(err: String, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: LightningError {
-				err,
+				err: err.clone(),
 				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
-						data: err.to_string()
+						data: err
 					},
 				},
 			},
@@ -207,7 +208,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn ignore_no_close(err: &'static str) -> Self {
+	fn ignore_no_close(err: String) -> Self {
 		Self {
 			err: LightningError {
 				err,
@@ -221,14 +222,14 @@ impl MsgHandleErrInternal {
 		Self { err, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: &'static str, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
 			err: LightningError {
-				err,
+				err: err.clone(),
 				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
-						data: err.to_string()
+						data: err
 					},
 				},
 			},
@@ -244,20 +245,20 @@ impl MsgHandleErrInternal {
 					action: msgs::ErrorAction::IgnoreError,
 				},
 				ChannelError::Close(msg) => LightningError {
-					err: msg,
+					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
-							data: msg.to_string()
+							data: msg
 						},
 					},
 				},
 				ChannelError::CloseDelayBroadcast(msg) => LightningError {
-					err: msg,
+					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
-							data: msg.to_string()
+							data: msg
 						},
 					},
 				},
@@ -632,7 +633,7 @@ macro_rules! handle_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()));
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()));
 				res
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -655,7 +656,7 @@ macro_rules! handle_monitor_err {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
 				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
+				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$entry.key()))
 			},
 		}
 	}
@@ -757,7 +758,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
 		if channel_value_satoshis < 1000 {
-			return Err(APIError::APIMisuseError { err: "channel_value must be at least 1000 satoshis" });
+			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
 
 		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
@@ -769,7 +770,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(channel.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(feature = "fuzztarget") {
-					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG" });
+					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
 				} else {
 					panic!("RNG is bad???");
 				}
@@ -855,7 +856,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						(failed_htlcs, Some(chan_entry.remove_entry().1))
 					} else { (failed_htlcs, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel"})
+				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()})
 			}
 		};
 		for htlc_source in failed_htlcs.drain(..) {
@@ -1201,7 +1202,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// May be called with channel_state already locked!
 	fn get_channel_update(&self, chan: &Channel<ChanSigner>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
-			None => return Err(LightningError{err: "Channel not yet established", action: msgs::ErrorAction::IgnoreError}),
+			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
 
@@ -1246,7 +1247,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let id = match channel_lock.short_to_id.get(&path.first().unwrap().short_channel_id) {
-				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
+				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
 				Some(id) => id.clone(),
 			};
 
@@ -1257,7 +1258,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
 					}
 					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!"});
+						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
 					}
 					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 						path: path.clone(),
@@ -2213,7 +2214,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 	fn internal_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
 		if msg.chain_hash != self.genesis_hash {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
 		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_features, msg, 0, &self.default_configuration)
@@ -2221,7 +2222,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(channel.channel_id()) {
-			hash_map::Entry::Occupied(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!", msg.temporary_channel_id.clone())),
+			hash_map::Entry::Occupied(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!".to_owned(), msg.temporary_channel_id.clone())),
 			hash_map::Entry::Vacant(entry) => {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 					node_id: their_node_id.clone(),
@@ -2240,12 +2241,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
 					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, their_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2265,11 +2266,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
 					(try_chan_entry!(self, chan.get_mut().funding_created(msg, &self.logger), channel_state, chan), chan.remove())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
@@ -2281,7 +2282,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					// channel, not the temporary_channel_id. This is compatible with ourselves, but the
 					// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
 					// any messages referencing a previously-closed channel anyway.
-					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", funding_msg.channel_id, chan.force_shutdown(true), None));
+					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id, chan.force_shutdown(true), None));
 				},
 				ChannelMonitorUpdateErr::TemporaryFailure => {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -2296,7 +2297,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id", funding_msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
@@ -2316,7 +2317,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let monitor = match chan.get_mut().funding_signed(&msg, &self.logger) {
 						Ok(update) => update,
@@ -2327,7 +2328,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					}
 					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2344,7 +2345,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
 				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
@@ -2365,7 +2366,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
@@ -2377,7 +2378,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let (shutdown, closing_signed, dropped_htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.fee_estimator, &msg), channel_state, chan_entry);
 					if let Some(msg) = shutdown {
@@ -2399,7 +2400,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						(dropped_htlcs, Some(chan_entry.remove_entry().1))
 					} else { (dropped_htlcs, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
@@ -2423,7 +2424,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), channel_state, chan_entry);
 					if let Some(msg) = closing_signed {
@@ -2444,7 +2445,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						(tx, Some(chan_entry.remove_entry().1))
 					} else { (tx, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		if let Some(broadcast_tx) = tx {
@@ -2478,7 +2479,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 
 				let create_pending_htlc_status = |chan: &Channel<ChanSigner>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
@@ -2521,7 +2522,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				};
 				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.logger), channel_state, chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
@@ -2533,11 +2534,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					try_chan_entry!(self, chan.get_mut().update_fulfill_htlc(&msg), channel_state, chan)
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		self.claim_funds_internal(channel_lock, htlc_source, msg.payment_preimage.clone());
@@ -2550,11 +2551,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), channel_state, chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
@@ -2565,16 +2566,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
-					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
+					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
@@ -2584,7 +2585,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
 					match chan.get_mut().commitment_signed(&msg, &self.fee_estimator, &self.logger) {
@@ -2626,7 +2627,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
@@ -2672,7 +2673,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
@@ -2680,7 +2681,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
-							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA"));
+							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
 						} else {
 							return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
 						}
@@ -2699,7 +2700,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					}
 					(pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		for failure in pending_failures.drain(..) {
@@ -2716,11 +2717,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().update_fee(&self.fee_estimator, &msg), channel_state, chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
@@ -2732,10 +2733,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				if !chan.get().is_usable() {
-					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it", action: msgs::ErrorAction::IgnoreError}));
+					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 				}
 
 				let our_node_id = self.get_our_node_id();
@@ -2744,10 +2745,21 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 				let were_node_one = announcement.node_id_1 == our_node_id;
 				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
-						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
-					let chan_err: ChannelError = ChannelError::Close("Bad announcement_signatures node_signature");
-					try_chan_entry!(self, Err(chan_err), channel_state, chan);
+				{
+					let their_node_key = if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 };
+					let their_bitcoin_key = if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 };
+					match (self.secp_ctx.verify(&msghash, &msg.node_signature, their_node_key),
+						   self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, their_bitcoin_key)) {
+						(Err(e), _) => {
+							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify node_signature: {:?}. Maybe using different node_secret for transport and routing msg? UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}", e, &announcement, their_node_key));
+							try_chan_entry!(self, Err(chan_err), channel_state, chan);
+						},
+						(_, Err(e)) => {
+							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify bitcoin_signature: {:?}. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})", e, &announcement, their_bitcoin_key));
+							try_chan_entry!(self, Err(chan_err), channel_state, chan);
+						},
+						_ => {}
+					}
 				}
 
 				let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
@@ -2763,7 +2775,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					update_msg: self.get_channel_update(chan.get()).unwrap(), // can only fail if we're not in a ready state
 				});
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
@@ -2775,7 +2787,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
@@ -2834,7 +2846,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
@@ -2851,16 +2863,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			let channel_state = &mut *channel_state_lock;
 
 			match channel_state.by_id.entry(channel_id) {
-				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
+				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: format!("Failed to find corresponding channel for id {}", channel_id.to_hex())}),
 				hash_map::Entry::Occupied(mut chan) => {
 					if !chan.get().is_outbound() {
-						return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
+						return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel".to_owned()});
 					}
 					if chan.get().is_awaiting_monitor_update() {
 						return Err(APIError::MonitorUpdateFailed);
 					}
 					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
+						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected".to_owned()});
 					}
 					their_node_id = chan.get().get_their_node_id();
 					if let Some((update_fee, commitment_signed, monitor_update)) =

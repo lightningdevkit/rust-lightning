@@ -20,6 +20,7 @@
 
 extern crate bitcoin;
 #[cfg(test)] extern crate hex;
+#[cfg(test)] extern crate regex;
 
 #[macro_use]
 pub mod util;

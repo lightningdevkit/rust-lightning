@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std::ops::Deref;
+use bitcoin::hashes::hex::ToHex;
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -74,7 +75,7 @@ macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr ) => {
 		match $secp_ctx.verify($msg, $sig, $pubkey) {
 			Ok(_) => {},
-			Err(_) => return Err(LightningError{err: "Invalid signature from remote node", action: ErrorAction::IgnoreError}),
+			Err(_) => return Err(LightningError{err: "Invalid signature from remote node".to_owned(), action: ErrorAction::IgnoreError}),
 		}
 	};
 }
@@ -86,7 +87,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
 		if msg.contents.node_id_1 == msg.contents.node_id_2 || msg.contents.bitcoin_key_1 == msg.contents.bitcoin_key_2 {
-			return Err(LightningError{err: "Channel announcement node had a channel with itself", action: ErrorAction::IgnoreError});
+			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
 		let checked_utxo = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
@@ -97,7 +98,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
 				                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
 				if script_pubkey != expected_script {
-					return Err(LightningError{err: "Channel announcement keys didn't match on-chain script", action: ErrorAction::IgnoreError});
+					return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", script_pubkey.to_hex(), expected_script.to_hex()), action: ErrorAction::IgnoreError});
 				}
 				//TODO: Check if value is worth storing, use it to inform routing, and compare it
 				//to the new HTLC max field in channel_update
@@ -108,10 +109,10 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				false
 			},
 			Err(ChainError::NotWatched) => {
-				return Err(LightningError{err: "Channel announced on an unknown chain", action: ErrorAction::IgnoreError});
+				return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.contents.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
 			},
 			Err(ChainError::UnknownTx) => {
-				return Err(LightningError{err: "Channel announced without corresponding UTXO entry", action: ErrorAction::IgnoreError});
+				return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
 			},
 		};
 		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, checked_utxo, Some(&self.secp_ctx));
@@ -522,11 +523,11 @@ impl NetworkGraph {
 		}
 
 		match self.nodes.get_mut(&msg.contents.node_id) {
-			None => Err(LightningError{err: "No existing channels for node_announcement", action: ErrorAction::IgnoreError}),
+			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
 					if node_info.last_update  >= msg.contents.timestamp {
-						return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
+						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
 					}
 				}
 
@@ -588,7 +589,7 @@ impl NetworkGraph {
 					Self::remove_channel_in_nodes(&mut self.nodes, &entry.get(), msg.contents.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(LightningError{err: "Already have knowledge of channel", action: ErrorAction::IgnoreError})
+					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreError})
 				}
 			},
 			BtreeEntry::Vacant(entry) => {
@@ -656,13 +657,13 @@ impl NetworkGraph {
 		let chan_was_enabled;
 
 		match self.channels.get_mut(&msg.contents.short_channel_id) {
-			None => return Err(LightningError{err: "Couldn't find channel for update", action: ErrorAction::IgnoreError}),
+			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(channel) => {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
 							if existing_chan_info.last_update >= msg.contents.timestamp {
-								return Err(LightningError{err: "Update older than last processed update", action: ErrorAction::IgnoreError});
+								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
 							}
 							chan_was_enabled = existing_chan_info.enabled;
 						} else {
