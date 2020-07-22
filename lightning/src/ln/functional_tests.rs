@@ -1612,7 +1612,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_keys = local_chan.get_local_keys();
 		let pubkeys = chan_keys.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
-		 chan_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER), chan_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - 2))
+		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER), chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2))
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_payment_point, remote_secret1) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
@@ -1620,7 +1620,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_keys = remote_chan.get_local_keys();
 		let pubkeys = chan_keys.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
-		 chan_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - 1))
+		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1))
 	};
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
@@ -8132,8 +8132,8 @@ fn test_counterparty_raa_skip_no_crash() {
 	let local_keys = &guard.by_id.get_mut(&channel_id).unwrap().local_keys;
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-		&SecretKey::from_slice(&local_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
-	let per_commitment_secret = local_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER);
+		&SecretKey::from_slice(&local_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+	let per_commitment_secret = local_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
 		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });

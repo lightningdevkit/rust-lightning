@@ -785,13 +785,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(chan)
 	}
 
-	// Utilities to derive keys:
-
-	fn build_local_commitment_secret(&self, idx: u64) -> SecretKey {
-		let res = self.local_keys.commitment_secret(idx);
-		SecretKey::from_slice(&res).unwrap()
-	}
-
 	// Utilities to build transactions:
 
 	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
@@ -1123,7 +1116,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// The result is a transaction which we can revoke ownership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_local_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, ChannelError> {
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(commitment_number));
+		let per_commitment_point = self.local_keys.get_per_commitment_point(commitment_number, &self.secp_ctx);
 		let delayed_payment_base = &self.local_keys.pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.local_keys.pubkeys().htlc_basepoint;
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
@@ -2028,8 +2021,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number - 1));
-		let per_commitment_secret = self.local_keys.commitment_secret(self.cur_local_commitment_transaction_number + 1);
+		let next_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number - 1, &self.secp_ctx);
+		let per_commitment_secret = self.local_keys.release_commitment_secret(self.cur_local_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_our_commitment = false;
@@ -2614,8 +2607,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_locked = if self.monitor_pending_funding_locked {
 			assert!(!self.channel_outbound, "Funding transaction broadcast without FundingBroadcastSafe!");
 			self.monitor_pending_funding_locked = false;
-			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+			let next_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point: next_per_commitment_point,
@@ -2667,8 +2659,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &self.build_local_commitment_secret(self.cur_local_commitment_transaction_number));
-		let per_commitment_secret = self.local_keys.commitment_secret(self.cur_local_commitment_transaction_number + 2);
+		let next_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
+		let per_commitment_secret = self.local_keys.release_commitment_secret(self.cur_local_commitment_transaction_number + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret,
@@ -2751,7 +2743,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.next_remote_commitment_number > 0 {
 			match msg.data_loss_protect {
 				OptionalField::Present(ref data_loss) => {
-					if self.local_keys.commitment_secret(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1) != data_loss.your_last_per_commitment_secret {
+					let expected_point = self.local_keys.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
+					let given_secret = SecretKey::from_slice(&data_loss.your_last_per_commitment_secret)
+						.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
+					if expected_point != PublicKey::from_secret_key(&self.secp_ctx, &given_secret) {
 						return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
 					}
 					if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number {
@@ -2787,8 +2782,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 
 			// We have OurFundingLocked set!
-			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+			let next_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
 			return Ok((Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point: next_per_commitment_point,
@@ -2818,8 +2812,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let resend_funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_local_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateFailed resending FundingLocked
-			let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-			let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+			let next_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point: next_per_commitment_point,
@@ -3405,8 +3398,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 					//a protocol oversight, but I assume I'm just missing something.
 					if need_commitment_update {
 						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-							let next_per_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
-							let next_per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &next_per_commitment_secret);
+							let next_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
 							return Ok((Some(msgs::FundingLocked {
 								channel_id: self.channel_id,
 								next_per_commitment_point: next_per_commitment_point,
@@ -3457,7 +3449,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+		let first_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
 		let local_keys = self.local_keys.pubkeys();
 
 		msgs::OpenChannel {
@@ -3477,7 +3469,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			payment_point: local_keys.payment_point,
 			delayed_payment_basepoint: local_keys.delayed_payment_basepoint,
 			htlc_basepoint: local_keys.htlc_basepoint,
-			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
+			first_per_commitment_point,
 			channel_flags: if self.config.announced_channel {1} else {0},
 			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
 		}
@@ -3494,7 +3486,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
-		let local_commitment_secret = self.build_local_commitment_secret(self.cur_local_commitment_transaction_number);
+		let first_per_commitment_point = self.local_keys.get_per_commitment_point(self.cur_local_commitment_transaction_number, &self.secp_ctx);
 		let local_keys = self.local_keys.pubkeys();
 
 		msgs::AcceptChannel {
@@ -3511,7 +3503,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			payment_point: local_keys.payment_point,
 			delayed_payment_basepoint: local_keys.delayed_payment_basepoint,
 			htlc_basepoint: local_keys.htlc_basepoint,
-			first_per_commitment_point: PublicKey::from_secret_key(&self.secp_ctx, &local_commitment_secret),
+			first_per_commitment_point,
 			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
 		}
 	}

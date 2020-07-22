@@ -48,7 +48,15 @@ impl EnforcingChannelKeys {
 }
 
 impl ChannelKeys for EnforcingChannelKeys {
-	fn commitment_secret(&self, idx: u64) -> [u8; 32] { self.inner.commitment_secret(idx) }
+	fn get_per_commitment_point<T: secp256k1::Signing + secp256k1::Verification>(&self, idx: u64, secp_ctx: &Secp256k1<T>) -> PublicKey {
+		self.inner.get_per_commitment_point(idx, secp_ctx)
+	}
+
+	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+		// TODO: enforce the ChannelKeys contract - error here if we already signed this commitment
+		self.inner.release_commitment_secret(idx)
+	}
+
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
@@ -71,6 +79,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 	}
 
 	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		// TODO: enforce the ChannelKeys contract - error if this commitment was already revoked
+		// TODO: need the commitment number
 		Ok(self.inner.sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
