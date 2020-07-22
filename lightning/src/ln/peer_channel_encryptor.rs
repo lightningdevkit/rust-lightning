@@ -12,6 +12,11 @@ use bitcoin::secp256k1;
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::byte_utils;
 
+/// Maximum Lightning message data length according to
+/// [BOLT-8](https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification)
+/// and [BOLT-1](https://github.com/lightningnetwork/lightning-rfc/blob/master/01-messaging.md#lightning-message-format):
+pub const LN_MAX_MSG_LEN: usize = ::std::u16::MAX as usize; // Must be equal to 65535
+
 // Sha256("Noise_XK_secp256k1_ChaChaPoly_SHA256")
 const NOISE_CK: [u8; 32] = [0x26, 0x40, 0xf5, 0x2e, 0xeb, 0xcd, 0x9e, 0x88, 0x29, 0x58, 0x95, 0x1c, 0x79, 0x42, 0x50, 0xee, 0xdb, 0x28, 0x00, 0x2c, 0x05, 0xd7, 0xdc, 0x2e, 0xa0, 0xf1, 0x95, 0x40, 0x60, 0x42, 0xca, 0xf1];
 // Sha256(NOISE_CK || "lightning")
@@ -373,7 +378,7 @@ impl PeerChannelEncryptor {
 	/// Encrypts the given message, returning the encrypted version
 	/// panics if msg.len() > 65535 or Noise handshake has not finished.
 	pub fn encrypt_message(&mut self, msg: &[u8]) -> Vec<u8> {
-		if msg.len() > 65535 {
+		if msg.len() > LN_MAX_MSG_LEN {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}
 
@@ -420,15 +425,15 @@ impl PeerChannelEncryptor {
 				*rn += 1;
 				Ok(byte_utils::slice_to_be16(&res))
 			},
-			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
+			_ => panic!("Tried to decrypt a message prior to noise handshake completion"),
 		}
 	}
 
 	/// Decrypts the given message.
 	/// panics if msg.len() > 65535 + 16
 	pub fn decrypt_message(&mut self, msg: &[u8]) -> Result<Vec<u8>, LightningError> {
-		if msg.len() > 65535 + 16 {
-			panic!("Attempted to encrypt message longer than 65535 bytes!");
+		if msg.len() > LN_MAX_MSG_LEN + 16 {
+			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
 		}
 
 		match self.noise_state {
@@ -440,7 +445,7 @@ impl PeerChannelEncryptor {
 
 				Ok(res)
 			},
-			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
+			_ => panic!("Tried to decrypt a message prior to noise handshake completion"),
 		}
 	}
 
@@ -467,6 +472,8 @@ impl PeerChannelEncryptor {
 
 #[cfg(test)]
 mod tests {
+	use super::LN_MAX_MSG_LEN;
+
 	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 	use hex;
@@ -479,6 +486,36 @@ mod tests {
 		let mut outbound_peer = PeerChannelEncryptor::new_outbound(their_node_id, SecretKey::from_slice(&hex::decode("1212121212121212121212121212121212121212121212121212121212121212").unwrap()[..]).unwrap());
 		assert_eq!(outbound_peer.get_act_one()[..], hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap()[..]);
 		outbound_peer
+	}
+
+	fn get_inbound_peer_for_test_vectors() -> PeerChannelEncryptor {
+		// transport-responder successful handshake
+		let our_node_id = SecretKey::from_slice(&hex::decode("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
+		let our_ephemeral = SecretKey::from_slice(&hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
+
+		let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
+
+		let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
+		assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
+
+		let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
+		// test vector doesn't specify the initiator static key, but it's the same as the one
+		// from transport-initiator successful handshake
+		assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
+
+		match inbound_peer.noise_state {
+			NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
+				assert_eq!(sk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
+				assert_eq!(sn, 0);
+				assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+				assert_eq!(rk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
+				assert_eq!(rn, 0);
+				assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
+			},
+			_ => panic!()
+		}
+
+		inbound_peer
 	}
 
 	#[test]
@@ -539,28 +576,7 @@ mod tests {
 		let our_ephemeral = SecretKey::from_slice(&hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
 
 		{
-			// transport-responder successful handshake
-			let mut inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
-
-			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
-
-			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
-			// test vector doesn't specify the initiator static key, but it's the same as the one
-			// from transport-initiator successful handshake
-			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
-
-			match inbound_peer.noise_state {
-				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
-					assert_eq!(sk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
-					assert_eq!(sn, 0);
-					assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-					assert_eq!(rk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
-					assert_eq!(rn, 0);
-					assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-				},
-				_ => panic!()
-			}
+			let _ = get_inbound_peer_for_test_vectors();
 		}
 		{
 			// transport-responder act1 short read test
@@ -659,35 +675,7 @@ mod tests {
 			}
 		}
 
-		let mut inbound_peer;
-
-		{
-			// transport-responder successful handshake
-			let our_node_id = SecretKey::from_slice(&hex::decode("2121212121212121212121212121212121212121212121212121212121212121").unwrap()[..]).unwrap();
-			let our_ephemeral = SecretKey::from_slice(&hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap()[..]).unwrap();
-
-			inbound_peer = PeerChannelEncryptor::new_inbound(&our_node_id);
-
-			let act_one = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap().to_vec();
-			assert_eq!(inbound_peer.process_act_one_with_keys(&act_one[..], &our_node_id, our_ephemeral.clone()).unwrap()[..], hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap()[..]);
-
-			let act_three = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap().to_vec();
-			// test vector doesn't specify the initiator static key, but it's the same as the one
-			// from transport-initiator successful handshake
-			assert_eq!(inbound_peer.process_act_three(&act_three[..]).unwrap().serialize()[..], hex::decode("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").unwrap()[..]);
-
-			match inbound_peer.noise_state {
-				NoiseState::Finished { sk, sn, sck, rk, rn, rck } => {
-					assert_eq!(sk, hex::decode("bb9020b8965f4df047e07f955f3c4b88418984aadc5cdb35096b9ea8fa5c3442").unwrap()[..]);
-					assert_eq!(sn, 0);
-					assert_eq!(sck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-					assert_eq!(rk, hex::decode("969ab31b4d288cedf6218839b27a3e2140827047f2c0f01bf5c04435d43511a9").unwrap()[..]);
-					assert_eq!(rn, 0);
-					assert_eq!(rck, hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap()[..]);
-				},
-				_ => panic!()
-			}
-		}
+		let mut inbound_peer = get_inbound_peer_for_test_vectors();
 
 		for i in 0..1005 {
 			let msg = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
@@ -712,5 +700,29 @@ mod tests {
 				assert_eq!(res, hex::decode("2ecd8c8a5629d0d02ab457a0fdd0f7b90a192cd46be5ecb6ca570bfc5e268338b1a16cf4ef2d36").unwrap());
 			}
 		}
+	}
+
+	#[test]
+	fn max_msg_len_limit_value() {
+		assert_eq!(LN_MAX_MSG_LEN, 65535);
+		assert_eq!(LN_MAX_MSG_LEN, ::std::u16::MAX as usize);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to encrypt message longer than 65535 bytes!")]
+	fn max_message_len_encryption() {
+		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
+		let msg = [4u8; LN_MAX_MSG_LEN + 1];
+		outbound_peer.encrypt_message(&msg);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to decrypt message longer than 65535 + 16 bytes!")]
+	fn max_message_len_decryption() {
+		let mut inbound_peer = get_inbound_peer_for_test_vectors();
+
+		// MSG should not exceed LN_MAX_MSG_LEN + 16
+		let msg = [4u8; LN_MAX_MSG_LEN + 17];
+		inbound_peer.decrypt_message(&msg).unwrap();
 	}
 }
