@@ -458,6 +458,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
 	      F::Target: FeeEstimator,
 	{
+		let our_to_self_delay = config.own_channel_config.our_to_self_delay;
 		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -467,8 +468,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if push_msat > channel_value_msat {
 			return Err(APIError::APIMisuseError { err: format!("Push value ({}) was larger than channel_value ({})", push_msat, channel_value_msat) });
 		}
-		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", config.own_channel_config.our_to_self_delay)});
+		if our_to_self_delay < BREAKDOWN_TIMEOUT {
+			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", our_to_self_delay)});
 		}
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 		if Channel::<ChanSigner>::get_remote_channel_reserve_satoshis(channel_value_satoshis) < Channel::<ChanSigner>::derive_our_dust_limit_satoshis(background_feerate) {
@@ -535,7 +536,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			their_htlc_minimum_msat: 0,
 			our_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			their_to_self_delay: 0,
-			our_to_self_delay: config.own_channel_config.our_to_self_delay,
+			our_to_self_delay,
 			their_max_accepted_htlcs: 0,
 			minimum_depth: 0, // Filled in in accept_channel
 
@@ -582,7 +583,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			htlc_basepoint: msg.htlc_basepoint
 		};
-		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
+		chan_keys.on_accept(&their_pubkeys, msg.to_self_delay, config.own_channel_config.our_to_self_delay);
 		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -1457,7 +1458,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			htlc_basepoint: msg.htlc_basepoint
 		};
 
-		self.local_keys.set_remote_channel_pubkeys(&their_pubkeys);
+		self.local_keys.on_accept(&their_pubkeys, msg.to_self_delay, self.our_to_self_delay);
 		self.their_pubkeys = Some(their_pubkeys);
 
 		self.their_cur_commitment_point = Some(msg.first_per_commitment_point);
@@ -1483,7 +1484,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw, logger).0;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		let remote_signature = self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -3524,7 +3525,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw, logger).0;
-		Ok(self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), self.our_to_self_delay, &self.secp_ctx)
+		Ok(self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -3877,7 +3878,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, self.our_to_self_delay, &self.secp_ctx)
+			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -4670,7 +4671,7 @@ mod tests {
 			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
 			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
 		};
-		chan_keys.set_remote_channel_pubkeys(&their_pubkeys);
+		chan_keys.on_accept(&their_pubkeys, chan.their_to_self_delay, chan.our_to_self_delay);
 
 		assert_eq!(their_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
@@ -4726,7 +4727,7 @@ mod tests {
 				assert_eq!(serialize(&localtx.add_local_sig(&redeemscript, local_sig))[..],
 						hex::decode($tx_hex).unwrap()[..]);
 
-				let htlc_sigs = chan_keys.sign_local_commitment_htlc_transactions(&localtx, chan.their_to_self_delay, &chan.secp_ctx).unwrap();
+				let htlc_sigs = chan_keys.sign_local_commitment_htlc_transactions(&localtx, &chan.secp_ctx).unwrap();
 				let mut htlc_sig_iter = localtx.per_htlc.iter().zip(htlc_sigs.iter().enumerate());
 
 				$({

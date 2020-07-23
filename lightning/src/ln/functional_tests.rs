@@ -1694,8 +1694,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
 		let local_chan_keys = local_chan.get_local_keys();
-		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &commit_tx_keys, &[&accepted_htlc_info],
-		BREAKDOWN_TIMEOUT, &secp_ctx).unwrap()
+		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {

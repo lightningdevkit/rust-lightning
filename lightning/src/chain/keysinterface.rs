@@ -69,7 +69,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the remote_revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the remote revocation_basepoint (which appears in the
-	/// call to ChannelKeys::set_remote_channel_pubkeys) and the provided per_commitment point
+	/// call to ChannelKeys::on_accept) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
 	/// The witness script which is hashed and included in the output script_pubkey may be
@@ -223,7 +223,7 @@ pub trait ChannelKeys : Send+Clone {
 	// TODO: Document the things someone using this interface should enforce before signing.
 	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a local commitment transaction. This will only ever be called with
 	/// the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
@@ -254,7 +254,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// (implying they were considered dust at the time the commitment transaction was negotiated),
 	/// a corresponding None should be included in the return value. All other positions in the
 	/// return value must contain a signature.
-	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()>;
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()>;
 
 	/// Create a signature for the given input in a transaction spending an HTLC or commitment
 	/// transaction output when our counterparty broadcasts an old state.
@@ -274,11 +274,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// htlc holds HTLC elements (hash, timelock) if the output being spent is a HTLC output, thus
 	/// changing the format of the witness script (which is committed to in the BIP 143
 	/// signatures).
-	///
-	/// on_remote_tx_csv is the relative lock-time that that our counterparty would have to set on
-	/// their transaction were they to spend the same output. It is included in the witness script
-	/// and thus committed to in the BIP 143 signature.
-	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Create a signature for a claiming transaction for a HTLC output on a remote commitment
 	/// transaction, either offered or received.
@@ -313,11 +309,13 @@ pub trait ChannelKeys : Send+Clone {
 	/// protocol.
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
-	/// Set the remote channel basepoints.  This is done immediately on incoming channels
-	/// and as soon as the channel is accepted on outgoing channels.
+	/// Set the remote channel basepoints and remote/local to_self_delay.
+	/// This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
+	///
+	/// We bind local_to_self_delay late here for API convenience.
 	///
 	/// Will be called before any signatures are applied.
-	fn set_remote_channel_pubkeys(&mut self, channel_points: &ChannelPublicKeys);
+	fn on_accept(&mut self, channel_points: &ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16);
 }
 
 /// A trait to describe an object which can get user secrets and key material.
@@ -343,6 +341,25 @@ pub trait KeysInterface: Send + Sync {
 }
 
 #[derive(Clone)]
+/// Holds late-bound channel data.
+/// This data is available after the channel is known to be accepted, either
+/// when receiving an open_channel for an inbound channel or when
+/// receiving accept_channel for an outbound channel.
+struct AcceptedChannelData {
+	/// Remote public keys and base points
+	remote_channel_pubkeys: ChannelPublicKeys,
+	/// The to_self_delay value specified by our counterparty and applied on locally-broadcastable
+	/// transactions, ie the amount of time that we have to wait to recover our funds if we
+	/// broadcast a transaction. You'll likely want to pass this to the
+	/// ln::chan_utils::build*_transaction functions when signing local transactions.
+	remote_to_self_delay: u16,
+	/// The to_self_delay value specified by us and applied on transactions broadcastable
+	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
+	/// if they broadcast a transaction.
+	local_to_self_delay: u16,
+}
+
+#[derive(Clone)]
 /// A simple implementation of ChannelKeys that just keeps the private keys in memory.
 pub struct InMemoryChannelKeys {
 	/// Private key of anchor tx
@@ -359,8 +376,8 @@ pub struct InMemoryChannelKeys {
 	pub commitment_seed: [u8; 32],
 	/// Local public keys and basepoints
 	pub(crate) local_channel_pubkeys: ChannelPublicKeys,
-	/// Remote public keys and base points
-	pub(crate) remote_channel_pubkeys: Option<ChannelPublicKeys>,
+	/// Remote public keys and remote/local to_self_delay, populated on channel acceptance
+	accepted_channel_data: Option<AcceptedChannelData>,
 	/// The total value of this channel
 	channel_value_satoshis: u64,
 	/// Key derivation parameters
@@ -392,7 +409,7 @@ impl InMemoryChannelKeys {
 			commitment_seed,
 			channel_value_satoshis,
 			local_channel_pubkeys,
-			remote_channel_pubkeys: None,
+			accepted_channel_data: None,
 			key_derivation_params,
 		}
 	}
@@ -413,7 +430,22 @@ impl InMemoryChannelKeys {
 		}
 	}
 
-	fn remote_pubkeys<'a>(&'a self) -> &'a ChannelPublicKeys { self.remote_channel_pubkeys.as_ref().unwrap() }
+	/// Remote pubkeys.
+	/// Will panic if on_accept wasn't called.
+	pub fn remote_pubkeys(&self) -> &ChannelPublicKeys { &self.accepted_channel_data.as_ref().unwrap().remote_channel_pubkeys }
+
+	/// The to_self_delay value specified by our counterparty and applied on locally-broadcastable
+	/// transactions, ie the amount of time that we have to wait to recover our funds if we
+	/// broadcast a transaction. You'll likely want to pass this to the
+	/// ln::chan_utils::build*_transaction functions when signing local transactions.
+	/// Will panic if on_accept wasn't called.
+	pub fn remote_to_self_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().remote_to_self_delay }
+
+	/// The to_self_delay value specified by us and applied on transactions broadcastable
+	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
+	/// if they broadcast a transaction.
+	/// Will panic if on_accept wasn't called.
+	pub fn local_to_self_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().local_to_self_delay }
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -429,12 +461,12 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.local_channel_pubkeys }
 	fn key_derivation_params(&self) -> (u64, u64) { self.key_derivation_params }
 
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
 
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
-		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
+		let accepted_data = self.accepted_channel_data.as_ref().expect("must accept before signing");
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &accepted_data.remote_channel_pubkeys.funding_pubkey);
 
 		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
@@ -444,7 +476,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let mut htlc_sigs = Vec::with_capacity(htlcs.len());
 		for ref htlc in htlcs {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, to_self_delay, htlc, &keys.a_delayed_payment_key, &keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.local_to_self_delay, htlc, &keys.a_delayed_payment_key, &keys.revocation_key);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
 				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
@@ -460,8 +492,8 @@ impl ChannelKeys for InMemoryChannelKeys {
 
 	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
-		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
+		let remote_channel_data = self.accepted_channel_data.as_ref().expect("must accept before signing");
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_data.remote_channel_pubkeys.funding_pubkey);
 
 		Ok(local_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
@@ -469,17 +501,18 @@ impl ChannelKeys for InMemoryChannelKeys {
 	#[cfg(test)]
 	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
+		let remote_channel_pubkeys = &self.accepted_channel_data.as_ref().expect("must accept before signing").remote_channel_pubkeys;
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
 
 		Ok(local_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
-	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+		let local_csv = self.accepted_channel_data.as_ref().unwrap().remote_to_self_delay;
 		local_commitment_tx.get_htlc_sigs(&self.htlc_base_key, local_csv, secp_ctx)
 	}
 
-	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let revocation_key = match chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
 			Ok(revocation_key) => revocation_key,
 			Err(_) => return Err(())
@@ -504,7 +537,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 				Ok(remote_delayedpubkey) => remote_delayedpubkey,
 				Err(_) => return Err(())
 			};
-			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, on_remote_tx_csv, &remote_delayedpubkey)
+			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.local_to_self_delay(), &remote_delayedpubkey)
 		};
 		let sighash_parts = bip143::SighashComponents::new(&justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.sighash_all(&justice_tx.input[input], &witness_script, amount)[..]);
@@ -532,9 +565,9 @@ impl ChannelKeys for InMemoryChannelKeys {
 		if closing_tx.input[0].witness.len() != 0 { return Err(()); }
 		if closing_tx.output.len() > 2 { return Err(()); }
 
-		let remote_channel_pubkeys = self.remote_channel_pubkeys.as_ref().expect("must set remote channel pubkeys before signing");
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
-		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_pubkeys.funding_pubkey);
+		let remote_channel_data = self.accepted_channel_data.as_ref().expect("must accept before signing");
+		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_data.remote_channel_pubkeys.funding_pubkey);
 
 		let sighash = hash_to_message!(&bip143::SighashComponents::new(closing_tx)
 			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
@@ -546,11 +579,18 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
 
-	fn set_remote_channel_pubkeys(&mut self, channel_pubkeys: &ChannelPublicKeys) {
-		assert!(self.remote_channel_pubkeys.is_none(), "Already set remote channel pubkeys");
-		self.remote_channel_pubkeys = Some(channel_pubkeys.clone());
+	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16) {
+		assert!(self.accepted_channel_data.is_none(), "Already accepted");
+		self.accepted_channel_data = Some(AcceptedChannelData {
+			remote_channel_pubkeys: channel_pubkeys.clone(),
+			remote_to_self_delay,
+			local_to_self_delay,
+		});
 	}
 }
+
+impl_writeable!(AcceptedChannelData, 0,
+ { remote_channel_pubkeys, remote_to_self_delay, local_to_self_delay });
 
 impl Writeable for InMemoryChannelKeys {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
@@ -560,7 +600,7 @@ impl Writeable for InMemoryChannelKeys {
 		self.delayed_payment_base_key.write(writer)?;
 		self.htlc_base_key.write(writer)?;
 		self.commitment_seed.write(writer)?;
-		self.remote_channel_pubkeys.write(writer)?;
+		self.accepted_channel_data.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 		self.key_derivation_params.0.write(writer)?;
 		self.key_derivation_params.1.write(writer)?;
@@ -577,7 +617,7 @@ impl Readable for InMemoryChannelKeys {
 		let delayed_payment_base_key = Readable::read(reader)?;
 		let htlc_base_key = Readable::read(reader)?;
 		let commitment_seed = Readable::read(reader)?;
-		let remote_channel_pubkeys = Readable::read(reader)?;
+		let remote_channel_data = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 		let secp_ctx = Secp256k1::signing_only();
 		let local_channel_pubkeys =
@@ -596,7 +636,7 @@ impl Readable for InMemoryChannelKeys {
 			commitment_seed,
 			channel_value_satoshis,
 			local_channel_pubkeys,
-			remote_channel_pubkeys,
+			accepted_channel_data: remote_channel_data,
 			key_derivation_params: (params_1, params_2),
 		})
 	}
