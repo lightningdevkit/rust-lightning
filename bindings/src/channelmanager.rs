@@ -18,7 +18,11 @@ use lightning::{
     },
     routing::router::Route,
     ln::channelmanager::{PaymentSecret, PaymentPreimage},
+    util::ser::{Readable, ReadableArgs},
+    ln::channelmanager::ChannelManagerReadArgs
 };
+
+use bitcoin::hash_types::BlockHash;
 
 use crate::{
     error::FFIResult,
@@ -34,11 +38,13 @@ use crate::{
         *
     },
     utils::into_fixed_buffer,
+    channelmonitor::FFIManyChannelMonitor
 };
 
-pub type FFIManyChannelMonitor = SimpleManyChannelMonitor<OutPoint, InMemoryChannelKeys, Arc<FFIBroadCaster>, Arc<FFIFeeEstimator>, Arc<FFILogger>, Arc<FFIChainWatchInterface>>;
 pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
 pub type FFIArcChannelManagerHandle<'a> = HandleShared<'a, FFIArcChannelManager>;
+pub type FFIChannelManagerReadArgs<'a> = ChannelManagerReadArgs<'a, Arc<InMemoryChannelKeys>, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
+
 
 fn fail_htlc_backwards_inner(payment_hash: Ref<Bytes32>, payment_secret: &Option<PaymentSecret>, handle: FFIArcChannelManagerHandle) -> Result<bool, FFIResult> {
     let chan_man: &FFIArcChannelManager = handle.as_ref();
@@ -314,11 +320,93 @@ ffi! {
         let mut chan_man: &FFIArcChannelManager = handle.as_ref();
         into_fixed_buffer(&mut chan_man, buf, &mut actual_len)
     }
+    fn deserialize_channel_manager(buf_ptr: Ref<u8>, buf_len: usize,
+                                   cfg: Ref<UserConfig>,
+
+                                   install_watch_tx_ptr: Ref<chain_watch_interface_fn::InstallWatchTxPtr>,
+                                   install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
+                                   watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
+                                   get_chain_utxo_ptr: Ref<chain_watch_interface_fn::GetChainUtxoPtr>,
+                                   filter_block_ptr: Ref<chain_watch_interface_fn::FilterBlock>,
+                                   reentered_ptr: Ref<chain_watch_interface_fn::ReEntered>,
+
+                                   get_node_secret_ptr: Ref<keys_interface_fn::GetNodeSecret>,
+                                   get_destination_script_ptr: Ref<keys_interface_fn::GetDestinationScript>,
+                                   get_shutdown_key_ptr: Ref<keys_interface_fn::GetShutdownPubKey>,
+                                   get_channel_keys_ptr: Ref<keys_interface_fn::GetChannelKeys>,
+                                   get_onion_rand_ptr: Ref<keys_interface_fn::GetOnionRand>,
+                                   get_channel_id_ptr: Ref<keys_interface_fn::GetChannelId>,
+
+                                   broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
+                                   log_ptr: Ref<ffilogger_fn::LogExtern>,
+                                   get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
+                                   handle: Out<FFIArcChannelManagerHandle>) -> FFIResult {
+
+        // TODO: use macro?
+        let log_ref = unsafe_block!("" => log_ptr.as_ref());
+        let install_watch_tx = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_tx_ptr.as_ref());
+        let install_watch_outpoint = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_outpoint_ptr.as_ref());
+        let watch_all_txn = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => watch_all_txn_ptr.as_ref());
+        let get_chain_utxo = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => get_chain_utxo_ptr.as_ref());
+        let filter_block = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => filter_block_ptr.as_ref());
+        let reentered = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => reentered_ptr.as_ref());
+
+        let get_node_secret_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_node_secret_ptr.as_ref());
+        let get_destination_script_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_destination_script_ptr.as_ref());
+        let get_shutdown_key_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_shutdown_key_ptr.as_ref());
+        let get_channel_keys_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_channel_keys_ptr.as_ref());
+        let get_onion_rand_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_onion_rand_ptr.as_ref());
+        let get_channel_id_ref = unsafe_block!("function pointer lives as long as KeysInterface and it points to valid data" => get_channel_id_ptr.as_ref());
+        let keys_manager = Arc::new(FFIKeysInterface::new(
+            *get_node_secret_ref,
+            *get_destination_script_ref,
+            *get_shutdown_key_ref,
+            *get_channel_keys_ref,
+            *get_onion_rand_ref,
+            *get_channel_id_ref,
+        ));
+
+        let logger = Arc::new( FFILogger{ log_ptr: *log_ref } );
+
+        let chain_watch_interface_arc =
+            Arc::new(FFIChainWatchInterface::new(
+                *install_watch_tx,
+                *install_watch_outpoint,
+                *watch_all_txn,
+                *get_chain_utxo,
+                *filter_block,
+                *reentered,
+            ));
+
+        let broadcast_ref = unsafe_block!("" => broadcast_transaction_ptr.as_ref());
+        let tx_broadcaster = Arc::new(FFIBroadCaster { broadcast_transaction_ptr: *broadcast_ref });
+
+        let fee_est_fn_ref = unsafe_block!("" => get_est_sat_per_1000_weight_ptr.as_ref());
+        let fee_estimator = Arc::new(FFIFeeEstimator{ get_est_sat_per_1000_weight_ptr: *fee_est_fn_ref });
+
+        let default_config = unsafe_block!("" => cfg.as_ref());
+        let mut buf = unsafe_block!("The buffer lives as long as this function. And its length is buf_len" => buf_ptr.as_bytes(buf_len));
+        let monitor =
+            Arc::new(FFIManyChannelMonitor::new(chain_watch_interface_arc, tx_broadcaster.clone(), logger.clone(), fee_estimator.clone()));
+        let readable_args = ChannelManagerReadArgs {
+            keys_manager,
+            fee_estimator,
+            monitor,
+            tx_broadcaster,
+            logger,
+            default_config: default_config.clone(),
+            channel_monitors: &mut Default::default()
+        };
+        let (_hash, chan_man): (BlockHash, FFIArcChannelManager) = ReadableArgs::read(&mut buf, readable_args).unwrap();
+        unsafe_block!("We know chan_man is not null by wrapper macro. And we know `Out` is writable" => handle.init(HandleShared::alloc(chan_man)));
+        FFIResult::ok()
+    }
 
     fn release_ffi_channel_manager(handle: FFIArcChannelManagerHandle) -> FFIResult {
         unsafe_block!("The upstream caller guarantees the handle will not be accessed after being freed" => FFIArcChannelManagerHandle::dealloc(handle, |mut _handle| {
             FFIResult::ok()
         }))
     }
+
 }
 
