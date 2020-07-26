@@ -6,6 +6,7 @@ use crate::{
     Ref,
     Out,
     channelmanager::{FFIArcChannelManagerHandle, FFIArcChannelManager},
+    channelmonitor::{FFIManyChannelMonitorHandle, FFIManyChannelMonitor},
     adaptors::{chain_watch_interface_fn, FFIChainWatchInterface}
 };
 use bitcoin::BlockHeader;
@@ -64,6 +65,26 @@ ffi! {
         let chan_man: Arc<FFIArcChannelManager> = unsafe_block!("We know the handle points to valid channel_manager" => channel_manager.as_arc());
         let block_notifier: &FFIBlockNotifier = handle.as_ref();
         block_notifier.unregister_listener(chan_man);
+        FFIResult::ok()
+    }
+
+    fn register_many_channel_monitor(
+        chan_mon_handle: FFIManyChannelMonitorHandle,
+        handle: FFIBlockNotifierHandle
+    ) -> FFIResult {
+        let chan_mon: Arc<FFIManyChannelMonitor> = unsafe_block!("We know the handle points to valid ChannelMonitor" => chan_mon_handle.as_arc());
+        let block_notifier = handle.as_ref();
+        block_notifier.register_listener(chan_mon);
+        FFIResult::ok()
+    }
+
+    fn unregister_many_channel_monitor(
+        chan_mon_handle: FFIManyChannelMonitorHandle,
+        handle: FFIBlockNotifierHandle
+    ) -> FFIResult {
+        let chan_mon: Arc<FFIManyChannelMonitor> = unsafe_block!("We know the handle points to valid ChannelMonitor" => chan_mon_handle.as_arc());
+        let block_notifier = handle.as_ref();
+        block_notifier.unregister_listener(chan_mon);
         FFIResult::ok()
     }
 

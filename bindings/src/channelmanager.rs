@@ -320,6 +320,7 @@ ffi! {
         let mut chan_man: &FFIArcChannelManager = handle.as_ref();
         into_fixed_buffer(&mut chan_man, buf, &mut actual_len)
     }
+
     fn deserialize_channel_manager(buf_ptr: Ref<u8>, buf_len: usize,
                                    cfg: Ref<UserConfig>,
 
