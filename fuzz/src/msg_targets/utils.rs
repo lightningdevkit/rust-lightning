@@ -78,8 +78,8 @@ macro_rules! test_msg_exact {
 	}
 }
 
-// Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to 0s on
-// re-serialization.
+// Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to
+// any value on re-serialization.
 #[macro_export]
 macro_rules! test_msg_hole {
 	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {

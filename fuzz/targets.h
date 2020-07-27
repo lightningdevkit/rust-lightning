@@ -22,10 +22,10 @@ void msg_update_fail_malformed_htlc_run(const unsigned char* data, size_t data_l
 void msg_update_fee_run(const unsigned char* data, size_t data_len);
 void msg_update_fulfill_htlc_run(const unsigned char* data, size_t data_len);
 void msg_channel_announcement_run(const unsigned char* data, size_t data_len);
-void msg_channel_update_run(const unsigned char* data, size_t data_len);
 void msg_node_announcement_run(const unsigned char* data, size_t data_len);
 void msg_update_add_htlc_run(const unsigned char* data, size_t data_len);
 void msg_error_message_run(const unsigned char* data, size_t data_len);
+void msg_channel_update_run(const unsigned char* data, size_t data_len);
 void msg_onion_hop_data_run(const unsigned char* data, size_t data_len);
 void msg_ping_run(const unsigned char* data, size_t data_len);
 void msg_pong_run(const unsigned char* data, size_t data_len);

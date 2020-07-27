@@ -15,7 +15,7 @@ use ln::{chan_utils, onion_utils};
 use routing::router::{Route, RouteHop, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
+use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction, OptionalField};
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::{byte_utils, test_utils};
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
@@ -6058,6 +6058,7 @@ impl msgs::ChannelUpdate {
 				flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				excess_data: vec![],

@@ -5,6 +5,7 @@ use chain::keysinterface;
 use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
+use ln::msgs::OptionalField;
 use ln::channelmonitor::HTLCUpdate;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
@@ -216,6 +217,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 			flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: vec![],

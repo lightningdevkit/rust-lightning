@@ -3129,6 +3129,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Allowed in any state (including after shutdown)
+	pub fn get_announced_htlc_max_msat(&self) -> u64 {
+		return cmp::min(
+			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
+			// to use full capacity. This is an effort to reduce routing failures, because in many cases
+			// channel might have been used to route very small values (either by honest users or as DoS).
+			self.channel_value_satoshis * 9 / 10,
+
+			Channel::<ChanSigner>::get_our_max_htlc_value_in_flight_msat(self.channel_value_satoshis)
+		);
+	}
+
+	/// Allowed in any state (including after shutdown)
 	pub fn get_their_htlc_minimum_msat(&self) -> u64 {
 		self.our_htlc_minimum_msat
 	}

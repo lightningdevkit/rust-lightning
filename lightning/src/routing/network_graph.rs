@@ -11,7 +11,7 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError,ErrorAction,LightningError,RoutingMessageHandler,NetAddress};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, OptionalField, MAX_VALUE_MSAT};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
@@ -90,8 +90,8 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
-		let checked_utxo = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
-			Ok((script_pubkey, _value)) => {
+		let utxo_value = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
+			Ok((script_pubkey, value)) => {
 				let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
 				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
 				                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
@@ -102,11 +102,11 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				}
 				//TODO: Check if value is worth storing, use it to inform routing, and compare it
 				//to the new HTLC max field in channel_update
-				true
+				Some(value)
 			},
 			Err(ChainError::NotSupported) => {
 				// Tentatively accept, potentially exposing us to DoS attacks
-				false
+				None
 			},
 			Err(ChainError::NotWatched) => {
 				return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.contents.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
@@ -115,7 +115,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
 			},
 		};
-		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, checked_utxo, Some(&self.secp_ctx));
+		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, utxo_value, Some(&self.secp_ctx));
 		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		result
 	}
@@ -215,6 +215,8 @@ pub struct DirectionalChannelInfo {
 	pub cltv_expiry_delta: u16,
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
+	/// The maximum value which may be relayed to the next hop via the channel.
+	pub htlc_maximum_msat: Option<u64>,
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
 	/// Most recent update for the channel received from the network
@@ -236,6 +238,7 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 	enabled,
 	cltv_expiry_delta,
 	htlc_minimum_msat,
+	htlc_maximum_msat,
 	fees,
 	last_update_message
 });
@@ -254,6 +257,8 @@ pub struct ChannelInfo {
 	pub node_two: PublicKey,
 	/// Details about the second direction of a channel
 	pub two_to_one: Option<DirectionalChannelInfo>,
+	/// The channel capacity as seen on-chain, if chain lookup is available.
+	pub capacity_sats: Option<u64>,
 	/// An initial announcement of the channel
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -275,6 +280,7 @@ impl_writeable!(ChannelInfo, 0, {
 	one_to_two,
 	node_two,
 	two_to_one,
+	capacity_sats,
 	announcement_message
 });
 
@@ -552,7 +558,7 @@ impl NetworkGraph {
 	/// which is probably result of a reorg. In that case, we update channel info only if the
 	/// utxo was checked, otherwise stick to the existing update, to prevent DoS risks.
 	/// Announcement signatures are checked here only if Secp256k1 object is provided.
-	fn update_channel_from_announcement(&mut self, msg: &msgs::ChannelAnnouncement, checked_utxo: bool, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
+	fn update_channel_from_announcement(&mut self, msg: &msgs::ChannelAnnouncement, utxo_value: Option<u64>, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
 		if let Some(sig_verifier) = secp_ctx {
 			let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 			secp_verify_sig!(sig_verifier, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
@@ -569,6 +575,7 @@ impl NetworkGraph {
 				one_to_two: None,
 				node_two: msg.contents.node_id_2.clone(),
 				two_to_one: None,
+				capacity_sats: utxo_value,
 				announcement_message: if should_relay { Some(msg.clone()) } else { None },
 			};
 
@@ -577,7 +584,7 @@ impl NetworkGraph {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
 				//exactly how...
-				if checked_utxo {
+				if utxo_value.is_some() {
 					// Either our UTXO provider is busted, there was a reorg, or the UTXO provider
 					// only sometimes returns results. In any case remove the previous entry. Note
 					// that the spec expects us to "blacklist" the node_ids involved, but we can't
@@ -659,6 +666,19 @@ impl NetworkGraph {
 		match self.channels.get_mut(&msg.contents.short_channel_id) {
 			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(channel) => {
+				if let OptionalField::Present(htlc_maximum_msat) = msg.contents.htlc_maximum_msat {
+					if htlc_maximum_msat > MAX_VALUE_MSAT {
+						return Err(LightningError{err: "htlc_maximum_msat is larger than maximum possible msats".to_owned(), action: ErrorAction::IgnoreError});
+					}
+
+					if let Some(capacity_sats) = channel.capacity_sats {
+						// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
+						// Don't query UTXO set here to reduce DoS risks.
+						if htlc_maximum_msat > capacity_sats * 1000 {
+							return Err(LightningError{err: "htlc_maximum_msat is larger than channel capacity".to_owned(), action: ErrorAction::IgnoreError});
+						}
+					}
+				}
 				macro_rules! maybe_update_channel_info {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
@@ -681,6 +701,7 @@ impl NetworkGraph {
 							last_update: msg.contents.timestamp,
 							cltv_expiry_delta: msg.contents.cltv_expiry_delta,
 							htlc_minimum_msat: msg.contents.htlc_minimum_msat,
+							htlc_maximum_msat: if let OptionalField::Present(max_value) = msg.contents.htlc_maximum_msat { Some(max_value) } else { None },
 							fees: RoutingFees {
 								base_msat: msg.contents.fee_base_msat,
 								proportional_millionths: msg.contents.fee_proportional_millionths,
@@ -774,8 +795,9 @@ mod tests {
 	use chain::chaininterface;
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate};
+	use ln::msgs::{OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate,
+		MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
@@ -1110,7 +1132,11 @@ mod tests {
 
 	#[test]
 	fn handling_channel_update() {
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let secp_ctx = Secp256k1::new();
+		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let chain_monitor = Arc::new(test_utils::TestChainWatcher::new());
+		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor.clone(), Arc::clone(&logger));
+
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
@@ -1121,8 +1147,16 @@ mod tests {
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let short_channel_id = 0;
 		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let amount_sats = 1000_000;
+
 		{
 			// Announce a channel we will update
+			let good_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
+			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
+			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
+			   .push_opcode(opcodes::all::OP_PUSHNUM_2)
+			   .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+			*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script.clone(), amount_sats));
 			let unsigned_announcement = UnsignedChannelAnnouncement {
 				features: ChannelFeatures::empty(),
 				chain_hash,
@@ -1156,6 +1190,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 10000,
 			fee_proportional_millionths: 20,
 			excess_data: Vec::new()
@@ -1194,6 +1229,7 @@ mod tests {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
+		unsigned_channel_update.timestamp += 10;
 
 		unsigned_channel_update.short_channel_id += 1;
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
@@ -1208,6 +1244,31 @@ mod tests {
 		};
 		unsigned_channel_update.short_channel_id = short_channel_id;
 
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than maximum possible msats")
+		};
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
+
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		let valid_channel_update = ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_1_privkey),
+			contents: unsigned_channel_update.clone()
+		};
+
+		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+			Ok(_) => panic!(),
+			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity")
+		};
+		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
 
 		// Even though previous update was not relayed further, we still accepted it,
 		// so we now won't accept update before the previous one.
@@ -1289,6 +1350,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 144,
 				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
 				excess_data: Vec::new()
@@ -1416,6 +1478,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 144,
 				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
 				excess_data: Vec::new()
@@ -1452,6 +1515,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 144,
 				htlc_minimum_msat: 1000000,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
 				excess_data: [1; 3].to_vec()
