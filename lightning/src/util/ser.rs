@@ -149,6 +149,33 @@ impl<R: Read> Read for ReadTrackingReader<R> {
 	}
 }
 
+impl Writeable for Vec<(crate::chain::transaction::OutPoint, BlockHash)>
+{
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		(self.len() as u16).write(w)?;
+		for (o, hash) in self.iter() {
+			o.write(w)?;
+			hash.write(w)?;
+		}
+		Ok(())
+	}
+}
+impl Readable for Vec<(crate::chain::transaction::OutPoint, BlockHash)>
+{
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: u16 = Readable::read(r)?;
+		let mut ret = Vec::with_capacity(len as usize);
+		for _ in 0..(len as usize)
+		{
+			let o = Readable::read(r)?;
+			let hash = Readable::read(r)?;
+			ret.push((o, hash));
+		}
+		Ok(ret)
+	}
+}
+
+
 /// A trait that various rust-lightning types implement allowing them to be written out to a Writer
 pub trait Writeable {
 	/// Writes self out to the given Writer

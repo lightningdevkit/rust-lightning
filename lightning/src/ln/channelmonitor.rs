@@ -221,7 +221,7 @@ pub struct SimpleManyChannelMonitorReadArgs<T: Deref, F: Deref, L: Deref, C: Der
 	pub chain_watch_interface: C
 }
 
-impl<Key: Send + Readable + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys + Readable, T: Deref, F: Deref, L: Deref, C: Deref> ReadableArgs<SimpleManyChannelMonitorReadArgs<T, F, L, C>> for (Vec<BlockHash>, SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>)
+impl<Key: Send + Readable + Clone + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys + Readable, T: Deref, F: Deref, L: Deref, C: Deref> ReadableArgs<SimpleManyChannelMonitorReadArgs<T, F, L, C>> for (Vec<(Key, BlockHash)>, SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>)
 	where T::Target: BroadcasterInterface,
 		  F::Target: FeeEstimator,
 		  L::Target: Logger,
@@ -230,14 +230,14 @@ impl<Key: Send + Readable + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelK
 	fn read<R: ::std::io::Read>(reader: &mut R, args: SimpleManyChannelMonitorReadArgs<T, F, L, C>) -> Result<Self, DecodeError> {
 		let num: u64 = Readable::read(reader)?;
 		let result = SimpleManyChannelMonitor::new(args.chain_watch_interface, args.tx_broadcaster, args.logger, args.fee_estimator);
-		let mut latest_block_hashes = Vec::with_capacity(num as usize);
+		let mut key_and_latest_block_hashes = Vec::with_capacity(num as usize);
 		for _ in 0..num {
 			let key: Key = Readable::read(reader)?;
-            let (hash, chan_mon): (BlockHash, ChannelMonitor<ChanSigner>) = Readable::read(reader)?;
-			result.add_monitor_by_key(key, chan_mon).expect("failed to add monitor by key");
-			latest_block_hashes.push(hash);
+			let (hash, chan_mon): (BlockHash, ChannelMonitor<ChanSigner>) = Readable::read(reader)?;
+			result.add_monitor_by_key(key.clone(), chan_mon).expect("failed to add monitor by key");
+			key_and_latest_block_hashes.push((key, hash));
 		}
-		Ok((latest_block_hashes, result))
+		Ok((key_and_latest_block_hashes, result))
 	}
 }
 
@@ -279,15 +279,22 @@ SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
 		  L::Target: Logger,
 		  C::Target: ChainWatchInterface,
 {
-	/// wrapper for `SimpleManyChannelMonitor::block_connected` so that ffi function can be dumb
-	/// enough to pass the simple block
-	pub fn raw_block_connected(&self, block: &Block, height: u32) {
-		let idxes = (*(&self.chain_monitor)).filter_block(block);
-		let mut txs: Vec<&Transaction> = Vec::with_capacity(idxes.len());
-		for i in &idxes {
-			txs.push(&block.txdata[i.clone()]);
+	/// wrapper for `ChannelMonitor::block_connected` so that a ffi function can be dumb
+	/// enough to pass the simple block after deserialization.
+	pub fn tell_block_connected_after_resume(&self, block: &Block, height: u32, key: Key) -> Result<(), MonitorUpdateError> {
+		let mut monitors = self.monitors.lock().unwrap();
+		match monitors.get_mut(&key) {
+			Some(channel_monitor) => {
+				let mut txn = Vec::with_capacity(block.txdata.len());
+				for tx in block.txdata.iter()
+				{
+					txn.push(tx);
+				}
+				channel_monitor.block_connected(&txn, height, &block.header.bitcoin_hash(), &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+				Ok(())
+			},
+			None => Err(MonitorUpdateError("No such monitor registered")),
 		}
-		self.block_connected(&block.header, height, txs.as_slice(), idxes.as_slice())
 	}
 }
 
