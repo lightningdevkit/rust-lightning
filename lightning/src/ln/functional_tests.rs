@@ -14,7 +14,7 @@
 use chain::Watch;
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
-use chain::chaininterface::{ChainListener, BlockNotifier};
+use chain::chaininterface::ChainListener;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
@@ -4352,7 +4352,6 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
 	nodes[0].node = &nodes_0_deserialized;
-	nodes[0].block_notifier.register_listener(nodes[0].node);
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	check_added_monitors!(nodes[0], 1);
 
@@ -4475,7 +4474,6 @@ fn test_manager_serialize_deserialize_events() {
 	};
 
 	// Make sure the channel is functioning as though the de/serialization never happened
-	nodes[0].block_notifier.register_listener(nodes[0].node);
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	check_added_monitors!(nodes[0], 1);
 
@@ -7517,10 +7515,6 @@ fn test_data_loss_protect() {
 	assert!(monitor.watch_channel(OutPoint { txid: chan.3.txid(), index: 0 }, chain_monitor).is_ok());
 	nodes[0].chain_monitor = &monitor;
 	nodes[0].chain_source = &chain_source;
-
-	nodes[0].block_notifier = BlockNotifier::new();
-	nodes[0].block_notifier.register_listener(&nodes[0].chain_monitor.chain_monitor);
-	nodes[0].block_notifier.register_listener(nodes[0].node);
 
 	check_added_monitors!(nodes[0], 1);
 

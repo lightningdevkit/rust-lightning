@@ -719,10 +719,6 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	///
 	/// Users need to notify the new ChannelManager when a new block is connected or
 	/// disconnected using its `block_connected` and `block_disconnected` methods.
-	/// However, rather than calling these methods directly, the user should register
-	/// the ChannelManager as a listener to the BlockNotifier and call the BlockNotifier's
-	/// `block_(dis)connected` methods, which will notify all registered listeners in one
-	/// go.
 	pub fn new(network: Network, fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
 		let secp_ctx = Secp256k1::new();
 

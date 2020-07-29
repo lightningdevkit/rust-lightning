@@ -13,16 +13,12 @@
 //! Includes traits for monitoring and receiving notifications of new blocks and block
 //! disconnections, transaction broadcasting, and feerate information requests.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::Txid;
 
-use std::sync::{Mutex, Arc};
 use std::collections::HashSet;
-use std::ops::Deref;
-use std::marker::PhantomData;
-use std::ptr;
 
 /// An interface to send a transaction to the Bitcoin network.
 pub trait BroadcasterInterface: Sync + Send {
@@ -159,145 +155,5 @@ impl ChainWatchedUtil {
 			}
 		}
 		false
-	}
-}
-
-/// BlockNotifierArc is useful when you need a BlockNotifier that points to ChainListeners with
-/// static lifetimes, e.g. when you're using lightning-net-tokio (since tokio::spawn requires
-/// parameters with static lifetimes). Other times you can afford a reference, which is more
-/// efficient, in which case BlockNotifierRef is a more appropriate type. Defining these type
-/// aliases prevents issues such as overly long function definitions.
-///
-/// (C-not exported) as we let clients handle any reference counting they need to do
-pub type BlockNotifierArc = Arc<BlockNotifier<'static, Arc<ChainListener>>>;
-
-/// BlockNotifierRef is useful when you want a BlockNotifier that points to ChainListeners
-/// with nonstatic lifetimes. This is useful for when static lifetimes are not needed. Nonstatic
-/// lifetimes are more efficient but less flexible, and should be used by default unless static
-/// lifetimes are required, e.g. when you're using lightning-net-tokio (since tokio::spawn
-/// requires parameters with static lifetimes), in which case BlockNotifierArc is a more
-/// appropriate type. Defining these type aliases for common usages prevents issues such as
-/// overly long function definitions.
-pub type BlockNotifierRef<'a> = BlockNotifier<'a, &'a ChainListener>;
-
-/// Utility for notifying listeners when blocks are connected or disconnected.
-///
-/// Rather than using a plain BlockNotifier, it is preferable to use either a BlockNotifierArc
-/// or a BlockNotifierRef for conciseness. See their documentation for more details, but essentially
-/// you should default to using a BlockNotifierRef, and use a BlockNotifierArc instead when you
-/// require ChainListeners with static lifetimes, such as when you're using lightning-net-tokio.
-pub struct BlockNotifier<'a, CL: Deref + 'a>
-		where CL::Target: ChainListener + 'a {
-	listeners: Mutex<Vec<CL>>,
-	phantom: PhantomData<&'a ()>,
-}
-
-impl<'a, CL: Deref + 'a> BlockNotifier<'a, CL>
-		where CL::Target: ChainListener + 'a {
-	/// Constructs a new BlockNotifier without any listeners.
-	pub fn new() -> BlockNotifier<'a, CL> {
-		BlockNotifier {
-			listeners: Mutex::new(Vec::new()),
-			phantom: PhantomData,
-		}
-	}
-
-	/// Register the given listener to receive events.
-	pub fn register_listener(&self, listener: CL) {
-		let mut vec = self.listeners.lock().unwrap();
-		vec.push(listener);
-	}
-	/// Unregister the given listener to no longer
-	/// receive events.
-	///
-	/// If the same listener is registered multiple times, unregistering
-	/// will remove ALL occurrences of that listener. Comparison is done using
-	/// the pointer returned by the Deref trait implementation.
-	///
-	/// (C-not exported) because the equality check would always fail
-	pub fn unregister_listener(&self, listener: CL) {
-		let mut vec = self.listeners.lock().unwrap();
-		// item is a ref to an abstract thing that dereferences to a ChainListener,
-		// so dereference it twice to get the ChainListener itself
-		vec.retain(|item | !ptr::eq(&(**item), &(*listener)));
-	}
-
-	/// Notify listeners that a block was connected.
-	pub fn block_connected(&self, block: &Block, height: u32) {
-		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		let listeners = self.listeners.lock().unwrap();
-		for listener in listeners.iter() {
-			listener.block_connected(&block.header, &txdata, height);
-		}
-	}
-
-	/// Notify listeners that a block was disconnected.
-	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let listeners = self.listeners.lock().unwrap();
-		for listener in listeners.iter() {
-			listener.block_disconnected(&header, disconnected_height);
-		}
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use bitcoin::blockdata::block::BlockHeader;
-	use bitcoin::blockdata::transaction::Transaction;
-	use super::{BlockNotifier, ChainListener};
-	use std::ptr;
-
-	struct TestChainListener(u8);
-
-	impl ChainListener for TestChainListener {
-		fn block_connected(&self, _header: &BlockHeader, _txdata: &[(usize, &Transaction)], _height: u32) {}
-		fn block_disconnected(&self, _header: &BlockHeader, _disconnected_height: u32) {}
-	}
-
-	#[test]
-	fn register_listener_test() {
-		let block_notifier = BlockNotifier::new();
-		assert_eq!(block_notifier.listeners.lock().unwrap().len(), 0);
-		let listener = &TestChainListener(0);
-		block_notifier.register_listener(listener as &ChainListener);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 1);
-		let item = vec.first().unwrap();
-		assert!(ptr::eq(&(**item), listener));
-	}
-
-	#[test]
-	fn unregister_single_listener_test() {
-		let block_notifier = BlockNotifier::new();
-		let listener1 = &TestChainListener(1);
-		let listener2 = &TestChainListener(2);
-		block_notifier.register_listener(listener1 as &ChainListener);
-		block_notifier.register_listener(listener2 as &ChainListener);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 2);
-		drop(vec);
-		block_notifier.unregister_listener(listener1);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 1);
-		let item = vec.first().unwrap();
-		assert!(ptr::eq(&(**item), listener2));
-	}
-
-	#[test]
-	fn unregister_multiple_of_the_same_listeners_test() {
-		let block_notifier = BlockNotifier::new();
-		let listener1 = &TestChainListener(1);
-		let listener2 = &TestChainListener(2);
-		block_notifier.register_listener(listener1 as &ChainListener);
-		block_notifier.register_listener(listener1 as &ChainListener);
-		block_notifier.register_listener(listener2 as &ChainListener);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 3);
-		drop(vec);
-		block_notifier.unregister_listener(listener1);
-		let vec = block_notifier.listeners.lock().unwrap();
-		assert_eq!(vec.len(), 1);
-		let item = vec.first().unwrap();
-		assert!(ptr::eq(&(**item), listener2));
 	}
 }

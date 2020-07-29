@@ -12,7 +12,7 @@
 
 use chain;
 use chain::Watch;
-use chain::chaininterface;
+use chain::chaininterface::ChainListener;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::ChannelMonitor;
@@ -83,7 +83,6 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, he
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
 	use chain::WatchEventProvider;
-	use chain::chaininterface::ChainListener;
 
 	let watch_events = node.chain_monitor.chain_monitor.release_pending_watch_events();
 	process_chain_watch_events(&watch_events);
@@ -106,7 +105,8 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 fn process_chain_watch_events(_events: &Vec<chain::WatchEvent>) {}
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
-	node.block_notifier.block_disconnected(header, height)
+	node.chain_monitor.chain_monitor.block_disconnected(header, height);
+	node.node.block_disconnected(header, height);
 }
 
 pub struct TestChanMonCfg {
@@ -127,7 +127,6 @@ pub struct NodeCfg<'a> {
 }
 
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
-	pub block_notifier: chaininterface::BlockNotifierRef<'a>,
 	pub chain_source: &'c test_utils::TestChainSource,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
@@ -1149,11 +1148,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let payment_count = Rc::new(RefCell::new(0));
 
 	for i in 0..node_count {
-		let block_notifier = chaininterface::BlockNotifier::new();
-		block_notifier.register_listener(&cfgs[i].chain_monitor.chain_monitor as &chaininterface::ChainListener);
-		block_notifier.register_listener(&chan_mgrs[i] as &chaininterface::ChainListener);
 		let net_graph_msg_handler = NetGraphMsgHandler::new(None, cfgs[i].logger);
-		nodes.push(Node{ chain_source: cfgs[i].chain_source, block_notifier,
+		nodes.push(Node{ chain_source: cfgs[i].chain_source,
 		                 tx_broadcaster: cfgs[i].tx_broadcaster, chain_monitor: &cfgs[i].chain_monitor,
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
