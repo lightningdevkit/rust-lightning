@@ -152,6 +152,7 @@ pub(crate) fn construct_channel_manager(
 
     let cfg = unsafe_block!("" => cfg.as_ref());
 
+    // let monitor = monitor_handle.as_arc();
     let monitor =
         Arc::new(FFIManyChannelMonitor::new(chain_watch_interface_arc, broadcaster.clone(), logger_arc.clone(), Arc::new(fee_est.clone())));
 

@@ -131,7 +131,7 @@ ffi! {
         let (hashes, many_channel_monitor): (Vec<(OutPoint, BlockHash)>, FFIManyChannelMonitor) = ReadableArgs::read(&mut ::std::io::Cursor::new(buf), read_args).unwrap();
 
         let output_buf = unsafe_block!("" => output_buf_ptr.as_uninit_bytes_mut(output_buf_len));
-        into_fixed_buffer(&mut hashes, output_buf, &mut output_actual_len)?;
+        into_fixed_buffer(&hashes, output_buf, &mut output_actual_len)?;
         unsafe_block!("We know the handle is not null by wrapper macro. And we know `Out` is writable" => handle.init(HandleShared::alloc(many_channel_monitor)));
         FFIResult::ok()
     }

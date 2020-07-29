@@ -86,7 +86,7 @@ ffi! {
                 *reentered_ref
             ));
         let route_handler = NetGraphMsgHandler::new(chain_watch_interface_arc, logger_arc.clone());
-        let chan_man = unsafe_block!("It must point to valid ChannelManager" => chan_man.as_arc());
+        let chan_man = chan_man.as_arc();
         let msg_handler =
             MessageHandler { chan_handler: chan_man, route_handler: Arc::new(route_handler) };
 

@@ -45,14 +45,12 @@ where
     }
 
     pub(super) fn as_ref(&self) -> &T {
-        unsafe_block!("We own, the interioer value" => { &*self.0 })
+        unsafe_block!("We own, the interior value" => { &*self.0 })
     }
 
-    unsafe_fn!("The pointer must be nonnull" => 
-        pub fn as_arc(&self) -> Arc<T> {
-            Arc::from_raw(self.0)
-        }
-    );
+    pub(super) fn as_arc(&self) -> Arc<T> {
+        unsafe_block!("We own, the interior value" => Arc::from_raw(self.0))
+    }
 
     unsafe_fn!("There are no other live references and the handle won't be used again" =>
     pub(super) fn dealloc<R>(handle: Self, f: impl FnOnce(T) -> R) -> R {
