@@ -35,7 +35,7 @@ impl EnforcingChannelKeys {
 impl EnforcingChannelKeys {
 	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
 	                                                               keys: &TxCreationKeys) {
-		let remote_points = self.inner.remote_channel_pubkeys.as_ref().unwrap();
+		let remote_points = self.inner.remote_pubkeys();
 
 		let keys_expected = TxCreationKeys::new(secp_ctx,
 		                                        &keys.per_commitment_point,
@@ -60,7 +60,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], to_self_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
 		self.check_keys(secp_ctx, keys);
 		let obscured_commitment_transaction_number = (commitment_tx.lock_time & 0xffffff) as u64 | ((commitment_tx.input[0].sequence as u64 & 0xffffff) << 3*8);
@@ -75,7 +75,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 			commitment_data.1 = cmp::max(commitment_number, commitment_data.1)
 		}
 
-		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, to_self_delay, secp_ctx).unwrap())
+		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, secp_ctx).unwrap())
 	}
 
 	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
@@ -89,8 +89,9 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let commitment_txid = local_commitment_tx.txid();
+		let local_csv = self.inner.remote_to_self_delay();
 
 		for this_htlc in local_commitment_tx.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
@@ -103,11 +104,11 @@ impl ChannelKeys for EnforcingChannelKeys {
 			}
 		}
 
-		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, local_csv, secp_ctx).unwrap())
+		Ok(self.inner.sign_local_commitment_htlc_transactions(local_commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, on_remote_tx_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		Ok(self.inner.sign_justice_transaction(justice_tx, input, amount, per_commitment_key, htlc, on_remote_tx_csv, secp_ctx).unwrap())
+	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_justice_transaction(justice_tx, input, amount, per_commitment_key, htlc, secp_ctx).unwrap())
 	}
 
 	fn sign_remote_htlc_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
@@ -122,8 +123,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
-	fn set_remote_channel_pubkeys(&mut self, channel_pubkeys: &ChannelPublicKeys) {
-		self.inner.set_remote_channel_pubkeys(channel_pubkeys)
+	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16) {
+		self.inner.on_accept(channel_pubkeys, remote_to_self_delay, local_to_self_delay)
 	}
 }
 
