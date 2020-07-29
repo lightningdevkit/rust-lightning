@@ -417,7 +417,8 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
 
 	keys_manager: K,
 
-	logger: L,
+	///
+	pub logger: L,
 }
 
 /// The amount of time we require our counterparty wait to claim their money (ie time between when
