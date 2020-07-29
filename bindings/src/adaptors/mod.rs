@@ -21,6 +21,7 @@ use lightning::{
 };
 
 pub mod primitives;
+
 use primitives::*;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
@@ -113,11 +114,11 @@ pub enum FFINetwork {
 }
 
 impl FFINetwork {
-    pub fn to_network(&self) -> bitcoin::network::constants::Network {
+    pub fn to_network(&self) -> Network {
         match self {
-            FFINetwork::MainNet => { bitcoin::network::constants::Network::Bitcoin },
-            FFINetwork::TestNet => { bitcoin::network::constants::Network::Testnet },
-            FFINetwork::RegTest => { bitcoin::network::constants::Network::Regtest },
+            FFINetwork::MainNet => { Network::Bitcoin },
+            FFINetwork::TestNet => { Network::Testnet },
+            FFINetwork::RegTest => { Network::Regtest },
         }
     }
 }

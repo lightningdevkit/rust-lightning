@@ -29,7 +29,7 @@ impl std::error::Error for Error {
 /// So in that case, we will return `FFIResult::BufferTooSmall` with actual length we want to write.
 /// The wrapper must call the function again with a pointer points to a longer buffer.
 pub (crate) fn into_fixed_buffer<T: Writeable>(
-    data: &mut T,
+    data: &T,
     buf: &mut [u8],
     actual_value_len: &mut Out<usize>
 ) -> FFIResult {

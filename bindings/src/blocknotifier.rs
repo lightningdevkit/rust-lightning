@@ -11,8 +11,8 @@ use crate::{
 };
 use bitcoin::BlockHeader;
 
-type FFIBlockNotifier = BlockNotifier<'static, Arc<dyn ChainListener>, Arc<FFIChainWatchInterface>>;
-type FFIBlockNotifierHandle<'a> = HandleShared<'a, FFIBlockNotifier>;
+pub type FFIBlockNotifier = BlockNotifier<'static, Arc<dyn ChainListener>, Arc<FFIChainWatchInterface>>;
+pub type FFIBlockNotifierHandle<'a> = HandleShared<'a, FFIBlockNotifier>;
 
 ffi! {
 

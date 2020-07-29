@@ -26,17 +26,12 @@ use crate::{
         fee_estimator_fn
     },
     utils::into_fixed_buffer,
-    adaptors::primitives::{FFIOutPoint, Bytes33}
+    adaptors::primitives::{FFIOutPoint}
 };
+use bitcoin::Block;
 
 pub type FFIManyChannelMonitor = SimpleManyChannelMonitor<OutPoint, InMemoryChannelKeys, Arc<FFIBroadCaster>, Arc<FFIFeeEstimator>, Arc<FFILogger>, Arc<FFIChainWatchInterface>>;
 pub type FFIManyChannelMonitorHandle<'a> = HandleShared<'a, FFIManyChannelMonitor>;
-
-
-fn add_monitor_by_key(outpoint: FFIOutPoint, handle: FFIManyChannelMonitorHandle) -> FFIResult {
-    unimplemented!()
-}
-
 
 ffi! {
     fn create_many_channel_monitor(
@@ -87,7 +82,8 @@ ffi! {
         into_fixed_buffer(&mut chan_mon, buf, &mut actual_len)
     }
 
-    fn deserialize_many_channel_monitor(buf_ptr: RefMut<u8>, buf_len: usize,
+    fn deserialize_many_channel_monitor(input_buf_ptr: RefMut<u8>,
+                                        input_buf_len: usize,
                                         install_watch_tx_ptr: Ref<chain_watch_interface_fn::InstallWatchTxPtr>,
                                         install_watch_outpoint_ptr: Ref<chain_watch_interface_fn::InstallWatchOutpointPtr>,
                                         watch_all_txn_ptr: Ref<chain_watch_interface_fn::WatchAllTxnPtr>,
@@ -98,6 +94,11 @@ ffi! {
                                         broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
                                         log_ptr: Ref<ffilogger_fn::LogExtern>,
                                         get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
+
+                                        output_buf_ptr: Out<u8>,
+                                        output_buf_len: usize,
+                                        output_actual_len: Out<usize>,
+
                                         handle: Out<FFIManyChannelMonitorHandle>) -> FFIResult
     {
         let install_watch_tx = unsafe_block!("function pointer lives as long as ChainWatchInterface and it points to valid data"  => install_watch_tx_ptr.as_ref());
@@ -126,11 +127,28 @@ ffi! {
         let logger = Arc::new( FFILogger{ log_ptr: *log_ref } );
 
         let read_args = SimpleManyChannelMonitorReadArgs { fee_estimator, tx_broadcaster, logger, chain_watch_interface };
-        let mut buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => buf_ptr.as_bytes_mut(buf_len));
-        let (hashes, many_channel_monitor): (Vec<BlockHash>, FFIManyChannelMonitor) = ReadableArgs::read(&mut ::std::io::Cursor::new(buf), read_args).unwrap();
+        let mut buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => input_buf_ptr.as_bytes_mut(input_buf_len));
+        let (hashes, many_channel_monitor): (Vec<(OutPoint, BlockHash)>, FFIManyChannelMonitor) = ReadableArgs::read(&mut ::std::io::Cursor::new(buf), read_args).unwrap();
+
+        let output_buf = unsafe_block!("" => output_buf_ptr.as_uninit_bytes_mut(output_buf_len));
+        into_fixed_buffer(&mut hashes, output_buf, &mut output_actual_len)?;
         unsafe_block!("We know the handle is not null by wrapper macro. And we know `Out` is writable" => handle.init(HandleShared::alloc(many_channel_monitor)));
         FFIResult::ok()
     }
+
+    fn tell_block_connected_after_resume(
+        block_ref: Ref<Block>,
+        height: u32,
+        key_ref: Ref<FFIOutPoint>,
+        handle: FFIManyChannelMonitorHandle
+    ) -> FFIResult {
+        let block: &Block = unsafe_block!("" => block_ref.as_ref());
+        let key: OutPoint = unsafe_block!("" => key_ref.as_ref()).clone().into();
+        let chan_mon = handle.as_ref();
+        chan_mon.tell_block_connected_after_resume(block, height, key)?;
+        FFIResult::ok()
+    }
+
 
     fn release_many_channel_monitor(handle: FFIManyChannelMonitorHandle) -> FFIResult {
         unsafe_block!("The upstream caller guarantees the handle will not be accessed after being freed" => FFIManyChannelMonitorHandle::dealloc(handle, |mut _handle| {

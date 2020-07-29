@@ -3,26 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use lightning::{
-    util::{
-        config::UserConfig,
-        events::EventsProvider
-    },
-    ln::{
-        channelmanager::{ChannelManager, PaymentHash},
-        channelmonitor::SimpleManyChannelMonitor
-    },
-    chain::{
-        keysinterface::{InMemoryChannelKeys},
-        transaction::OutPoint
-    },
-    routing::router::Route,
-    ln::channelmanager::{PaymentSecret, PaymentPreimage},
-    util::ser::{Readable, ReadableArgs},
-    ln::channelmanager::ChannelManagerReadArgs
+use bitcoin::{
+    hash_types::BlockHash,
+    secp256k1
 };
-
-use bitcoin::hash_types::BlockHash;
 
 use crate::{
     error::FFIResult,
@@ -33,12 +17,32 @@ use crate::{
             Bytes33,
             FFIRoute,
             FFIEvents,
-            FFIOutPoint
+            FFIOutPoint,
+            FFIBytes
         },
         *
     },
     utils::into_fixed_buffer,
     channelmonitor::FFIManyChannelMonitor
+};
+use lightning::{
+    routing::router::{RouteHint, get_route},
+    util::{
+        config::UserConfig,
+        events::EventsProvider
+    },
+    ln::{
+        channelmanager::{ChannelManager, PaymentHash},
+    },
+    chain::{
+        keysinterface::{InMemoryChannelKeys},
+        transaction::OutPoint
+    },
+    routing::router::Route,
+    ln::channelmanager::{PaymentSecret, PaymentPreimage},
+    util::ser::{Readable, ReadableArgs},
+    ln::channelmanager::ChannelManagerReadArgs,
+    routing::network_graph::NetworkGraph
 };
 
 pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
@@ -67,6 +71,7 @@ fn claim_funds_inner(payment_preimage: Ref<Bytes32>, payment_secret: Option<Paym
     chan_man.claim_funds(payment_preimage, &payment_secret, expected_amount)
 }
 
+
 fn send_payment_inner(handle: FFIArcChannelManagerHandle, route_ref: Ref<FFIRoute>, payment_hash_ref: Ref<Bytes32>, payment_secret: Option<PaymentSecret>) -> FFIResult {
     let chan_man: &FFIArcChannelManager = handle.as_ref();
     let route_ffi: &FFIRoute = unsafe_block!("We know it points to valid route data" => route_ref.as_ref());
@@ -74,6 +79,36 @@ fn send_payment_inner(handle: FFIArcChannelManagerHandle, route_ref: Ref<FFIRout
     let payment_hash: PaymentHash = payment_hash_ffi.clone().into();
     let route: Route = route_ffi.clone().try_into()?;
     chan_man.send_payment(&route, payment_hash, &payment_secret)?;
+    FFIResult::ok()
+}
+
+
+fn get_route_and_send_payment_inner(
+    graph_bytes_ptr: Ref<u8>,
+    graph_bytes_len: usize,
+    their_node_id: Ref<Bytes33>,
+    last_hops_ref: Ref<FFIBytes>,
+    final_value_msat: u64,
+    final_cltv: u32,
+    maybe_payment_secret: &Option<PaymentSecret>,
+    payment_hash_ref: Ref<Bytes32>,
+    chanman_handle: FFIArcChannelManagerHandle
+) -> FFIResult {
+    let chan_man: &FFIArcChannelManager = chanman_handle.as_ref();
+    let their_node_id: secp256k1::PublicKey = unsafe_block!("" => their_node_id.as_ref()).clone().try_into()?;
+    let hops = chan_man.list_usable_channels();
+    let last_hops = unsafe_block!("data lives as long as this function and it points to valid value" => last_hops_ref.as_ref());
+    let last_hops: Vec<RouteHint> = Readable::read(&mut last_hops.as_ref()).expect("Failed to deserialize last_hops");
+    let our_node_id = chan_man.get_our_node_id();
+    let mut graph_bytes = unsafe_block!("" => graph_bytes_ptr.as_bytes(graph_bytes_len));
+    let graph: NetworkGraph = Readable::read(&mut graph_bytes).expect("Failed to decode graph");
+    let mut route = get_route(&our_node_id, &graph, &their_node_id, Some(&hops), last_hops.as_ref(), final_value_msat, final_cltv, chan_man.logger.clone())?;
+    if maybe_payment_secret.is_none()
+    {
+        route = Route { paths: route.paths[0..1].to_vec() }
+    }
+    let payment_hash: PaymentHash = unsafe_block!("We know it points to valid hash data" => payment_hash_ref.as_ref()).clone().into();
+    chan_man.send_payment(&route, payment_hash, maybe_payment_secret)?;
     FFIResult::ok()
 }
 
@@ -94,7 +129,6 @@ pub(crate) fn construct_channel_manager(
     log_ref: &ffilogger_fn::LogExtern,
     get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
     cur_block_height: usize,
-
 ) -> FFIArcChannelManager {
     let network = ffi_network.to_network();
 
@@ -252,8 +286,36 @@ ffi! {
         send_payment_inner(handle, route_ref, payment_hash_ref, None)
     }
 
+    fn get_route_and_send_payment(
+        graph_bytes_ptr: Ref<u8>,
+        graph_bytes_len: usize,
+        their_node_id: Ref<Bytes33>,
+        last_hops_ref: Ref<FFIBytes>,
+        final_value_msat: u64,
+        final_cltv: u32,
+        payment_secret_ref: Ref<Bytes32>,
+        payment_hash: Ref<Bytes32>,
+        chanman_handle: FFIArcChannelManagerHandle
+    ) -> FFIResult {
+        let payment_secret = unsafe_block!("" => payment_secret_ref.as_ref()).clone().into();
+        get_route_and_send_payment_inner(graph_bytes_ptr, graph_bytes_len, their_node_id, last_hops_ref, final_value_msat, final_cltv, &Some(payment_secret), payment_hash, chanman_handle)
+    }
+
+    fn get_route_and_send_payment_without_secret(
+        graph_bytes_ptr: Ref<u8>,
+        graph_bytes_len: usize,
+        their_node_id: Ref<Bytes33>,
+        last_hops_ref: Ref<FFIBytes>,
+        final_value_msat: u64,
+        final_cltv: u32,
+        payment_hash: Ref<Bytes32>,
+        chanman_handle: FFIArcChannelManagerHandle
+    ) -> FFIResult {
+        get_route_and_send_payment_inner(graph_bytes_ptr, graph_bytes_len, their_node_id, last_hops_ref, final_value_msat, final_cltv, &None, payment_hash, chanman_handle)
+    }
+
     fn funding_transaction_generated(temporary_channel_id: Ref<Bytes32>, funding_txo: FFIOutPoint, handle: FFIArcChannelManagerHandle) -> FFIResult {
-    let chan_man: &FFIArcChannelManager = handle.as_ref();
+        let chan_man: &FFIArcChannelManager = handle.as_ref();
         let temporary_channel_id: &Bytes32 = unsafe_block!("data lives as long as this function and it points to a valid value" => temporary_channel_id.as_ref());
         let funding_txo: OutPoint = funding_txo.try_into()?;
         chan_man.funding_transaction_generated(&temporary_channel_id.bytes, funding_txo);
