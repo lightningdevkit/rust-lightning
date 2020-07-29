@@ -14,7 +14,6 @@
 use chain::Watch;
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
-use chain::chaininterface::ChainListener;
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
@@ -3558,10 +3557,8 @@ fn test_unconf_chan() {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		headers.push(header.clone());
 	}
-	let mut height = 99;
 	while !headers.is_empty() {
-		nodes[0].node.block_disconnected(&headers.pop().unwrap(), height);
-		height -= 1;
+		nodes[0].node.block_disconnected(&headers.pop().unwrap());
 	}
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);

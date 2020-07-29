@@ -12,7 +12,6 @@
 
 use chain;
 use chain::Watch;
-use chain::chaininterface::ChainListener;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::ChannelMonitor;
@@ -106,7 +105,7 @@ fn process_chain_watch_events(_events: &Vec<chain::WatchEvent>) {}
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
-	node.node.block_disconnected(header, height);
+	node.node.block_disconnected(header);
 }
 
 pub struct TestChanMonCfg {

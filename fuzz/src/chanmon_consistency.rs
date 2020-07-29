@@ -30,7 +30,7 @@ use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::chaininterface::{BroadcasterInterface, ChainListener, ConfirmationTarget, FeeEstimator};
+use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
 use lightning::ln::channelmonitor;
 use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};

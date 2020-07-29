@@ -26,7 +26,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use lightning::chain;
-use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator};
+use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmonitor;
@@ -212,7 +212,7 @@ impl<'a> MoneyLossDetector<'a> {
 	fn disconnect_block(&mut self) {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
 			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			self.manager.block_disconnected(&header, self.height as u32);
+			self.manager.block_disconnected(&header);
 			self.monitor.block_disconnected(&header, self.height as u32);
 			self.height -= 1;
 			let removal_height = self.height;

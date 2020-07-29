@@ -13,7 +13,6 @@
 //! Includes traits for monitoring and receiving notifications of new blocks and block
 //! disconnections, transaction broadcasting, and feerate information requests.
 
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::Txid;
@@ -24,18 +23,6 @@ use std::collections::HashSet;
 pub trait BroadcasterInterface: Sync + Send {
 	/// Sends a transaction out to (hopefully) be mined.
 	fn broadcast_transaction(&self, tx: &Transaction);
-}
-
-/// A trait indicating a desire to listen for events from the chain
-pub trait ChainListener: Sync + Send {
-	/// Notifies a listener that a block was connected. Transactions may be filtered and are given
-	/// paired with their position within the block.
-	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32);
-
-	/// Notifies a listener that a block was disconnected.
-	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
-	/// Height must be the one of the block which was disconnected (not new height of the best chain)
-	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32);
 }
 
 /// An enum that represents the speed at which we want a transaction to confirm used for feerate
@@ -53,8 +40,7 @@ pub enum ConfirmationTarget {
 /// horizons.
 ///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
-/// called from inside the library in response to ChainListener events, P2P events, or timer
-/// events).
+/// called from inside the library in response to chain events, P2P events, or timer events).
 pub trait FeeEstimator: Sync + Send {
 	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
 	///

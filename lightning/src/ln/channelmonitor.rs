@@ -43,7 +43,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, Hold
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
-use chain::chaininterface::{ChainListener, ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{ChainWatchedUtil, BroadcasterInterface, FeeEstimator};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
@@ -188,10 +188,11 @@ pub struct HTLCUpdate {
 }
 impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 
-/// An implementation of a [`chain::Watch`] and ChainListener.
+/// An implementation of [`chain::Watch`] for monitoring channels.
 ///
-/// May be used in conjunction with [`ChannelManager`] to monitor channels locally or used
-/// independently to monitor channels remotely.
+/// Connected and disconnected blocks must be provided to `ChainMonitor` as documented by
+/// [`chain::Watch`]. May be used in conjunction with [`ChannelManager`] to monitor channels locally
+/// or used independently to monitor channels remotely.
 ///
 /// [`chain::Watch`]: ../../chain/trait.Watch.html
 /// [`ChannelManager`]: ../channelmanager/struct.ChannelManager.html
@@ -269,13 +270,19 @@ impl WatchEventQueue {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
-	ChainListener for ChainMonitor<ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
-	fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
+	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
+	/// of a channel and reacting accordingly based on transactions in the connected block. See
+	/// [`ChannelMonitor::block_connected`] for details. Any HTLCs that were resolved on chain will
+	/// be returned by [`chain::Watch::release_pending_monitor_events`].
+	///
+	/// [`ChannelMonitor::block_connected`]: struct.ChannelMonitor.html#method.block_connected
+	/// [`chain::Watch::release_pending_monitor_events`]: ../../chain/trait.Watch.html#tymethod.release_pending_monitor_events
+	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
 		let mut watch_events = self.watch_events.lock().unwrap();
 		let matched_txn = watch_events.filter_block(txdata);
 		{
@@ -292,7 +299,12 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 		}
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
+	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
+	/// of a channel based on the disconnected block. See [`ChannelMonitor::block_disconnected`] for
+	/// details.
+	///
+	/// [`ChannelMonitor::block_disconnected`]: struct.ChannelMonitor.html#method.block_disconnected
+	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let mut monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values_mut() {
 			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
