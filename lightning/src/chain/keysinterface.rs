@@ -11,7 +11,7 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{Transaction, OutPoint, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
@@ -31,6 +31,7 @@ use bitcoin::secp256k1;
 use util::byte_utils;
 use util::ser::{Writeable, Writer, Readable};
 
+use chain::transaction::OutPoint;
 use ln::chan_utils;
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction, PreCalculatedTxCreationKeys};
 use ln::msgs::UnsignedChannelAnnouncement;

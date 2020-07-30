@@ -4672,7 +4672,7 @@ macro_rules! check_spendable_outputs {
 							match *outp {
 								SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, ref output, ref key_derivation_params } => {
 									let input = TxIn {
-										previous_output: outpoint.clone(),
+										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: 0,
 										witness: Vec::new(),
@@ -4700,7 +4700,7 @@ macro_rules! check_spendable_outputs {
 								},
 								SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref remote_revocation_pubkey } => {
 									let input = TxIn {
-										previous_output: outpoint.clone(),
+										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: *to_self_delay as u32,
 										witness: Vec::new(),
@@ -4733,7 +4733,7 @@ macro_rules! check_spendable_outputs {
 								SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
 									let secp_ctx = Secp256k1::new();
 									let input = TxIn {
-										previous_output: outpoint.clone(),
+										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: 0,
 										witness: Vec::new(),
