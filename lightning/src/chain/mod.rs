@@ -95,32 +95,33 @@ pub trait Watch: Send + Sync {
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent>;
 }
 
-/// An interface for providing [`WatchEvent`]s.
+/// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to
+/// channels.
 ///
-/// [`WatchEvent`]: enum.WatchEvent.html
-pub trait WatchEventProvider {
-	/// Releases events produced since the last call. Subsequent calls must only return new events.
-	fn release_pending_watch_events(&self) -> Vec<WatchEvent>;
-}
+/// This is useful in order to have a [`Watch`] implementation convey to a chain source which
+/// transactions to be notified of. Notification may take the form of pre-filtering blocks or, in
+/// the case of [BIP 157]/[BIP 158], only fetching a block if the compact filter matches. If
+/// receiving full blocks from a chain source, any further filtering is unnecessary.
+///
+/// After an output has been registered, subsequent block retrievals from the chain source must not
+/// exclude any transactions matching the new criteria nor any in-block descendants of such
+/// transactions.
+///
+/// Note that use as part of a [`Watch`] implementation involves reentrancy. Therefore, the `Filter`
+/// should not block on I/O. Implementations should instead queue the newly monitored data to be
+/// processed later. Then, in order to block until the data has been processed, any `Watch`
+/// invocation that has called the `Filter` must return [`TemporaryFailure`].
+///
+/// [`Watch`]: trait.Watch.html
+/// [`TemporaryFailure`]: ../ln/channelmonitor/enum.ChannelMonitorUpdateErr.html#variant.TemporaryFailure
+/// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
+/// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
+pub trait Filter: Send + Sync {
+	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
+	/// a spending condition.
+	fn register_tx(&self, txid: Txid, script_pubkey: Script);
 
-/// An event indicating on-chain activity to watch for pertaining to a channel.
-pub enum WatchEvent {
-	/// Watch for a transaction with `txid` and having an output with `script_pubkey` as a spending
-	/// condition.
-	WatchTransaction {
-		/// Identifier of the transaction.
-		txid: Txid,
-
-		/// Spending condition for an output of the transaction.
-		script_pubkey: Script,
-	},
-	/// Watch for spends of a transaction output identified by `outpoint` having `script_pubkey` as
-	/// the spending condition.
-	WatchOutput {
-		/// Identifier for the output.
-		outpoint: OutPoint,
-
-		/// Spending condition for the output.
-		script_pubkey: Script,
-	}
+	/// Registers interest in spends of a transaction output identified by `outpoint` having
+	/// `script_pubkey` as the spending condition.
+	fn register_output(&self, outpoint: OutPoint, script_pubkey: Script);
 }

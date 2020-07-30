@@ -10,7 +10,6 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use chain;
 use chain::Watch;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
@@ -81,27 +80,10 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, he
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
-	use chain::WatchEventProvider;
-
-	let watch_events = node.chain_monitor.chain_monitor.release_pending_watch_events();
-	process_chain_watch_events(&watch_events);
-
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-	loop {
-		node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
-
-		let watch_events = node.chain_monitor.chain_monitor.release_pending_watch_events();
-		process_chain_watch_events(&watch_events);
-
-		if watch_events.is_empty() {
-			break;
-		}
-	}
-
+	while node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height) {}
 	node.node.block_connected(&block.header, &txdata, height);
 }
-
-fn process_chain_watch_events(_events: &Vec<chain::WatchEvent>) {}
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
@@ -215,12 +197,15 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}).unwrap();
 			}
 
-			let channel_monitor = test_utils::TestChainMonitor::new(self.tx_broadcaster.clone(), &self.logger, &feeest);
+			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
+			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), self.tx_broadcaster.clone(), &self.logger, &feeest);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if let Err(_) = channel_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
+				if let Err(_) = chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
 				}
 			}
+			assert_eq!(*chain_source.watched_txn.lock().unwrap(), *self.chain_source.watched_txn.lock().unwrap());
+			assert_eq!(*chain_source.watched_outputs.lock().unwrap(), *self.chain_source.watched_outputs.lock().unwrap());
 		}
 	}
 }
@@ -1120,7 +1105,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	for i in 0..node_count {
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-		let chain_monitor = test_utils::TestChainMonitor::new(&chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
+		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
 		nodes.push(NodeCfg { chain_source: &chanmon_cfgs[i].chain_source, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chain_monitor, keys_manager, node_seed: seed });
 	}
 
