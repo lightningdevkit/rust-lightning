@@ -31,7 +31,7 @@ use crate::{
 use bitcoin::Block;
 
 pub type FFIManyChannelMonitor = SimpleManyChannelMonitor<OutPoint, InMemoryChannelKeys, Arc<FFIBroadCaster>, Arc<FFIFeeEstimator>, Arc<FFILogger>, Arc<FFIChainWatchInterface>>;
-pub type FFIManyChannelMonitorHandle<'a> = HandleShared<'a, FFIManyChannelMonitor>;
+pub type FFIManyChannelMonitorHandle = HandleShared<'static, FFIManyChannelMonitor>;
 
 ffi! {
     fn create_many_channel_monitor(

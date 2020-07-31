@@ -11,8 +11,8 @@ use crate::{
 };
 use bitcoin::BlockHeader;
 
-pub type FFIBlockNotifier = BlockNotifier<'static, Arc<dyn ChainListener>, Arc<FFIChainWatchInterface>>;
-pub type FFIBlockNotifierHandle<'a> = HandleShared<'a, FFIBlockNotifier>;
+pub type FFIBlockNotifier = BlockNotifier<'static, &'static dyn ChainListener, Arc<FFIChainWatchInterface>>;
+pub type FFIBlockNotifierHandle = HandleShared<'static, FFIBlockNotifier>;
 
 ffi! {
 
@@ -52,7 +52,7 @@ ffi! {
         channel_manager: FFIArcChannelManagerHandle,
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
-        let chan_man = channel_manager.as_arc();
+        let chan_man = channel_manager.as_static_ref();
         let block_notifier: &FFIBlockNotifier = handle.as_ref();
         block_notifier.register_listener(chan_man);
         FFIResult::ok()
@@ -62,7 +62,7 @@ ffi! {
         channel_manager: FFIArcChannelManagerHandle,
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
-        let chan_man = channel_manager.as_arc();
+        let chan_man = channel_manager.as_static_ref();
         let block_notifier: &FFIBlockNotifier = handle.as_ref();
         block_notifier.unregister_listener(chan_man);
         FFIResult::ok()
@@ -72,7 +72,7 @@ ffi! {
         chan_mon_handle: FFIManyChannelMonitorHandle,
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
-        let chan_mon = chan_mon_handle.as_arc();
+        let chan_mon = chan_mon_handle.as_static_ref();
         let block_notifier = handle.as_ref();
         block_notifier.register_listener(chan_mon);
         FFIResult::ok()
@@ -82,7 +82,7 @@ ffi! {
         chan_mon_handle: FFIManyChannelMonitorHandle,
         handle: FFIBlockNotifierHandle
     ) -> FFIResult {
-        let chan_mon = chan_mon_handle.as_arc();
+        let chan_mon = chan_mon_handle.as_static_ref();
         let block_notifier = handle.as_ref();
         block_notifier.unregister_listener(chan_mon);
         FFIResult::ok()

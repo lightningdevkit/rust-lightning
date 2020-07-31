@@ -26,8 +26,8 @@ use crate::{
     }
 };
 
-type FFISimpleArcPeerManager = PeerManager<FFISocketDescriptor, Arc<FFIArcChannelManager>, Arc<NetGraphMsgHandler<Arc<FFIChainWatchInterface>, Arc<FFILogger>>>, Arc<FFILogger>>;
-type FFIArcPeerManagerHandle<'a> = HandleShared<'a, FFISimpleArcPeerManager>;
+type FFISimpleArcPeerManager = PeerManager<FFISocketDescriptor, &'static FFIArcChannelManager, Arc<NetGraphMsgHandler<Arc<FFIChainWatchInterface>, Arc<FFILogger>>>, Arc<FFILogger>>;
+type FFIArcPeerManagerHandle = HandleShared<'static, FFISimpleArcPeerManager>;
 
 lazy_static! {
     static ref SOCKET_DESC_INDEX: AtomicUsize = AtomicUsize::new(0);
@@ -86,7 +86,7 @@ ffi! {
                 *reentered_ref
             ));
         let route_handler = NetGraphMsgHandler::new(chain_watch_interface_arc, logger_arc.clone());
-        let chan_man = chan_man.as_arc();
+        let chan_man = chan_man.as_static_ref();
         let msg_handler =
             MessageHandler { chan_handler: chan_man, route_handler: Arc::new(route_handler) };
 

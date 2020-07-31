@@ -44,10 +44,11 @@ use lightning::{
     ln::channelmanager::ChannelManagerReadArgs,
     routing::network_graph::NetworkGraph
 };
+use crate::channelmonitor::FFIManyChannelMonitorHandle;
 
-pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
-pub type FFIArcChannelManagerHandle<'a> = HandleShared<'a, FFIArcChannelManager>;
-pub type FFIChannelManagerReadArgs<'a> = ChannelManagerReadArgs<'a, Arc<InMemoryChannelKeys>, Arc<FFIManyChannelMonitor>, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
+pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, &'static FFIManyChannelMonitor, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
+pub type FFIArcChannelManagerHandle = HandleShared<'static, FFIArcChannelManager>;
+pub type FFIChannelManagerReadArgs<'a> = ChannelManagerReadArgs<'a, Arc<InMemoryChannelKeys>, &'static FFIManyChannelMonitor, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
 
 
 fn fail_htlc_backwards_inner(payment_hash: Ref<Bytes32>, payment_secret: &Option<PaymentSecret>, handle: FFIArcChannelManagerHandle) -> Result<bool, FFIResult> {
@@ -129,6 +130,7 @@ pub(crate) fn construct_channel_manager(
     log_ref: &ffilogger_fn::LogExtern,
     get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
     cur_block_height: usize,
+    monitor_handle: FFIManyChannelMonitorHandle
 ) -> FFIArcChannelManager {
     let network = ffi_network.to_network();
 
@@ -153,8 +155,7 @@ pub(crate) fn construct_channel_manager(
     let cfg = unsafe_block!("" => cfg.as_ref());
 
     // let monitor = monitor_handle.as_arc();
-    let monitor =
-        Arc::new(FFIManyChannelMonitor::new(chain_watch_interface_arc, broadcaster.clone(), logger_arc.clone(), Arc::new(fee_est.clone())));
+    let monitor = monitor_handle.as_static_ref();
 
     ChannelManager::new(
         network,
@@ -192,7 +193,9 @@ ffi! {
         log_ptr: Ref<ffilogger_fn::LogExtern>,
         get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
         cur_block_height: usize,
-        chan_man: Out<FFIArcChannelManagerHandle>) -> FFIResult {
+        monitor_handle: FFIManyChannelMonitorHandle,
+        chan_man: Out<FFIArcChannelManagerHandle>
+        ) -> FFIResult {
 
         let log_ref = unsafe_block!("" => log_ptr.as_ref());
         let network = unsafe_block!("" => *network_ref.as_ref());
@@ -236,6 +239,7 @@ ffi! {
                 log_ref,
                 get_est_sat_per_1000_weight_ptr,
                 cur_block_height,
+                monitor_handle
             );
         unsafe_block!("We know chan_man is not null by wrapper macro. And we know `Out` is writable" => chan_man.init(HandleShared::alloc(chan_man_raw)));
         FFIResult::ok()
@@ -404,6 +408,7 @@ ffi! {
                                    broadcast_transaction_ptr: Ref<broadcaster_fn::BroadcastTransactionPtr>,
                                    log_ptr: Ref<ffilogger_fn::LogExtern>,
                                    get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
+                                   monitor_handle: FFIManyChannelMonitorHandle,
                                    handle: Out<FFIArcChannelManagerHandle>) -> FFIResult {
 
         // TODO: use macro?
@@ -450,8 +455,7 @@ ffi! {
 
         let default_config = unsafe_block!("" => cfg.as_ref());
         let mut buf = unsafe_block!("The buffer lives as long as this function. And its length is buf_len" => buf_ptr.as_bytes(buf_len));
-        let monitor =
-            Arc::new(FFIManyChannelMonitor::new(chain_watch_interface_arc, tx_broadcaster.clone(), logger.clone(), fee_estimator.clone()));
+        let monitor = monitor_handle.as_static_ref();
         let readable_args = ChannelManagerReadArgs {
             keys_manager,
             fee_estimator,
