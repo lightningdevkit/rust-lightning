@@ -71,6 +71,10 @@ jobs:
         if: matrix.coverage
         uses: codecov/codecov-action@v1
         with:
+          # Could you use this to fake the coverage report for your PR? Sure.
+          # Will anyone be impressed by your amazing coverage? No
+          # Maybe if codecov wasn't broken we wouldn't need to do this...
+          token: f421b687-4dc2-4387-ac3d-dc3b2528af57
           fail_ci_if_error: true
 
   fuzz:
