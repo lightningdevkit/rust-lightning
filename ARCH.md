@@ -38,10 +38,10 @@ At a high level, some of the common interfaces fit together as follows:
                      | KeysInterface |  --------------
                      -----------------  | UserConfig |
          --------------------       |   --------------
-  /------| MessageSendEvent |       |   |     ----------------
- |       --------------------       |   |     | FeeEstimator | <-----------------------
+   ------| MessageSendEvent |       |   |     ----------------
+  /      --------------------       |   |     | FeeEstimator | <-----------------------
  |   (as MessageSendEventsProvider) |   |     ----------------                         \
- |                         ^        |   |    /                 ------------------------ |
+ |                         ^        |   |    /                ------------------------  |
  |                          \       |   |   /      ---------> | BroadcasterInterface |  |
  |                           \      |   |  /      /           ------------------------  |
  |                            \     v   v v      /                          ^           |
@@ -56,7 +56,7 @@ At a high level, some of the common interfaces fit together as follows:
  |                    -----------------          \   /  ----------------
  |                            |                   \ /          |
 (as RoutingMessageHandler)    v                    v           v
-  \                   --------------------     ---------   -----------------
+  \                   ----------------------   ---------   -----------------
    -----------------> | NetGraphMsgHandler |   | Event |   | chain::Filter |
-                      --------------------     ---------   -----------------
+                      ----------------------   ---------   -----------------
 ```
