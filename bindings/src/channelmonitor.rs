@@ -26,7 +26,7 @@ use crate::{
         fee_estimator_fn
     },
     utils::into_fixed_buffer,
-    adaptors::primitives::{FFIOutPoint}
+    adaptors::primitives::{FFIOutPoint, Bytes32}
 };
 use bitcoin::Block;
 
@@ -137,15 +137,29 @@ ffi! {
     }
 
     fn tell_block_connected_after_resume(
-        block_ref: Ref<Block>,
+        block_ref: Ref<u8>,
+        block_len: usize,
         height: u32,
         key_ref: Ref<FFIOutPoint>,
         handle: FFIManyChannelMonitorHandle
     ) -> FFIResult {
-        let block: &Block = unsafe_block!("" => block_ref.as_ref());
+        let block_bytes = unsafe_block!("" => block_ref.as_bytes(block_len));
+        let block = bitcoin::consensus::deserialize(block_bytes)?;
         let key: OutPoint = unsafe_block!("" => key_ref.as_ref()).clone().into();
         let chan_mon = handle.as_ref();
-        chan_mon.tell_block_connected_after_resume(block, height, key)?;
+        chan_mon.tell_block_connected_after_resume(&block, height, key)?;
+        FFIResult::ok()
+    }
+
+    fn tell_block_disconnected_after_resume(
+        block_hash_ref: Ref<Bytes32>,
+        height: u32,
+        key_ref: Ref<FFIOutPoint>,
+        handle: FFIManyChannelMonitorHandle) -> FFIResult {
+        let block_hash: BlockHash = unsafe_block!("" => block_hash_ref.as_ref()).clone().into();
+        let key: OutPoint = unsafe_block!("" => key_ref.as_ref()).clone().into();
+        let chan_mon = handle.as_ref();
+        chan_mon.tell_block_disconnected_after_resume(&block_hash, height, key)?;
         FFIResult::ok()
     }
 

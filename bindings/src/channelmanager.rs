@@ -154,7 +154,6 @@ pub(crate) fn construct_channel_manager(
 
     let cfg = unsafe_block!("" => cfg.as_ref());
 
-    // let monitor = monitor_handle.as_arc();
     let monitor = monitor_handle.as_static_ref();
 
     ChannelManager::new(

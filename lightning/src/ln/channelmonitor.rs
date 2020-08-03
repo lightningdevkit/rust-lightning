@@ -296,6 +296,18 @@ SimpleManyChannelMonitor<Key, ChanSigner, T, F, L, C>
 			None => Err(MonitorUpdateError("No such monitor registered")),
 		}
 	}
+
+	///
+	pub fn tell_block_disconnected_after_resume(&self, block_hash: &BlockHash, height: u32, key: Key) -> Result<(), MonitorUpdateError> {
+		let mut monitors = self.monitors.lock().unwrap();
+		match monitors.get_mut(&key) {
+			Some(channel_monitor) => {
+                channel_monitor.block_disconnected(height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+				Ok(())
+			},
+			None => Err(MonitorUpdateError("No such monitor registered"))
+		}
+	}
 }
 
 

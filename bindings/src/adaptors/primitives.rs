@@ -79,6 +79,12 @@ impl From<BlockHash> for Bytes32 {
     }
 }
 
+impl From<Bytes32> for BlockHash {
+    fn from(this: Bytes32) -> Self {
+        BlockHash::from_slice(&this.bytes).unwrap()
+    }
+}
+
 impl From<Bytes32> for PaymentSecret {
     fn from(ffi_secret: Bytes32) -> PaymentSecret {
         PaymentSecret(ffi_secret.bytes)
