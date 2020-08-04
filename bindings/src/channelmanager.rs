@@ -408,6 +408,11 @@ ffi! {
                                    log_ptr: Ref<ffilogger_fn::LogExtern>,
                                    get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
                                    monitor_handle: FFIManyChannelMonitorHandle,
+
+                                    output_buf_ptr: Out<u8>,
+                                    output_buf_len: usize,
+                                    output_actual_len: Out<usize>,
+
                                    handle: Out<FFIArcChannelManagerHandle>) -> FFIResult {
 
         // TODO: use macro?
@@ -464,7 +469,11 @@ ffi! {
             default_config: default_config.clone(),
             channel_monitors: &mut Default::default()
         };
-        let (_hash, chan_man): (BlockHash, FFIArcChannelManager) = ReadableArgs::read(&mut buf, readable_args).unwrap();
+        let (hash, chan_man): (BlockHash, FFIArcChannelManager) = ReadableArgs::read(&mut buf, readable_args).unwrap();
+
+        let output_buf = unsafe_block!("" => output_buf_ptr.as_uninit_bytes_mut(output_buf_len));
+        into_fixed_buffer(&hash, output_buf, &mut output_actual_len)?;
+
         unsafe_block!("We know chan_man is not null by wrapper macro. And we know `Out` is writable" => handle.init(HandleShared::alloc(chan_man)));
         FFIResult::ok()
     }
