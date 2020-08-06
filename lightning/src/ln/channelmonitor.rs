@@ -53,7 +53,7 @@ use util::events::Event;
 
 use std::collections::{HashMap, HashSet, hash_map};
 use std::sync::Mutex;
-use std::{hash,cmp, mem};
+use std::{cmp, mem};
 use std::ops::Deref;
 use std::io::Error;
 
@@ -188,28 +188,20 @@ pub struct HTLCUpdate {
 }
 impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 
-/// A simple implementation of a [`chain::Watch`] and ChainListener. Can be used to create a
-/// watchtower or watch our own channels.
+/// An implementation of a [`chain::Watch`] and ChainListener.
 ///
-/// Note that you must provide your own key by which to refer to channels.
-///
-/// If you're accepting remote monitors (ie are implementing a watchtower), you must verify that
-/// users cannot overwrite a given channel by providing a duplicate key. ie you should probably
-/// index by a PublicKey which is required to sign any updates.
-///
-/// If you're using this for local monitoring of your own channels, you probably want to use
-/// `OutPoint` as the key, which will give you a [`chain::Watch`] implementation.
+/// May be used in conjunction with [`ChannelManager`] to monitor channels locally or used
+/// independently to monitor channels remotely.
 ///
 /// [`chain::Watch`]: ../../chain/trait.Watch.html
-///
-/// (C-not exported) due to an unconstrained generic in `Key`
-pub struct ChainMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref>
+/// [`ChannelManager`]: ../channelmanager/struct.ChannelManager.html
+pub struct ChainMonitor<ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref>
 	where T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
 	/// The monitors
-	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
+	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChanSigner>>>,
 	watch_events: Mutex<WatchEventQueue>,
 	broadcaster: T,
 	logger: L,
@@ -277,8 +269,8 @@ impl WatchEventQueue {
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
-	ChainListener for ChainMonitor<Key, ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
+	ChainListener for ChainMonitor<ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
@@ -308,14 +300,14 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> ChainMonitor<Key, ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
 	/// Creates a new object which can be used to monitor several channels given the chain
 	/// interface with which to register to receive notifications.
-	pub fn new(broadcaster: T, logger: L, feeest: F) -> ChainMonitor<Key, ChanSigner, T, F, L> {
+	pub fn new(broadcaster: T, logger: L, feeest: F) -> Self {
 		Self {
 			monitors: Mutex::new(HashMap::new()),
 			watch_events: Mutex::new(WatchEventQueue::new()),
@@ -325,12 +317,12 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 		}
 	}
 
-	/// Adds or updates the monitor which monitors the channel referred to by the given key.
-	fn add_monitor_by_key(&self, key: Key, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
+	/// Adds the monitor that watches the channel referred to by the given outpoint.
+	fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
 		let mut watch_events = self.watch_events.lock().unwrap();
 		let mut monitors = self.monitors.lock().unwrap();
-		let entry = match monitors.entry(key) {
-			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given key is already present")),
+		let entry = match monitors.entry(outpoint) {
+			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given outpoint is already present")),
 			hash_map::Entry::Vacant(e) => e,
 		};
 		{
@@ -348,10 +340,10 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 		Ok(())
 	}
 
-	/// Updates the monitor which monitors the channel referred to by the given key.
-	fn update_monitor_by_key(&self, key: Key, update: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
+	/// Updates the monitor that watches the channel referred to by the given outpoint.
+	fn update_monitor(&self, outpoint: OutPoint, update: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
 		let mut monitors = self.monitors.lock().unwrap();
-		match monitors.get_mut(&key) {
+		match monitors.get_mut(&outpoint) {
 			Some(orig_monitor) => {
 				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
 				orig_monitor.update_monitor(update, &self.broadcaster, &self.logger)
@@ -361,7 +353,7 @@ impl<Key : Send + cmp::Eq + hash::Hash + 'static, ChanSigner: ChannelKeys, T: De
 	}
 }
 
-impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send> chain::Watch for ChainMonitor<OutPoint, ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
@@ -369,14 +361,14 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 	type Keys = ChanSigner;
 
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.add_monitor_by_key(funding_txo, monitor) {
+		match self.add_monitor(funding_txo, monitor) {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
 		}
 	}
 
 	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.update_monitor_by_key(funding_txo, update) {
+		match self.update_monitor(funding_txo, update) {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
 		}
@@ -391,7 +383,7 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> events::EventsProvider for ChainMonitor<Key, ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> events::EventsProvider for ChainMonitor<ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
@@ -405,7 +397,7 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: De
 	}
 }
 
-impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> chain::WatchEventProvider for ChainMonitor<Key, ChanSigner, T, F, L>
+impl<ChanSigner: ChannelKeys, T: Deref, F: Deref, L: Deref> chain::WatchEventProvider for ChainMonitor<ChanSigner, T, F, L>
 	where T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
