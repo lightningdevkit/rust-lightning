@@ -12,9 +12,9 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
+use chain::channelmonitor::ChannelMonitorUpdateErr;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
-use ln::channelmonitor::ChannelMonitorUpdateErr;
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};

@@ -11,8 +11,8 @@
 //! These tests work by standing up full nodes and route payments across the network, checking the
 //! returned errors decode to the correct thing.
 
+use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use ln::channelmanager::{HTLCForwardInfo, PaymentPreimage, PaymentHash};
-use ln::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use ln::onion_utils;
 use routing::router::{Route, get_route};
 use ln::features::InitFeatures;

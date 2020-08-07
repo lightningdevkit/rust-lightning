@@ -10,13 +10,13 @@
 use chain;
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
+use chain::channelmonitor;
+use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
-use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
-use ln::channelmonitor::MonitorEvent;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};

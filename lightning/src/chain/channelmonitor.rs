@@ -20,7 +20,7 @@
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 //!
-//! [`chain::Watch`]: ../../chain/trait.Watch.html
+//! [`chain::Watch`]: ../trait.Watch.html
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{TxOut,Transaction};
@@ -64,7 +64,7 @@ use std::io::Error;
 #[derive(Clone)]
 #[must_use]
 pub struct ChannelMonitorUpdate {
-	pub(super) updates: Vec<ChannelMonitorUpdateStep>,
+	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
 	/// The sequence number of this update. Updates *must* be replayed in-order according to this
 	/// sequence number (and updates may panic if they are not). The update_id values are strictly
 	/// increasing and increase by one for each new update.
@@ -180,12 +180,12 @@ pub enum MonitorEvent {
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
 /// preimage claim backward will lead to loss of funds.
 ///
-/// [`chain::Watch`]: ../../chain/trait.Watch.html
+/// [`chain::Watch`]: ../trait.Watch.html
 #[derive(Clone, PartialEq)]
 pub struct HTLCUpdate {
-	pub(super) payment_hash: PaymentHash,
-	pub(super) payment_preimage: Option<PaymentPreimage>,
-	pub(super) source: HTLCSource
+	pub(crate) payment_hash: PaymentHash,
+	pub(crate) payment_preimage: Option<PaymentPreimage>,
+	pub(crate) source: HTLCSource
 }
 impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 
@@ -195,8 +195,8 @@ impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
 /// [`chain::Watch`]. May be used in conjunction with [`ChannelManager`] to monitor channels locally
 /// or used independently to monitor channels remotely.
 ///
-/// [`chain::Watch`]: ../../chain/trait.Watch.html
-/// [`ChannelManager`]: ../channelmanager/struct.ChannelManager.html
+/// [`chain::Watch`]: ../trait.Watch.html
+/// [`ChannelManager`]: ../../ln/channelmanager/struct.ChannelManager.html
 pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
@@ -228,8 +228,8 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// to obtain updated `txdata`.
 	///
 	/// [`ChannelMonitor::block_connected`]: struct.ChannelMonitor.html#method.block_connected
-	/// [`chain::Watch::release_pending_monitor_events`]: ../../chain/trait.Watch.html#tymethod.release_pending_monitor_events
-	/// [`chain::Filter`]: ../../chain/trait.Filter.html
+	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
+	/// [`chain::Filter`]: ../trait.Filter.html
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> bool {
 		let mut has_new_outputs_to_watch = false;
 		{
@@ -270,7 +270,7 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
 	///
-	/// [`chain::Filter`]: ../../chain/trait.Filter.html
+	/// [`chain::Filter`]: ../trait.Filter.html
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F) -> Self {
 		Self {
 			monitors: Mutex::new(HashMap::new()),
@@ -285,7 +285,7 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	///
 	/// Calls back to [`chain::Filter`] with the funding transaction and outputs to watch.
 	///
-	/// [`chain::Filter`]: ../../chain/trait.Filter.html
+	/// [`chain::Filter`]: ../trait.Filter.html
 	fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
 		let mut monitors = self.monitors.lock().unwrap();
 		let entry = match monitors.entry(outpoint) {
@@ -654,7 +654,7 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 #[cfg_attr(test, derive(PartialEq))]
 #[derive(Clone)]
-pub(super) enum ChannelMonitorUpdateStep {
+pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
@@ -1117,7 +1117,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 }
 
 impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
-	pub(super) fn new(keys: ChanSigner, shutdown_pubkey: &PublicKey,
+	pub(crate) fn new(keys: ChanSigner, shutdown_pubkey: &PublicKey,
 			on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
 			counterparty_htlc_base_key: &PublicKey, counterparty_delayed_payment_base_key: &PublicKey,
 			on_holder_tx_csv: u16, funding_redeemscript: Script, channel_value_satoshis: u64,
@@ -1202,7 +1202,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
 	/// counterparty commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
+	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
 		if let Err(()) = self.commitment_secrets.provide_secret(idx, secret) {
 			return Err(MonitorUpdateError("Previous secret did not match new one"));
 		}
@@ -1254,7 +1254,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(super) fn provide_latest_counterparty_commitment_tx_info<L: Deref>(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey, logger: &L) where L::Target: Logger {
+	pub(crate) fn provide_latest_counterparty_commitment_tx_info<L: Deref>(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey, logger: &L) where L::Target: Logger {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
@@ -1303,7 +1303,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
-	pub(super) fn provide_latest_holder_commitment_tx_info(&mut self, commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
+	fn provide_latest_holder_commitment_tx_info(&mut self, commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
 		let txid = commitment_tx.txid();
 		let sequence = commitment_tx.unsigned_tx.input[0].sequence as u64;
 		let locktime = commitment_tx.unsigned_tx.lock_time as u64;
@@ -1329,11 +1329,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	pub(super) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
+	pub(crate) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 	}
 
-	pub(super) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
+	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
@@ -1418,7 +1418,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
 	///
-	/// [`chain::Watch::release_pending_monitor_events`]: ../../chain/trait.Watch.html#tymethod.release_pending_monitor_events
+	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
 	pub fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_monitor_events);
@@ -1438,19 +1438,19 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
-	pub(super) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
+	fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		self.commitment_secrets.get_secret(idx)
 	}
 
-	pub(super) fn get_min_seen_secret(&self) -> u64 {
+	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		self.commitment_secrets.get_min_seen_secret()
 	}
 
-	pub(super) fn get_cur_counterparty_commitment_number(&self) -> u64 {
+	pub(crate) fn get_cur_counterparty_commitment_number(&self) -> u64 {
 		self.current_counterparty_commitment_number
 	}
 
-	pub(super) fn get_cur_holder_commitment_number(&self) -> u64 {
+	pub(crate) fn get_cur_holder_commitment_number(&self) -> u64 {
 		self.current_holder_commitment_number
 	}
 
@@ -2595,9 +2595,9 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hash_types::Txid;
 	use hex;
+	use chain::channelmonitor::ChannelMonitor;
 	use chain::transaction::OutPoint;
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
-	use ln::channelmonitor::ChannelMonitor;
 	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, HolderCommitmentTransaction};

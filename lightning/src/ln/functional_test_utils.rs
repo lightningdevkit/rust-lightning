@@ -11,9 +11,9 @@
 //! nodes for functional tests.
 
 use chain::Watch;
+use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
-use ln::channelmonitor::ChannelMonitor;
 use routing::router::{Route, get_route};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use ln::features::InitFeatures;

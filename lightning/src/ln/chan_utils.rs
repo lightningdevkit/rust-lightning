@@ -81,7 +81,7 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 /// Allows us to keep track of all of the revocation secrets of counterarties in just 50*32 bytes
 /// or so.
 #[derive(Clone)]
-pub(super) struct CounterpartyCommitmentSecrets {
+pub(crate) struct CounterpartyCommitmentSecrets {
 	old_secrets: [([u8; 32], u64); 49],
 }
 
@@ -97,7 +97,7 @@ impl PartialEq for CounterpartyCommitmentSecrets {
 }
 
 impl CounterpartyCommitmentSecrets {
-	pub(super) fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self { old_secrets: [([0; 32], 1 << 48); 49], }
 	}
 
@@ -111,7 +111,7 @@ impl CounterpartyCommitmentSecrets {
 		48
 	}
 
-	pub(super) fn get_min_seen_secret(&self) -> u64 {
+	pub(crate) fn get_min_seen_secret(&self) -> u64 {
 		//TODO This can be optimized?
 		let mut min = 1 << 48;
 		for &(_, idx) in self.old_secrets.iter() {
@@ -123,7 +123,7 @@ impl CounterpartyCommitmentSecrets {
 	}
 
 	#[inline]
-	pub(super) fn derive_secret(secret: [u8; 32], bits: u8, idx: u64) -> [u8; 32] {
+	fn derive_secret(secret: [u8; 32], bits: u8, idx: u64) -> [u8; 32] {
 		let mut res: [u8; 32] = secret;
 		for i in 0..bits {
 			let bitpos = bits - 1 - i;
@@ -135,7 +135,7 @@ impl CounterpartyCommitmentSecrets {
 		res
 	}
 
-	pub(super) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), ()> {
+	pub(crate) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), ()> {
 		let pos = Self::place_secret(idx);
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
@@ -151,7 +151,7 @@ impl CounterpartyCommitmentSecrets {
 	}
 
 	/// Can only fail if idx is < get_min_seen_secret
-	pub(super) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
+	pub(crate) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		for i in 0..self.old_secrets.len() {
 			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
 				return Some(Self::derive_secret(self.old_secrets[i].0, i as u8, idx))

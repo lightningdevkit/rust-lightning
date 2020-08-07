@@ -3,8 +3,8 @@
 
 use bitcoin::hash_types::BlockHash;
 
+use lightning::chain::channelmonitor;
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
-use lightning::ln::channelmonitor;
 use lightning::util::ser::{Readable, Writer};
 
 use utils::test_logger;
