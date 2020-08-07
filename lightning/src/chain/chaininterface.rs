@@ -14,10 +14,6 @@
 //! disconnections, transaction broadcasting, and feerate information requests.
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::script::Script;
-use bitcoin::hash_types::Txid;
-
-use std::collections::HashSet;
 
 /// An interface to send a transaction to the Bitcoin network.
 pub trait BroadcasterInterface: Sync + Send {
@@ -55,91 +51,3 @@ pub trait FeeEstimator: Sync + Send {
 
 /// Minimum relay fee as required by bitcoin network mempool policy.
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
-
-/// Utility for tracking registered txn/outpoints and checking for matches
-#[cfg_attr(test, derive(PartialEq))]
-pub struct ChainWatchedUtil {
-	watch_all: bool,
-
-	// We are more conservative in matching during testing to ensure everything matches *exactly*,
-	// even though during normal runtime we take more optimized match approaches...
-	#[cfg(test)]
-	watched_txn: HashSet<(Txid, Script)>,
-	#[cfg(not(test))]
-	watched_txn: HashSet<Script>,
-
-	watched_outpoints: HashSet<(Txid, u32)>,
-}
-
-impl ChainWatchedUtil {
-	/// Constructs an empty (watches nothing) ChainWatchedUtil
-	pub fn new() -> Self {
-		Self {
-			watch_all: false,
-			watched_txn: HashSet::new(),
-			watched_outpoints: HashSet::new(),
-		}
-	}
-
-	/// Registers a tx for monitoring, returning true if it was a new tx and false if we'd already
-	/// been watching for it.
-	pub fn register_tx(&mut self, txid: &Txid, script_pub_key: &Script) -> bool {
-		if self.watch_all { return false; }
-		#[cfg(test)]
-		{
-			self.watched_txn.insert((txid.clone(), script_pub_key.clone()))
-		}
-		#[cfg(not(test))]
-		{
-			let _tx_unused = txid; // It's used in cfg(test), though
-			self.watched_txn.insert(script_pub_key.clone())
-		}
-	}
-
-	/// Registers an outpoint for monitoring, returning true if it was a new outpoint and false if
-	/// we'd already been watching for it
-	pub fn register_outpoint(&mut self, outpoint: (Txid, u32), _script_pub_key: &Script) -> bool {
-		if self.watch_all { return false; }
-		self.watched_outpoints.insert(outpoint)
-	}
-
-	/// Sets us to match all transactions, returning true if this is a new setting and false if
-	/// we'd already been set to match everything.
-	pub fn watch_all(&mut self) -> bool {
-		if self.watch_all { return false; }
-		self.watch_all = true;
-		true
-	}
-
-	/// Checks if a given transaction matches the current filter.
-	pub fn does_match_tx(&self, tx: &Transaction) -> bool {
-		if self.watch_all {
-			return true;
-		}
-		for out in tx.output.iter() {
-			#[cfg(test)]
-			for &(ref txid, ref script) in self.watched_txn.iter() {
-				if *script == out.script_pubkey {
-					if tx.txid() == *txid {
-						return true;
-					}
-				}
-			}
-			#[cfg(not(test))]
-			for script in self.watched_txn.iter() {
-				if *script == out.script_pubkey {
-					return true;
-				}
-			}
-		}
-		for input in tx.input.iter() {
-			for outpoint in self.watched_outpoints.iter() {
-				let &(outpoint_hash, outpoint_index) = outpoint;
-				if outpoint_hash == input.previous_output.txid && outpoint_index == input.previous_output.vout {
-					return true;
-				}
-			}
-		}
-		false
-	}
-}

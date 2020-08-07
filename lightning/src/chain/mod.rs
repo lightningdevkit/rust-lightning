@@ -73,8 +73,7 @@ pub trait Watch: Send + Sync {
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
-	/// calling [`block_connected`] and [`block_disconnected`] on the monitor and including all such
-	/// transactions that meet this criteria.
+	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
 	/// [`get_outputs_to_watch`]: ../ln/channelmonitor/struct.ChannelMonitor.html#method.get_outputs_to_watch
 	/// [`block_connected`]: ../ln/channelmonitor/struct.ChannelMonitor.html#method.block_connected
@@ -119,9 +118,9 @@ pub trait Watch: Send + Sync {
 pub trait Filter: Send + Sync {
 	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
-	fn register_tx(&self, txid: Txid, script_pubkey: Script);
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
 	/// Registers interest in spends of a transaction output identified by `outpoint` having
 	/// `script_pubkey` as the spending condition.
-	fn register_output(&self, outpoint: OutPoint, script_pubkey: Script);
+	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script);
 }

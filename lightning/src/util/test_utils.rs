@@ -423,11 +423,11 @@ impl chain::Access for TestChainSource {
 }
 
 impl chain::Filter for TestChainSource {
-	fn register_tx(&self, txid: Txid, script_pubkey: Script) {
-		self.watched_txn.lock().unwrap().insert((txid, script_pubkey));
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
+		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
 	}
 
-	fn register_output(&self, outpoint: OutPoint, script_pubkey: Script) {
-		self.watched_outputs.lock().unwrap().insert((outpoint, script_pubkey));
+	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) {
+		self.watched_outputs.lock().unwrap().insert((*outpoint, script_pubkey.clone()));
 	}
 }
