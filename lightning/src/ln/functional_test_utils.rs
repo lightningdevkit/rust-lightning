@@ -169,7 +169,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					monitor: self.chan_monitor,
 					tx_broadcaster: self.tx_broadcaster.clone(),
 					logger: &test_utils::TestLogger::new(),
-					channel_monitors: &mut channel_monitors,
+					channel_monitors,
 				}).unwrap();
 			}
 

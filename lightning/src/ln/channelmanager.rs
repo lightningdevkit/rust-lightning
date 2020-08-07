@@ -3775,7 +3775,27 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	///
 	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
 	/// this struct.
-	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
+	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
+}
+
+impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+		T::Target: BroadcasterInterface,
+		K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
+	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
+	/// populate a HashMap directly from C.
+	pub fn new(keys_manager: K, fee_estimator: F, monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
+			mut channel_monitors: Vec<&'a mut ChannelMonitor<ChanSigner>>) -> Self {
+		Self {
+			keys_manager, fee_estimator, monitor, tx_broadcaster, logger, default_config,
+			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
+		}
+	}
 }
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
@@ -3802,7 +3822,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: ::std::io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {

@@ -242,7 +242,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
-				channel_monitors: &mut monitor_refs,
+				channel_monitors: monitor_refs,
 			};
 
 			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
