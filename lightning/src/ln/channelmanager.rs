@@ -1822,6 +1822,44 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		} else { false }
 	}
 
+	// Fail a list of HTLCs that were just freed from the holding cell. The HTLCs need to be
+	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
+	// be surfaced to the user.
+	fn fail_holding_cell_htlcs(&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32]) {
+		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
+			match htlc_src {
+				HTLCSource::PreviousHopData(HTLCPreviousHopData { .. }) => {
+					let (failure_code, onion_failure_data) =
+						match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
+							hash_map::Entry::Occupied(chan_entry) => {
+								if let Ok(upd) = self.get_channel_update(&chan_entry.get()) {
+									(0x1000|7, upd.encode_with_len())
+								} else {
+									(0x4000|10, Vec::new())
+								}
+							},
+							hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
+						};
+					let channel_state = self.channel_state.lock().unwrap();
+					self.fail_htlc_backwards_internal(channel_state,
+						htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data});
+				},
+				HTLCSource::OutboundRoute { .. } => {
+					self.pending_events.lock().unwrap().push(
+						events::Event::PaymentFailed {
+							payment_hash,
+							rejected_by_dest: false,
+#[cfg(test)]
+							error_code: None,
+#[cfg(test)]
+							error_data: None,
+						}
+					)
+				},
+			};
+		}
+	}
+
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that while we take a channel_state lock as input, we do *not* assume consistency here.
 	/// There are several callsites that do stupid things like loop over a list of payment_hashes
@@ -2670,23 +2708,27 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 
 	fn internal_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
-		let (pending_forwards, mut pending_failures, short_channel_id) = {
+		let mut htlcs_to_fail = Vec::new();
+		let res = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
+						break Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
-						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update, htlcs_to_fail_in) =
+						break_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
+					htlcs_to_fail = htlcs_to_fail_in;
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
-							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
+							break Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
 						} else {
-							return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
+							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures) {
+								break Err(e);
+							} else { unreachable!(); }
 						}
 					}
 					if let Some(updates) = commitment_update {
@@ -2701,17 +2743,22 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							msg,
 						});
 					}
-					(pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
+					break Ok((pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel")))
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		for failure in pending_failures.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id);
+		match res {
+			Ok((pending_forwards, mut pending_failures, short_channel_id)) => {
+				for failure in pending_failures.drain(..) {
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+				}
+				self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
+				Ok(())
+			},
+			Err(e) => Err(e)
 		}
-		self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
-
-		Ok(())
 	}
 
 	fn internal_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
@@ -2792,6 +2839,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				if chan.get().get_their_node_id() != *their_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
+				// Currently, we expect all holding cell update_adds to be dropped on peer
+				// disconnect, so Channel's reestablish will never hand us any holding cell
+				// freed HTLCs to fail backwards. If in the future we no longer drop pending
+				// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
 				if let Some(monitor_update) = monitor_update_opt {
@@ -3258,6 +3309,10 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 				log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_their_node_id() == *their_node_id {
+						// Note that currently on channel reestablish we assert that there are no
+						// holding cell add-HTLCs, so if in the future we stop removing uncommitted HTLCs
+						// on peer disconnect here, there will need to be corresponding changes in
+						// reestablish logic.
 						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {

@@ -2118,7 +2118,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
 	/// fulfilling or failing the last pending HTLC)
-	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
+	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
 		if self.holding_cell_htlc_updates.len() != 0 || self.holding_cell_update_fee.is_some() {
 			log_trace!(logger, "Freeing holding cell with {} HTLC updates{}", self.holding_cell_htlc_updates.len(), if self.holding_cell_update_fee.is_some() { " and a fee update" } else { "" });
@@ -2133,110 +2133,94 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			let mut update_add_htlcs = Vec::with_capacity(htlc_updates.len());
 			let mut update_fulfill_htlcs = Vec::with_capacity(htlc_updates.len());
 			let mut update_fail_htlcs = Vec::with_capacity(htlc_updates.len());
-			let mut err = None;
+			let mut htlcs_to_fail = Vec::new();
 			for htlc_update in htlc_updates.drain(..) {
 				// Note that this *can* fail, though it should be due to rather-rare conditions on
 				// fee races with adding too many outputs which push our total payments just over
 				// the limit. In case it's less rare than I anticipate, we may want to revisit
 				// handling this case better and maybe fulfilling some of the HTLCs while attempting
 				// to rebalance channels.
-				if err.is_some() { // We're back to AwaitingRemoteRevoke (or are about to fail the channel)
-					self.holding_cell_htlc_updates.push(htlc_update);
-				} else {
-					match &htlc_update {
-						&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, ..} => {
-							match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone()) {
-								Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
-								Err(e) => {
-									match e {
-										ChannelError::Ignore(ref msg) => {
-											log_info!(logger, "Failed to send HTLC with payment_hash {} due to {}", log_bytes!(payment_hash.0), msg);
-										},
-										_ => {
-											log_info!(logger, "Failed to send HTLC with payment_hash {} resulting in a channel closure during holding_cell freeing", log_bytes!(payment_hash.0));
-										},
-									}
-									err = Some(e);
+				match &htlc_update {
+					&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, ..} => {
+						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone()) {
+							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
+							Err(e) => {
+								match e {
+									ChannelError::Ignore(ref msg) => {
+										log_info!(logger, "Failed to send HTLC with payment_hash {} due to {}", log_bytes!(payment_hash.0), msg);
+										// If we fail to send here, then this HTLC should
+										// be failed backwards. Failing to send here
+										// indicates that this HTLC may keep being put back
+										// into the holding cell without ever being
+										// successfully forwarded/failed/fulfilled, causing
+										// our counterparty to eventually close on us.
+										htlcs_to_fail.push((source.clone(), *payment_hash));
+									},
+									_ => {
+										panic!("Got a non-IgnoreError action trying to send holding cell HTLC");
+									},
 								}
 							}
-						},
-						&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
-							match self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger) {
-								Ok((update_fulfill_msg_option, additional_monitor_update_opt)) => {
-									update_fulfill_htlcs.push(update_fulfill_msg_option.unwrap());
-									if let Some(mut additional_monitor_update) = additional_monitor_update_opt {
-										monitor_update.updates.append(&mut additional_monitor_update.updates);
-									}
-								},
-								Err(e) => {
-									if let ChannelError::Ignore(_) = e {}
-									else {
-										panic!("Got a non-IgnoreError action trying to fulfill holding cell HTLC");
-									}
-								}
-							}
-						},
-						&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
-							match self.get_update_fail_htlc(htlc_id, err_packet.clone()) {
-								Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
-								Err(e) => {
-									if let ChannelError::Ignore(_) = e {}
-									else {
-										panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
-									}
-								}
-							}
-						},
-					}
-					if err.is_some() {
-						self.holding_cell_htlc_updates.push(htlc_update);
-						if let Some(ChannelError::Ignore(_)) = err {
-							// If we failed to add the HTLC, but got an Ignore error, we should
-							// still send the new commitment_signed, so reset the err to None.
-							err = None;
 						}
-					}
+					},
+					&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, htlc_id, .. } => {
+						match self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger) {
+							Ok((update_fulfill_msg_option, additional_monitor_update_opt)) => {
+								update_fulfill_htlcs.push(update_fulfill_msg_option.unwrap());
+								if let Some(mut additional_monitor_update) = additional_monitor_update_opt {
+									monitor_update.updates.append(&mut additional_monitor_update.updates);
+								}
+							},
+							Err(e) => {
+								if let ChannelError::Ignore(_) = e {}
+								else {
+									panic!("Got a non-IgnoreError action trying to fulfill holding cell HTLC");
+								}
+							}
+						}
+					},
+					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
+						match self.get_update_fail_htlc(htlc_id, err_packet.clone()) {
+							Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
+							Err(e) => {
+								if let ChannelError::Ignore(_) = e {}
+								else {
+									panic!("Got a non-IgnoreError action trying to fail holding cell HTLC");
+								}
+							}
+						}
+					},
 				}
 			}
-			//TODO: Need to examine the type of err - if it's a fee issue or similar we may want to
-			//fail it back the route, if it's a temporary issue we can ignore it...
-			match err {
-				None => {
-					if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.holding_cell_update_fee.is_none() {
-						// This should never actually happen and indicates we got some Errs back
-						// from update_fulfill_htlc/update_fail_htlc, but we handle it anyway in
-						// case there is some strange way to hit duplicate HTLC removes.
-						return Ok(None);
-					}
-					let update_fee = if let Some(feerate) = self.holding_cell_update_fee {
-							self.pending_update_fee = self.holding_cell_update_fee.take();
-							Some(msgs::UpdateFee {
-								channel_id: self.channel_id,
-								feerate_per_kw: feerate as u32,
-							})
-						} else {
-							None
-						};
-
-					let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check(logger)?;
-					// send_commitment_no_status_check and get_update_fulfill_htlc may bump latest_monitor_id
-					// but we want them to be strictly increasing by one, so reset it here.
-					self.latest_monitor_update_id = monitor_update.update_id;
-					monitor_update.updates.append(&mut additional_update.updates);
-
-					Ok(Some((msgs::CommitmentUpdate {
-						update_add_htlcs,
-						update_fulfill_htlcs,
-						update_fail_htlcs,
-						update_fail_malformed_htlcs: Vec::new(),
-						update_fee: update_fee,
-						commitment_signed,
-					}, monitor_update)))
-				},
-				Some(e) => Err(e)
+			if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.holding_cell_update_fee.is_none() {
+				return Ok((None, htlcs_to_fail));
 			}
+			let update_fee = if let Some(feerate) = self.holding_cell_update_fee {
+				self.pending_update_fee = self.holding_cell_update_fee.take();
+				Some(msgs::UpdateFee {
+					channel_id: self.channel_id,
+					feerate_per_kw: feerate as u32,
+				})
+			} else {
+				None
+			};
+
+			let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check(logger)?;
+			// send_commitment_no_status_check and get_update_fulfill_htlc may bump latest_monitor_id
+			// but we want them to be strictly increasing by one, so reset it here.
+			self.latest_monitor_update_id = monitor_update.update_id;
+			monitor_update.updates.append(&mut additional_update.updates);
+
+			Ok((Some((msgs::CommitmentUpdate {
+				update_add_htlcs,
+				update_fulfill_htlcs,
+				update_fail_htlcs,
+				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: update_fee,
+				commitment_signed,
+			}, monitor_update)), htlcs_to_fail))
 		} else {
-			Ok(None)
+			Ok((None, Vec::new()))
 		}
 	}
 
@@ -2245,7 +2229,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack<F: Deref, L: Deref>(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &F, logger: &L) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate), ChannelError>
+	pub fn revoke_and_ack<F: Deref, L: Deref>(&mut self, msg: &msgs::RevokeAndACK, fee_estimator: &F, logger: &L) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<msgs::ClosingSigned>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>), ChannelError>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
@@ -2420,11 +2404,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
-			return Ok((None, Vec::new(), Vec::new(), None, monitor_update))
+			return Ok((None, Vec::new(), Vec::new(), None, monitor_update, Vec::new()))
 		}
 
 		match self.free_holding_cell_htlcs(logger)? {
-			Some((mut commitment_update, mut additional_update)) => {
+			(Some((mut commitment_update, mut additional_update)), htlcs_to_fail) => {
 				commitment_update.update_fail_htlcs.reserve(update_fail_htlcs.len());
 				for fail_msg in update_fail_htlcs.drain(..) {
 					commitment_update.update_fail_htlcs.push(fail_msg);
@@ -2439,9 +2423,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				self.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 
-				Ok((Some(commitment_update), to_forward_infos, revoked_htlcs, None, monitor_update))
+				Ok((Some(commitment_update), to_forward_infos, revoked_htlcs, None, monitor_update, htlcs_to_fail))
 			},
-			None => {
+			(None, htlcs_to_fail) => {
 				if require_commitment {
 					let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check(logger)?;
 
@@ -2457,9 +2441,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						update_fail_malformed_htlcs,
 						update_fee: None,
 						commitment_signed
-					}), to_forward_infos, revoked_htlcs, None, monitor_update))
+					}), to_forward_infos, revoked_htlcs, None, monitor_update, htlcs_to_fail))
 				} else {
-					Ok((None, to_forward_infos, revoked_htlcs, self.maybe_propose_first_closing_signed(fee_estimator), monitor_update))
+					Ok((None, to_forward_infos, revoked_htlcs, self.maybe_propose_first_closing_signed(fee_estimator), monitor_update, htlcs_to_fail))
 				}
 			}
 		}
@@ -2561,6 +2545,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
+				// Note that currently on channel reestablish we assert that there are
+				// no holding cell HTLC update_adds, so if in the future we stop
+				// dropping added HTLCs here and failing them backwards, then there will
+				// need to be corresponding changes made in the Channel's re-establish
+				// logic.
 				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
 					outbound_drops.push((source.clone(), payment_hash.clone()));
 					false
@@ -2828,6 +2817,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 
 			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
+				// Note that if in the future we no longer drop holding cell update_adds on peer
+				// disconnect, this logic will need to be updated.
+				for htlc_update in self.holding_cell_htlc_updates.iter() {
+					if let &HTLCUpdateAwaitingACK::AddHTLC { .. } = htlc_update {
+						debug_assert!(false, "There shouldn't be any add-HTLCs in the holding cell now because they should have been dropped on peer disconnect. Panic here because said HTLCs won't be handled correctly.");
+					}
+				}
+
 				// We're up-to-date and not waiting on a remote revoke (if we are our
 				// channel_reestablish should result in them sending a revoke_and_ack), but we may
 				// have received some updates while we were disconnected. Free the holding cell
@@ -2835,8 +2832,18 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				match self.free_holding_cell_htlcs(logger) {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
 					Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast(_)) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
-					Ok(Some((commitment_update, monitor_update))) => return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), shutdown_msg)),
-					Ok(None) => return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg)),
+					Ok((Some((commitment_update, monitor_update)), htlcs_to_fail)) => {
+						// If in the future we no longer drop holding cell update_adds on peer
+						// disconnect, we may be handed some HTLCs to fail backwards here.
+						assert!(htlcs_to_fail.is_empty());
+						return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), shutdown_msg));
+					},
+					Ok((None, htlcs_to_fail)) => {
+						// If in the future we no longer drop holding cell update_adds on peer
+						// disconnect, we may be handed some HTLCs to fail backwards here.
+						assert!(htlcs_to_fail.is_empty());
+						return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg));
+					},
 				}
 			} else {
 				return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg));
