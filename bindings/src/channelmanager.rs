@@ -45,6 +45,9 @@ use lightning::{
     routing::network_graph::NetworkGraph
 };
 use crate::channelmonitor::FFIManyChannelMonitorHandle;
+use std::collections::HashMap;
+use lightning::ln::channelmonitor::ChannelMonitor;
+use bitcoin_hashes::hex::ToHex;
 
 pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, &'static FFIManyChannelMonitor, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
 pub type FFIArcChannelManagerHandle = HandleShared<'static, FFIArcChannelManager>;
@@ -68,7 +71,6 @@ fn create_channel_inner(their_network_key: Ref<Bytes33>, channel_value_satoshis:
 fn claim_funds_inner(payment_preimage: Ref<Bytes32>, payment_secret: Option<PaymentSecret>, expected_amount: u64, handle: FFIArcChannelManagerHandle) -> bool {
     let chan_man: &FFIArcChannelManager = handle.as_ref();
     let payment_preimage: PaymentPreimage = unsafe_block!("" => payment_preimage.as_ref()).clone().into();
-
     chan_man.claim_funds(payment_preimage, &payment_secret, expected_amount)
 }
 
@@ -409,9 +411,9 @@ ffi! {
                                    get_est_sat_per_1000_weight_ptr: Ref<fee_estimator_fn::GetEstSatPer1000WeightPtr>,
                                    monitor_handle: FFIManyChannelMonitorHandle,
 
-                                    output_buf_ptr: Out<u8>,
-                                    output_buf_len: usize,
-                                    output_actual_len: Out<usize>,
+                                   output_buf_ptr: Out<u8>,
+                                   output_buf_len: usize,
+                                   output_actual_len: Out<usize>,
 
                                    handle: Out<FFIArcChannelManagerHandle>) -> FFIResult {
 
@@ -460,6 +462,11 @@ ffi! {
         let default_config = unsafe_block!("" => cfg.as_ref());
         let mut buf = unsafe_block!("The buffer lives as long as this function. And its length is buf_len" => buf_ptr.as_bytes(buf_len));
         let monitor = monitor_handle.as_static_ref();
+        let mut monitors = monitor.monitors.lock().unwrap();
+        let mut channel_monitors: &mut HashMap<OutPoint, &mut ChannelMonitor<InMemoryChannelKeys>> = &mut Default::default();
+        for m in (*monitors).iter_mut() {
+            channel_monitors.insert(m.0.clone(), m.1);
+        }
         let readable_args = ChannelManagerReadArgs {
             keys_manager,
             fee_estimator,
@@ -467,7 +474,7 @@ ffi! {
             tx_broadcaster,
             logger,
             default_config: default_config.clone(),
-            channel_monitors: &mut Default::default()
+            channel_monitors: channel_monitors
         };
         let (hash, chan_man): (BlockHash, FFIArcChannelManager) = ReadableArgs::read(&mut buf, readable_args).unwrap();
 
@@ -483,6 +490,5 @@ ffi! {
             FFIResult::ok()
         }))
     }
-
 }
 
