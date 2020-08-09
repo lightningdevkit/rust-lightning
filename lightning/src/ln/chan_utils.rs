@@ -540,8 +540,7 @@ pub struct LocalCommitmentTransaction {
 	// Which order the signatures should go in when constructing the final commitment tx witness.
 	// The user should be able to reconstruc this themselves, so we don't bother to expose it.
 	our_sig_first: bool,
-	/// The key derivation parameters for this commitment transaction
-	pub local_keys: TxCreationKeys,
+	pub(crate) local_keys: TxCreationKeys,
 	/// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
 	/// controlled by the channel initiator.
 	pub feerate_per_kw: u32,
@@ -604,6 +603,12 @@ impl LocalCommitmentTransaction {
 			feerate_per_kw,
 			per_htlc: htlc_data,
 		}
+	}
+
+	/// The pre-calculated transaction creation public keys.
+	/// An external validating signer should not trust these keys.
+	pub fn trust_key_derivation(&self) -> &TxCreationKeys {
+		&self.local_keys
 	}
 
 	/// Get the txid of the local commitment transaction contained in this
