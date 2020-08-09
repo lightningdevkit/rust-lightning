@@ -19,7 +19,7 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{CounterpartyCommitmentSecrets, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, PreCalculatedTxCreationKeys};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
@@ -1484,7 +1484,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw, logger).0;
-		let remote_signature = self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), &self.secp_ctx)
+		let pre_remote_keys = PreCalculatedTxCreationKeys::new(remote_keys);
+		let remote_signature = self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &pre_remote_keys, &Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign the "remote" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -3525,7 +3526,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let remote_keys = self.build_remote_transaction_keys()?;
 		let remote_initial_commitment_tx = self.build_commitment_transaction(self.cur_remote_commitment_transaction_number, &remote_keys, false, false, self.feerate_per_kw, logger).0;
-		Ok(self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &remote_keys, &Vec::new(), &self.secp_ctx)
+		let pre_remote_keys = PreCalculatedTxCreationKeys::new(remote_keys);
+		Ok(self.local_keys.sign_remote_commitment(self.feerate_per_kw, &remote_initial_commitment_tx, &pre_remote_keys, &Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -3878,7 +3880,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &remote_keys, &htlcs, &self.secp_ctx)
+			let pre_remote_keys = PreCalculatedTxCreationKeys::new(remote_keys.clone());
+			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &pre_remote_keys, &htlcs, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;

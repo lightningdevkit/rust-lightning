@@ -1,4 +1,4 @@
-use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction};
+use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction, PreCalculatedTxCreationKeys};
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
@@ -60,9 +60,9 @@ impl ChannelKeys for EnforcingChannelKeys {
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, pre_keys: &PreCalculatedTxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
-		self.check_keys(secp_ctx, keys);
+		self.check_keys(secp_ctx, pre_keys.trust_key_derivation());
 		let obscured_commitment_transaction_number = (commitment_tx.lock_time & 0xffffff) as u64 | ((commitment_tx.input[0].sequence as u64 & 0xffffff) << 3*8);
 
 		{
@@ -75,7 +75,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 			commitment_data.1 = cmp::max(commitment_number, commitment_data.1)
 		}
 
-		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, keys, htlcs, secp_ctx).unwrap())
+		Ok(self.inner.sign_remote_commitment(feerate_per_kw, commitment_tx, pre_keys, htlcs, secp_ctx).unwrap())
 	}
 
 	fn sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
