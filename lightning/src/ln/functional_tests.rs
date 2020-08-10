@@ -52,6 +52,7 @@ use std::sync::atomic::Ordering;
 use std::{mem, io};
 
 use ln::functional_test_utils::*;
+use ln::chan_utils::PreCalculatedTxCreationKeys;
 
 #[test]
 fn test_insane_channel_opens() {
@@ -1694,7 +1695,8 @@ fn test_fee_spike_violation_fails_htlc() {
 		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
 		let local_chan_keys = local_chan.get_local_keys();
-		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
+		let pre_commit_tx_keys = PreCalculatedTxCreationKeys::new(commit_tx_keys);
+		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &pre_commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {

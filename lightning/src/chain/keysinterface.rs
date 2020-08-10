@@ -23,7 +23,7 @@ use util::byte_utils;
 use util::ser::{Writeable, Writer, Readable};
 
 use ln::chan_utils;
-use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction};
+use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction, PreCalculatedTxCreationKeys};
 use ln::msgs;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -223,7 +223,7 @@ pub trait ChannelKeys : Send+Clone {
 	// TODO: Document the things someone using this interface should enforce before signing.
 	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	// making the callee generate it via some util function we expose)!
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &PreCalculatedTxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()>;
 
 	/// Create a signature for a local commitment transaction. This will only ever be called with
 	/// the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
@@ -461,8 +461,9 @@ impl ChannelKeys for InMemoryChannelKeys {
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.local_channel_pubkeys }
 	fn key_derivation_params(&self) -> (u64, u64) { self.key_derivation_params }
 
-	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, keys: &TxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_remote_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, pre_keys: &PreCalculatedTxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		if commitment_tx.input.len() != 1 { return Err(()); }
+		let keys = pre_keys.trust_key_derivation();
 
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let accepted_data = self.accepted_channel_data.as_ref().expect("must accept before signing");

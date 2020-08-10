@@ -267,22 +267,51 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 
 /// The set of public keys which are used in the creation of one commitment transaction.
 /// These are derived from the channel base keys and per-commitment data.
+///
+/// These keys are assumed to be good, either because the code derived them from
+/// channel basepoints via the new function, or they were obtained via
+/// PreCalculatedTxCreationKeys.trust_key_derivation because we trusted the source of the
+/// pre-calculated keys.
 #[derive(PartialEq, Clone)]
 pub struct TxCreationKeys {
 	/// The per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
 	/// The revocation key which is used to allow the owner of the commitment transaction to
 	/// provide their counterparty the ability to punish them if they broadcast an old state.
-	pub(crate) revocation_key: PublicKey,
+	pub revocation_key: PublicKey,
 	/// A's HTLC Key
-	pub(crate) a_htlc_key: PublicKey,
+	pub a_htlc_key: PublicKey,
 	/// B's HTLC Key
-	pub(crate) b_htlc_key: PublicKey,
+	pub b_htlc_key: PublicKey,
 	/// A's Payment Key (which isn't allowed to be spent from for some delay)
-	pub(crate) a_delayed_payment_key: PublicKey,
+	pub a_delayed_payment_key: PublicKey,
 }
 impl_writeable!(TxCreationKeys, 33*6,
 	{ per_commitment_point, revocation_key, a_htlc_key, b_htlc_key, a_delayed_payment_key });
+
+/// The per-commitment point and a set of pre-calculated public keys used for transaction creation
+/// in the signer.
+/// The pre-calculated keys are an optimization, because ChannelKeys has enough
+/// information to re-derive them.
+pub struct PreCalculatedTxCreationKeys(TxCreationKeys);
+
+impl PreCalculatedTxCreationKeys {
+	/// Create a new PreCalculatedTxCreationKeys from TxCreationKeys
+	pub fn new(keys: TxCreationKeys) -> Self {
+		PreCalculatedTxCreationKeys(keys)
+	}
+
+	/// The pre-calculated transaction creation public keys.
+	/// An external validating signer should not trust these keys.
+	pub fn trust_key_derivation(&self) -> &TxCreationKeys {
+		&self.0
+	}
+
+	/// The transaction per-commitment point
+	pub fn per_comitment_point(&self) -> &PublicKey {
+		&self.0.per_commitment_point
+	}
+}
 
 /// One counterparty's public keys which do not change over the life of a channel.
 #[derive(Clone, PartialEq)]
@@ -318,7 +347,8 @@ impl_writeable!(ChannelPublicKeys, 33*5, {
 
 
 impl TxCreationKeys {
-	pub(crate) fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
+	/// Create a new TxCreationKeys from channel base points and the per-commitment point
+	pub fn new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, a_delayed_payment_base: &PublicKey, a_htlc_base: &PublicKey, b_revocation_base: &PublicKey, b_htlc_base: &PublicKey) -> Result<TxCreationKeys, secp256k1::Error> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
 			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &b_revocation_base)?,
@@ -510,8 +540,7 @@ pub struct LocalCommitmentTransaction {
 	// Which order the signatures should go in when constructing the final commitment tx witness.
 	// The user should be able to reconstruc this themselves, so we don't bother to expose it.
 	our_sig_first: bool,
-	/// The key derivation parameters for this commitment transaction
-	pub local_keys: TxCreationKeys,
+	pub(crate) local_keys: TxCreationKeys,
 	/// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
 	/// controlled by the channel initiator.
 	pub feerate_per_kw: u32,
@@ -574,6 +603,12 @@ impl LocalCommitmentTransaction {
 			feerate_per_kw,
 			per_htlc: htlc_data,
 		}
+	}
+
+	/// The pre-calculated transaction creation public keys.
+	/// An external validating signer should not trust these keys.
+	pub fn trust_key_derivation(&self) -> &TxCreationKeys {
+		&self.local_keys
 	}
 
 	/// Get the txid of the local commitment transaction contained in this
