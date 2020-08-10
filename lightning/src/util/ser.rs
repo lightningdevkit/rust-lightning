@@ -1,7 +1,7 @@
 //! A very simple serialization framework which is used to serialize/deserialize messages as well
 //! as ChannelsManagers and ChannelMonitors.
 
-use std::io::{Read, Write};
+use std::io::{Read, Write, Error};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Mutex;
@@ -16,7 +16,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use std::marker::Sized;
-use ln::msgs::DecodeError;
+use ln::msgs::{DecodeError, NetAddress};
 use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 use util::byte_utils;
 
@@ -170,6 +170,34 @@ impl Readable for Vec<(crate::chain::transaction::OutPoint, BlockHash)>
 			let o = Readable::read(r)?;
 			let hash = Readable::read(r)?;
 			ret.push((o, hash));
+		}
+		Ok(ret)
+	}
+}
+
+impl Writeable for Vec<NetAddress> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), Error> {
+		(self.len() as u16).write(w)?;
+		for addr in self.iter() {
+			addr.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for Vec<NetAddress> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: u16 = Readable::read(r)?;
+		let mut ret = Vec::with_capacity(len as usize);
+		for _ in 0..(len as usize)
+		{
+			let res = Readable::read(r)?;
+			match res {
+				Ok(addr) => {
+					ret.push(addr);
+				},
+				Err(_) => { return Err(DecodeError::InvalidValue); },
+			}
 		}
 		Ok(ret)
 	}
