@@ -3880,11 +3880,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlcs.push(htlc);
 			}
 
-			let pre_remote_keys = PreCalculatedTxCreationKeys::new(remote_keys.clone());
+			let pre_remote_keys = PreCalculatedTxCreationKeys::new(remote_keys);
 			let res = self.local_keys.sign_remote_commitment(feerate_per_kw, &remote_commitment_tx.0, &pre_remote_keys, &htlcs, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
+			let remote_keys = pre_remote_keys.trust_key_derivation();
 
 			log_trace!(logger, "Signed remote commitment tx {} with redeemscript {} -> {}",
 				encode::serialize_hex(&remote_commitment_tx.0),
@@ -3894,7 +3895,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
 					encode::serialize_hex(&chan_utils::build_htlc_transaction(&remote_commitment_tx.0.txid(), feerate_per_kw, self.our_to_self_delay, htlc, &remote_keys.a_delayed_payment_key, &remote_keys.revocation_key)),
-					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &remote_keys)),
+					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, remote_keys)),
 					log_bytes!(remote_keys.a_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]));
 			}
