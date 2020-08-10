@@ -74,185 +74,278 @@ pub struct Init {
 /// An error message to be sent or received from a peer
 #[derive(Clone)]
 pub struct ErrorMessage {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) data: String,
+	/// The channel ID involved in the error
+	pub channel_id: [u8; 32],
+	/// A possibly human-readable error description.
+	/// The string should be sanitized before it is used (e.g. emitted to logs
+	/// or printed to stdout).  Otherwise, a well crafted error message may trigger a security
+	/// vulnerability in the terminal emulator or the logging subsystem.
+	pub data: String,
 }
 
 /// A ping message to be sent or received from a peer
 pub struct Ping {
-	pub(crate) ponglen: u16,
-	pub(crate) byteslen: u16,
+	/// The desired response length
+	pub ponglen: u16,
+	/// The ping packet size.
+	/// This field is not sent on the wire. byteslen zeros are sent.
+	pub byteslen: u16,
 }
 
 /// A pong message to be sent or received from a peer
 pub struct Pong {
-	pub(crate) byteslen: u16,
+	/// The pong packet size.
+	/// This field is not sent on the wire. byteslen zeros are sent.
+	pub byteslen: u16,
 }
 
 /// An open_channel message to be sent or received from a peer
 #[derive(Clone)]
 pub struct OpenChannel {
-	pub(crate) chain_hash: BlockHash,
-	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) funding_satoshis: u64,
-	pub(crate) push_msat: u64,
-	pub(crate) dust_limit_satoshis: u64,
-	pub(crate) max_htlc_value_in_flight_msat: u64,
-	pub(crate) channel_reserve_satoshis: u64,
-	pub(crate) htlc_minimum_msat: u64,
-	pub(crate) feerate_per_kw: u32,
-	pub(crate) to_self_delay: u16,
-	pub(crate) max_accepted_htlcs: u16,
-	pub(crate) funding_pubkey: PublicKey,
-	pub(crate) revocation_basepoint: PublicKey,
-	pub(crate) payment_point: PublicKey,
-	pub(crate) delayed_payment_basepoint: PublicKey,
-	pub(crate) htlc_basepoint: PublicKey,
-	pub(crate) first_per_commitment_point: PublicKey,
-	pub(crate) channel_flags: u8,
-	pub(crate) shutdown_scriptpubkey: OptionalField<Script>,
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// A temporary channel ID, until the funding outpoint is announced
+	pub temporary_channel_id: [u8; 32],
+	/// The channel value
+	pub funding_satoshis: u64,
+	/// The amount to push to the counterparty as part of the open, in milli-satoshi
+	pub push_msat: u64,
+	/// The threshold below which outputs on transactions broadcast by sender will be omitted
+	pub dust_limit_satoshis: u64,
+	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
+	pub max_htlc_value_in_flight_msat: u64,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
+	/// The minimum HTLC size incoming to sender, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// The feerate per 1000-weight of sender generated transactions, until updated by update_fee
+	pub feerate_per_kw: u32,
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they broadcast a commitment transaction
+	pub to_self_delay: u16,
+	/// The maximum number of inbound HTLCs towards sender
+	pub max_accepted_htlcs: u16,
+	/// The sender's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+	/// Used to derive a revocation key for transactions broadcast by counterparty
+	pub revocation_basepoint: PublicKey,
+	/// A payment key to sender for transactions broadcast by counterparty
+	pub payment_point: PublicKey,
+	/// Used to derive a payment key to sender for transactions broadcast by sender
+	pub delayed_payment_basepoint: PublicKey,
+	/// Used to derive an HTLC payment key to sender
+	pub htlc_basepoint: PublicKey,
+	/// The first to-be-broadcast-by-sender transaction's per commitment point
+	pub first_per_commitment_point: PublicKey,
+	/// Channel flags
+	pub channel_flags: u8,
+	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	pub shutdown_scriptpubkey: OptionalField<Script>,
 }
 
 /// An accept_channel message to be sent or received from a peer
 #[derive(Clone)]
 pub struct AcceptChannel {
-	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) dust_limit_satoshis: u64,
-	pub(crate) max_htlc_value_in_flight_msat: u64,
-	pub(crate) channel_reserve_satoshis: u64,
-	pub(crate) htlc_minimum_msat: u64,
-	pub(crate) minimum_depth: u32,
-	pub(crate) to_self_delay: u16,
-	pub(crate) max_accepted_htlcs: u16,
-	pub(crate) funding_pubkey: PublicKey,
-	pub(crate) revocation_basepoint: PublicKey,
-	pub(crate) payment_point: PublicKey,
-	pub(crate) delayed_payment_basepoint: PublicKey,
-	pub(crate) htlc_basepoint: PublicKey,
-	pub(crate) first_per_commitment_point: PublicKey,
-	pub(crate) shutdown_scriptpubkey: OptionalField<Script>
+	/// A temporary channel ID, until the funding outpoint is announced
+	pub temporary_channel_id: [u8; 32],
+	/// The threshold below which outputs on transactions broadcast by sender will be omitted
+	pub dust_limit_satoshis: u64,
+	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
+	pub max_htlc_value_in_flight_msat: u64,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
+	/// The minimum HTLC size incoming to sender, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// Minimum depth of the funding transaction before the channel is considered open
+	pub minimum_depth: u32,
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they broadcast a commitment transaction
+	pub to_self_delay: u16,
+	/// The maximum number of inbound HTLCs towards sender
+	pub max_accepted_htlcs: u16,
+	/// The sender's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+	/// Used to derive a revocation key for transactions broadcast by counterparty
+	pub revocation_basepoint: PublicKey,
+	/// A payment key to sender for transactions broadcast by counterparty
+	pub payment_point: PublicKey,
+	/// Used to derive a payment key to sender for transactions broadcast by sender
+	pub delayed_payment_basepoint: PublicKey,
+	/// Used to derive an HTLC payment key to sender for transactions broadcast by counterparty
+	pub htlc_basepoint: PublicKey,
+	/// The first to-be-broadcast-by-sender transaction's per commitment point
+	pub first_per_commitment_point: PublicKey,
+	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	pub shutdown_scriptpubkey: OptionalField<Script>,
 }
 
 /// A funding_created message to be sent or received from a peer
 #[derive(Clone)]
 pub struct FundingCreated {
-	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) funding_txid: Txid,
-	pub(crate) funding_output_index: u16,
-	pub(crate) signature: Signature,
+	/// A temporary channel ID, until the funding is established
+	pub temporary_channel_id: [u8; 32],
+	/// The funding transaction ID
+	pub funding_txid: Txid,
+	/// The specific output index funding this channel
+	pub funding_output_index: u16,
+	/// The signature of the channel initiator (funder) on the funding transaction
+	pub signature: Signature,
 }
 
 /// A funding_signed message to be sent or received from a peer
 #[derive(Clone)]
 pub struct FundingSigned {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) signature: Signature,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The signature of the channel acceptor (fundee) on the funding transaction
+	pub signature: Signature,
 }
 
 /// A funding_locked message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
-#[allow(missing_docs)]
 pub struct FundingLocked {
+	/// The channel ID
 	pub channel_id: [u8; 32],
+	/// The per-commitment point of the second commitment transaction
 	pub next_per_commitment_point: PublicKey,
 }
 
 /// A shutdown message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct Shutdown {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) scriptpubkey: Script,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The destination of this peer's funds on closing.
+	/// Must be in one of these forms: p2pkh, p2sh, p2wpkh, p2wsh.
+	pub scriptpubkey: Script,
 }
 
 /// A closing_signed message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct ClosingSigned {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) fee_satoshis: u64,
-	pub(crate) signature: Signature,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The proposed total fee for the closing transaction
+	pub fee_satoshis: u64,
+	/// A signature on the closing transaction
+	pub signature: Signature,
 }
 
 /// An update_add_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateAddHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
-	pub(crate) amount_msat: u64,
-	pub(crate) payment_hash: PaymentHash,
-	pub(crate) cltv_expiry: u32,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
+	/// The HTLC value in milli-satoshi
+	pub amount_msat: u64,
+	/// The payment hash, the pre-image of which controls HTLC redemption
+	pub payment_hash: PaymentHash,
+	/// The expiry height of the HTLC
+	pub cltv_expiry: u32,
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateFulfillHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
-	pub(crate) payment_preimage: PaymentPreimage,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
+	/// The pre-image of the payment hash, allowing HTLC redemption
+	pub payment_preimage: PaymentPreimage,
 }
 
 /// An update_fail_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateFailHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
 	pub(crate) reason: OnionErrorPacket,
 }
 
 /// An update_fail_malformed_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateFailMalformedHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
 	pub(crate) sha256_of_onion: [u8; 32],
-	pub(crate) failure_code: u16,
+	/// The failure code
+	pub failure_code: u16,
 }
 
 /// A commitment_signed message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct CommitmentSigned {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) signature: Signature,
-	pub(crate) htlc_signatures: Vec<Signature>,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// A signature on the commitment transaction
+	pub signature: Signature,
+	/// Signatures on the HTLC transactions
+	pub htlc_signatures: Vec<Signature>,
 }
 
 /// A revoke_and_ack message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct RevokeAndACK {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) per_commitment_secret: [u8; 32],
-	pub(crate) next_per_commitment_point: PublicKey,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The secret corresponding to the per-commitment point
+	pub per_commitment_secret: [u8; 32],
+	/// The next sender-broadcast commitment transaction's per-commitment point
+	pub next_per_commitment_point: PublicKey,
 }
 
 /// An update_fee message to be sent or received from a peer
 #[derive(PartialEq, Clone)]
 pub struct UpdateFee {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) feerate_per_kw: u32,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// Fee rate per 1000-weight of the transaction
+	pub feerate_per_kw: u32,
 }
 
 #[derive(PartialEq, Clone)]
-pub(crate) struct DataLossProtect {
-	pub(crate) your_last_per_commitment_secret: [u8; 32],
-	pub(crate) my_current_per_commitment_point: PublicKey,
+/// Proof that the sender knows the per-commitment secret of the previous commitment transaction.
+/// This is used to convince the recipient that the channel is at a certain commitment
+/// number even if they lost that data due to a local failure.  Of course, the peer may lie
+/// and even later commitments may have been revoked.
+pub struct DataLossProtect {
+	/// Proof that the sender knows the per-commitment secret of a specific commitment transaction
+	/// belonging to the recipient
+	pub your_last_per_commitment_secret: [u8; 32],
+	/// The sender's per-commitment point for their current commitment transaction
+	pub my_current_per_commitment_point: PublicKey,
 }
 
 /// A channel_reestablish message to be sent or received from a peer
 #[derive(PartialEq, Clone)]
 pub struct ChannelReestablish {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) next_local_commitment_number: u64,
-	pub(crate) next_remote_commitment_number: u64,
-	pub(crate) data_loss_protect: OptionalField<DataLossProtect>,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The next commitment number for the sender
+	pub next_local_commitment_number: u64,
+	/// The next commitment number for the recipient
+	pub next_remote_commitment_number: u64,
+	/// Optionally, a field proving that next_remote_commitment_number-1 has been revoked
+	pub data_loss_protect: OptionalField<DataLossProtect>,
 }
 
 /// An announcement_signatures message to be sent or received from a peer
 #[derive(PartialEq, Clone, Debug)]
 pub struct AnnouncementSignatures {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) short_channel_id: u64,
-	pub(crate) node_signature: Signature,
-	pub(crate) bitcoin_signature: Signature,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The short channel ID
+	pub short_channel_id: u64,
+	/// A signature by the node key
+	pub node_signature: Signature,
+	/// A signature by the funding key
+	pub bitcoin_signature: Signature,
 }
 
 /// An address which can be used to connect to a remote peer
@@ -382,73 +475,99 @@ impl Readable for Result<NetAddress, u8> {
 	}
 }
 
-// Only exposed as broadcast of node_announcement should be filtered by node_id
 /// The unsigned part of a node_announcement
 #[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedNodeAnnouncement {
-	pub(crate) features: NodeFeatures,
-	pub(crate) timestamp: u32,
+	/// The advertised features
+	pub features: NodeFeatures,
+	/// A strictly monotonic announcement counter, with gaps allowed
+	pub timestamp: u32,
 	/// The node_id this announcement originated from (don't rebroadcast the node_announcement back
 	/// to this node).
-	pub        node_id: PublicKey,
-	pub(crate) rgb: [u8; 3],
-	pub(crate) alias: [u8; 32],
-	/// List of addresses on which this node is reachable. Note that you may only have up to one
-	/// address of each type, if you have more, they may be silently discarded or we may panic!
-	pub(crate) addresses: Vec<NetAddress>,
+	pub node_id: PublicKey,
+	/// An RGB color for UI purposes
+	pub rgb: [u8; 3],
+	/// An alias, for UI purposes.  This should be sanitized before use.  There is no guarantee
+	/// of uniqueness.
+	pub alias: [u8; 32],
+	/// List of addresses on which this node is reachable
+	pub addresses: Vec<NetAddress>,
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
 #[derive(PartialEq, Clone, Debug)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
-	pub(crate) signature: Signature,
-	pub(crate) contents: UnsignedNodeAnnouncement,
+	/// The signature by the node key
+	pub signature: Signature,
+	/// The actual content of the announcement
+	pub contents: UnsignedNodeAnnouncement,
 }
 
-// Only exposed as broadcast of channel_announcement should be filtered by node_id
 /// The unsigned part of a channel_announcement
 #[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedChannelAnnouncement {
-	pub(crate) features: ChannelFeatures,
-	pub(crate) chain_hash: BlockHash,
-	pub(crate) short_channel_id: u64,
+	/// The advertised channel features
+	pub features: ChannelFeatures,
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// The short channel ID
+	pub short_channel_id: u64,
 	/// One of the two node_ids which are endpoints of this channel
-	pub        node_id_1: PublicKey,
+	pub node_id_1: PublicKey,
 	/// The other of the two node_ids which are endpoints of this channel
-	pub        node_id_2: PublicKey,
-	pub(crate) bitcoin_key_1: PublicKey,
-	pub(crate) bitcoin_key_2: PublicKey,
+	pub node_id_2: PublicKey,
+	/// The funding key for the first node
+	pub bitcoin_key_1: PublicKey,
+	/// The funding key for the second node
+	pub bitcoin_key_2: PublicKey,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_announcement message to be sent or received from a peer
 #[derive(PartialEq, Clone, Debug)]
 pub struct ChannelAnnouncement {
-	pub(crate) node_signature_1: Signature,
-	pub(crate) node_signature_2: Signature,
-	pub(crate) bitcoin_signature_1: Signature,
-	pub(crate) bitcoin_signature_2: Signature,
-	pub(crate) contents: UnsignedChannelAnnouncement,
+	/// Authentication of the announcement by the first public node
+	pub node_signature_1: Signature,
+	/// Authentication of the announcement by the second public node
+	pub node_signature_2: Signature,
+	/// Proof of funding UTXO ownership by the first public node
+	pub bitcoin_signature_1: Signature,
+	/// Proof of funding UTXO ownership by the second public node
+	pub bitcoin_signature_2: Signature,
+	/// The actual announcement
+	pub contents: UnsignedChannelAnnouncement,
 }
 
+/// The unsigned part of a channel_update
 #[derive(PartialEq, Clone, Debug)]
-pub(crate) struct UnsignedChannelUpdate {
-	pub(crate) chain_hash: BlockHash,
-	pub(crate) short_channel_id: u64,
-	pub(crate) timestamp: u32,
-	pub(crate) flags: u8,
-	pub(crate) cltv_expiry_delta: u16,
-	pub(crate) htlc_minimum_msat: u64,
-	pub(crate) htlc_maximum_msat: OptionalField<u64>,
-	pub(crate) fee_base_msat: u32,
-	pub(crate) fee_proportional_millionths: u32,
+pub struct UnsignedChannelUpdate {
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// The short channel ID
+	pub short_channel_id: u64,
+	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
+	pub timestamp: u32,
+	/// Channel flags
+	pub flags: u8,
+	/// The number of blocks to subtract from incoming HTLC cltv_expiry values
+	pub cltv_expiry_delta: u16,
+	/// The minimum HTLC size incoming to sender, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// Optionally, the maximum HTLC value incoming to sender, in milli-satoshi
+	pub htlc_maximum_msat: OptionalField<u64>,
+	/// The base HTLC fee charged by sender, in milli-satoshi
+	pub fee_base_msat: u32,
+	/// The amount to fee multiplier, in micro-satoshi
+	pub fee_proportional_millionths: u32,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_update message to be sent or received from a peer
 #[derive(PartialEq, Clone, Debug)]
 pub struct ChannelUpdate {
-	pub(crate) signature: Signature,
-	pub(crate) contents: UnsignedChannelUpdate,
+	/// A signature of the channel update
+	pub signature: Signature,
+	/// The actual channel update
+	pub contents: UnsignedChannelUpdate,
 }
 
 /// Used to put an error message in a LightningError
