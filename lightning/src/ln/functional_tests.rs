@@ -1960,7 +1960,8 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
-		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0 + 1);
+		let (mut route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0);
+		route.paths[0].last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
@@ -6472,7 +6473,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 0, InitFeatures::known(), InitFeatures::known());
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -6544,9 +6545,13 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], max_in_flight, max_in_flight);
 
 	let (_, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
-	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let logger = test_utils::TestLogger::new();
-	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, &[], max_in_flight+1, TEST_FINAL_CLTV, &logger).unwrap();
+	// Manually create a route over our max in flight (which our router normally automatically
+	// limits us to.
+	let route = Route { paths: vec![vec![RouteHop {
+	   pubkey: nodes[1].node.get_our_node_id(), node_features: NodeFeatures::known(), channel_features: ChannelFeatures::known(),
+	   short_channel_id: nodes[1].node.list_usable_channels()[0].short_channel_id.unwrap(),
+	   fee_msat: max_in_flight + 1, cltv_expiry_delta: TEST_FINAL_CLTV
+	}]] };
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
 

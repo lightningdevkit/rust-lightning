@@ -98,6 +98,13 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 		}
 	}
 
+	/// Adds a provider used to check new announcements. Does not affect
+	/// existing announcements unless they are updated.
+	/// Add, update or remove the provider would replace the current one.
+	pub fn add_chain_access(&mut self, chain_access: Option<C>) {
+		self.chain_access = chain_access;
+	}
+
 	/// Take a read lock on the network_graph and return it in the C-bindings
 	/// newtype helper. This is likely only useful when called via the C
 	/// bindings as you can call `self.network_graph.read().unwrap()` in Rust
