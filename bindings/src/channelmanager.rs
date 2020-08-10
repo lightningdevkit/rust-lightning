@@ -26,27 +26,38 @@ use crate::{
     channelmonitor::FFIManyChannelMonitor
 };
 use lightning::{
-    routing::router::{RouteHint, get_route},
+    routing::{
+        router::{
+            RouteHint,
+            get_route,
+            Route
+        },
+        network_graph::NetworkGraph
+    },
     util::{
         config::UserConfig,
-        events::EventsProvider
-    },
-    ln::{
-        channelmanager::{ChannelManager, PaymentHash},
+        events::EventsProvider,
+        ser::{Readable, ReadableArgs}
     },
     chain::{
         keysinterface::{InMemoryChannelKeys},
         transaction::OutPoint
     },
-    routing::router::Route,
-    ln::channelmanager::{PaymentSecret, PaymentPreimage},
-    util::ser::{Readable, ReadableArgs},
-    ln::channelmanager::ChannelManagerReadArgs,
-    routing::network_graph::NetworkGraph
+    ln::{
+        channelmanager::{
+            ChannelManagerReadArgs,
+            PaymentSecret,
+            PaymentPreimage,
+            ChannelManager,
+            PaymentHash
+        },
+        channelmonitor::ChannelMonitor,
+        msgs::NetAddress
+    },
 };
+
 use crate::channelmonitor::FFIManyChannelMonitorHandle;
 use std::collections::HashMap;
-use lightning::ln::channelmonitor::ChannelMonitor;
 use bitcoin_hashes::hex::ToHex;
 
 pub type FFIArcChannelManager = ChannelManager<InMemoryChannelKeys, &'static FFIManyChannelMonitor, Arc<FFIBroadCaster>, Arc<FFIKeysInterface>, Arc<FFIFeeEstimator>, Arc<FFILogger>>;
@@ -325,6 +336,16 @@ ffi! {
         let temporary_channel_id: &Bytes32 = unsafe_block!("data lives as long as this function and it points to a valid value" => temporary_channel_id.as_ref());
         let funding_txo: OutPoint = funding_txo.try_into()?;
         chan_man.funding_transaction_generated(&temporary_channel_id.bytes, funding_txo);
+        FFIResult::ok()
+    }
+
+    fn broadcast_node_announcement(rgb: Ref<[u8; 3]>, alias: Ref<[u8; 32]>, addresses_bytes_ref: Ref<FFIBytes>, handle: FFIArcChannelManagerHandle) -> FFIResult {
+        let rgb = unsafe_block!("" => rgb.as_ref());
+        let alias = unsafe_block!("" => alias.as_ref());
+        let addresses_bytes = unsafe_block!("" => addresses_bytes_ref.as_ref());
+        let addresses: Vec<NetAddress> = Readable::read(&mut addresses_bytes.as_ref()).unwrap();
+        let chan_man = handle.as_ref();
+        chan_man.broadcast_node_announcement(rgb.clone(), alias.clone(), addresses);
         FFIResult::ok()
     }
 
