@@ -175,10 +175,8 @@ pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: D
         L::Target: Logger,
         C::Target: ChainWatchInterface,
 {
-	#[cfg(test)] // Used in ChannelManager tests to manipulate channels directly
+	/// The monitors
 	pub monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
-	#[cfg(not(test))]
-	monitors: Mutex<HashMap<Key, ChannelMonitor<ChanSigner>>>,
 	chain_monitor: C,
 	broadcaster: T,
 	logger: L,
@@ -1849,7 +1847,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Unsafe test-only version of get_latest_local_commitment_txn used by our test framework
 	/// to bypass LocalCommitmentTransaction state update lockdown after signature and generate
 	/// revoked commitment transaction.
-	#[cfg(test)]
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	pub fn unsafe_get_latest_local_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
 		log_trace!(logger, "Getting signed copy of latest local commitment transaction!");
 		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_local_tx(&self.funding_redeemscript) {

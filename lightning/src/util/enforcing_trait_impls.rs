@@ -93,7 +93,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		Ok(self.inner.unsafe_sign_local_commitment(local_commitment_tx, secp_ctx).unwrap())
 	}

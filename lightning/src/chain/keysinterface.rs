@@ -247,7 +247,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// transactions which will be broadcasted later, after the channel has moved on to a newer
 	/// state. Thus, needs its own method as sign_local_commitment may enforce that we only ever
 	/// get called once.
-	#[cfg(test)]
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Create a signature for each HTLC transaction spending a local commitment transaction.
@@ -508,7 +508,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(local_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_local_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let remote_channel_pubkeys = &self.accepted_channel_data.as_ref().expect("must accept before signing").remote_channel_pubkeys;
