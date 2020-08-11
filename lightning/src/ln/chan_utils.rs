@@ -599,10 +599,25 @@ impl LocalCommitmentTransaction {
 	}
 
 	/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
-	/// remote signature and both parties keys
+	/// remote signature and both parties keys.
+	///
+	/// The unsigned transaction outputs must be consistent with htlc_data.  This function
+	/// only checks that the shape and amounts are consistent, but does not check the scriptPubkey.
 	pub fn new_missing_local_sig(unsigned_tx: Transaction, their_sig: Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u32, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
 		if unsigned_tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
 		if unsigned_tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
+
+		for htlc in &htlc_data {
+			if let Some(index) = htlc.0.transaction_output_index {
+				let out = &unsigned_tx.output[index as usize];
+				if out.value != htlc.0.amount_msat / 1000 {
+					panic!("HTLC at index {} has incorrect amount", index);
+				}
+				if !out.script_pubkey.is_v0_p2wsh() {
+					panic!("HTLC at index {} doesn't have p2wsh scriptPubkey", index);
+				}
+			}
+		}
 
 		Self {
 			unsigned_tx,
