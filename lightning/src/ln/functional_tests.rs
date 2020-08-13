@@ -1893,6 +1893,25 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	check_added_monitors!(nodes[1], 1);
 }
 
+#[test]
+fn test_inbound_outbound_capacity_is_not_zero() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let channels0 = node_chanmgrs[0].list_channels();
+	let channels1 = node_chanmgrs[1].list_channels();
+	assert_eq!(channels0.len(), 1);
+	assert_eq!(channels1.len(), 1);
+
+	assert_eq!(channels0[0].inbound_capacity_msat, 95000000);
+	assert_eq!(channels1[0].outbound_capacity_msat, 95000000);
+
+	assert_eq!(channels0[0].outbound_capacity_msat, 100000 * 1000 - 95000000);
+	assert_eq!(channels1[0].inbound_capacity_msat, 100000 * 1000 - 95000000);
+}
+
 fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64) -> u64 {
 	(COMMITMENT_TX_BASE_WEIGHT + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate as u64 / 1000 * 1000
 }

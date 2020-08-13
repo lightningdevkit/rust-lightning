@@ -1696,8 +1696,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// corner case properly.
 	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
 		// Note that we have to handle overflow due to the above case.
-		(cmp::min(self.channel_value_satoshis as i64 * 1000 - self.value_to_self_msat as i64 - self.get_inbound_pending_htlc_stats().1 as i64, 0) as u64,
-		cmp::min(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
+		(cmp::max(self.channel_value_satoshis as i64 * 1000 - self.value_to_self_msat as i64 - self.get_inbound_pending_htlc_stats().1 as i64, 0) as u64,
+		cmp::max(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
 	}
 
 	// Get the fee cost of a commitment tx with a given number of HTLC outputs.
