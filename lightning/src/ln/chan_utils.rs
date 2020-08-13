@@ -317,7 +317,7 @@ impl PreCalculatedTxCreationKeys {
 	}
 
 	/// The transaction per-commitment point
-	pub fn per_comitment_point(&self) -> &PublicKey {
+	pub fn per_commitment_point(&self) -> &PublicKey {
 		&self.0.per_commitment_point
 	}
 }
