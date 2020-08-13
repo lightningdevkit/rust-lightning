@@ -386,9 +386,6 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 
 	their_shutdown_scriptpubkey: Option<Script>,
 
-	/// Used exclusively to broadcast the latest local state, mostly a historical quirk that this
-	/// is here:
-	channel_monitor: Option<ChannelMonitor<ChanSigner>>,
 	commitment_secrets: CounterpartyCommitmentSecrets,
 
 	network_sync: UpdateStatus,
@@ -557,7 +554,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			their_shutdown_scriptpubkey: None,
 
-			channel_monitor: None,
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
 			network_sync: UpdateStatus::Fresh,
@@ -786,7 +782,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			their_shutdown_scriptpubkey,
 
-			channel_monitor: None,
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
 			network_sync: UpdateStatus::Fresh,
@@ -1222,7 +1217,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				payment_preimage: payment_preimage_arg.clone(),
 			}],
 		};
-		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone(), logger).unwrap();
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
 			for pending_update in self.holding_cell_htlc_updates.iter() {
@@ -1552,7 +1546,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			} }
 		}
 
-		self.channel_monitor = Some(create_monitor!());
 		let channel_monitor = create_monitor!();
 
 		self.channel_state = ChannelState::FundingSent as u32;
@@ -1618,7 +1611,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			} }
 		}
 
-		self.channel_monitor = Some(create_monitor!());
 		let channel_monitor = create_monitor!();
 
 		assert_eq!(self.channel_state & (ChannelState::MonitorUpdateFailed as u32), 0); // We have no had any monitor(s) yet to fail update!
@@ -2060,7 +2052,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				htlc_outputs: htlcs_and_sigs
 			}]
 		};
-		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone(), logger).unwrap();
 
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
@@ -2280,7 +2271,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				secret: msg.per_commitment_secret,
 			}],
 		};
-		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone(), logger).unwrap();
 
 		// Update state now that we've passed all the can-fail calls...
 		// (note that we may still fail to generate the new commitment_signed message, but that's
@@ -3115,14 +3105,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.user_id
 	}
 
-	/// May only be called after funding has been initiated (ie is_funding_initiated() is true)
-	pub fn channel_monitor(&mut self) -> &mut ChannelMonitor<ChanSigner> {
-		if self.channel_state < ChannelState::FundingSent as u32 {
-			panic!("Can't get a channel monitor until funding has been created");
-		}
-		self.channel_monitor.as_mut().unwrap()
-	}
-
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
 	/// is_usable() returns true).
 	/// Allowed in any state (including after shutdown)
@@ -3397,9 +3379,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if header.bitcoin_hash() != self.last_block_connected {
 			self.last_block_connected = header.bitcoin_hash();
 			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
-			if let Some(channel_monitor) = self.channel_monitor.as_mut() {
-				channel_monitor.last_block_hash = self.last_block_connected;
-			}
 			if self.funding_tx_confirmations > 0 {
 				if self.funding_tx_confirmations == self.minimum_depth as u64 {
 					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
@@ -3458,9 +3437,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
 		self.last_block_connected = header.bitcoin_hash();
-		if let Some(channel_monitor) = self.channel_monitor.as_mut() {
-			channel_monitor.last_block_hash = self.last_block_connected;
-		}
 		false
 	}
 
@@ -3871,7 +3847,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				their_revocation_point: self.their_cur_commitment_point.unwrap()
 			}]
 		};
-		self.channel_monitor.as_mut().unwrap().update_monitor_ooo(monitor_update.clone(), logger).unwrap();
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
 		Ok((res, monitor_update))
 	}
@@ -4242,8 +4217,6 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.their_shutdown_scriptpubkey.write(writer)?;
 
 		self.commitment_secrets.write(writer)?;
-
-		self.channel_monitor.as_ref().unwrap().write_for_disk(writer)?;
 		Ok(())
 	}
 }
@@ -4398,13 +4371,6 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 		let their_shutdown_scriptpubkey = Readable::read(reader)?;
 		let commitment_secrets = Readable::read(reader)?;
 
-		let (monitor_last_block, channel_monitor) = Readable::read(reader)?;
-		// We drop the ChannelMonitor's last block connected hash cause we don't actually bother
-		// doing full block connection operations on the internal ChannelMonitor copies
-		if monitor_last_block != last_block_connected {
-			return Err(DecodeError::InvalidValue);
-		}
-
 		Ok(Channel {
 			user_id,
 
@@ -4476,7 +4442,6 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 
 			their_shutdown_scriptpubkey,
 
-			channel_monitor: Some(channel_monitor),
 			commitment_secrets,
 
 			network_sync: UpdateStatus::Fresh,

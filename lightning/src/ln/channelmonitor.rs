@@ -828,7 +828,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
 	// their last_block_hash from its state and not based on updated copies that didn't run through
 	// the full block_connected).
-	pub(crate) last_block_hash: BlockHash,
+	last_block_hash: BlockHash,
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 }
 
@@ -1368,27 +1368,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			broadcaster.broadcast_transaction(tx);
 		}
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
-	}
-
-	/// Used in Channel to cheat wrt the update_ids since it plays games, will be removed soon!
-	pub(super) fn update_monitor_ooo<L: Deref>(&mut self, mut updates: ChannelMonitorUpdate, logger: &L) -> Result<(), MonitorUpdateError> where L::Target: Logger {
-		for update in updates.updates.drain(..) {
-			match update {
-				ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo { commitment_tx, htlc_outputs } => {
-					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_local_commitment_tx_info(commitment_tx, htlc_outputs)?
-				},
-				ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
-					self.provide_latest_remote_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point, logger),
-				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
-				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(idx, secret)?,
-				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
-			}
-		}
-		self.latest_update_id = updates.update_id;
-		Ok(())
 	}
 
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
