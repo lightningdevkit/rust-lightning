@@ -46,12 +46,12 @@ impl EnforcingChannelKeys {
 	                                                               keys: &TxCreationKeys) {
 		let remote_points = self.inner.remote_pubkeys();
 
-		let keys_expected = TxCreationKeys::new(secp_ctx,
-		                                        &keys.per_commitment_point,
-		                                        &remote_points.delayed_payment_basepoint,
-		                                        &remote_points.htlc_basepoint,
-		                                        &self.inner.pubkeys().revocation_basepoint,
-		                                        &self.inner.pubkeys().htlc_basepoint).unwrap();
+		let keys_expected = TxCreationKeys::derive_new(secp_ctx,
+		                                               &keys.per_commitment_point,
+		                                               &remote_points.delayed_payment_basepoint,
+		                                               &remote_points.htlc_basepoint,
+		                                               &self.inner.pubkeys().revocation_basepoint,
+		                                               &self.inner.pubkeys().htlc_basepoint).unwrap();
 		if keys != &keys_expected { panic!("derived different per-tx keys") }
 	}
 }

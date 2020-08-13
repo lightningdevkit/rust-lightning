@@ -1636,7 +1636,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
 	let commitment_secret = SecretKey::from_slice(&remote_secret1).unwrap();
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &commitment_secret);
-	let commit_tx_keys = chan_utils::TxCreationKeys::new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
+	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
 		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
 
 	// Build the remote commitment transaction so we can sign it, and then later use the

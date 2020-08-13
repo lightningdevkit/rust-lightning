@@ -1126,7 +1126,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let htlc_basepoint = &self.local_keys.pubkeys().htlc_basepoint;
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys".to_owned()))
+		Ok(secp_check!(TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys".to_owned()))
 	}
 
 	#[inline]
@@ -1140,7 +1140,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let htlc_basepoint = &self.local_keys.pubkeys().htlc_basepoint;
 		let their_pubkeys = self.their_pubkeys.as_ref().unwrap();
 
-		Ok(secp_check!(TxCreationKeys::new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &their_pubkeys.delayed_payment_basepoint, &their_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint), "Remote tx keys generation got bogus keys".to_owned()))
+		Ok(secp_check!(TxCreationKeys::derive_new(&self.secp_ctx, &self.their_cur_commitment_point.unwrap(), &their_pubkeys.delayed_payment_basepoint, &their_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint), "Remote tx keys generation got bogus keys".to_owned()))
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -4674,7 +4674,7 @@ mod tests {
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 		let htlc_basepoint = &chan.local_keys.pubkeys().htlc_basepoint;
-		let keys = TxCreationKeys::new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint).unwrap();
+		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &their_pubkeys.revocation_basepoint, &their_pubkeys.htlc_basepoint).unwrap();
 
 		chan.their_pubkeys = Some(their_pubkeys);
 
