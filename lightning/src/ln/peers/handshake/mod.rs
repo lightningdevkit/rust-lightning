@@ -14,10 +14,9 @@ use ln::peers::handshake::acts::{ActOne, ActThree, ActTwo, ACT_ONE_LENGTH, ACT_T
 use ln::peers::handshake::hash::HandshakeHash;
 use ln::peers::handshake::states::{ActOneExpectation, ActThreeExpectation, ActTwoExpectation, HandshakeState};
 
-pub(crate) mod acts;
+mod acts;
 mod hash;
 mod states;
-mod tests;
 
 /// Object for managing handshakes.
 /// Currently requires explicit ephemeral private key specification.
@@ -162,7 +161,7 @@ impl PeerHandshake {
 	}
 
 	/// Initiate the handshake with a peer and return the first act
-	pub fn initiate(&mut self, remote_public_key: &PublicKey) -> Result<ActOne, String> {
+	fn initiate(&mut self, remote_public_key: &PublicKey) -> Result<ActOne, String> {
 		if let &Some(HandshakeState::Uninitiated) = &self.state {} else {
 			return Err("Handshakes can only be initiated from the uninitiated state".to_string());
 		}
@@ -188,7 +187,7 @@ impl PeerHandshake {
 	}
 
 	/// Process a peer's incoming first act and return the second act
-	pub(crate) fn process_act_one(&mut self, act: ActOne) -> Result<ActTwo, String> {
+	fn process_act_one(&mut self, act: ActOne) -> Result<ActTwo, String> {
 		let state = self.state.take();
 		let act_one_expectation = match state {
 			Some(HandshakeState::AwaitingActOne(act_state)) => act_state,
@@ -235,7 +234,7 @@ impl PeerHandshake {
 	}
 
 	/// Process a peer's incoming second act and return the third act alongside a Conduit instance
-	pub(crate) fn process_act_two(&mut self, act: ActTwo) -> Result<(ActThree, Conduit), String> {
+	fn process_act_two(&mut self, act: ActTwo) -> Result<(ActThree, Conduit), String> {
 		let state = self.state.take();
 		let act_two_expectation = match state {
 			Some(HandshakeState::AwaitingActTwo(act_state)) => act_state,
@@ -275,7 +274,7 @@ impl PeerHandshake {
 	}
 
 	/// Process a peer's incoming third act and return a Conduit instance
-	pub(crate) fn process_act_three(&mut self, act: ActThree) -> Result<(PublicKey, Conduit), String> {
+	fn process_act_three(&mut self, act: ActThree) -> Result<(PublicKey, Conduit), String> {
 		let state = self.state.take();
 		let act_three_expectation = match state {
 			Some(HandshakeState::AwaitingActThree(act_state)) => act_state,
