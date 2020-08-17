@@ -41,7 +41,6 @@ use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 use ln::peers::handshake::PeerHandshake;
 use ln::peers::conduit::Conduit;
-use ln::peers::handshake::acts::Act;
 
 /// Provides references to trait impls which handle different types of messages.
 pub struct MessageHandler<CM: Deref, RM: Deref> where
