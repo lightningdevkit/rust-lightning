@@ -50,7 +50,8 @@ be covered by functional tests.
 When refactoring, structure your PR to make it easy to review and don't
 hestitate to split it into multiple small, focused PRs.
 
-The Minimal Supported Rust Version is 1.22.0 (enforced by our Travis).
+The Minimal Supported Rust Version is 1.30.0 (enforced by our Travis and
+GitHub Actions).
 
 Commits should cover both the issue fixed and the solution's rationale.
 These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
