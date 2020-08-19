@@ -1158,9 +1158,6 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					if !chan.is_live() { // channel_disabled
 						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
 					}
-					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
-						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
-					}
 					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&self.fee_estimator) as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
@@ -1188,7 +1185,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				{
 					let mut res = Vec::with_capacity(8 + 128);
 					if let Some(chan_update) = chan_update {
-						if code == 0x1000 | 11 || code == 0x1000 | 12 {
+						if code == 0x1000 | 12 {
 							res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
 						}
 						else if code == 0x1000 | 13 {
@@ -1587,6 +1584,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
 									});
+									if amt_to_forward < chan.get().get_our_htlc_minimum_msat() {
+										let mut data = Vec::with_capacity(8 + 128);
+										data.extend_from_slice(&byte_utils::be64_to_array(amt_to_forward));
+										let chan_update = self.get_channel_update(chan.get()).unwrap();
+										data.extend_from_slice(&chan_update.encode_with_len()[..]);
+										failed_forwards.push((htlc_source, payment_hash,
+											HTLCFailReason::Reason { failure_code: 0x1000 | 11, data }
+										));
+										continue;
+									}
 									match chan.get_mut().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet) {
 										Err(e) => {
 											if let ChannelError::Ignore(msg) = e {

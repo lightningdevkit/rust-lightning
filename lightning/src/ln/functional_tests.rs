@@ -5909,10 +5909,11 @@ fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, 
 }
 
 // test_case
-// 0: node1 fails backward
+// 0: final node fails backward
 // 1: final node fails backward
 // 2: payment completed but the user rejects the payment
 // 3: final node fails backward (but tamper onion payloads from node0)
+// 4: intermediate node failure, fails backward
 // 100: trigger error in the intermediate node and tamper returning fail_htlc
 // 200: trigger error in the final node and tamper returning fail_htlc
 fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, mut callback_msg: F1, mut callback_fail: F2, mut callback_node: F3, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<HTLCFailChannelUpdate>)
@@ -6013,13 +6014,25 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 			assert!(update_1_0.update_fail_htlcs.len() == 1);
 			update_1_0
 		},
+		4 => { // intermediate node failure; failing backward to start node
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+			// forwarding on 1
+			expect_htlc_forward!(&nodes[1]);
+
+			// backward fail on 1
+			expect_htlc_forward!(&nodes[1]);
+			check_added_monitors!(nodes[1], 1);
+			let update_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+			assert!(update_1_0.update_fail_htlcs.len() == 1);
+			update_1_0
+		},
 		_ => unreachable!(),
 	};
 
 	// 1 => 0 commitment_signed_dance
 	if update_1_0.update_fail_htlcs.len() > 0 {
 		let mut fail_msg = update_1_0.update_fail_htlcs[0].clone();
-		if test_case == 100 {
+		if test_case == 100 || test_case == 4 {
 			callback_fail(&mut fail_msg);
 		}
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
@@ -6269,11 +6282,20 @@ fn test_onion_failure() {
 	run_onion_failure_test("unknown_next_peer", 0, &nodes, &bogus_route, &payment_hash, |_| {}, ||{}, true, Some(PERM|10),
 	  Some(msgs::HTLCFailChannelUpdate::ChannelClosed{short_channel_id: bogus_route.paths[0][1].short_channel_id, is_permanent:true}));
 
-	let amt_to_forward = nodes[1].node.channel_state.lock().unwrap().by_id.get(&channels[1].2).unwrap().get_their_htlc_minimum_msat() - 1;
+	let amt_to_forward = nodes[1].node.channel_state.lock().unwrap().by_id.get(&channels[1].2).unwrap().get_our_htlc_minimum_msat() - 1;
 	let mut bogus_route = route.clone();
 	let route_len = bogus_route.paths[0].len();
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward;
-	run_onion_failure_test("amount_below_minimum", 0, &nodes, &bogus_route, &payment_hash, |_| {}, ||{}, true, Some(UPDATE|11), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
+	run_onion_failure_test_with_fail_intercept("amount_below_minimum", 4, &nodes, &bogus_route, &payment_hash, |_| {}, |msg| {
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+		let mut data = Vec::with_capacity(8 + 128);
+		data.extend_from_slice(&byte_utils::be64_to_array(amt_to_forward));
+		let mut chan_update = ChannelUpdate::dummy();
+		chan_update.contents.htlc_minimum_msat = amt_to_forward + 1;
+		data.extend_from_slice(&chan_update.encode_with_len()[..]);
+		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], UPDATE|11, &data);
+	}, ||{}, true, Some(UPDATE|11), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	//TODO: with new config API, we will be able to generate both valid and
 	//invalid channel_update cases.
