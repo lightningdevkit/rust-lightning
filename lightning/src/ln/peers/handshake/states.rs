@@ -9,14 +9,6 @@ use ln::peers::handshake::PeerHandshake;
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::Conduit;
 
-pub enum HandshakeState {
-	Uninitiated,
-	AwaitingActOne(ActOneExpectation),
-	AwaitingActTwo(ActTwoExpectation),
-	AwaitingActThree(ActThreeExpectation),
-	Complete,
-}
-
 pub enum HandshakeState2 {
 	Uninitiated2(UninitiatedHandshakeState),
 	AwaitingActOne2(AwaitingActOneHandshakeState),
@@ -307,26 +299,6 @@ impl AwaitingActThreeHandshakeState {
 			read_buffer
 		}
 	}
-}
-
-pub struct ActOneExpectation {
-	pub(super) hash: HandshakeHash,
-	pub(super) chaining_key: [u8; 32],
-}
-
-pub struct ActTwoExpectation {
-	pub(super) hash: HandshakeHash,
-	pub(super) chaining_key: [u8; 32],
-	pub(super) temporary_key: [u8; 32],
-	pub(super) ephemeral_private_key: SecretKey,
-}
-
-pub struct ActThreeExpectation {
-	pub(super) hash: HandshakeHash,
-	pub(super) chaining_key: [u8; 32],
-	pub(super) temporary_key: [u8; 32],
-	pub(super) ephemeral_private_key: SecretKey,
-	pub(super) remote_ephemeral_public_key: PublicKey,
 }
 
 #[cfg(test)]
