@@ -344,19 +344,34 @@ fn handshake_state_initialization(responder_public_key: &PublicKey) -> (Handshak
 	(hash, chaining_key)
 }
 
-fn calculate_act_message(local_private_key: &SecretKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], hash: &mut HandshakeHash) -> ([u8; 50], SymmetricKey, SymmetricKey) {
-	let local_public_key = private_key_to_public_key(local_private_key);
+// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
+// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
+fn calculate_act_message(local_private_ephemeral_key: &SecretKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], h_hash: &mut HandshakeHash) -> ([u8; 50], SymmetricKey, SymmetricKey) {
+	// 1. e = generateKey() (passed in)
+	// 2. h = SHA-256(h || e.pub.serializeCompressed())
+	let serialized_local_public_key = private_key_to_public_key(local_private_ephemeral_key).serialize();
+	let hash = sha256!(concat!(h_hash.value, serialized_local_public_key));
 
-	hash.update(&local_public_key.serialize());
+	// 3. ACT1: es = ECDH(e.priv, rs)
+	// 3. ACT2: es = ECDH(e.priv, re)
+	let ecdh = ecdh(local_private_ephemeral_key, &remote_public_key);
 
-	let ecdh = ecdh(local_private_key, &remote_public_key);
+	// 4. ACT1: ck, temp_k1 = HKDF(ck, es)
+	// 4. ACT2: ck, temp_k2 = HKDF(ck, ee)
 	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
-	let tagged_ciphertext = chacha::encrypt(&temporary_key, 0, &hash.value, &[0; 0]);
 
-	hash.update(&tagged_ciphertext);
+	// 5. ACT1: c = encryptWithAD(temp_k1, 0, h, zero)
+	// 5. ACT2: c = encryptWithAD(temp_k2, 0, h, zero)
+	let tagged_ciphertext = chacha::encrypt(&temporary_key, 0, &hash, &[0; 0]);
 
+	// 6. h = SHA-256(h || c)
+	*h_hash = HandshakeHash {
+		value: sha256!(hash, tagged_ciphertext)
+	};
+
+	// Send m = 0 || e.pub.serializeCompressed() || c
 	let mut act = [0u8; 50];
-	act[1..34].copy_from_slice(&local_public_key.serialize());
+	act[1..34].copy_from_slice(&serialized_local_public_key);
 	act[34..].copy_from_slice(tagged_ciphertext.as_slice());
 
 	(act, chaining_key, temporary_key)
