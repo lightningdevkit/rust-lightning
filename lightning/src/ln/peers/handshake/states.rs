@@ -1,13 +1,14 @@
 use bitcoin::secp256k1;
 
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::handshake::hash::HandshakeHash;
 use ln::peers::handshake::acts::{Act, ActOne, ACT_ONE_LENGTH, ActTwo, ACT_TWO_LENGTH, ACT_THREE_LENGTH, ActThree};
 use ln::peers::handshake::states::HandshakeState2::{AwaitingActTwo2, AwaitingActThree2, Complete2};
-use ln::peers::handshake::PeerHandshake;
 use ln::peers::{chacha, hkdf};
-use ln::peers::conduit::Conduit;
+use ln::peers::conduit::{Conduit, SymmetricKey};
 
 pub enum HandshakeState2 {
 	Uninitiated2(UninitiatedHandshakeState),
@@ -81,10 +82,10 @@ impl IHandshakeState for UninitiatedHandshakeState {
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
 		let responder_public_key = self.responder_public_key;
 
-		let (mut hash, chaining_key) = PeerHandshake::initialize_state(&responder_public_key);
+		let (mut hash, chaining_key) = initialize_state(&responder_public_key);
 
 		// serialize act one
-		let (act_one, chaining_key, _) = PeerHandshake::calculate_act_message(
+		let (act_one, chaining_key, _) = calculate_act_message(
 			&initiator_ephemeral_private_key,
 			&responder_public_key,
 			chaining_key,
@@ -103,7 +104,7 @@ impl AwaitingActOneHandshakeState {
 
 		let curve = secp256k1::Secp256k1::new();
 		let responder_public_key = PublicKey::from_secret_key(&curve, &responder_private_key);
-		let (hash, chaining_key) = PeerHandshake::initialize_state(&responder_public_key);
+		let (hash, chaining_key) = initialize_state(&responder_public_key);
 
 		AwaitingActOneHandshakeState {
 			responder_private_key,
@@ -135,14 +136,14 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 		act_one_bytes.copy_from_slice(&read_buffer[..ACT_ONE_LENGTH]);
 		read_buffer.drain(..ACT_ONE_LENGTH);
 
-		let (initiator_ephemeral_public_key, chaining_key, _) = PeerHandshake::process_act_message(
+		let (initiator_ephemeral_public_key, chaining_key, _) = process_act_message(
 			act_one_bytes,
 			&responder_private_key,
 			chaining_key,
 			&mut hash,
 		)?;
 
-		let (act_two, chaining_key, temporary_key) = PeerHandshake::calculate_act_message(
+		let (act_two, chaining_key, temporary_key) = calculate_act_message(
 			&responder_ephemeral_private_key,
 			&initiator_ephemeral_public_key,
 			chaining_key,
@@ -179,7 +180,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		act_two_bytes.copy_from_slice(&read_buffer[..ACT_TWO_LENGTH]);
 		read_buffer.drain(..ACT_TWO_LENGTH);
 
-		let (responder_ephemeral_public_key, chaining_key, temporary_key) = PeerHandshake::process_act_message(
+		let (responder_ephemeral_public_key, chaining_key, temporary_key) = process_act_message(
 			act_two_bytes,
 			&initiator_ephemeral_private_key,
 			chaining_key,
@@ -193,7 +194,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash.value, &initiator_public_key.serialize());
 		hash.update(&tagged_encrypted_pubkey);
 
-		let ecdh = PeerHandshake::ecdh(&initiator_private_key, &responder_ephemeral_public_key);
+		let ecdh = ecdh(&initiator_private_key, &responder_ephemeral_public_key);
 		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
 		let authentication_tag = chacha::encrypt(&temporary_key, 0, &hash.value, &[0; 0]);
 		let (sending_key, receiving_key) = hkdf::derive(&chaining_key, &[0; 0]);
@@ -270,7 +271,7 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 
 		hash.update(&tagged_encrypted_pubkey);
 
-		let ecdh = PeerHandshake::ecdh(&responder_ephemeral_private_key, &initiator_pubkey);
+		let ecdh = ecdh(&responder_ephemeral_private_key, &initiator_pubkey);
 		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
 		let _tag_check = chacha::decrypt(&temporary_key, 0, &hash.value, &chacha_tag)?;
 		let (receiving_key, sending_key) = hkdf::derive(&chaining_key, &[0; 0]);
@@ -299,6 +300,96 @@ impl AwaitingActThreeHandshakeState {
 			read_buffer
 		}
 	}
+}
+
+fn initialize_state(public_key: &PublicKey) -> (HandshakeHash, [u8; 32]) {
+	let protocol_name = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
+	let prologue = b"lightning";
+
+	let mut sha = Sha256::engine();
+	sha.input(protocol_name);
+	let chaining_key = Sha256::from_engine(sha).into_inner();
+
+	let mut initial_hash_preimage = chaining_key.to_vec();
+	initial_hash_preimage.extend_from_slice(prologue.as_ref());
+
+	let mut hash = HandshakeHash::new(initial_hash_preimage.as_slice());
+	hash.update(&public_key.serialize());
+
+	(hash, chaining_key)
+}
+
+fn calculate_act_message(local_private_key: &SecretKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], hash: &mut HandshakeHash) -> ([u8; 50], SymmetricKey, SymmetricKey) {
+	let local_public_key = private_key_to_public_key(local_private_key);
+
+	hash.update(&local_public_key.serialize());
+
+	let ecdh = ecdh(local_private_key, &remote_public_key);
+	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
+	let tagged_ciphertext = chacha::encrypt(&temporary_key, 0, &hash.value, &[0; 0]);
+
+	hash.update(&tagged_ciphertext);
+
+	let mut act = [0u8; 50];
+	act[1..34].copy_from_slice(&local_public_key.serialize());
+	act[34..].copy_from_slice(tagged_ciphertext.as_slice());
+
+	(act, chaining_key, temporary_key)
+}
+
+// Due to the very high similarity of acts 1 and 2, this method is used to process both
+fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: SymmetricKey, hash: &mut HandshakeHash) -> Result<(PublicKey, SymmetricKey, SymmetricKey), String> {
+	let version = act_bytes[0];
+	if version != 0 {
+		// this should not crash the process, hence no panic
+		return Err("unexpected version".to_string());
+	}
+
+	let mut ephemeral_public_key_bytes = [0u8; 33];
+	ephemeral_public_key_bytes.copy_from_slice(&act_bytes[1..34]);
+	let ephemeral_public_key = if let Ok(public_key) = PublicKey::from_slice(&ephemeral_public_key_bytes) {
+		public_key
+	} else {
+		return Err("invalid remote ephemeral public key".to_string());
+	};
+
+	let mut chacha_tag = [0u8; 16];
+	chacha_tag.copy_from_slice(&act_bytes[34..50]);
+
+	// process the act message
+
+	// update hash with partner's pubkey
+	hash.update(&ephemeral_public_key.serialize());
+
+	// calculate ECDH with partner's pubkey and local privkey
+	let ecdh = ecdh(local_private_key, &ephemeral_public_key);
+
+	// HKDF(chaining key, ECDH) -> chaining key' + next temporary key
+	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
+
+	// Validate chacha tag (temporary key, 0, hash, chacha_tag)
+	let _tag_check = chacha::decrypt(&temporary_key, 0, &hash.value, &chacha_tag)?;
+
+	hash.update(&chacha_tag);
+
+	Ok((ephemeral_public_key, chaining_key, temporary_key))
+}
+
+fn private_key_to_public_key(private_key: &SecretKey) -> PublicKey {
+	let curve = secp256k1::Secp256k1::new();
+	let pk_object = PublicKey::from_secret_key(&curve, &private_key);
+	pk_object
+}
+
+fn ecdh(private_key: &SecretKey, public_key: &PublicKey) -> SymmetricKey {
+	let curve = secp256k1::Secp256k1::new();
+	let mut pk_object = public_key.clone();
+	pk_object.mul_assign(&curve, &private_key[..]).expect("invalid multiplication");
+
+	let preimage = pk_object.serialize();
+	let mut sha = Sha256::engine();
+	sha.input(preimage.as_ref());
+	Sha256::from_engine(sha).into_inner()
 }
 
 #[cfg(test)]
