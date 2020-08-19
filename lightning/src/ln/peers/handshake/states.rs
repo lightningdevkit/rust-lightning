@@ -82,7 +82,7 @@ impl IHandshakeState for UninitiatedHandshakeState {
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
 		let responder_public_key = self.responder_public_key;
 
-		let (mut hash, chaining_key) = initialize_state(&responder_public_key);
+		let (mut hash, chaining_key) = handshake_state_initialization(&responder_public_key);
 
 		// serialize act one
 		let (act_one, chaining_key, _) = calculate_act_message(
@@ -104,7 +104,7 @@ impl AwaitingActOneHandshakeState {
 
 		let curve = secp256k1::Secp256k1::new();
 		let responder_public_key = PublicKey::from_secret_key(&curve, &responder_private_key);
-		let (hash, chaining_key) = initialize_state(&responder_public_key);
+		let (hash, chaining_key) = handshake_state_initialization(&responder_public_key);
 
 		AwaitingActOneHandshakeState {
 			responder_private_key,
@@ -302,19 +302,44 @@ impl AwaitingActThreeHandshakeState {
 	}
 }
 
-fn initialize_state(public_key: &PublicKey) -> (HandshakeHash, [u8; 32]) {
+// Generate a SHA-256 hash from one or more elements
+macro_rules! sha256 {
+	( $( $x:expr ),+ ) => {{
+		let mut sha = Sha256::engine();
+		$(
+			sha.input($x.as_ref());
+		)*
+		Sha256::from_engine(sha).into_inner()
+	}}
+}
+
+// Concatenate two slices in a Vec
+macro_rules! concat {
+	($arg1:expr, $arg2:expr) => {{
+		let mut result = $arg1.to_vec();
+		result.extend_from_slice($arg2.as_ref());
+		result
+	}}
+}
+
+// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#handshake-state-initialization
+fn handshake_state_initialization(responder_public_key: &PublicKey) -> (HandshakeHash, [u8; 32]) {
 	let protocol_name = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
 	let prologue = b"lightning";
 
-	let mut sha = Sha256::engine();
-	sha.input(protocol_name);
-	let chaining_key = Sha256::from_engine(sha).into_inner();
+	// 1. h = SHA-256(protocolName)
+	// 2. ck = h
+	let chaining_key = sha256!(protocol_name);
 
-	let mut initial_hash_preimage = chaining_key.to_vec();
-	initial_hash_preimage.extend_from_slice(prologue.as_ref());
+	// 3. h = SHA-256(h || prologue)
+	let hash = sha256!(concat!(chaining_key, prologue));
 
-	let mut hash = HandshakeHash::new(initial_hash_preimage.as_slice());
-	hash.update(&public_key.serialize());
+	// h = SHA-256(h || responderPublicKey)
+	let hash = sha256!(concat!(hash, responder_public_key.serialize()));
+
+	let hash = HandshakeHash {
+		value: hash
+	};
 
 	(hash, chaining_key)
 }
