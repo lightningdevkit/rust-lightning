@@ -114,7 +114,14 @@ impl IHandshakeState for UninitiatedHandshakeState {
 
 		Ok((
 			Some(Act::One(ActOne(act_one))),
-			AwaitingActTwo2(AwaitingActTwoHandshakeState::new(initiator_static_private_key, initiator_ephemeral_private_key, responder_static_public_key, chaining_key, hash))
+			AwaitingActTwo2(AwaitingActTwoHandshakeState {
+				initiator_static_private_key,
+				initiator_ephemeral_private_key,
+				responder_static_public_key,
+				chaining_key,
+				hash,
+				read_buffer: Vec::new()
+			})
 		))
 	}
 }
@@ -171,9 +178,13 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 
 		Ok((
 			Some(Act::Two(ActTwo(act_two))),
-			AwaitingActThree2(
-				AwaitingActThreeHandshakeState::new(hash, responder_ephemeral_private_key, chaining_key, temporary_key, read_buffer)
-			)
+			AwaitingActThree2(AwaitingActThreeHandshakeState {
+				hash,
+				responder_ephemeral_private_key,
+				chaining_key,
+				temporary_key,
+				read_buffer
+			})
 		))
 	}
 }
@@ -248,19 +259,6 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 			Some(Act::Three(ActThree(act_three))),
 			Complete2(Some((conduit, responder_static_public_key)))
 		))
-	}
-}
-
-impl AwaitingActTwoHandshakeState {
-	fn new(initiator_static_private_key: SecretKey, initiator_ephemeral_private_key: SecretKey, responder_static_public_key: PublicKey, chaining_key: [u8;32], hash: HandshakeHash) -> Self {
-		AwaitingActTwoHandshakeState {
-			initiator_static_private_key,
-			initiator_ephemeral_private_key,
-			responder_static_public_key,
-			chaining_key,
-			hash,
-			read_buffer: Vec::new()
-		}
 	}
 }
 
@@ -339,18 +337,6 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 			None,
 			Complete2(Some((conduit, initiator_pubkey)))
 		))
-	}
-}
-
-impl AwaitingActThreeHandshakeState {
-	fn new(hash: HandshakeHash, responder_ephemeral_private_key: SecretKey, chaining_key: [u8; 32], temporary_key: [u8; 32], read_buffer: Vec<u8>) -> Self {
-		AwaitingActThreeHandshakeState {
-			hash,
-			responder_ephemeral_private_key,
-			chaining_key,
-			temporary_key,
-			read_buffer
-		}
 	}
 }
 
