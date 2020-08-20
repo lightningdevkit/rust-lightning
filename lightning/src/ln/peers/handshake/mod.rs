@@ -17,16 +17,16 @@ pub struct PeerHandshake {
 
 impl PeerHandshake {
 	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
-	pub fn new_outbound(private_key: &SecretKey, remote_public_key: &PublicKey, ephemeral_private_key: &SecretKey) -> Self {
+	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState2::Uninitiated2(UninitiatedHandshakeState::new(private_key.clone(), ephemeral_private_key.clone(), remote_public_key.clone()))),
+			state: Some(HandshakeState2::Uninitiated2(UninitiatedHandshakeState::new(initiator_static_private_key.clone(), initiator_ephemeral_private_key.clone(), responder_static_public_key.clone()))),
 		}
 	}
 
 	/// Instantiate a new handshake in anticipation of a peer's first handshake act
-	pub fn new_inbound(private_key: &SecretKey, ephemeral_private_key: &SecretKey) -> Self {
+	pub fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState2::AwaitingActOne2(AwaitingActOneHandshakeState::new(private_key.clone(), ephemeral_private_key.clone()))),
+			state: Some(HandshakeState2::AwaitingActOne2(AwaitingActOneHandshakeState::new(responder_static_private_key.clone(), responder_ephemeral_private_key.clone()))),
 		}
 	}
 
@@ -37,7 +37,7 @@ impl PeerHandshake {
 	/// # Return values
 	/// Returns a tuple with the following components:
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
-	/// `.1`: Conduit option if the handshake was just processed to completion and messages can now be encrypted and decrypted
+	/// `.1`: Some(Conduit, PublicKey) if the handshake was just processed to completion and messages can now be encrypted and decrypted
 	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
 		let cur_state = self.state.take().unwrap();
 
