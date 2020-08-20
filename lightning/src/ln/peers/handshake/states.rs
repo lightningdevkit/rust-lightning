@@ -11,6 +11,7 @@ use ln::peers::conduit::{Conduit, SymmetricKey};
 
 // Alias type to allow passing handshake hash easier
 type HandshakeHash = [u8; 32];
+type ChainingKey = [u8; 32];
 
 // Generate a SHA-256 hash from one or more elements
 macro_rules! sha256 {
@@ -62,7 +63,7 @@ pub struct UninitiatedHandshakeState {
 	initiator_ephemeral_private_key: SecretKey,
 	initiator_ephemeral_public_key: PublicKey,
 	responder_static_public_key: PublicKey,
-	chaining_key: [u8; 32],
+	chaining_key: ChainingKey,
 	hash: HandshakeHash,
 }
 
@@ -70,7 +71,7 @@ pub struct AwaitingActOneHandshakeState {
 	responder_static_private_key: SecretKey,
 	responder_ephemeral_private_key: SecretKey,
 	responder_ephemeral_public_key: PublicKey,
-	chaining_key: [u8; 32],
+	chaining_key: ChainingKey,
 	hash: HandshakeHash,
 	read_buffer: Vec<u8>
 }
@@ -80,7 +81,7 @@ pub struct AwaitingActTwoHandshakeState {
 	initiator_static_public_key: PublicKey,
 	initiator_ephemeral_private_key: SecretKey,
 	responder_static_public_key: PublicKey,
-	chaining_key: [u8; 32],
+	chaining_key: ChainingKey,
 	hash: HandshakeHash,
 	read_buffer: Vec<u8>
 }
@@ -88,7 +89,7 @@ pub struct AwaitingActTwoHandshakeState {
 pub struct AwaitingActThreeHandshakeState {
 	hash: HandshakeHash,
 	responder_ephemeral_private_key: SecretKey,
-	chaining_key: [u8; 32],
+	chaining_key: ChainingKey,
 	temporary_key: [u8; 32],
 	read_buffer: Vec<u8>
 }
@@ -346,7 +347,7 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 }
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#handshake-state-initialization
-fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (HandshakeHash, [u8; 32]) {
+fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (HandshakeHash, ChainingKey) {
 	let protocol_name = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
 	let prologue = b"lightning";
 
@@ -365,7 +366,7 @@ fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (H
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], hash: HandshakeHash) -> ([u8; 50], HandshakeHash, SymmetricKey, SymmetricKey) {
+fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: ChainingKey, hash: HandshakeHash) -> ([u8; 50], HandshakeHash, SymmetricKey, SymmetricKey) {
 	// 1. e = generateKey() (passed in)
 	// 2. h = SHA-256(h || e.pub.serializeCompressed())
 	let serialized_local_public_key = local_public_ephemeral_key.serialize();
