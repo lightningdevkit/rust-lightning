@@ -4,10 +4,12 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-use ln::peers::handshake::acts::{Act, ActOne, ACT_ONE_TWO_LENGTH, ActTwo, ACT_THREE_LENGTH, ActThree};
 use ln::peers::handshake::states::HandshakeState2::{AwaitingActTwo2, AwaitingActThree2, Complete2};
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
+
+const ACT_ONE_TWO_LENGTH: usize = 50;
+const ACT_THREE_LENGTH: usize = 66;
 
 // Alias type to allow passing handshake hash easier
 type HandshakeHash = [u8; 32];
@@ -42,7 +44,7 @@ pub enum HandshakeState2 {
 }
 
 impl HandshakeState2 {
-	pub(crate) fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
+	pub(crate) fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState2), String> {
 		match self {
 			HandshakeState2::Uninitiated2(state) => { state.next(input) },
 			HandshakeState2::AwaitingActOne2(state) => { state.next(input) },
@@ -54,7 +56,7 @@ impl HandshakeState2 {
 }
 
 trait IHandshakeState {
-	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String>;
+	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState2), String>;
 }
 
 pub struct UninitiatedHandshakeState {
@@ -113,7 +115,7 @@ impl UninitiatedHandshakeState {
 
 impl IHandshakeState for UninitiatedHandshakeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
-	fn next(self, _input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
+	fn next(self, _input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState2), String> {
 		let initiator_static_private_key = self.initiator_static_private_key;
 		let initiator_static_public_key = self.initiator_static_public_key;
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
@@ -132,7 +134,7 @@ impl IHandshakeState for UninitiatedHandshakeState {
 		);
 
 		Ok((
-			Some(Act::One(ActOne(act_one))),
+			Some(act_one.to_vec()),
 			AwaitingActTwo2(AwaitingActTwoHandshakeState {
 				initiator_static_private_key,
 				initiator_static_public_key,
@@ -166,7 +168,7 @@ impl AwaitingActOneHandshakeState {
 impl IHandshakeState for AwaitingActOneHandshakeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (receiver)
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
+	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState2), String> {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
@@ -192,7 +194,7 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 		);
 
 		Ok((
-			Some(Act::Two(ActTwo(act_two))),
+			Some(act_two),
 			AwaitingActThree2(AwaitingActThreeHandshakeState {
 				hash,
 				responder_ephemeral_private_key,
@@ -207,7 +209,7 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 impl IHandshakeState for AwaitingActTwoHandshakeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (sender)
-	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
+	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState2), String> {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
@@ -249,9 +251,11 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		let mut conduit = Conduit::new(sending_key, receiving_key, chaining_key);
 
 		// Send m = 0 || c || t over the network buffer
-		let mut act_three = [0u8; ACT_THREE_LENGTH];
-		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
-		act_three[50..].copy_from_slice(authentication_tag.as_slice());
+		let mut act_three = Vec::with_capacity(ACT_THREE_LENGTH);
+		act_three.extend(&[0]);
+		act_three.extend(&tagged_encrypted_pubkey);
+		act_three.extend(&authentication_tag);
+		assert_eq!(act_three.len(), ACT_THREE_LENGTH);
 
 		// Any remaining data in the read buffer would be encrypted, so transfer ownership
 		// to the Conduit for future use. In this case, it is unlikely that any valid data
@@ -262,7 +266,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		}
 
 		Ok((
-			Some(Act::Three(ActThree(act_three))),
+			Some(act_three),
 			Complete2(Some((conduit, responder_static_public_key)))
 		))
 	}
@@ -270,7 +274,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 
 impl IHandshakeState for AwaitingActThreeHandshakeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (receiver)
-	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
+	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState2), String> {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
@@ -366,7 +370,7 @@ fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (H
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: ChainingKey, hash: HandshakeHash) -> ([u8; 50], HandshakeHash, SymmetricKey, SymmetricKey) {
+fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: ChainingKey, hash: HandshakeHash) -> (Vec<u8>, HandshakeHash, SymmetricKey, SymmetricKey) {
 	// 1. e = generateKey() (passed in)
 	// 2. h = SHA-256(h || e.pub.serializeCompressed())
 	let serialized_local_public_key = local_public_ephemeral_key.serialize();
@@ -388,9 +392,11 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 	let hash = sha256!(hash, tagged_ciphertext);
 
 	// Send m = 0 || e.pub.serializeCompressed() || c
-	let mut act = [0u8; 50];
-	act[1..34].copy_from_slice(&serialized_local_public_key);
-	act[34..].copy_from_slice(tagged_ciphertext.as_slice());
+	let mut act = Vec::with_capacity(ACT_ONE_TWO_LENGTH);
+	act.extend(&[0]);
+	act.extend_from_slice(&serialized_local_public_key);
+	act.extend(&tagged_ciphertext);
+	assert_eq!(act.len(), ACT_ONE_TWO_LENGTH);
 
 	(act, hash, chaining_key, temporary_key)
 }
@@ -472,7 +478,6 @@ mod test {
 	use bitcoin::secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-	use ln::peers::handshake::acts::Act;
 	use ln::peers::handshake::states::{UninitiatedHandshakeState, AwaitingActOneHandshakeState, HandshakeState2};
 	use ln::peers::handshake::states::HandshakeState2::{AwaitingActThree2, AwaitingActTwo2, Complete2};
 
@@ -509,7 +514,7 @@ mod test {
 	macro_rules! do_next_or_panic {
 		($state:expr, $input:expr) => {
 			if let (Some(output_act), next_state) = $state.next($input).unwrap() {
-				(output_act.serialize(), next_state)
+				(output_act, next_state)
 			} else {
 				panic!();
 			}
@@ -530,7 +535,7 @@ mod test {
 	fn uninitiated_to_awaiting_act_two() {
 		let test_ctx = TestCtx::new();
 
-		assert_matches!(test_ctx.initiator.next(&[]).unwrap(), (Some(Act::One(_)), AwaitingActTwo2(_)));
+		assert_matches!(test_ctx.initiator.next(&[]).unwrap(), (Some(_), AwaitingActTwo2(_)));
 	}
 
 	// Initiator::Uninitiated -> AwaitingActTwo (extra bytes in argument)
@@ -538,7 +543,7 @@ mod test {
 	fn uninitiated_to_awaiting_act_two_extra_bytes() {
 		let test_ctx = TestCtx::new();
 
-		assert_matches!(test_ctx.initiator.next(&[1]).unwrap(), (Some(Act::One(_)), AwaitingActTwo2(_)));
+		assert_matches!(test_ctx.initiator.next(&[1]).unwrap(), (Some(_), AwaitingActTwo2(_)));
 	}
 
 	// Responder::AwaitingActOne -> Error (input too small)
@@ -559,7 +564,7 @@ mod test {
 		let (mut act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
 		act1.extend_from_slice(&[1]);
 
-		assert_matches!(test_ctx.responder.next(&act1).unwrap(), (Some(Act::Two(_)), AwaitingActThree2(_)));
+		assert_matches!(test_ctx.responder.next(&act1).unwrap(), (Some(_), AwaitingActThree2(_)));
 	}
 
 	// Responder::AwaitingActOne -> Error (bad version byte)
@@ -603,7 +608,7 @@ mod test {
 		let test_ctx = TestCtx::new();
 		let (act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
 
-		assert_matches!(test_ctx.responder.next(&act1).unwrap(), (Some(Act::Two(_)), AwaitingActThree2(_)));
+		assert_matches!(test_ctx.responder.next(&act1).unwrap(), (Some(_), AwaitingActThree2(_)));
 	}
 
 	// Initiator::AwaitingActTwo -> Complete
@@ -613,7 +618,7 @@ mod test {
 		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
 		let (act2, _awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
 
-		let remote_pubkey = if let (Some(Act::Three(_)), Complete2(Some((_, remote_pubkey)))) = awaiting_act_two_state.next(&act2).unwrap() {
+		let remote_pubkey = if let (Some(_), Complete2(Some((_, remote_pubkey)))) = awaiting_act_two_state.next(&act2).unwrap() {
 			remote_pubkey
 		} else {
 			panic!();

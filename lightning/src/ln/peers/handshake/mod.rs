@@ -5,10 +5,8 @@
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handshake::acts::Act;
 use ln::peers::handshake::states::{HandshakeState2, UninitiatedHandshakeState, AwaitingActOneHandshakeState};
 
-mod acts;
 mod states;
 
 /// Object for managing handshakes.
@@ -49,7 +47,7 @@ impl PeerHandshake {
 	/// Returns a tuple with the following components:
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Conduit option if the handshake was just processed to completion and messages can now be encrypted and decrypted
-	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Act>, Option<Conduit>), String> {
+	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<Conduit>), String> {
 		let cur_state = self.state.take().unwrap();
 
 		let (act_opt, mut next_state) = cur_state.next(input)?;
@@ -78,7 +76,6 @@ mod test {
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 	use ln::peers::handshake::PeerHandshake;
-	use ln::peers::handshake::acts::Act;
 	use ln::peers::handshake::states::HandshakeState2;
 
 	struct TestCtx {
@@ -123,7 +120,7 @@ mod test {
 
 	macro_rules! do_process_act_or_panic {
 		($handshake:expr, $input:expr) => {
-			$handshake.process_act($input).unwrap().0.unwrap().serialize()
+			$handshake.process_act($input).unwrap().0.unwrap()
 		}
 	}
 
@@ -154,7 +151,7 @@ mod test {
 	fn peer_handshake_outbound_uninitiated_to_awaiting_act_two() {
 		let mut test_ctx = TestCtx::new();
 
-		assert_matches!(test_ctx.outbound_handshake.process_act(&[]).unwrap(), (Some(Act::One(_)), None));
+		assert_matches!(test_ctx.outbound_handshake.process_act(&[]).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::AwaitingActTwo2(_)));
 		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
@@ -165,7 +162,7 @@ mod test {
 		let mut test_ctx = TestCtx::new();
 
 		// TODO: process_act() should error if state does not use vec, but it is non-empty
-		assert_matches!(test_ctx.outbound_handshake.process_act(&[1]).unwrap(), (Some(Act::One(_)), None));
+		assert_matches!(test_ctx.outbound_handshake.process_act(&[1]).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::AwaitingActTwo2(_)));
 		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
@@ -186,7 +183,7 @@ mod test {
 		let mut act1 = do_process_act_or_panic!(test_ctx.outbound_handshake, &[]);
 		act1.extend_from_slice(&[1]);
 
-		assert_matches!(test_ctx.inbound_handshake.process_act(&act1).unwrap(), (Some(Act::Two(_)), None));
+		assert_matches!(test_ctx.inbound_handshake.process_act(&act1).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::AwaitingActThree2(_)));
 		assert!(test_ctx.inbound_handshake.get_remote_pubkey().is_none());
 	}
@@ -230,7 +227,7 @@ mod test {
 		let mut test_ctx = TestCtx::new();
 		let act1 = do_process_act_or_panic!(test_ctx.outbound_handshake, &[]);
 
-		assert_matches!(test_ctx.inbound_handshake.process_act(&act1).unwrap(), (Some(Act::Two(_)), None));
+		assert_matches!(test_ctx.inbound_handshake.process_act(&act1).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::AwaitingActThree2(_)));
 		assert!(test_ctx.inbound_handshake.get_remote_pubkey().is_none());
 	}
@@ -242,7 +239,7 @@ mod test {
 		let act1 = do_process_act_or_panic!(test_ctx.outbound_handshake, &[]);
 		let act2 = do_process_act_or_panic!(test_ctx.inbound_handshake, &act1);
 
-		assert_matches!(test_ctx.outbound_handshake.process_act(&act2).unwrap(), (Some(Act::Three(_)), Some(_)));
+		assert_matches!(test_ctx.outbound_handshake.process_act(&act2).unwrap(), (Some(_), Some(_)));
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::Complete2(_)));
 		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
