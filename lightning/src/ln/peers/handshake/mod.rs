@@ -13,7 +13,6 @@ mod states;
 /// Currently requires explicit ephemeral private key specification.
 pub struct PeerHandshake {
 	state: Option<HandshakeState2>,
-	remote_public_key: Option<PublicKey>,
 }
 
 impl PeerHandshake {
@@ -21,7 +20,6 @@ impl PeerHandshake {
 	pub fn new_outbound(private_key: &SecretKey, remote_public_key: &PublicKey, ephemeral_private_key: &SecretKey) -> Self {
 		Self {
 			state: Some(HandshakeState2::Uninitiated2(UninitiatedHandshakeState::new(private_key.clone(), ephemeral_private_key.clone(), remote_public_key.clone()))),
-			remote_public_key: Some(remote_public_key.clone()),
 		}
 	}
 
@@ -29,14 +27,7 @@ impl PeerHandshake {
 	pub fn new_inbound(private_key: &SecretKey, ephemeral_private_key: &SecretKey) -> Self {
 		Self {
 			state: Some(HandshakeState2::AwaitingActOne2(AwaitingActOneHandshakeState::new(private_key.clone(), ephemeral_private_key.clone()))),
-			remote_public_key: None,
 		}
-	}
-
-	/// Return the remote public key once it has been extracted from the third act.
-	/// Potentially useful for inbound connections
-	pub fn get_remote_pubkey(&self) -> Option<PublicKey> {
-		self.remote_public_key
 	}
 
 	/// Process act dynamically
@@ -47,17 +38,14 @@ impl PeerHandshake {
 	/// Returns a tuple with the following components:
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Conduit option if the handshake was just processed to completion and messages can now be encrypted and decrypted
-	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<Conduit>), String> {
+	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
 		let cur_state = self.state.take().unwrap();
 
 		let (act_opt, mut next_state) = cur_state.next(input)?;
 
 		let result = match next_state {
 			HandshakeState2::Complete2(ref mut conduit_and_pubkey) => {
-				let (conduit, remote_pubkey) = conduit_and_pubkey.take().unwrap();
-				self.remote_public_key = Some(remote_pubkey);
-
-				Ok((act_opt, Some(conduit)))
+				Ok((act_opt, conduit_and_pubkey.take()))
 			},
 			_ => { Ok((act_opt, None)) }
 		};
@@ -80,9 +68,7 @@ mod test {
 
 	struct TestCtx {
 		outbound_handshake: PeerHandshake,
-		outbound_public_key: PublicKey,
 		inbound_handshake: PeerHandshake,
-		inbound_public_key: PublicKey
 	}
 
 	impl TestCtx {
@@ -102,9 +88,7 @@ mod test {
 
 			TestCtx {
 				outbound_handshake,
-				outbound_public_key,
 				inbound_handshake,
-				inbound_public_key
 			}
 		}
 	}
@@ -130,7 +114,6 @@ mod test {
 		let test_ctx = TestCtx::new();
 
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::Uninitiated2(_)));
-		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
 
 	// Default Inbound::AwaitingActOne
@@ -139,7 +122,6 @@ mod test {
 		let test_ctx = TestCtx::new();
 
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::AwaitingActOne2(_)));
-		assert!(test_ctx.inbound_handshake.get_remote_pubkey().is_none());
 	}
 
 	/*
@@ -153,7 +135,6 @@ mod test {
 
 		assert_matches!(test_ctx.outbound_handshake.process_act(&[]).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::AwaitingActTwo2(_)));
-		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
 
 	// Outbound::Uninitiated -> AwaitingActTwo (extra bytes in argument)
@@ -164,7 +145,6 @@ mod test {
 		// TODO: process_act() should error if state does not use vec, but it is non-empty
 		assert_matches!(test_ctx.outbound_handshake.process_act(&[1]).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::AwaitingActTwo2(_)));
-		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
 
 	// Inbound::AwaitingActOne -> Error (input too small)
@@ -185,7 +165,6 @@ mod test {
 
 		assert_matches!(test_ctx.inbound_handshake.process_act(&act1).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::AwaitingActThree2(_)));
-		assert!(test_ctx.inbound_handshake.get_remote_pubkey().is_none());
 	}
 
 	// Inbound::AwaitingActOne -> Error (bad version byte)
@@ -229,7 +208,6 @@ mod test {
 
 		assert_matches!(test_ctx.inbound_handshake.process_act(&act1).unwrap(), (Some(_), None));
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::AwaitingActThree2(_)));
-		assert!(test_ctx.inbound_handshake.get_remote_pubkey().is_none());
 	}
 
 	// Outbound::AwaitingActTwo -> Complete (valid conduit)
@@ -241,7 +219,6 @@ mod test {
 
 		assert_matches!(test_ctx.outbound_handshake.process_act(&act2).unwrap(), (Some(_), Some(_)));
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::Complete2(_)));
-		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
 
 
@@ -256,14 +233,13 @@ mod test {
 		let mut act2 = do_process_act_or_panic!(test_ctx.inbound_handshake, &act1);
 		act2.extend_from_slice(&[1; 100]);
 
-		let conduit = if let (_, Some(conduit)) = test_ctx.outbound_handshake.process_act(&act2).unwrap() {
+		let (conduit, _) = if let (_, Some(conduit)) = test_ctx.outbound_handshake.process_act(&act2).unwrap() {
 			conduit
 		} else {
 			panic!();
 		};
 
 		assert_eq!(100, conduit.decryptor.read_buffer_length());
-		assert_eq!(test_ctx.outbound_handshake.get_remote_pubkey(), Some(test_ctx.inbound_public_key));
 	}
 
 	// Outbound::AwaitingActTwo -> Error (input too small)
@@ -321,7 +297,6 @@ mod test {
 
 		assert_matches!(test_ctx.inbound_handshake.process_act(&act3).unwrap(), (None, Some(_)));
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::Complete2(_)));
-		assert_eq!(test_ctx.inbound_handshake.get_remote_pubkey(), Some(test_ctx.outbound_public_key));
 	}
 
 	// Inbound::AwaitingActThree -> Complete (with extra bytes)
@@ -335,7 +310,7 @@ mod test {
 		let mut act3 = do_process_act_or_panic!(test_ctx.outbound_handshake, &act2);
 		act3.extend_from_slice(&[2; 100]);
 
-		let conduit = if let (None, Some(conduit)) = test_ctx.inbound_handshake.process_act(&act3).unwrap() {
+		let (conduit, _) = if let (None, Some(conduit)) = test_ctx.inbound_handshake.process_act(&act3).unwrap() {
 			conduit
 		} else {
 			panic!();

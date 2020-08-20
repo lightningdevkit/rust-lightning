@@ -141,12 +141,9 @@ impl PeerState {
 	}
 
 	fn process_peer_data(&mut self, data: &[u8], mutable_response_buffer: &mut LinkedList<Vec<u8>>) -> PeerDataProcessingDecision {
-		let mut conduit_option = None;
-		let mut decision_option = None;
-
 		match self {
 			&mut PeerState::Authenticating(ref mut handshake) => {
-				let (next_act, conduit) = match handshake.process_act(data) {
+				let (next_act, conduit_and_remote_pubkey) = match handshake.process_act(data) {
 					Ok(act_result) => act_result,
 					Err(e) => {
 						return PeerDataProcessingDecision::Disconnect(PeerHandleError { no_connection_possible: false });
@@ -158,23 +155,16 @@ impl PeerState {
 					mutable_response_buffer.push_back(act);
 				}
 
-				let remote_pubkey_option = handshake.get_remote_pubkey();
-				if let Some(conduit) = conduit {
-					conduit_option = Some(conduit);
-					decision_option = Some(PeerDataProcessingDecision::CompleteHandshake(requires_response, remote_pubkey_option));
+				if let Some((conduit, remote_pubkey)) = conduit_and_remote_pubkey {
+					*self = PeerState::Connected(conduit);
+					return PeerDataProcessingDecision::CompleteHandshake(requires_response, Some(remote_pubkey));
 				}
 			}
 
 			&mut PeerState::Connected(ref mut conduit) => {
 				conduit.read(data);
 			}
-		};
-
-		if let (Some(conduit), Some(decision)) = (conduit_option, decision_option) {
-			*self = PeerState::Connected(conduit);
-			return decision;
 		}
-
 		PeerDataProcessingDecision::Continue
 	}
 }
