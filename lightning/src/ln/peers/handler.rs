@@ -155,7 +155,7 @@ impl PeerState {
 
 				let requires_response = next_act.is_some();
 				if let Some(act) = next_act {
-					mutable_response_buffer.push_back(act.serialize());
+					mutable_response_buffer.push_back(act);
 				}
 
 				let remote_pubkey_option = handshake.get_remote_pubkey();
@@ -366,7 +366,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
 		let mut handshake = PeerHandshake::new_outbound(&self.our_node_secret, &their_node_id, &self.get_ephemeral_key());
 		let (act, ..) = handshake.process_act(&[]).unwrap();
-		let res = act.unwrap().serialize();
+		let res = act.unwrap();
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
