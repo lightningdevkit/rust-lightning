@@ -56,13 +56,18 @@ trait IHandshakeState {
 
 pub struct UninitiatedHandshakeState {
 	initiator_static_private_key: SecretKey,
+	initiator_static_public_key: PublicKey,
 	initiator_ephemeral_private_key: SecretKey,
+	initiator_ephemeral_public_key: PublicKey,
 	responder_static_public_key: PublicKey,
+	chaining_key: [u8; 32],
+	hash: HandshakeHash,
 }
 
 pub struct AwaitingActOneHandshakeState {
 	responder_static_private_key: SecretKey,
 	responder_ephemeral_private_key: SecretKey,
+	responder_ephemeral_public_key: PublicKey,
 	chaining_key: [u8; 32],
 	hash: HandshakeHash,
 	read_buffer: Vec<u8>
@@ -70,6 +75,7 @@ pub struct AwaitingActOneHandshakeState {
 
 pub struct AwaitingActTwoHandshakeState {
 	initiator_static_private_key: SecretKey,
+	initiator_static_public_key: PublicKey,
 	initiator_ephemeral_private_key: SecretKey,
 	responder_static_public_key: PublicKey,
 	chaining_key: [u8; 32],
@@ -87,10 +93,17 @@ pub struct AwaitingActThreeHandshakeState {
 
 impl UninitiatedHandshakeState {
 	pub(crate) fn new(initiator_static_private_key: SecretKey, initiator_ephemeral_private_key: SecretKey, responder_static_public_key: PublicKey) -> Self {
+		let initiator_static_public_key = private_key_to_public_key(&initiator_static_private_key);
+		let (hash, chaining_key) = handshake_state_initialization(&responder_static_public_key);
+		let initiator_ephemeral_public_key = private_key_to_public_key(&initiator_ephemeral_private_key);
 		UninitiatedHandshakeState {
 			initiator_static_private_key,
+			initiator_static_public_key,
 			initiator_ephemeral_private_key,
-			responder_static_public_key
+			initiator_ephemeral_public_key,
+			responder_static_public_key,
+			chaining_key,
+			hash
 		}
 	}
 }
@@ -99,14 +112,17 @@ impl IHandshakeState for UninitiatedHandshakeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 	fn next(self, _input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
 		let initiator_static_private_key = self.initiator_static_private_key;
+		let initiator_static_public_key = self.initiator_static_public_key;
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
+		let initiator_ephemeral_public_key = self.initiator_ephemeral_public_key;
 		let responder_static_public_key = self.responder_static_public_key;
-
-		let (mut hash, chaining_key) = handshake_state_initialization(&responder_static_public_key);
+		let chaining_key = self.chaining_key;
+		let mut hash = self.hash;
 
 		// serialize act one
 		let (act_one, chaining_key, _) = calculate_act_message(
 			&initiator_ephemeral_private_key,
+			&initiator_ephemeral_public_key,
 			&responder_static_public_key,
 			chaining_key,
 			&mut hash,
@@ -116,6 +132,7 @@ impl IHandshakeState for UninitiatedHandshakeState {
 			Some(Act::One(ActOne(act_one))),
 			AwaitingActTwo2(AwaitingActTwoHandshakeState {
 				initiator_static_private_key,
+				initiator_static_public_key,
 				initiator_ephemeral_private_key,
 				responder_static_public_key,
 				chaining_key,
@@ -130,10 +147,12 @@ impl AwaitingActOneHandshakeState {
 	pub(crate) fn new(responder_static_private_key: SecretKey, responder_ephemeral_private_key: SecretKey) -> Self {
 		let responder_static_public_key = private_key_to_public_key(&responder_static_private_key);
 		let (hash, chaining_key) = handshake_state_initialization(&responder_static_public_key);
+		let responder_ephemeral_public_key = private_key_to_public_key(&responder_ephemeral_private_key);
 
 		AwaitingActOneHandshakeState {
 			responder_static_private_key,
 			responder_ephemeral_private_key,
+			responder_ephemeral_public_key,
 			chaining_key,
 			hash,
 			read_buffer: Vec::new()
@@ -156,6 +175,7 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 		let responder_static_private_key = self.responder_static_private_key;
 		let chaining_key = self.chaining_key;
 		let responder_ephemeral_private_key = self.responder_ephemeral_private_key;
+		let responder_ephemeral_public_key = self.responder_ephemeral_public_key;
 
 		// 1. Read exactly 50 bytes from the network buffer
 		let mut act_one_bytes = [0u8; ACT_ONE_LENGTH];
@@ -171,6 +191,7 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 
 		let (act_two, chaining_key, temporary_key) = calculate_act_message(
 			&responder_ephemeral_private_key,
+			&responder_ephemeral_public_key,
 			&initiator_ephemeral_public_key,
 			chaining_key,
 			&mut hash,
@@ -201,6 +222,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		}
 
 		let initiator_static_private_key = self.initiator_static_private_key;
+		let initiator_static_public_key = self.initiator_static_public_key;
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
 		let responder_static_public_key = self.responder_static_public_key;
 		let mut hash = self.hash;
@@ -220,8 +242,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 
 		// start serializing act three
 		// 1. c = encryptWithAD(temp_k2, 1, h, s.pub.serializeCompressed())
-		let initiator_public_key = private_key_to_public_key(&initiator_static_private_key);
-		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash.value, &initiator_public_key.serialize());
+		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash.value, &initiator_static_public_key.serialize());
 
 		// 2. h = SHA-256(h || c)
 		let hash = sha256!(concat!(hash.value, tagged_encrypted_pubkey));
@@ -364,10 +385,10 @@ fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (H
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-fn calculate_act_message(local_private_ephemeral_key: &SecretKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], h_hash: &mut HandshakeHash) -> ([u8; 50], SymmetricKey, SymmetricKey) {
+fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], h_hash: &mut HandshakeHash) -> ([u8; 50], SymmetricKey, SymmetricKey) {
 	// 1. e = generateKey() (passed in)
 	// 2. h = SHA-256(h || e.pub.serializeCompressed())
-	let serialized_local_public_key = private_key_to_public_key(local_private_ephemeral_key).serialize();
+	let serialized_local_public_key = local_public_ephemeral_key.serialize();
 	let hash = sha256!(concat!(h_hash.value, serialized_local_public_key));
 
 	// 3. ACT1: es = ECDH(e.priv, rs)
