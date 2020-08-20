@@ -10,6 +10,26 @@ use ln::peers::handshake::states::HandshakeState2::{AwaitingActTwo2, AwaitingAct
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
 
+// Generate a SHA-256 hash from one or more elements
+macro_rules! sha256 {
+	( $( $x:expr ),+ ) => {{
+		let mut sha = Sha256::engine();
+		$(
+			sha.input($x.as_ref());
+		)+
+		Sha256::from_engine(sha).into_inner()
+	}}
+}
+
+// Concatenate two slices in a Vec
+macro_rules! concat {
+	($arg1:expr, $arg2:expr) => {{
+		let mut result = $arg1.to_vec();
+		result.extend_from_slice($arg2.as_ref());
+		result
+	}}
+}
+
 pub enum HandshakeState2 {
 	Uninitiated2(UninitiatedHandshakeState),
 	AwaitingActOne2(AwaitingActOneHandshakeState),
@@ -188,24 +208,38 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		)?;
 
 		// start serializing act three
-
-		let curve = secp256k1::Secp256k1::new();
-		let initiator_public_key = PublicKey::from_secret_key(&curve, &initiator_static_private_key);
+		// 1. c = encryptWithAD(temp_k2, 1, h, s.pub.serializeCompressed())
+		let initiator_public_key = private_key_to_public_key(&initiator_static_private_key);
 		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash.value, &initiator_public_key.serialize());
-		hash.update(&tagged_encrypted_pubkey);
 
+		// 2. h = SHA-256(h || c)
+		let hash = sha256!(concat!(hash.value, tagged_encrypted_pubkey));
+
+		// 3. se = ECDH(s.priv, re)
 		let ecdh = ecdh(&initiator_static_private_key, &responder_ephemeral_public_key);
+
+		// 4. ck, temp_k3 = HKDF(ck, se)
 		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
-		let authentication_tag = chacha::encrypt(&temporary_key, 0, &hash.value, &[0; 0]);
+
+		// 5. t = encryptWithAD(temp_k3, 0, h, zero)
+		let authentication_tag = chacha::encrypt(&temporary_key, 0, &hash, &[0; 0]);
+
+		// 6. sk, rk = HKDF(ck, zero)
 		let (sending_key, receiving_key) = hkdf::derive(&chaining_key, &[0; 0]);
 
+		// 7. rn = 0, sn = 0
+		// - done by Conduit
+		let mut conduit = Conduit::new(sending_key, receiving_key, chaining_key);
+
+		// Send m = 0 || c || t over the network buffer
 		let mut act_three = [0u8; ACT_THREE_LENGTH];
 		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
 		act_three[50..].copy_from_slice(authentication_tag.as_slice());
 
-		let mut conduit = Conduit::new(sending_key, receiving_key, chaining_key);
-
-		if read_buffer.len() > 0 { // have we received more data still?
+		// Any remaining data in the read buffer would be encrypted, so transfer ownership
+		// to the Conduit for future use. In this case, it is unlikely that any valid data
+		// exists, since the responder doesn't have Act3
+		if read_buffer.len() > 0 {
 			conduit.read(&read_buffer[..]);
 			read_buffer.drain(..);
 		}
@@ -300,26 +334,6 @@ impl AwaitingActThreeHandshakeState {
 			read_buffer
 		}
 	}
-}
-
-// Generate a SHA-256 hash from one or more elements
-macro_rules! sha256 {
-	( $( $x:expr ),+ ) => {{
-		let mut sha = Sha256::engine();
-		$(
-			sha.input($x.as_ref());
-		)*
-		Sha256::from_engine(sha).into_inner()
-	}}
-}
-
-// Concatenate two slices in a Vec
-macro_rules! concat {
-	($arg1:expr, $arg2:expr) => {{
-		let mut result = $arg1.to_vec();
-		result.extend_from_slice($arg2.as_ref());
-		result
-	}}
 }
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#handshake-state-initialization
