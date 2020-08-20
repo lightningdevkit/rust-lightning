@@ -4,7 +4,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-use ln::peers::handshake::acts::{Act, ActOne, ACT_ONE_LENGTH, ActTwo, ACT_TWO_LENGTH, ACT_THREE_LENGTH, ActThree};
+use ln::peers::handshake::acts::{Act, ActOne, ACT_ONE_TWO_LENGTH, ActTwo, ACT_THREE_LENGTH, ActThree};
 use ln::peers::handshake::states::HandshakeState2::{AwaitingActTwo2, AwaitingActThree2, Complete2};
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
@@ -169,23 +169,14 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
-		if read_buffer.len() < ACT_ONE_LENGTH {
-			return Err("need at least 50 bytes".to_string());
-		}
-
 		let hash = self.hash;
 		let responder_static_private_key = self.responder_static_private_key;
 		let chaining_key = self.chaining_key;
 		let responder_ephemeral_private_key = self.responder_ephemeral_private_key;
 		let responder_ephemeral_public_key = self.responder_ephemeral_public_key;
 
-		// 1. Read exactly 50 bytes from the network buffer
-		let mut act_one_bytes = [0u8; ACT_ONE_LENGTH];
-		act_one_bytes.copy_from_slice(&read_buffer[..ACT_ONE_LENGTH]);
-		read_buffer.drain(..ACT_ONE_LENGTH);
-
 		let (initiator_ephemeral_public_key, hash, chaining_key, _) = process_act_message(
-			act_one_bytes,
+			&mut read_buffer,
 			&responder_static_private_key,
 			chaining_key,
 			hash,
@@ -219,10 +210,6 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
-		if read_buffer.len() < ACT_TWO_LENGTH {
-			return Err("need at least 50 bytes".to_string());
-		}
-
 		let initiator_static_private_key = self.initiator_static_private_key;
 		let initiator_static_public_key = self.initiator_static_public_key;
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
@@ -230,13 +217,8 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		let hash = self.hash;
 		let chaining_key = self.chaining_key;
 
-		// 1. Read exactly 50 bytes from the network buffer
-		let mut act_two_bytes = [0u8; ACT_TWO_LENGTH];
-		act_two_bytes.copy_from_slice(&read_buffer[..ACT_TWO_LENGTH]);
-		read_buffer.drain(..ACT_TWO_LENGTH);
-
 		let (responder_ephemeral_public_key, hash, chaining_key, temporary_key) = process_act_message(
-			act_two_bytes,
+			&mut read_buffer,
 			&initiator_ephemeral_private_key,
 			chaining_key,
 			hash,
@@ -415,7 +397,16 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 // Due to the very high similarity of acts 1 and 2, this method is used to process both
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (receiver)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
-fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: SymmetricKey, hash: HandshakeHash) -> Result<(PublicKey, HandshakeHash, SymmetricKey, SymmetricKey), String> {
+fn process_act_message(read_buffer: &mut Vec<u8>, local_private_key: &SecretKey, chaining_key: SymmetricKey, hash: HandshakeHash) -> Result<(PublicKey, HandshakeHash, SymmetricKey, SymmetricKey), String> {
+	// 1. Read exactly 50 bytes from the network buffer
+	if read_buffer.len() < ACT_ONE_TWO_LENGTH {
+		return Err("need at least 50 bytes".to_string());
+	}
+
+	let mut act_bytes = [0u8; ACT_ONE_TWO_LENGTH];
+	act_bytes.copy_from_slice(&read_buffer[..ACT_ONE_TWO_LENGTH]);
+	read_buffer.drain(..ACT_ONE_TWO_LENGTH);
+
 	// 2.Parse the read message (m) into v, re, and c
 	let version = act_bytes[0];
 
@@ -557,7 +548,7 @@ mod test {
 	}
 
 	// Responder::AwaitingActOne -> AwaitingActThree
-	// TODO: Should this fail since we don't expect data > ACT_ONE_LENGTH and likely indicates
+	// TODO: Should this fail since we don't expect data > ACT_ONE_TWO_LENGTH and likely indicates
 	// a bad peer?
 	// TODO: Should the behavior be changed to handle act1 data that is striped across multiple
 	// next() calls?
