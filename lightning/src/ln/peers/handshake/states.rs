@@ -265,6 +265,7 @@ impl AwaitingActTwoHandshakeState {
 }
 
 impl IHandshakeState for AwaitingActThreeHandshakeState {
+	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (receiver)
 	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState2), String> {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
@@ -278,15 +279,13 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 		let responder_ephemeral_private_key = self.responder_ephemeral_private_key;
 		let chaining_key = self.chaining_key;
 
+		// 1. Read exactly 66 bytes from the network buffer
 		let mut act_three_bytes = [0u8; ACT_THREE_LENGTH];
 		act_three_bytes.copy_from_slice(&read_buffer[..ACT_THREE_LENGTH]);
 		read_buffer.drain(..ACT_THREE_LENGTH);
 
+		// 2. Parse the read message (m) into v, c, and t
 		let version = act_three_bytes[0];
-		if version != 0 {
-			// this should not crash the process, hence no panic
-			return Err("unexpected version".to_string());
-		}
 
 		let mut tagged_encrypted_pubkey = [0u8; 49];
 		tagged_encrypted_pubkey.copy_from_slice(&act_three_bytes[1..50]);
@@ -294,6 +293,13 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 		let mut chacha_tag = [0u8; 16];
 		chacha_tag.copy_from_slice(&act_three_bytes[50..66]);
 
+		// 3. If v is an unrecognized handshake version, then the responder MUST abort the connection attempt.
+		if version != 0 {
+			// this should not crash the process, hence no panic
+			return Err("unexpected version".to_string());
+		}
+
+		// 4. rs = decryptWithAD(temp_k2, 1, h, c)
 		let remote_pubkey_vec = chacha::decrypt(&temporary_key, 1, &hash.value, &tagged_encrypted_pubkey)?;
 		let mut initiator_pubkey_bytes = [0u8; 33];
 		initiator_pubkey_bytes.copy_from_slice(remote_pubkey_vec.as_slice());
@@ -303,15 +309,27 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 			return Err("invalid remote public key".to_string());
 		};
 
-		hash.update(&tagged_encrypted_pubkey);
+		// 5. h = SHA-256(h || c)
+		let hash = sha256!(concat!(hash.value, tagged_encrypted_pubkey));
 
+		// 6. se = ECDH(e.priv, rs)
 		let ecdh = ecdh(&responder_ephemeral_private_key, &initiator_pubkey);
+
+		// 7. ck, temp_k3 = HKDF(ck, se)
 		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
-		let _tag_check = chacha::decrypt(&temporary_key, 0, &hash.value, &chacha_tag)?;
+
+		// 8. p = decryptWithAD(temp_k3, 0, h, t)
+		let _tag_check = chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag)?;
+
+		// 9. rk, sk = HKDF(ck, zero)
 		let (receiving_key, sending_key) = hkdf::derive(&chaining_key, &[0; 0]);
 
+		// 10. rn = 0, sn = 0
+		// - done by Conduit
 		let mut conduit = Conduit::new(sending_key, receiving_key, chaining_key);
 
+		// Any remaining data in the read buffer would be encrypted, so transfer ownership
+		// to the Conduit for future use.
 		if read_buffer.len() > 0 { // have we received more data still?
 			conduit.read(&read_buffer[..]);
 			read_buffer.drain(..);
