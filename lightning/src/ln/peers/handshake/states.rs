@@ -4,7 +4,6 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-use ln::peers::handshake::states::HandshakeState::{InitiatorAwaitingActTwo, ResponderAwaitingActThree, Complete};
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
 
@@ -24,7 +23,7 @@ macro_rules! concat_then_sha256 {
 	}}
 }
 
-pub enum HandshakeState {
+pub(super) enum HandshakeState {
 	InitiatorStarting(InitiatorStartingState),
 	ResponderAwaitingActOne(ResponderAwaitingActOneState),
 	InitiatorAwaitingActTwo(InitiatorAwaitingActTwoState),
@@ -34,13 +33,22 @@ pub enum HandshakeState {
 
 // Trait for all individual states to implement that ensure HandshakeState::next() can
 // delegate to a common function signature.
-trait IHandshakeState {
+pub(super) trait IHandshakeState {
 	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String>;
 }
 
 // Enum dispatch for state machine. Single public interface can statically dispatch to all states
 impl HandshakeState {
-	pub fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
+	pub(super) fn new_initiator(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
+		HandshakeState::InitiatorStarting(InitiatorStartingState::new(initiator_static_private_key.clone(), initiator_ephemeral_private_key.clone(), responder_static_public_key.clone()))
+	}
+	pub(super) fn new_responder(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
+		HandshakeState::ResponderAwaitingActOne(ResponderAwaitingActOneState::new(responder_static_private_key.clone(), responder_ephemeral_private_key.clone()))
+	}
+}
+
+impl IHandshakeState for HandshakeState {
+	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
 		match self {
 			HandshakeState::InitiatorStarting(state) => { state.next(input) },
 			HandshakeState::ResponderAwaitingActOne(state) => { state.next(input) },
@@ -52,7 +60,7 @@ impl HandshakeState {
 }
 
 // Handshake state of the Initiator prior to generating Act 1
-pub struct InitiatorStartingState {
+pub(super) struct InitiatorStartingState {
 	initiator_static_private_key: SecretKey,
 	initiator_static_public_key: PublicKey,
 	initiator_ephemeral_private_key: SecretKey,
@@ -63,7 +71,7 @@ pub struct InitiatorStartingState {
 }
 
 // Handshake state of the Responder prior to receiving Act 1
-pub struct ResponderAwaitingActOneState {
+pub(super) struct ResponderAwaitingActOneState {
 	responder_static_private_key: SecretKey,
 	responder_ephemeral_private_key: SecretKey,
 	responder_ephemeral_public_key: PublicKey,
@@ -73,7 +81,7 @@ pub struct ResponderAwaitingActOneState {
 }
 
 // Handshake state of the Initiator prior to receiving Act 2
-pub struct InitiatorAwaitingActTwoState {
+pub(super) struct InitiatorAwaitingActTwoState {
 	initiator_static_private_key: SecretKey,
 	initiator_static_public_key: PublicKey,
 	initiator_ephemeral_private_key: SecretKey,
@@ -84,7 +92,7 @@ pub struct InitiatorAwaitingActTwoState {
 }
 
 // Handshake state of the Responder prior to receiving Act 3
-pub struct ResponderAwaitingActThreeState {
+pub(super) struct ResponderAwaitingActThreeState {
 	hash: Sha256,
 	responder_ephemeral_private_key: SecretKey,
 	chaining_key: ChainingKey,
@@ -131,7 +139,7 @@ impl IHandshakeState for InitiatorStartingState {
 
 		Ok((
 			Some(act_one.to_vec()),
-			InitiatorAwaitingActTwo(InitiatorAwaitingActTwoState {
+			HandshakeState::InitiatorAwaitingActTwo(InitiatorAwaitingActTwoState {
 				initiator_static_private_key,
 				initiator_static_public_key,
 				initiator_ephemeral_private_key,
@@ -191,7 +199,7 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 
 		Ok((
 			Some(act_two),
-			ResponderAwaitingActThree(ResponderAwaitingActThreeState {
+			HandshakeState::ResponderAwaitingActThree(ResponderAwaitingActThreeState {
 				hash,
 				responder_ephemeral_private_key,
 				chaining_key,
@@ -263,7 +271,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 
 		Ok((
 			Some(act_three),
-			Complete(Some((conduit, responder_static_public_key)))
+			HandshakeState::Complete(Some((conduit, responder_static_public_key)))
 		))
 	}
 }
@@ -341,7 +349,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		Ok((
 			None,
-			Complete(Some((conduit, initiator_pubkey)))
+			HandshakeState::Complete(Some((conduit, initiator_pubkey)))
 		))
 	}
 }
@@ -467,13 +475,13 @@ fn ecdh(private_key: &SecretKey, public_key: &PublicKey) -> SymmetricKey {
 
 #[cfg(test)]
 mod test {
+	use super::*;
+	use super::HandshakeState::*;
+
 	use hex;
 
 	use bitcoin::secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
-
-	use ln::peers::handshake::states::{InitiatorStartingState, ResponderAwaitingActOneState, HandshakeState};
-	use ln::peers::handshake::states::HandshakeState::{ResponderAwaitingActThree, InitiatorAwaitingActTwo, Complete};
 
 	struct TestCtx {
 		initiator: HandshakeState,
