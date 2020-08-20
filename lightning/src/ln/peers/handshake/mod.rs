@@ -5,7 +5,7 @@
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handshake::states::{HandshakeState, InitiatorStartingState, ResponderAwaitingActOneState};
+use ln::peers::handshake::states::{HandshakeState, IHandshakeState};
 
 mod states;
 
@@ -19,14 +19,14 @@ impl PeerHandshake {
 	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
 	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState::InitiatorStarting(InitiatorStartingState::new(initiator_static_private_key.clone(), initiator_ephemeral_private_key.clone(), responder_static_public_key.clone()))),
+			state: Some(HandshakeState::new_initiator(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key))
 		}
 	}
 
 	/// Instantiate a new handshake in anticipation of a peer's first handshake act
 	pub fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState::ResponderAwaitingActOne(ResponderAwaitingActOneState::new(responder_static_private_key.clone(), responder_ephemeral_private_key.clone()))),
+			state: Some(HandshakeState::new_responder(responder_static_private_key, responder_ephemeral_private_key))
 		}
 	}
 
@@ -58,11 +58,10 @@ impl PeerHandshake {
 
 #[cfg(test)]
 mod test {
+	use super::*;
+
 	use bitcoin::secp256k1;
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
-
-	use ln::peers::handshake::PeerHandshake;
-	use ln::peers::handshake::states::HandshakeState;
 
 	struct TestCtx {
 		outbound_handshake: PeerHandshake,
