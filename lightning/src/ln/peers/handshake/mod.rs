@@ -5,28 +5,28 @@
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handshake::states::{HandshakeState2, UninitiatedHandshakeState, AwaitingActOneHandshakeState};
+use ln::peers::handshake::states::{HandshakeState, InitiatorStartingState, ResponderAwaitingActOneState};
 
 mod states;
 
 /// Object for managing handshakes.
 /// Currently requires explicit ephemeral private key specification.
 pub struct PeerHandshake {
-	state: Option<HandshakeState2>,
+	state: Option<HandshakeState>,
 }
 
 impl PeerHandshake {
 	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
 	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState2::Uninitiated2(UninitiatedHandshakeState::new(initiator_static_private_key.clone(), initiator_ephemeral_private_key.clone(), responder_static_public_key.clone()))),
+			state: Some(HandshakeState::InitiatorStarting(InitiatorStartingState::new(initiator_static_private_key.clone(), initiator_ephemeral_private_key.clone(), responder_static_public_key.clone()))),
 		}
 	}
 
 	/// Instantiate a new handshake in anticipation of a peer's first handshake act
 	pub fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState2::AwaitingActOne2(AwaitingActOneHandshakeState::new(responder_static_private_key.clone(), responder_ephemeral_private_key.clone()))),
+			state: Some(HandshakeState::ResponderAwaitingActOne(ResponderAwaitingActOneState::new(responder_static_private_key.clone(), responder_ephemeral_private_key.clone()))),
 		}
 	}
 
@@ -44,7 +44,7 @@ impl PeerHandshake {
 		let (act_opt, mut next_state) = cur_state.next(input)?;
 
 		let result = match next_state {
-			HandshakeState2::Complete2(ref mut conduit_and_pubkey) => {
+			HandshakeState::Complete(ref mut conduit_and_pubkey) => {
 				Ok((act_opt, conduit_and_pubkey.take()))
 			},
 			_ => { Ok((act_opt, None)) }
@@ -62,7 +62,7 @@ mod test {
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 	use ln::peers::handshake::PeerHandshake;
-	use ln::peers::handshake::states::HandshakeState2;
+	use ln::peers::handshake::states::HandshakeState;
 
 	struct TestCtx {
 		outbound_handshake: PeerHandshake,
@@ -115,7 +115,7 @@ mod test {
 	fn peer_handshake_new_outbound() {
 		let test_ctx = TestCtx::new();
 
-		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::Uninitiated2(_)));
+		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState::InitiatorStarting(_)));
 	}
 
 	// Default Inbound::AwaitingActOne
@@ -123,7 +123,7 @@ mod test {
 	fn peer_handshake_new_inbound() {
 		let test_ctx = TestCtx::new();
 
-		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState2::AwaitingActOne2(_)));
+		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState::ResponderAwaitingActOne(_)));
 	}
 
 	/*
@@ -161,7 +161,7 @@ mod test {
 	fn process_act_properly_updates_state() {
 		let mut test_ctx = TestCtx::new();
 		do_process_act_or_panic!(test_ctx.outbound_handshake, &[]);
-		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState2::AwaitingActTwo2(_)));
+		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState::InitiatorAwaitingActTwo(_)));
 	}
 
 	// Test that any errors from the state machine are passed back to the caller
