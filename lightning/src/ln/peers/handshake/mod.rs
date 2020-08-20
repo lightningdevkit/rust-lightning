@@ -9,7 +9,6 @@ use ln::peers::handshake::acts::Act;
 use ln::peers::handshake::states::{HandshakeState2, UninitiatedHandshakeState, AwaitingActOneHandshakeState};
 
 mod acts;
-mod hash;
 mod states;
 
 /// Object for managing handshakes.

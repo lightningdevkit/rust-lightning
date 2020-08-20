@@ -4,11 +4,13 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-use ln::peers::handshake::hash::HandshakeHash;
 use ln::peers::handshake::acts::{Act, ActOne, ACT_ONE_LENGTH, ActTwo, ACT_TWO_LENGTH, ACT_THREE_LENGTH, ActThree};
 use ln::peers::handshake::states::HandshakeState2::{AwaitingActTwo2, AwaitingActThree2, Complete2};
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
+
+// Alias type to allow passing handshake hash easier
+type HandshakeHash = [u8; 32];
 
 // Generate a SHA-256 hash from one or more elements
 macro_rules! sha256 {
@@ -120,12 +122,12 @@ impl IHandshakeState for UninitiatedHandshakeState {
 		let mut hash = self.hash;
 
 		// serialize act one
-		let (act_one, chaining_key, _) = calculate_act_message(
+		let (act_one, hash, chaining_key, _) = calculate_act_message(
 			&initiator_ephemeral_private_key,
 			&initiator_ephemeral_public_key,
 			&responder_static_public_key,
 			chaining_key,
-			&mut hash,
+			hash,
 		);
 
 		Ok((
@@ -171,7 +173,7 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 			return Err("need at least 50 bytes".to_string());
 		}
 
-		let mut hash = self.hash;
+		let hash = self.hash;
 		let responder_static_private_key = self.responder_static_private_key;
 		let chaining_key = self.chaining_key;
 		let responder_ephemeral_private_key = self.responder_ephemeral_private_key;
@@ -182,19 +184,19 @@ impl IHandshakeState for AwaitingActOneHandshakeState {
 		act_one_bytes.copy_from_slice(&read_buffer[..ACT_ONE_LENGTH]);
 		read_buffer.drain(..ACT_ONE_LENGTH);
 
-		let (initiator_ephemeral_public_key, chaining_key, _) = process_act_message(
+		let (initiator_ephemeral_public_key, hash, chaining_key, _) = process_act_message(
 			act_one_bytes,
 			&responder_static_private_key,
 			chaining_key,
-			&mut hash,
+			hash,
 		)?;
 
-		let (act_two, chaining_key, temporary_key) = calculate_act_message(
+		let (act_two, hash, chaining_key, temporary_key) = calculate_act_message(
 			&responder_ephemeral_private_key,
 			&responder_ephemeral_public_key,
 			&initiator_ephemeral_public_key,
 			chaining_key,
-			&mut hash,
+			hash,
 		);
 
 		Ok((
@@ -225,7 +227,7 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		let initiator_static_public_key = self.initiator_static_public_key;
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
 		let responder_static_public_key = self.responder_static_public_key;
-		let mut hash = self.hash;
+		let hash = self.hash;
 		let chaining_key = self.chaining_key;
 
 		// 1. Read exactly 50 bytes from the network buffer
@@ -233,19 +235,19 @@ impl IHandshakeState for AwaitingActTwoHandshakeState {
 		act_two_bytes.copy_from_slice(&read_buffer[..ACT_TWO_LENGTH]);
 		read_buffer.drain(..ACT_TWO_LENGTH);
 
-		let (responder_ephemeral_public_key, chaining_key, temporary_key) = process_act_message(
+		let (responder_ephemeral_public_key, hash, chaining_key, temporary_key) = process_act_message(
 			act_two_bytes,
 			&initiator_ephemeral_private_key,
 			chaining_key,
-			&mut hash,
+			hash,
 		)?;
 
 		// start serializing act three
 		// 1. c = encryptWithAD(temp_k2, 1, h, s.pub.serializeCompressed())
-		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash.value, &initiator_static_public_key.serialize());
+		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash, &initiator_static_public_key.serialize());
 
 		// 2. h = SHA-256(h || c)
-		let hash = sha256!(concat!(hash.value, tagged_encrypted_pubkey));
+		let hash = sha256!(concat!(hash, tagged_encrypted_pubkey));
 
 		// 3. se = ECDH(s.priv, re)
 		let ecdh = ecdh(&initiator_static_private_key, &responder_ephemeral_public_key);
@@ -319,7 +321,7 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 		}
 
 		// 4. rs = decryptWithAD(temp_k2, 1, h, c)
-		let remote_pubkey_vec = chacha::decrypt(&temporary_key, 1, &hash.value, &tagged_encrypted_pubkey)?;
+		let remote_pubkey_vec = chacha::decrypt(&temporary_key, 1, &hash, &tagged_encrypted_pubkey)?;
 		let mut initiator_pubkey_bytes = [0u8; 33];
 		initiator_pubkey_bytes.copy_from_slice(remote_pubkey_vec.as_slice());
 		let initiator_pubkey = if let Ok(public_key) = PublicKey::from_slice(&initiator_pubkey_bytes) {
@@ -329,7 +331,7 @@ impl IHandshakeState for AwaitingActThreeHandshakeState {
 		};
 
 		// 5. h = SHA-256(h || c)
-		let hash = sha256!(concat!(hash.value, tagged_encrypted_pubkey));
+		let hash = sha256!(concat!(hash, tagged_encrypted_pubkey));
 
 		// 6. se = ECDH(e.priv, rs)
 		let ecdh = ecdh(&responder_ephemeral_private_key, &initiator_pubkey);
@@ -376,20 +378,16 @@ fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (H
 	// h = SHA-256(h || responderPublicKey)
 	let hash = sha256!(concat!(hash, responder_static_public_key.serialize()));
 
-	let hash = HandshakeHash {
-		value: hash
-	};
-
 	(hash, chaining_key)
 }
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], h_hash: &mut HandshakeHash) -> ([u8; 50], SymmetricKey, SymmetricKey) {
+fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: [u8; 32], hash: HandshakeHash) -> ([u8; 50], HandshakeHash, SymmetricKey, SymmetricKey) {
 	// 1. e = generateKey() (passed in)
 	// 2. h = SHA-256(h || e.pub.serializeCompressed())
 	let serialized_local_public_key = local_public_ephemeral_key.serialize();
-	let hash = sha256!(concat!(h_hash.value, serialized_local_public_key));
+	let hash = sha256!(concat!(hash, serialized_local_public_key));
 
 	// 3. ACT1: es = ECDH(e.priv, rs)
 	// 3. ACT2: es = ECDH(e.priv, re)
@@ -404,22 +402,20 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 	let tagged_ciphertext = chacha::encrypt(&temporary_key, 0, &hash, &[0; 0]);
 
 	// 6. h = SHA-256(h || c)
-	*h_hash = HandshakeHash {
-		value: sha256!(hash, tagged_ciphertext)
-	};
+	let hash = sha256!(hash, tagged_ciphertext);
 
 	// Send m = 0 || e.pub.serializeCompressed() || c
 	let mut act = [0u8; 50];
 	act[1..34].copy_from_slice(&serialized_local_public_key);
 	act[34..].copy_from_slice(tagged_ciphertext.as_slice());
 
-	(act, chaining_key, temporary_key)
+	(act, hash, chaining_key, temporary_key)
 }
 
 // Due to the very high similarity of acts 1 and 2, this method is used to process both
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (receiver)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
-fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: SymmetricKey, h_hash: &mut HandshakeHash) -> Result<(PublicKey, SymmetricKey, SymmetricKey), String> {
+fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chaining_key: SymmetricKey, hash: HandshakeHash) -> Result<(PublicKey, HandshakeHash, SymmetricKey, SymmetricKey), String> {
 	// 2.Parse the read message (m) into v, re, and c
 	let version = act_bytes[0];
 
@@ -441,7 +437,7 @@ fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chain
 	}
 
 	// 4. h = SHA-256(h || re.serializeCompressed())
-	let hash = sha256!(concat!(h_hash.value, ephemeral_public_key_bytes));
+	let hash = sha256!(concat!(hash, ephemeral_public_key_bytes));
 
 	// 5. Act1: es = ECDH(s.priv, re)
 	// 5. Act2: ee = ECDH(e.priv, ee)
@@ -455,11 +451,9 @@ fn process_act_message(act_bytes: [u8; 50], local_private_key: &SecretKey, chain
 	let _tag_check = chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag)?;
 
 	// 8. h = SHA-256(h || c)
-	*h_hash = HandshakeHash {
-		value: sha256!(concat!(hash, chacha_tag))
-	};
+	let hash = sha256!(concat!(hash, chacha_tag));
 
-	Ok((ephemeral_public_key, chaining_key, temporary_key))
+	Ok((ephemeral_public_key, hash, chaining_key, temporary_key))
 }
 
 fn private_key_to_public_key(private_key: &SecretKey) -> PublicKey {
