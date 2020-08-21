@@ -79,19 +79,6 @@ impl Conduit {
 		self.decryptor.decrypt_single_message(new_data)
 	}
 
-	/// Decrypt a message from the beginning of the provided buffer. Returns the consumed number of bytes.
-	fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) {
-		self.decryptor.decrypt(buffer)
-	}
-
-	fn increment_sending_nonce(&mut self) {
-		self.encryptor.increment_nonce()
-	}
-
-	fn increment_receiving_nonce(&mut self) {
-		self.decryptor.increment_nonce()
-	}
-
 	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
 		*nonce += 1;
 		if *nonce == KEY_ROTATION_INDEX {
@@ -247,7 +234,7 @@ mod tests {
 
 	#[test]
 	fn test_nonce_chaining() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let (mut connected_peer, _remote_peer) = setup_peers();
 		let message = hex::decode("68656c6c6f").unwrap();
 
 		let encrypted_message = connected_peer.encrypt(&message);
@@ -261,7 +248,7 @@ mod tests {
 	#[test]
 	/// Based on RFC test vectors: https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#message-encryption-tests
 	fn test_key_rotation() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let (mut connected_peer, _remote_peer) = setup_peers();
 
 		let message = hex::decode("68656c6c6f").unwrap();
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
@@ -292,7 +279,7 @@ mod tests {
 		for _ in 0..501 {
 			// read two messages at once, filling buffer
 			let mut current_encrypted_message = encrypted_messages.remove(0);
-			let mut next_encrypted_message = encrypted_messages.remove(0);
+			let next_encrypted_message = encrypted_messages.remove(0);
 			current_encrypted_message.extend_from_slice(&next_encrypted_message);
 			let decrypted_message = remote_peer.decrypt_single_message(Some(&current_encrypted_message)).unwrap();
 			assert_eq!(decrypted_message, message);
