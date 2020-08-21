@@ -17,10 +17,12 @@ pub struct PeerHandshake {
 
 impl PeerHandshake {
 	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
-	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
-		Self {
-			state: Some(HandshakeState::new_initiator(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key))
-		}
+	pub fn create_and_initialize_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> (Vec<u8>, Self) {
+		let state = HandshakeState::new_initiator(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key);
+
+		// This transition does not have a failure path
+		let (response_vec_opt, next_state) = state.next(&[]).unwrap();
+		(response_vec_opt.unwrap(), Self { state: Some(next_state) })
 	}
 
 	/// Instantiate a new handshake in anticipation of a peer's first handshake act
@@ -64,6 +66,7 @@ mod test {
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 	struct TestCtx {
+		act1: Vec<u8>,
 		outbound_handshake: PeerHandshake,
 		outbound_static_public_key: PublicKey,
 		inbound_handshake: PeerHandshake,
@@ -82,10 +85,11 @@ mod test {
 			let inbound_static_public_key = PublicKey::from_secret_key(&curve, &inbound_static_private_key);
 			let inbound_ephemeral_private_key = SecretKey::from_slice(&[0x_22_u8; 32]).unwrap();
 
-			let outbound_handshake = PeerHandshake::new_outbound(&outbound_static_private_key, &inbound_static_public_key, &outbound_ephemeral_private_key);
+			let (act1, outbound_handshake) = PeerHandshake::create_and_initialize_outbound(&outbound_static_private_key, &inbound_static_public_key, &outbound_ephemeral_private_key);
 			let inbound_handshake = PeerHandshake::new_inbound(&inbound_static_private_key, &inbound_ephemeral_private_key);
 
 			TestCtx {
+				act1,
 				outbound_handshake,
 				outbound_static_public_key,
 				inbound_handshake,
@@ -114,7 +118,7 @@ mod test {
 	fn peer_handshake_new_outbound() {
 		let test_ctx = TestCtx::new();
 
-		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState::InitiatorStarting(_)));
+		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState::InitiatorAwaitingActTwo(_)));
 	}
 
 	// Default Inbound::AwaitingActOne
@@ -133,8 +137,7 @@ mod test {
 	#[test]
 	fn full_sequence_sanity_test() {
 		let mut test_ctx = TestCtx::new();
-		let act1 = do_process_act_or_panic!(test_ctx.outbound_handshake, &[]);
-		let act2 = do_process_act_or_panic!(test_ctx.inbound_handshake, &act1);
+		let act2 = do_process_act_or_panic!(test_ctx.inbound_handshake, &test_ctx.act1);
 
 		let (act3, inbound_remote_pubkey) = if let (Some(act3), Some((_, remote_pubkey))) = test_ctx.outbound_handshake.process_act(&act2).unwrap() {
 			(act3, remote_pubkey)
@@ -159,8 +162,8 @@ mod test {
 	#[test]
 	fn process_act_properly_updates_state() {
 		let mut test_ctx = TestCtx::new();
-		do_process_act_or_panic!(test_ctx.outbound_handshake, &[]);
-		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState::InitiatorAwaitingActTwo(_)));
+		do_process_act_or_panic!(test_ctx.inbound_handshake, &test_ctx.act1);
+		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState::ResponderAwaitingActThree(_)));
 	}
 
 	// Test that any errors from the state machine are passed back to the caller
