@@ -365,9 +365,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet had a
 	/// socket_disconnected().
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
-		let mut handshake = PeerHandshake::new_outbound(&self.our_node_secret, &their_node_id, &self.get_ephemeral_key());
-		let (act, ..) = handshake.process_act(&[]).unwrap();
-		let res = act.unwrap();
+		let (initial_bytes, handshake) = PeerHandshake::create_and_initialize_outbound(&self.our_node_secret, &their_node_id, &self.get_ephemeral_key());
 
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
@@ -386,7 +384,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
-		Ok(res)
+		Ok(initial_bytes)
 	}
 
 	/// Indicates a new inbound connection has been established.

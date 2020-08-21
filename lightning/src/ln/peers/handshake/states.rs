@@ -560,10 +560,8 @@ mod test {
 	#[test]
 	fn starting_to_awaiting_act_two_extra_bytes() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
 
-		assert_eq!(act1, test_ctx.valid_act1);
-		assert_matches!(awaiting_act_two_state, InitiatorAwaitingActTwo(_));
+		assert_eq!(test_ctx.initiator.next(&[1]).err(), Some(String::from("first call for initiator must be empty")));
 	}
 
 	// Responder::AwaitingActOne -> AwaitingActThree
