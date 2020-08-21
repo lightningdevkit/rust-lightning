@@ -111,12 +111,17 @@ jobs:
     runs-on: ubuntu-latest
     # Ubuntu's version of rustc uses its own LLVM instead of being a real native package.
     # This leaves us with an incompatible LLVM version when linking. Instead, use a real OS.
-    container: debian:testing
+    # We further (temporarily) use Debian experimental since testing links rustc against the
+    # brand-new llvm-10, but clang/llvm still default to LLVM 9.
+    container: debian:experimental
     env:
       TOOLCHAIN: stable
     steps:
       - name: Install native Rust toolchain, Valgrind, and build utilitis
         run: |
+          echo 'Package: llvm llvm-runtime clang lld' > /etc/apt/preferences.d/99-llvm10
+          echo 'Pin: release n=experimental' >> /etc/apt/preferences.d/99-llvm10
+          echo 'Pin-Priority: 995' >> /etc/apt/preferences.d/99-llvm10
           apt-get update
           apt-get -y dist-upgrade
           apt-get -y install cargo valgrind lld git g++ clang
