@@ -22,7 +22,6 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, LightningError, RoutingMessageHandler};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use util::ser::{VecWriter, Writeable};
-use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
 use util::byte_utils;
@@ -145,7 +144,7 @@ impl PeerState {
 			&mut PeerState::Authenticating(ref mut handshake) => {
 				match handshake.process_act(data) {
 					// Any errors originating from the handshake sequence result in Disconnect
-					Err(e) => {
+					Err(_e) => {
 						(None, PeerDataProcessingDecision::Disconnect(PeerHandleError { no_connection_possible: false }))
 					},
 					// Otherwise, handshake may or may not be complete depending on whether or not
@@ -606,10 +605,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 					let mut received_messages = vec![];
 					if let &mut PeerState::Connected(ref mut conduit) = &mut peer.encryptor {
-						let encryptor = &mut conduit.encryptor;
-						let decryptor = &mut conduit.decryptor;
-
-						for msg_data in decryptor {
+						for msg_data in &mut conduit.decryptor {
 							let mut reader = ::std::io::Cursor::new(&msg_data[..]);
 							let message_result = wire::read(&mut reader);
 							let message = match message_result {
