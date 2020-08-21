@@ -119,7 +119,12 @@ impl InitiatorStartingState {
 
 impl IHandshakeState for InitiatorStartingState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
-	fn next(self, _input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
+	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
+
+		if input.len() > 0 {
+			return Err("first call for initiator must be empty".to_string());
+		}
+
 		let initiator_static_private_key = self.initiator_static_private_key;
 		let initiator_static_public_key = self.initiator_static_public_key;
 		let initiator_ephemeral_private_key = self.initiator_ephemeral_private_key;
@@ -474,6 +479,8 @@ fn ecdh(private_key: &SecretKey, public_key: &PublicKey) -> SymmetricKey {
 }
 
 #[cfg(test)]
+// Reference RFC test vectors for hard-coded values
+// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#appendix-a-transport-test-vectors
 mod test {
 	use super::*;
 	use super::HandshakeState::*;
@@ -487,7 +494,11 @@ mod test {
 		initiator: HandshakeState,
 		initiator_public_key: PublicKey,
 		responder: HandshakeState,
-		responder_static_public_key: PublicKey
+		responder_static_public_key: PublicKey,
+		valid_act1: Vec<u8>,
+		valid_act2: Vec<u8>,
+		valid_act3: Vec<u8>,
+
 	}
 
 	impl TestCtx {
@@ -509,6 +520,9 @@ mod test {
 				initiator_public_key,
 				responder: HandshakeState::ResponderAwaitingActOne(responder),
 				responder_static_public_key,
+				valid_act1: hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap(),
+				valid_act2: hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap(),
+				valid_act3: hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap()
 			}
 		}
 	}
@@ -536,23 +550,31 @@ mod test {
 	#[test]
 	fn starting_to_awaiting_act_two() {
 		let test_ctx = TestCtx::new();
+		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
 
-		assert_matches!(test_ctx.initiator.next(&[]).unwrap(), (Some(_), InitiatorAwaitingActTwo(_)));
+		assert_eq!(act1, test_ctx.valid_act1);
+		assert_matches!(awaiting_act_two_state, InitiatorAwaitingActTwo(_));
 	}
 
 	// Initiator::Starting -> AwaitingActTwo (extra bytes in argument)
 	#[test]
 	fn starting_to_awaiting_act_two_extra_bytes() {
 		let test_ctx = TestCtx::new();
+		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
 
-		assert_matches!(test_ctx.initiator.next(&[1]).unwrap(), (Some(_), InitiatorAwaitingActTwo(_)));
+		assert_eq!(act1, test_ctx.valid_act1);
+		assert_matches!(awaiting_act_two_state, InitiatorAwaitingActTwo(_));
 	}
 
-	// Responder::AwaitingActOne -> Error (input too small)
+	// Responder::AwaitingActOne -> AwaitingActThree
+	// RFC test vector: transport-responder successful handshake
 	#[test]
-	fn awaiting_act_one_to_awaiting_act_three_input_too_small() {
+	fn awaiting_act_one_to_awaiting_act_three() {
 		let test_ctx = TestCtx::new();
-		assert_eq!(test_ctx.responder.next(&[]).err(), Some(String::from("need at least 50 bytes")))
+		let (act2, awaiting_act_three_state) = test_ctx.responder.next(&test_ctx.valid_act1).unwrap();
+
+		assert_eq!(act2.unwrap(), test_ctx.valid_act2);
+		assert_matches!(awaiting_act_three_state, ResponderAwaitingActThree(_));
 	}
 
 	// Responder::AwaitingActOne -> AwaitingActThree
@@ -563,70 +585,70 @@ mod test {
 	#[test]
 	fn awaiting_act_one_to_awaiting_act_three_input_extra_bytes() {
 		let test_ctx = TestCtx::new();
-		let (mut act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let mut act1 = test_ctx.valid_act1;
 		act1.extend_from_slice(&[1]);
+		let (act2, awaiting_act_three_state) = test_ctx.responder.next(&act1).unwrap();
 
-		assert_matches!(test_ctx.responder.next(&act1).unwrap(), (Some(_), ResponderAwaitingActThree(_)));
+		assert_eq!(act2.unwrap(), test_ctx.valid_act2);
+		assert_matches!(awaiting_act_three_state, ResponderAwaitingActThree(_));
+	}
+
+	// Responder::AwaitingActOne -> Error (input too small)
+	// RFC test vector: transport-responder act1 short read test
+	#[test]
+	fn awaiting_act_one_to_awaiting_act_three_input_too_small() {
+		let test_ctx = TestCtx::new();
+		let act1 = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c").unwrap();
+		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("need at least 50 bytes")))
 	}
 
 	// Responder::AwaitingActOne -> Error (bad version byte)
+	// RFC test vector: transport-responder act1 bad version test
 	#[test]
 	fn awaiting_act_one_to_awaiting_act_three_input_bad_version() {
 		let test_ctx = TestCtx::new();
-		let (mut act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
-		// set version byte to 1
-		act1[0] = 1;
+		let act1 = hex::decode("01036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap();
 
 		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("unexpected version")));
 	}
 
-	// Responder::AwaitingActOne -> Error (invalid hmac)
-	#[test]
-	fn awaiting_act_one_to_awaiting_act_three_invalid_hmac() {
-		let test_ctx = TestCtx::new();
-		// Modify the initiator to point to a different responder
-		let (mut act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
-		// corrupt the ciphertext
-		act1[34] = 0;
-
-		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("invalid hmac")));
-	}
-
 	// Responder::AwaitingActOne -> Error (invalid remote ephemeral key)
+	// RFC test vector: transport-responder act1 bad key serialization test
 	#[test]
 	fn awaiting_act_one_to_awaiting_act_three_invalid_remote_ephemeral_key() {
 		let test_ctx = TestCtx::new();
-		// Modify the initiator to point to a different responder
-		let (mut act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
-		// corrupt the ephemeral public key
-		act1[1] = 0;
+		let act1 = hex::decode("00046360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap();
 
 		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("invalid remote ephemeral public key")));
 	}
 
-	// Responder::AwaitingActOne -> AwaitingActThree
+	// Responder::AwaitingActOne -> Error (invalid hmac)
+	// RFC test vector: transport-responder act1 bad MAC test
 	#[test]
-	fn awaiting_act_one_to_awaiting_act_three() {
+	fn awaiting_act_one_to_awaiting_act_three_invalid_hmac() {
 		let test_ctx = TestCtx::new();
-		let (act1, _) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let act1 = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6b").unwrap();
 
-		assert_matches!(test_ctx.responder.next(&act1).unwrap(), (Some(_), ResponderAwaitingActThree(_)));
+		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("invalid hmac")));
 	}
 
 	// Initiator::AwaitingActTwo -> Complete
+	// RFC test vector: transport-initiator successful handshake
 	#[test]
 	fn awaiting_act_two_to_complete() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, _awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
+		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let (act3, complete_state) = do_next_or_panic!(awaiting_act_two_state, &test_ctx.valid_act2);
 
-		let remote_pubkey = if let (Some(_), Complete(Some((_, remote_pubkey)))) = awaiting_act_two_state.next(&act2).unwrap() {
-			remote_pubkey
+		let (conduit, remote_pubkey) = if let Complete(Some((conduit, remote_pubkey))) = complete_state {
+			(conduit, remote_pubkey)
 		} else {
 			panic!();
 		};
 
+		assert_eq!(act3, test_ctx.valid_act3);
 		assert_eq!(remote_pubkey, test_ctx.responder_static_public_key);
+		assert_eq!(0, conduit.decryptor.read_buffer_length());
 	}
 
 	// Initiator::AwaitingActTwo -> Complete (with extra data)
@@ -636,81 +658,81 @@ mod test {
 	#[test]
 	fn awaiting_act_two_to_complete_excess_bytes_are_in_conduit() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (mut act2, _awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
+		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let mut act2 = test_ctx.valid_act2;
 		act2.extend_from_slice(&[1; 100]);
+		let (act3, complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
 
-		let (_act3, complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
-
-		let conduit = if let Complete(Some((conduit, _))) = complete_state {
-			conduit
+		let (conduit, remote_pubkey) = if let Complete(Some((conduit, remote_pubkey))) = complete_state {
+			(conduit, remote_pubkey)
 		} else {
 			panic!();
 		};
 
+		assert_eq!(act3, test_ctx.valid_act3);
+		assert_eq!(remote_pubkey, test_ctx.responder_static_public_key);
 		assert_eq!(100, conduit.decryptor.read_buffer_length());
 	}
 
 	// Initiator::AwaitingActTwo -> Error (input too small)
+	// RFC test vector: transport-initiator act2 short read test
 	#[test]
 	fn awaiting_act_two_input_too_small() {
 		let test_ctx = TestCtx::new();
 		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let act2 = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730").unwrap();
 
-		assert_eq!(awaiting_act_two_state.next(&[]).err(), Some(String::from("need at least 50 bytes")));
+		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("need at least 50 bytes")));
 	}
 
 	// Initiator::AwaitingActTwo -> Error (bad version byte)
+	// RFC test vector: transport-initiator act2 bad version test
 	#[test]
 	fn awaiting_act_two_bad_version_byte() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (mut act2, _awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		// set invalid version byte
-		act2[0] = 1;
+		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let act2 = hex::decode("0102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap();
 
 		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("unexpected version")));
 	}
 
-	// Initiator::AwaitingActTwo -> Error (invalid hmac)
-	#[test]
-	fn awaiting_act_two_invalid_hmac() {
-		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (mut act2, _awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		// corrupt the ciphertext
-		act2[34] = 0;
-
-		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("invalid hmac")));
-	}
-
 	// Initiator::AwaitingActTwo -> Error (invalid ephemeral public key)
+	// RFC test vector: transport-initiator act2 bad key serialization test
 	#[test]
 	fn awaiting_act_two_invalid_ephemeral_public_key() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (mut act2, _awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		// corrupt the ephemeral public key
-		act2[1] = 0;
+		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let act2 = hex::decode("0004466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap();
 
 		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("invalid remote ephemeral public key")));
 	}
 
+	// Initiator::AwaitingActTwo -> Error (invalid hmac)
+	// RFC test vector: transport-initiator act2 bad MAC test
+	#[test]
+	fn awaiting_act_two_invalid_hmac() {
+		let test_ctx = TestCtx::new();
+		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let act2 = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730af").unwrap();
+
+		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("invalid hmac")));
+	}
+
 	// Responder::AwaitingActThree -> Complete
+	// RFC test vector: transport-responder successful handshake
 	#[test]
 	fn awaiting_act_three_to_complete() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		let (act3, _complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
 
-		let remote_pubkey = if let (None, Complete(Some((_, remote_pubkey)))) = awaiting_act_three_state.next(&act3).unwrap() {
-			remote_pubkey
+		let (conduit, remote_pubkey) = if let (None, Complete(Some((conduit, remote_pubkey)))) = awaiting_act_three_state.next(&test_ctx.valid_act3).unwrap() {
+			(conduit, remote_pubkey)
 		} else {
 			panic!();
 		};
 
 		assert_eq!(remote_pubkey, test_ctx.initiator_public_key);
+		assert_eq!(0, conduit.decryptor.read_buffer_length());
 	}
 
 	// Responder::AwaitingActThree -> None (with extra bytes)
@@ -719,66 +741,71 @@ mod test {
 	#[test]
 	fn awaiting_act_three_excess_bytes_after_complete_are_in_conduit() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		let (mut act3, _complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
+		let mut act3 = test_ctx.valid_act3;
 		act3.extend_from_slice(&[2; 100]);
 
-		let conduit = if let (_, Complete(Some((conduit, _)))) = awaiting_act_three_state.next(&act3).unwrap() {
-			conduit
+		let (conduit, remote_pubkey) = if let (None, Complete(Some((conduit, remote_pubkey)))) = awaiting_act_three_state.next(&act3).unwrap() {
+			(conduit, remote_pubkey)
 		} else {
 			panic!();
 		};
 
+		assert_eq!(remote_pubkey, test_ctx.initiator_public_key);
 		assert_eq!(100, conduit.decryptor.read_buffer_length());
 	}
 
-	// Responder::AwaitingActThree -> Error (input too small)
-	#[test]
-	fn awaiting_act_three_input_too_small() {
-		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		let (act3, _complete) = do_next_or_panic!(awaiting_act_two_state, &act2);
-
-		assert_eq!(awaiting_act_three_state.next(&act3[..65]).err(), Some(String::from("need at least 66 bytes")));
-	}
-
 	// Responder::AwaitingActThree -> Error (bad version bytes)
+	// RFC test vector: transport-responder act3 bad version test
 	#[test]
 	fn awaiting_act_three_bad_version_bytes() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		let (mut act3, _complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
-		// set version byte to 1
-		act3[0] = 1;
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
+		let act3 = hex::decode("01b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap();
 
 		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("unexpected version")));
 	}
 
+	// Responder::AwaitingActThree -> Error (input too small)
+	// RFC test vector: transport-responder act3 short read test
+	#[test]
+	fn awaiting_act_three_input_too_small() {
+		let test_ctx = TestCtx::new();
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
+		let act3 = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139").unwrap();
+
+		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("need at least 66 bytes")));
+	}
+
 	// Responder::AwaitingActThree -> Error (invalid hmac)
+	// RFC test vector: transport-responder act3 bad MAC for ciphertext test
 	#[test]
 	fn awaiting_act_three_invalid_hmac() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		let (mut act3, _complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
-		// corrupt encrypted pubkey
-		act3[1] = 1;
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
+		let act3 = hex::decode("00c9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba").unwrap();
 
 		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("invalid hmac")));
 	}
 
+	// Responder::AwaitingActThree -> Error (invalid remote_static_key)
+	// RFC test vector: transport-responder act3 bad rs test
+	#[test]
+	fn awaiting_act_three_invalid_rs() {
+		let test_ctx = TestCtx::new();
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
+		let act3 = hex::decode("00bfe3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa2235536ad09a8ee351870c2bb7f78b754a26c6cef79a98d25139c856d7efd252c2ae73c").unwrap();
+
+		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("invalid remote public key")));
+	}
+
 	// Responder::AwaitingActThree -> Error (invalid tag hmac)
+	// RFC test vector: transport-responder act3 bad MAC test
 	#[test]
 	fn awaiting_act_three_invalid_tag_hmac() {
 		let test_ctx = TestCtx::new();
-		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let (act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &act1);
-		let (mut act3, _complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
-		// corrupt tag
-		act3[50] = 1;
+		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
+		let act3 = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139bb").unwrap();
 
 		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("invalid hmac")));
 	}
@@ -830,3 +857,4 @@ mod test {
 				   "00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba");
 	}
 }
+
