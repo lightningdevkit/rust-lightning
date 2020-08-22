@@ -3158,11 +3158,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		);
 	}
 
-	/// Allowed in any state (including after shutdown)
-	pub fn get_their_htlc_minimum_msat(&self) -> u64 {
-		self.our_htlc_minimum_msat
-	}
-
 	pub fn get_value_satoshis(&self) -> u64 {
 		self.channel_value_satoshis
 	}
