@@ -1185,7 +1185,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				{
 					let mut res = Vec::with_capacity(8 + 128);
 					if let Some(chan_update) = chan_update {
-						if code == 0x1000 | 12 {
+						if code == 0x1000 | 12 { // fee_insufficient
 							res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
 						}
 						else if code == 0x1000 | 13 {
@@ -1585,12 +1585,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 										incoming_packet_shared_secret: incoming_shared_secret,
 									});
 									if amt_to_forward < chan.get().get_our_htlc_minimum_msat() {
-										let mut data = Vec::with_capacity(8 + 128);
+										let mut data = Vec::with_capacity(8 + 128); // 8-bytes-htlc_msat + 2-byte-length + length-byte-channel_update
 										data.extend_from_slice(&byte_utils::be64_to_array(amt_to_forward));
 										let chan_update = self.get_channel_update(chan.get()).unwrap();
 										data.extend_from_slice(&chan_update.encode_with_len()[..]);
 										failed_forwards.push((htlc_source, payment_hash,
-											HTLCFailReason::Reason { failure_code: 0x1000 | 11, data }
+											HTLCFailReason::Reason { failure_code: 0x1000 | 11, data } // amount_below_minimum
 										));
 										continue;
 									}
