@@ -341,12 +341,10 @@ pub trait KeysInterface: Send + Sync {
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
 	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner;
-	/// Get a secret and PRNG seed for constructing an onion packet
-	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]);
-	/// Get a unique temporary channel id. Channels will be referred to by this until the funding
-	/// transaction is created, at which point they will use the outpoint in the funding
-	/// transaction.
-	fn get_channel_id(&self) -> [u8; 32];
+	/// Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
+	/// onion packets and for temporary channel IDs. There is no requirement that these be
+	/// persisted anywhere, though they must be unique across restarts.
+	fn get_secure_random_bytes(&self) -> [u8; 32];
 }
 
 #[derive(Clone)]
@@ -666,10 +664,8 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
-	session_master_key: ExtendedPrivKey,
-	session_child_index: AtomicUsize,
-	channel_id_master_key: ExtendedPrivKey,
-	channel_id_child_index: AtomicUsize,
+	rand_bytes_master_key: ExtendedPrivKey,
+	rand_bytes_child_index: AtomicUsize,
 
 	seed: [u8; 32],
 	starting_time_secs: u64,
@@ -678,7 +674,7 @@ pub struct KeysManager {
 
 impl KeysManager {
 	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
-	/// RNG is busted) this may panic (but more importantly, you will possibly lose funds).
+	/// CSRNG is busted) this may panic (but more importantly, you will possibly lose funds).
 	/// starting_time isn't strictly required to actually be a time, but it must absolutely,
 	/// without a doubt, be unique to this instance. ie if you start multiple times with the same
 	/// seed, starting_time must be unique to each run. Thus, the easiest way to achieve this is to
@@ -715,8 +711,7 @@ impl KeysManager {
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
-				let session_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
-				let channel_id_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted");
+				let rand_bytes_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
 
 				KeysManager {
 					secp_ctx,
@@ -725,10 +720,8 @@ impl KeysManager {
 					shutdown_pubkey,
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
-					session_master_key,
-					session_child_index: AtomicUsize::new(0),
-					channel_id_master_key,
-					channel_id_child_index: AtomicUsize::new(0),
+					rand_bytes_master_key,
+					rand_bytes_child_index: AtomicUsize::new(0),
 
 					seed: *seed,
 					starting_time_secs,
@@ -821,29 +814,14 @@ impl KeysInterface for KeysManager {
 		self.derive_channel_keys(channel_value_satoshis, ix_and_nanos, self.starting_time_secs)
 	}
 
-	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let mut sha = self.derive_unique_start();
 
-		let child_ix = self.session_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.session_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		let child_ix = self.rand_bytes_child_index.fetch_add(1, Ordering::AcqRel);
+		let child_privkey = self.rand_bytes_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
 		sha.input(&child_privkey.private_key.key[..]);
 
-		let mut rng_seed = sha.clone();
-		// Not exactly the most ideal construction, but the second value will get fed into
-		// ChaCha so it is another step harder to break.
-		rng_seed.input(b"RNG Seed Salt");
-		sha.input(b"Session Key Salt");
-		(SecretKey::from_slice(&Sha256::from_engine(sha).into_inner()).expect("Your RNG is busted"),
-		Sha256::from_engine(rng_seed).into_inner())
-	}
-
-	fn get_channel_id(&self) -> [u8; 32] {
-		let mut sha = self.derive_unique_start();
-
-		let child_ix = self.channel_id_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.channel_id_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
-		sha.input(&child_privkey.private_key.key[..]);
-
+		sha.input(b"Unique Secure Random Bytes Salt");
 		Sha256::from_engine(sha).into_inner()
 	}
 }

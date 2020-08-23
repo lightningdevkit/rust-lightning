@@ -6126,7 +6126,7 @@ fn test_onion_failure() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	for node in nodes.iter() {
-		*node.keys_manager.override_session_priv.lock().unwrap() = Some(SecretKey::from_slice(&[3; 32]).unwrap());
+		*node.keys_manager.override_session_priv.lock().unwrap() = Some([3; 32]);
 	}
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);

@@ -295,13 +295,7 @@ impl KeysInterface for KeyProvider {
 		})
 	}
 
-	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
-		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
-		(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, ctr]).unwrap(),
-		[0; 32])
-	}
-
-	fn get_channel_id(&self) -> [u8; 32] {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]

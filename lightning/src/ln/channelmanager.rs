@@ -1243,7 +1243,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	// Only public for testing, this should otherwise never be called direcly
 	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32) -> Result<(), APIError> {
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
-		let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
+		let prng_seed = self.keys_manager.get_secure_random_bytes();
+		let session_priv = SecretKey::from_slice(&self.keys_manager.get_secure_random_bytes()[..]).expect("RNG is busted");
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
