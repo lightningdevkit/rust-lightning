@@ -4,7 +4,15 @@
 //! Conduit enables message encryption and decryption, and automatically handles key rotation.
 
 mod chacha;
-pub mod conduit;
-pub mod handshake;
 pub mod handler;
 mod hkdf;
+
+#[cfg(feature = "fuzztarget")]
+pub mod conduit;
+#[cfg(not(feature = "fuzztarget"))]
+mod conduit;
+
+#[cfg(feature = "fuzztarget")]
+pub mod handshake;
+#[cfg(not(feature = "fuzztarget"))]
+mod handshake;

@@ -75,6 +75,7 @@ impl Conduit {
 	/// only the first message will be returned, and the rest stored in the internal buffer.
 	/// If a message pending in the buffer still hasn't been decrypted, that message will be
 	/// returned in lieu of anything new, even if new data is provided.
+	#[cfg(any(test, feature = "fuzztarget"))]
 	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Option<Vec<u8>> {
 		self.decryptor.decrypt_single_message(new_data)
 	}
