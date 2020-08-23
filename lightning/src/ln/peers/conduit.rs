@@ -5,6 +5,11 @@ use util::byte_utils;
 
 pub(super) type SymmetricKey = [u8; 32];
 
+/// Maximum Lightning message data length according to
+/// [BOLT-8](https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification)
+/// and [BOLT-1](https://github.com/lightningnetwork/lightning-rfc/blob/master/01-messaging.md#lightning-message-format):
+const LN_MAX_MSG_LEN: usize = ::std::u16::MAX as usize; // Must be equal to 65535
+
 const MESSAGE_LENGTH_HEADER_SIZE: usize = 2;
 const TAGGED_MESSAGE_LENGTH_HEADER_SIZE: usize = MESSAGE_LENGTH_HEADER_SIZE + chacha::TAG_SIZE;
 
@@ -75,6 +80,7 @@ impl Conduit {
 	/// only the first message will be returned, and the rest stored in the internal buffer.
 	/// If a message pending in the buffer still hasn't been decrypted, that message will be
 	/// returned in lieu of anything new, even if new data is provided.
+	#[cfg(any(test, feature = "fuzztarget"))]
 	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Option<Vec<u8>> {
 		self.decryptor.decrypt_single_message(new_data)
 	}
@@ -96,6 +102,10 @@ impl Conduit {
 
 impl Encryptor {
 	pub(super) fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
+		if buffer.len() > LN_MAX_MSG_LEN {
+			panic!("Attempted to encrypt message longer than 65535 bytes!");
+		}
+
 		let length = buffer.len() as u16;
 		let length_bytes = byte_utils::be16_to_array(length);
 
@@ -134,6 +144,10 @@ impl Decryptor {
 
 		if let Some(data) = new_data {
 			read_buffer.extend_from_slice(data);
+		}
+
+		if read_buffer.len() > LN_MAX_MSG_LEN + 16 {
+			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
 		}
 
 		let (current_message, offset) = self.decrypt(&read_buffer[..]);
@@ -197,6 +211,7 @@ impl Decryptor {
 
 #[cfg(test)]
 mod tests {
+	use super::*;
 	use hex;
 
 	use ln::peers::conduit::Conduit;
@@ -290,5 +305,29 @@ mod tests {
 			let decrypted_message = remote_peer.decrypt_single_message(None).unwrap();
 			assert_eq!(decrypted_message, message);
 		}
+	}
+
+	#[test]
+	fn max_msg_len_limit_value() {
+		assert_eq!(LN_MAX_MSG_LEN, 65535);
+		assert_eq!(LN_MAX_MSG_LEN, ::std::u16::MAX as usize);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to encrypt message longer than 65535 bytes!")]
+	fn max_message_len_encryption() {
+		let (mut connected_peer, _) = setup_peers();
+		let msg = [4u8; LN_MAX_MSG_LEN + 1];
+		connected_peer.encrypt(&msg);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to decrypt message longer than 65535 + 16 bytes!")]
+	fn max_message_len_decryption() {
+		let (mut connected_peer, _) = setup_peers();
+
+		// MSG should not exceed LN_MAX_MSG_LEN + 16
+		let msg = [4u8; LN_MAX_MSG_LEN + 17];
+		connected_peer.decrypt_single_message(Some(&msg));
 	}
 }

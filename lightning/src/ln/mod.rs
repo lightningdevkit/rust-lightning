@@ -25,11 +25,6 @@ pub mod chan_utils;
 pub mod features;
 pub(crate) mod onchaintx;
 
-#[cfg(feature = "fuzztarget")]
-pub mod peer_channel_encryptor;
-#[cfg(not(feature = "fuzztarget"))]
-pub(crate) mod peer_channel_encryptor;
-
 mod channel;
 mod onion_utils;
 mod wire;
@@ -53,4 +48,3 @@ mod reorg_tests;
 #[allow(unused_mut)]
 mod onion_route_tests;
 
-pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
