@@ -504,21 +504,46 @@ mod tests {
 		};
 	}
 
-	#[test]
-	fn route_test() {
+	fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec<SecretKey>, Vec<PublicKey>) {
+		let privkeys: Vec<SecretKey> = (2..10).map(|i| {
+			SecretKey::from_slice(&hex::decode(format!("{:02}", i).repeat(32)).unwrap()[..]).unwrap()
+		}).collect();
+
+		let pubkeys = privkeys.iter().map(|secret| PublicKey::from_secret_key(&secp_ctx, secret)).collect();
+
+		let our_privkey = SecretKey::from_slice(&hex::decode("01".repeat(32)).unwrap()[..]).unwrap();
+		let our_id = PublicKey::from_secret_key(&secp_ctx, &our_privkey);
+
+		(our_privkey, our_id, privkeys, pubkeys)
+	}
+
+	fn id_to_feature_flags(id: u8) -> Vec<u8> {
+		// Set the feature flags to the id'th odd (ie non-required) feature bit so that we can
+		// test for it later.
+		let idx = (id - 1) * 2 + 1;
+		if idx > 8*3 {
+			vec![1 << (idx - 8*3), 0, 0, 0]
+		} else if idx > 8*2 {
+			vec![1 << (idx - 8*2), 0, 0]
+		} else if idx > 8*1 {
+			vec![1 << (idx - 8*1), 0]
+		} else {
+			vec![1 << idx]
+		}
+	}
+
+	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<std::sync::Arc<crate::chain::chaininterface::ChainWatchInterfaceUtil>, std::sync::Arc<crate::util::test_utils::TestLogger>>, std::sync::Arc<test_utils::TestLogger>) {
 		let secp_ctx = Secp256k1::new();
-		let our_privkey = &SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
-		let our_id = PublicKey::from_secret_key(&secp_ctx, our_privkey);
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor, Arc::clone(&logger));
-		// Build network from our_id to node8:
+		// Build network from our_id to node7:
 		//
-		//        -1(1)2-  node1  -1(3)2-
+		//        -1(1)2-  node0  -1(3)2-
 		//       /                       \
-		// our_id -1(12)2- node8 -1(13)2--- node3
+		// our_id -1(12)2- node7 -1(13)2--- node2
 		//       \                       /
-		//        -1(2)2-  node2  -1(4)2-
+		//        -1(2)2-  node1  -1(4)2-
 		//
 		//
 		// chan1  1-to-2: disabled
@@ -540,13 +565,13 @@ mod tests {
 		// chan13 2-to-1: enabled, 0 fee
 		//
 		//
-		//       -1(5)2- node4 -1(8)2--
+		//       -1(5)2- node3 -1(8)2--
 		//       |         2          |
 		//       |       (11)         |
 		//      /          1           \
-		// node3--1(6)2- node5 -1(9)2--- node7 (not in global route map)
+		// node2--1(6)2- node4 -1(9)2--- node6 (not in global route map)
 		//      \                      /
-		//       -1(7)2- node6 -1(10)2-
+		//       -1(7)2- node5 -1(10)2-
 		//
 		// chan5  1-to-2: enabled, 100 msat fee
 		// chan5  2-to-1: enabled, 0 fee
@@ -569,44 +594,10 @@ mod tests {
 		// chan11 1-to-2: enabled, 0 fee
 		// chan11 2-to-1: enabled, 0 fee
 
-		let node1_privkey = &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap();
-		let node2_privkey = &SecretKey::from_slice(&hex::decode("0303030303030303030303030303030303030303030303030303030303030303").unwrap()[..]).unwrap();
-		let node3_privkey = &SecretKey::from_slice(&hex::decode("0404040404040404040404040404040404040404040404040404040404040404").unwrap()[..]).unwrap();
-		let node4_privkey = &SecretKey::from_slice(&hex::decode("0505050505050505050505050505050505050505050505050505050505050505").unwrap()[..]).unwrap();
-		let node5_privkey = &SecretKey::from_slice(&hex::decode("0606060606060606060606060606060606060606060606060606060606060606").unwrap()[..]).unwrap();
-		let node6_privkey = &SecretKey::from_slice(&hex::decode("0707070707070707070707070707070707070707070707070707070707070707").unwrap()[..]).unwrap();
-		let node7_privkey = &SecretKey::from_slice(&hex::decode("0808080808080808080808080808080808080808080808080808080808080808").unwrap()[..]).unwrap();
-		let node8_privkey = &SecretKey::from_slice(&hex::decode("0909090909090909090909090909090909090909090909090909090909090909").unwrap()[..]).unwrap();
+		let (our_privkey, _, privkeys, _) = get_nodes(&secp_ctx);
 
-
-		let node1 = PublicKey::from_secret_key(&secp_ctx, node1_privkey);
-		let node2 = PublicKey::from_secret_key(&secp_ctx, node2_privkey);
-		let node3 = PublicKey::from_secret_key(&secp_ctx, node3_privkey);
-		let node4 = PublicKey::from_secret_key(&secp_ctx, node4_privkey);
-		let node5 = PublicKey::from_secret_key(&secp_ctx, node5_privkey);
-		let node6 = PublicKey::from_secret_key(&secp_ctx, node6_privkey);
-		let node7 = PublicKey::from_secret_key(&secp_ctx, node7_privkey);
-		let node8 = PublicKey::from_secret_key(&secp_ctx, node8_privkey);
-
-		macro_rules! id_to_feature_flags {
-			// Set the feature flags to the id'th odd (ie non-required) feature bit so that we can
-			// test for it later.
-			($id: expr) => { {
-				let idx = ($id - 1) * 2 + 1;
-				if idx > 8*3 {
-					vec![1 << (idx - 8*3), 0, 0, 0]
-				} else if idx > 8*2 {
-					vec![1 << (idx - 8*2), 0, 0]
-				} else if idx > 8*1 {
-					vec![1 << (idx - 8*1), 0]
-				} else {
-					vec![1 << idx]
-				}
-			} }
-		}
-
-		add_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, node1_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(1)), 1);
-		update_channel(&net_graph_msg_handler, &secp_ctx, node1_privkey, UnsignedChannelUpdate {
+		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[0], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 1,
 			timestamp: 1,
@@ -618,10 +609,11 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node1_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(1)), 0);
 
-		add_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, node2_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(2)), 2);
-		update_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, UnsignedChannelUpdate {
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[0], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 2,
 			timestamp: 1,
@@ -633,7 +625,7 @@ mod tests {
 			fee_proportional_millionths: u32::max_value(),
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node2_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 2,
 			timestamp: 1,
@@ -646,10 +638,10 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node2_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(2)), 0);
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[1], NodeFeatures::from_le_bytes(id_to_feature_flags(2)), 0);
 
-		add_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, node8_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(12)), 12);
-		update_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, UnsignedChannelUpdate {
+		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[7], ChannelFeatures::from_le_bytes(id_to_feature_flags(12)), 12);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 12,
 			timestamp: 1,
@@ -661,7 +653,7 @@ mod tests {
 			fee_proportional_millionths: u32::max_value(),
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node8_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 12,
 			timestamp: 1,
@@ -674,11 +666,10 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[7], NodeFeatures::from_le_bytes(id_to_feature_flags(8)), 0);
 
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node8_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(8)), 0);
-
-		add_channel(&net_graph_msg_handler, &secp_ctx, node1_privkey, node3_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(3)), 3);
-		update_channel(&net_graph_msg_handler, &secp_ctx, node1_privkey, UnsignedChannelUpdate {
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 3,
 			timestamp: 1,
@@ -690,7 +681,7 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 3,
 			timestamp: 1,
@@ -703,9 +694,8 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-
-		add_channel(&net_graph_msg_handler, &secp_ctx, node2_privkey, node3_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(4)), 4);
-		update_channel(&net_graph_msg_handler, &secp_ctx, node2_privkey, UnsignedChannelUpdate {
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 4,
 			timestamp: 1,
@@ -717,7 +707,7 @@ mod tests {
 			fee_proportional_millionths: 1000000,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 4,
 			timestamp: 1,
@@ -730,8 +720,8 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		add_channel(&net_graph_msg_handler, &secp_ctx, node8_privkey, node3_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(13)), 13);
-		update_channel(&net_graph_msg_handler, &secp_ctx, node8_privkey, UnsignedChannelUpdate {
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(13)), 13);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 13,
 			timestamp: 1,
@@ -743,7 +733,7 @@ mod tests {
 			fee_proportional_millionths: 2000000,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 13,
 			timestamp: 1,
@@ -755,10 +745,11 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node3_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(3)), 0);
-		add_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, node5_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(6)), 6);
 
-		update_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, UnsignedChannelUpdate {
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[2], NodeFeatures::from_le_bytes(id_to_feature_flags(3)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 6,
 			timestamp: 1,
@@ -770,7 +761,7 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node5_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 6,
 			timestamp: 1,
@@ -780,11 +771,11 @@ mod tests {
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
-			excess_data: Vec::new()
+			excess_data: Vec::new(),
 		});
 
-		add_channel(&net_graph_msg_handler, &secp_ctx, node5_privkey, node4_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(11)), 11);
-		update_channel(&net_graph_msg_handler, &secp_ctx, node5_privkey, UnsignedChannelUpdate {
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(11)), 11);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 11,
 			timestamp: 1,
@@ -796,7 +787,7 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node4_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 11,
 			timestamp: 1,
@@ -808,12 +799,13 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node5_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(5)), 0);
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node4_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(4)), 0);
 
-		add_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, node6_privkey, ChannelFeatures::from_le_bytes(id_to_feature_flags!(7)), 7);
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[4], NodeFeatures::from_le_bytes(id_to_feature_flags(5)), 0);
 
-		update_channel(&net_graph_msg_handler, &secp_ctx, node3_privkey, UnsignedChannelUpdate {
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[3], NodeFeatures::from_le_bytes(id_to_feature_flags(4)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[5], ChannelFeatures::from_le_bytes(id_to_feature_flags(7)), 7);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 7,
 			timestamp: 1,
@@ -825,7 +817,7 @@ mod tests {
 			fee_proportional_millionths: 1000000,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, node6_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[5], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 7,
 			timestamp: 1,
@@ -838,29 +830,42 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node6_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(6)), 0);
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[5], NodeFeatures::from_le_bytes(id_to_feature_flags(6)), 0);
+
+		(secp_ctx, net_graph_msg_handler, logger)
+	}
+
+	#[test]
+	fn simple_route_test() {
+		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple route to 3 via 2
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, node2);
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 100);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags!(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags!(2));
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(4));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+	}
 
+	#[test]
+	fn disable_channels_test() {
+		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
 		// // Disable channels 4 and 12 by flags=2
-		update_channel(&net_graph_msg_handler, &secp_ctx, node2_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 4,
 			timestamp: 2,
@@ -872,7 +877,7 @@ mod tests {
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
 		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, UnsignedChannelUpdate {
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
 			short_channel_id: 12,
 			timestamp: 2,
@@ -886,15 +891,15 @@ mod tests {
 		});
 
 		// If all the channels require some features we don't understand, route should fail
-		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)) {
+		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 100, 42, Arc::clone(&logger)) {
 			assert_eq!(err, "Failed to find a path to the given destination");
 		} else { panic!(); }
 
-		// If we specify a channel to node8, that overrides our local channel view and that gets used
+		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
 			short_channel_id: Some(42),
-			remote_network_id: node8.clone(),
+			remote_network_id: nodes[7].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
@@ -902,65 +907,46 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, Some(&our_chans),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, node8);
+		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 13);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(13));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+	}
 
-		// Re-enable channels 4 and 12
-		update_channel(&net_graph_msg_handler, &secp_ctx, node2_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
-			short_channel_id: 4,
-			timestamp: 3,
-			flags: 0, // to enable
-			cltv_expiry_delta: (4 << 8) | 1,
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: OptionalField::Absent,
-			fee_base_msat: 0,
-			fee_proportional_millionths: 1000000,
-			excess_data: Vec::new()
-		});
-		update_channel(&net_graph_msg_handler, &secp_ctx, our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
-			short_channel_id: 12,
-			timestamp: 3,
-			flags: 0, // to enable
-			cltv_expiry_delta: u16::max_value(),
-			htlc_minimum_msat: 0,
-			htlc_maximum_msat: OptionalField::Absent,
-			fee_base_msat: u32::max_value(),
-			fee_proportional_millionths: u32::max_value(),
-			excess_data: Vec::new()
-		});
+	#[test]
+	fn disable_node_test() {
+		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
 		let mut unknown_features = NodeFeatures::known();
 		unknown_features.set_required_unknown_bits();
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node1_privkey, unknown_features.clone(), 1);
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node2_privkey, unknown_features.clone(), 1);
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node8_privkey, unknown_features.clone(), 1);
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[0], unknown_features.clone(), 1);
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[1], unknown_features.clone(), 1);
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[7], unknown_features.clone(), 1);
 
-		// // If all nodes require some features we don't understand, route should fail
-		// if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler, &node3, None, &Vec::new(), 100, 42, Arc::clone(&logger)) {
-		// 	assert_eq!(err, "Failed to find a path to the given destination");
-		// } else { panic!(); }
+		// If all nodes require some features we don't understand, route should fail
+		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, &Vec::new(), 100, 42, Arc::clone(&logger)) {
+			assert_eq!(err, "Failed to find a path to the given destination");
+		} else { panic!(); }
 
-		// If we specify a channel to node8, that overrides our local channel view and that gets used
+		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
 			short_channel_id: Some(42),
-			remote_network_id: node8.clone(),
+			remote_network_id: nodes[7].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
@@ -968,62 +954,63 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, node8);
+		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 13);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(13));
-
-		// Re-enable nodes 1, 2, and 8
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node1_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(1)), 2);
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node2_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(2)), 2);
-		add_or_update_node(&net_graph_msg_handler, &secp_ctx, node8_privkey, NodeFeatures::from_le_bytes(id_to_feature_flags!(8)), 2);
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 
 		// Note that we don't test disabling node 3 and failing to route to it, as we (somewhat
 		// naively) assume that the user checked the feature bits on the invoice, which override
 		// the node_announcement.
+	}
+
+	#[test]
+	fn our_chans_test() {
+		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node1, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0], None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 3);
 
-		assert_eq!(route.paths[0][0].pubkey, node2);
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags!(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags!(2));
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, (3 << 8) | 2);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(4));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, node1);
+		assert_eq!(route.paths[0][2].pubkey, nodes[0]);
 		assert_eq!(route.paths[0][2].short_channel_id, 3);
 		assert_eq!(route.paths[0][2].fee_msat, 100);
 		assert_eq!(route.paths[0][2].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags!(1));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags!(3));
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(1));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(3));
 
-		// If we specify a channel to node8, that overrides our local channel view and that gets used
+		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
 			short_channel_id: Some(42),
-			remote_network_id: node8.clone(),
+			remote_network_id: nodes[7].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
@@ -1031,96 +1018,110 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node3, Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, node8);
+		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 13);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(13));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+	}
 
+	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
 			proportional_millionths: 0,
 		};
-		let mut last_hops = vec!(RouteHint {
-				src_node_id: node4.clone(),
-				short_channel_id: 8,
-				fees: zero_fees,
-				cltv_expiry_delta: (8 << 8) | 1,
-				htlc_minimum_msat: 0,
-			}, RouteHint {
-				src_node_id: node5.clone(),
-				short_channel_id: 9,
-				fees: RoutingFees {
-					base_msat: 1001,
-					proportional_millionths: 0,
-				},
-				cltv_expiry_delta: (9 << 8) | 1,
-				htlc_minimum_msat: 0,
-			}, RouteHint {
-				src_node_id: node6.clone(),
-				short_channel_id: 10,
-				fees: zero_fees,
-				cltv_expiry_delta: (10 << 8) | 1,
-				htlc_minimum_msat: 0,
-			});
+		vec!(RouteHint {
+			src_node_id: nodes[3].clone(),
+			short_channel_id: 8,
+			fees: zero_fees,
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: 0,
+		}, RouteHint {
+			src_node_id: nodes[4].clone(),
+			short_channel_id: 9,
+			fees: RoutingFees {
+				base_msat: 1001,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (9 << 8) | 1,
+			htlc_minimum_msat: 0,
+		}, RouteHint {
+			src_node_id: nodes[5].clone(),
+			short_channel_id: 10,
+			fees: zero_fees,
+			cltv_expiry_delta: (10 << 8) | 1,
+			htlc_minimum_msat: 0,
+		})
+	}
+
+	#[test]
+	fn last_hops_test() {
+		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, &last_hops(&nodes), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 5);
 
-		assert_eq!(route.paths[0][0].pubkey, node2);
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 100);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags!(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags!(2));
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 0);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(4));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, node5);
+		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
 		assert_eq!(route.paths[0][2].short_channel_id, 6);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
 		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags!(5));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags!(6));
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
 
-		assert_eq!(route.paths[0][3].pubkey, node4);
+		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][3].short_channel_id, 11);
 		assert_eq!(route.paths[0][3].fee_msat, 0);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags!(4));
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags!(11));
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
 
-		assert_eq!(route.paths[0][4].pubkey, node7);
+		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 100);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
 		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+	}
+
+	#[test]
+	fn our_chans_last_hop_connect_test() {
+		let (secp_ctx, net_graph_msg_handler, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
 			short_channel_id: Some(42),
-			remote_network_id: node4.clone(),
+			remote_network_id: nodes[3].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
@@ -1128,17 +1129,18 @@ mod tests {
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, Some(&our_chans), &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
+		let mut last_hops = last_hops(&nodes);
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], Some(&our_chans), &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
-		assert_eq!(route.paths[0][0].pubkey, node4);
+		assert_eq!(route.paths[0][0].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 0);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
-		assert_eq!(route.paths[0][1].pubkey, node7);
+		assert_eq!(route.paths[0][1].pubkey, nodes[6]);
 		assert_eq!(route.paths[0][1].short_channel_id, 8);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
@@ -1148,33 +1150,33 @@ mod tests {
 		last_hops[0].fees.base_msat = 1000;
 
 		// Revert to via 6 as the fee on 8 goes up
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, &last_hops, 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 4);
 
-		assert_eq!(route.paths[0][0].pubkey, node2);
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 200); // fee increased as its % of value transferred across node
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags!(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags!(2));
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, (7 << 8) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(4));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, node6);
+		assert_eq!(route.paths[0][2].pubkey, nodes[5]);
 		assert_eq!(route.paths[0][2].short_channel_id, 7);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
 		assert_eq!(route.paths[0][2].cltv_expiry_delta, (10 << 8) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags!(6));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags!(7));
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(6));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(7));
 
-		assert_eq!(route.paths[0][3].pubkey, node7);
+		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
 		assert_eq!(route.paths[0][3].short_channel_id, 10);
 		assert_eq!(route.paths[0][3].fee_msat, 100);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
@@ -1182,40 +1184,40 @@ mod tests {
 		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		// ...but still use 8 for larger payments as 6 has a variable feerate
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &node7, None, &last_hops, 2000, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, &last_hops, 2000, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 5);
 
-		assert_eq!(route.paths[0][0].pubkey, node2);
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 3000);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
-		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags!(2));
-		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags!(2));
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
-		assert_eq!(route.paths[0][1].pubkey, node3);
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 0);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags!(3));
-		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags!(4));
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
-		assert_eq!(route.paths[0][2].pubkey, node5);
+		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
 		assert_eq!(route.paths[0][2].short_channel_id, 6);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
 		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags!(5));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags!(6));
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
 
-		assert_eq!(route.paths[0][3].pubkey, node4);
+		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][3].short_channel_id, 11);
 		assert_eq!(route.paths[0][3].fee_msat, 1000);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags!(4));
-		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags!(11));
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
 
-		assert_eq!(route.paths[0][4].pubkey, node7);
+		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 2000);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
