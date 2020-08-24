@@ -7,6 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use std::cmp;
+use std::{error, fmt};
+
 use bitcoin::secp256k1;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
@@ -23,37 +26,54 @@ pub struct FuzzGen<'a> {
 }
 
 impl<'a> FuzzGen<'a> {
-	pub fn new(data: &'a [u8]) -> Self {
+	fn new(data: &'a [u8]) -> Self {
 		Self {
 			read_pos: 0,
 			data
 		}
 	}
 
-	pub fn generate_bytes(&mut self,  num: usize) -> Result<&'a [u8], String> {
+	fn generate_bytes(&mut self,  num: usize) -> Result<&'a [u8], GeneratorFinishedError> {
 		if self.data.len() < self.read_pos + num {
-			return Err("out of bytes".to_string());
+			return Err(GeneratorFinishedError { });
 		}
 
 		self.read_pos += num;
 		Ok(&self.data[self.read_pos - num..self.read_pos])
 	}
 
-	pub fn generate_secret_key(&mut self) -> Result<SecretKey, String> {
+	fn generate_secret_key(&mut self) -> Result<SecretKey, GeneratorFinishedError> {
 		// Loop through the input 32 bytes at a time until a valid
 		// secret key can be created or we run out of bytes
 		loop {
 			match SecretKey::from_slice(self.generate_bytes(32)?) {
 				Ok(key) => { return Ok(key) },
-				_ => {}
+				_ => { }
 			}
 		}
 	}
 
-	pub fn generate_bool(&mut self) -> Result<bool, String> {
+	fn generate_bool(&mut self) -> Result<bool, GeneratorFinishedError> {
 		let next_byte = self.generate_bytes(1)?;
 		Ok(next_byte[0] & 1 == 1)
 	}
+}
+
+#[derive(PartialEq)]
+struct GeneratorFinishedError { }
+
+impl fmt::Debug for GeneratorFinishedError {
+	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		formatter.write_str("Generator out of bytes")
+	}
+}
+impl fmt::Display for GeneratorFinishedError {
+	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		formatter.write_str("Generator out of bytes")
+	}
+}
+impl error::Error for GeneratorFinishedError {
+	fn description(&self) -> &str { "Generator out of bytes" }
 }
 
 struct TestCtx {
@@ -65,7 +85,7 @@ struct TestCtx {
 }
 
 impl TestCtx {
-	fn make(generator: &mut FuzzGen) -> Result<Self, String> {
+	fn make(generator: &mut FuzzGen) -> Result<Self, GeneratorFinishedError> {
 		let curve = secp256k1::Secp256k1::new();
 
 		// Generate needed keys for successful handshake
@@ -92,7 +112,7 @@ impl TestCtx {
 // Common test function that sends encrypted messages between two conduits until the source data
 // runs out.
 #[inline]
-fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, responder_conduit: &mut Conduit) -> Result<(), String> {
+fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, responder_conduit: &mut Conduit, failures_expected: bool) -> Result<(), GeneratorFinishedError> {
 	// Keep sending messages back and forth until the input data is consumed
 	loop {
 		// Randomly generate message length
@@ -105,20 +125,30 @@ fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, re
 		// randomly choose sender of message
 		let receiver_unencrypted_msg = if generator.generate_bool()? {
 			let encrypted_msg = initiator_conduit.encrypt(sender_unencrypted_msg);
-			responder_conduit.decrypt_single_message(Some(&encrypted_msg))
+			if let Ok(msg) = responder_conduit.decrypt_single_message(Some(&encrypted_msg)) {
+				msg
+			} else {
+				assert!(failures_expected);
+				return Ok(());
+			}
 		} else {
 			let encrypted_msg = responder_conduit.encrypt(sender_unencrypted_msg);
-			initiator_conduit.decrypt_single_message(Some(&encrypted_msg))
+			if let Ok(msg) = initiator_conduit.decrypt_single_message(Some(&encrypted_msg)) {
+				msg
+			} else {
+				assert!(failures_expected);
+				return Ok(());
+			}
 		};
 
-		assert_eq!(sender_unencrypted_msg, receiver_unencrypted_msg.unwrap().unwrap().as_slice());
+		assert_eq!(sender_unencrypted_msg, receiver_unencrypted_msg.unwrap().as_slice());
 	}
 }
 
 // This test completes a valid handshake based on "random" private keys and then sends variable
 // length encrypted messages between two conduits to validate that they can communicate.
 #[inline]
-fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), String> {
+fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedError> {
 	let mut test_ctx = TestCtx::make(generator)?;
 
 	// The handshake should complete with any valid private keys
@@ -141,10 +171,37 @@ fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), String> {
 	assert_eq!(initiator_pubkey, test_ctx.initiator_static_public_key);
 	assert_eq!(responder_pubkey, test_ctx.responder_static_public_key);
 
-	// The nodes should be able to communicate over the conduit
-	do_conduit_tests(generator, &mut initiator_conduit, &mut responder_conduit)?;
+	// The nodes should be able to communicate over the conduit.
+	do_conduit_tests(generator, &mut initiator_conduit, &mut responder_conduit, false)
+}
 
-	unreachable!();
+// Either returns (act, false) or (random_bytes, true) where random_bytes is the same len as act
+fn maybe_generate_bad_act(generator: &mut FuzzGen, act: Vec<u8>) -> Result<(Vec<u8>, bool), GeneratorFinishedError> {
+	if generator.generate_bool()? {
+		Ok(((generator.generate_bytes(act.len())?).to_vec(), true))
+	} else {
+		Ok((act, false))
+	}
+}
+
+// Add between 0..15 bytes of garbage to a vec and returns whether or not it added bytes
+fn maybe_add_garbage(generator: &mut FuzzGen, input: &mut Vec<u8>) -> Result<bool, GeneratorFinishedError> {
+	let garbage_amount = (generator.generate_bytes(1)?)[0] >> 4;
+
+	if garbage_amount != 0 {
+		input.extend(generator.generate_bytes(garbage_amount as usize)?);
+		Ok(true)
+	} else {
+		Ok(false)
+	}
+}
+
+// Splits a Vec into between 1..7 chunks returning a Vec of slices into the original data
+fn split_vec<'a>(generator: &mut FuzzGen, input: &'a Vec<u8>) -> Result<Vec<&'a [u8]>, GeneratorFinishedError> {
+	let num_chunks = cmp::max(1, ((generator.generate_bytes(1)?)[0] as u8) >> 5) as usize;
+	let chunk_size = input.len() / num_chunks;
+
+	Ok(input.chunks(chunk_size).collect())
 }
 
 // This test variant goes through the peer handshake between the initiator and responder with
@@ -152,62 +209,108 @@ fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), String> {
 // In the event of an error from process_act() we validate that the input data was generated
 // randomly to ensure real act generation still produces valid transitions.
 #[inline]
-fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), String> {
+fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedError> {
 	let mut test_ctx = TestCtx::make(generator)?;
-	let mut used_generated_data = false;
 
-	// Possibly generate bad data for act1 and ensure that the responder does not panic
-	let mut act1 = test_ctx.act1;
-	if generator.generate_bool()? {
-		act1 = (generator.generate_bytes(50)?).to_vec();
-		used_generated_data = true;
+	// Possibly generate bad data for act1
+	let (mut act1, mut used_generated_data) = maybe_generate_bad_act(generator, test_ctx.act1)?;
+
+	// Optionally, add garbage data to the end
+	used_generated_data |= maybe_add_garbage(generator, &mut act1)?;
+
+	// Split act1 into between 1..7 chunks
+	let act1_chunks = split_vec(generator, &act1)?;
+
+	let mut act2_option = None;
+	for partial_act1 in act1_chunks {
+		match test_ctx.responder_handshake.process_act(&partial_act1) {
+			// Save valid act2 for initiator
+			Ok((Some(act2_option_inner), None)) => {
+				act2_option = Some(act2_option_inner);
+			},
+			// Partial act
+			Ok((None, None)) => { }
+			// errors are fine as long as they happened due to using bad data
+			Err(_) => {
+				assert!(used_generated_data);
+				return Ok(());
+			}
+			_ => panic!("responder required to output act bytes and no conduit/pubkey")
+		};
+	}
+	let act2 = act2_option.unwrap();
+
+	// Possibly generate bad data for act2
+	let (mut act2, is_bad_data) = maybe_generate_bad_act(generator, act2)?;
+
+	// Optionally, add garbage data to the end
+	let did_add_garbage = maybe_add_garbage(generator, &mut act2)?;
+
+	// Keep track of whether or not we have generated bad data up to this point
+	used_generated_data |= is_bad_data | did_add_garbage;
+
+	// Split act2 into between 1..7 chunks
+	let act2_chunks = split_vec(generator, &act2)?;
+
+	let mut act3_option = None;
+	let mut conduit_and_remote_pubkey_option = None;
+	for partial_act2 in act2_chunks {
+		match test_ctx.initiator_handshake.process_act(&partial_act2) {
+			Ok((Some(act3), Some(conduit_and_remote_pubkey_option_inner))) => {
+				act3_option = Some(act3);
+				conduit_and_remote_pubkey_option = Some(conduit_and_remote_pubkey_option_inner);
+
+				// Valid conduit and pubkey indicates handshake is over
+				break;
+			}
+			// Partial act
+			Ok((None, None)) => { },
+			// errors are fine as long as they happened due to using bad data
+			Err(_) => {
+				assert!(used_generated_data);
+				return Ok(());
+			}
+			_ => panic!("initiator required to output act bytes, conduit, and pubkey")
+		};
 	}
 
-	let mut act2 = match test_ctx.responder_handshake.process_act(&act1) {
-		Ok((Some(act2), None)) => {
-			act2
-		}
-		Err(_) => {
-			assert!(used_generated_data);
-			return Err("generated expected failure with bad data".to_string());
-		}
-		_ => panic!("responder required to output act bytes and no conduit/pubkey")
-	};
+	// Ensure we actually received act3 bytes, conduit, and remote pubkey from process_act()
+	let act3 = act3_option.unwrap();
+	let (mut initiator_conduit, responder_pubkey) = conduit_and_remote_pubkey_option.unwrap();
 
-	// Possibly generate bad data for act2 and ensure that the initiator does not panic
-	if generator.generate_bool()? {
-		act2 = (generator.generate_bytes(50)?).to_vec();
-		used_generated_data = true;
+	// Possibly generate bad data for act3
+	let (mut act3, is_bad_data) = maybe_generate_bad_act(generator, act3)?;
+
+	// Optionally, add garbage data to the end
+	let did_add_garbage = maybe_add_garbage(generator, &mut act3)?;
+
+	// Keep track of whether or not we have generated bad data up to this point
+	used_generated_data |= is_bad_data | did_add_garbage;
+
+	// Split act3 into between 1..7 chunks
+	let act3_chunks = split_vec(generator, &act3)?;
+
+	let mut conduit_and_remote_pubkey_option = None;
+	for partial_act3 in act3_chunks {
+		match test_ctx.responder_handshake.process_act(&partial_act3) {
+			Ok((None, Some(conduit_and_remote_pubkey_option_inner))) => {
+				conduit_and_remote_pubkey_option = Some(conduit_and_remote_pubkey_option_inner);
+
+				// Valid conduit and pubkey indicates handshake is over
+				break;
+			},
+			// partial act
+			Ok((None, None)) => { },
+			// errors are fine as long as they happened due to using bad data
+			Err(_) => {
+				assert!(used_generated_data);
+				return Ok(());
+			},
+			_ => panic!("responder required to output conduit, and pubkey")
+		};
 	}
-
-	let (mut act3, (mut initiator_conduit, responder_pubkey)) = match test_ctx.initiator_handshake.process_act(&act2) {
-		Ok((Some(act3), Some((conduit, remote_pubkey)))) => {
-			(act3, (conduit, remote_pubkey))
-		}
-		Err(_) => {
-			assert!(used_generated_data);
-			return Err("generated expected failure with bad data".to_string());
-		}
-		_ => panic!("initiator required to output act bytes and no conduit/pubkey")
-	};
-
-	// Possibly generate bad data for act3 and ensure that the responder does not panic
-	if generator.generate_bool()? {
-		act3 = (generator.generate_bytes(66)?).to_vec();
-		used_generated_data = true;
-	}
-
-	let (mut responder_conduit, initiator_pubkey) = match test_ctx.responder_handshake.process_act(&act3) {
-		Ok((None, Some((conduit, remote_pubkey)))) => {
-			(conduit, remote_pubkey)
-		}
-		Err(_) => {
-			// extremely unlikely we randomly generate a correct act3, but if so.. reset this
-			assert!(used_generated_data);
-			return Err("generated expected failure with bad data".to_string());
-		},
-		_ => panic!("responder required to output conduit/remote pubkey and no act bytes")
-	};
+	// Ensure we actually received conduit and remote pubkey from process_act()
+	let (mut responder_conduit, initiator_pubkey) = conduit_and_remote_pubkey_option.unwrap();
 
 	// The handshake should complete with each peer knowing the static_public_key of the remote peer
 	if initiator_pubkey != test_ctx.initiator_static_public_key {
@@ -220,9 +323,7 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), String> {
 	}
 
 	// The nodes should be able to communicate over the conduit
-	do_conduit_tests(generator, &mut initiator_conduit, &mut responder_conduit)?;
-
-	unreachable!();
+	do_conduit_tests(generator, &mut initiator_conduit, &mut responder_conduit, used_generated_data)
 }
 
 #[inline]
@@ -235,13 +336,19 @@ fn do_test(data: &[u8]) {
 		_ => { return }
 	};
 
+	// The only valid error that can leak here is the FuzzGen error to indicate
+	// the input bytes have been exhausted and the test can't proceed. Everything
+	// else should be caught and handled by the individual tests to validate any
+	// errors.
 	if do_valid_handshake {
 		match do_completed_handshake_test(&mut generator) {
-			_ => {}
+			Err(_) => { }
+			_ => { }
 		}
 	} else {
 		match do_handshake_test(&mut generator) {
-			_ => {}
+			Err(_) => { }
+			_ => { }
 		}
 	}
 }
@@ -262,7 +369,7 @@ mod test {
 	#[test]
 	fn data_generator_empty() {
 		let mut generator = FuzzGen::new(&[]);
-		assert_eq!(generator.generate_bool().err(), Some("out of bytes".to_string()));
+		assert_eq!(generator.generate_bool(), Err(GeneratorFinishedError { }));
 	}
 
 	#[test]
@@ -281,13 +388,13 @@ mod test {
 	fn data_generator_bool_then_error() {
 		let mut generator = FuzzGen::new(&[1]);
 		assert!(generator.generate_bool().unwrap());
-		assert_eq!(generator.generate_bool().err(), Some("out of bytes".to_string()));
+		assert_eq!(generator.generate_bool(), Err(GeneratorFinishedError { }));
 	}
 
 	#[test]
 	fn data_generator_bytes_too_many() {
 		let mut generator = FuzzGen::new(&[1, 2, 3, 4]);
-		assert_eq!(generator.generate_bytes(5).err(), Some("out of bytes".to_string()));
+		assert_eq!(generator.generate_bytes(5), Err(GeneratorFinishedError { }));
 	}
 
 	#[test]
@@ -306,6 +413,93 @@ mod test {
 		assert_eq!(result, &input[..2]);
 		let result = generator.generate_bytes(2).unwrap();
 		assert_eq!(result, &input[2..]);
-		assert_eq!(generator.generate_bytes(1).err(), Some("out of bytes".to_string()));
+		assert_eq!(generator.generate_bytes(1), Err(GeneratorFinishedError { }));
+	}
+
+	#[test]
+	fn maybe_generate_bad_act_gen_bad() {
+		// 1 is used to take bad branch and 2 is used to generate bad act
+		let input = [1, 2];
+		let mut generator = FuzzGen::new(&input);
+
+		let original_act = &[5];
+
+		let (act, is_bad) = maybe_generate_bad_act(&mut generator, original_act.to_vec()).unwrap();
+		assert!(is_bad);
+		assert_eq!(act, &[2]);
+	}
+
+	#[test]
+	fn maybe_generate_bad_act_gen_good() {
+		// 0 is used to take good branch
+		let input = [0];
+		let mut generator = FuzzGen::new(&input);
+		let original_act = &[5];
+
+		let (act, is_bad) = maybe_generate_bad_act(&mut generator, original_act.to_vec()).unwrap();
+		assert!(!is_bad);
+		assert_eq!(act, &[5]);
+	}
+
+	#[test]
+	fn maybe_add_garbage_did_add() {
+		// 0x10 consumed to specify amount of garbage (1 byte) and 2 is consumed to add garbage
+		let input = [0x10, 2];
+		let mut generator = FuzzGen::new(&input);
+		let mut act = vec![5];
+
+		let did_add_garbage = maybe_add_garbage(&mut generator, &mut act).unwrap();
+		assert!(did_add_garbage);
+		assert_eq!(act, &[5, 2]);
+	}
+
+	#[test]
+	fn maybe_add_garbage_no_add() {
+		// 0x10 consumed to specify amount of garbage (1 byte) and 2 is consumed to add garbage
+		let input = [0];
+		let mut generator = FuzzGen::new(&input);
+		let mut act = vec![5];
+
+		let did_add_garbage = maybe_add_garbage(&mut generator, &mut act).unwrap();
+		assert!(!did_add_garbage);
+		assert_eq!(act, &[5]);
+	}
+
+	#[test]
+	fn split_vec_1_chunk() {
+		// 0 consumed for number of chunks (1 is min)
+		let input = [0];
+		let mut generator = FuzzGen::new(&input);
+		let act = vec![5, 6];
+
+		let act_parts = split_vec(&mut generator, &act).unwrap();
+		assert_eq!(act_parts.len(), 1);
+		assert_eq!(act_parts[0], &[5, 6]);
+	}
+
+	#[test]
+	fn split_vec_2_chunks() {
+		// 40 consumed for number of chunks. Chunk size is equal to the high three bits (2)
+		let input = [0x40];
+		let mut generator = FuzzGen::new(&input);
+		let act = vec![5, 6];
+
+		let act_parts = split_vec(&mut generator, &act).unwrap();
+		assert_eq!(act_parts.len(), 2);
+		assert_eq!(act_parts[0], &[5]);
+		assert_eq!(act_parts[1], &[6]);
+	}
+	#[test]
+	fn split_vec_2_chunks_odd() {
+		// 40 consumed for number of chunks. Chunk size is equal to the high three bits (2)
+		let input = [0x40];
+		let mut generator = FuzzGen::new(&input);
+		let act = vec![5, 6, 7, 8, 9];
+
+		let act_parts = split_vec(&mut generator, &act).unwrap();
+		assert_eq!(act_parts.len(), 3);
+		assert_eq!(act_parts[0], &[5, 6]);
+		assert_eq!(act_parts[1], &[7, 8]);
+		assert_eq!(act_parts[2], &[9]);
 	}
 }
