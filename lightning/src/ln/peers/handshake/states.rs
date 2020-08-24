@@ -181,6 +181,22 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
+		// In the event of a partial fill, stay in the same state and wait for more data
+		if read_buffer.len() < ACT_ONE_TWO_LENGTH {
+			return Ok((
+				None,
+				HandshakeState::ResponderAwaitingActOne(Self {
+					responder_static_private_key: self.responder_static_private_key,
+					responder_ephemeral_private_key: self.responder_ephemeral_private_key,
+					responder_ephemeral_public_key: self.responder_ephemeral_public_key,
+					chaining_key: self.chaining_key,
+					hash: self.hash,
+					read_buffer
+				})
+			));
+		}
+
+
 		let hash = self.hash;
 		let responder_static_private_key = self.responder_static_private_key;
 		let chaining_key = self.chaining_key;
@@ -221,6 +237,22 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
+
+		// In the event of a partial fill, stay in the same state and wait for more data
+		if read_buffer.len() < ACT_ONE_TWO_LENGTH {
+			return Ok((
+				None,
+				HandshakeState::InitiatorAwaitingActTwo(Self {
+					initiator_static_private_key: self.initiator_static_private_key,
+					initiator_static_public_key: self.initiator_static_public_key,
+					initiator_ephemeral_private_key: self.initiator_ephemeral_private_key,
+					responder_static_public_key: self.responder_static_public_key,
+					chaining_key: self.chaining_key,
+					hash: self.hash,
+					read_buffer
+				})
+			));
+		}
 
 		let initiator_static_private_key = self.initiator_static_private_key;
 		let initiator_static_public_key = self.initiator_static_public_key;
@@ -287,8 +319,18 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
+		// In the event of a partial fill, stay in the same state and wait for more data
 		if read_buffer.len() < ACT_THREE_LENGTH {
-			return Err("need at least 66 bytes".to_string());
+			return Ok((
+				None,
+				HandshakeState::ResponderAwaitingActThree(Self {
+					hash: self.hash,
+					responder_ephemeral_private_key: self.responder_ephemeral_private_key,
+					chaining_key: self.chaining_key,
+					temporary_key: self.temporary_key,
+					read_buffer
+				})
+			));
 		}
 
 		let hash = self.hash;
@@ -407,10 +449,6 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
 fn process_act_message(read_buffer: &mut Vec<u8>, local_private_key: &SecretKey, chaining_key: ChainingKey, hash: Sha256) -> Result<(PublicKey, Sha256, SymmetricKey, SymmetricKey), String> {
 	// 1. Read exactly 50 bytes from the network buffer
-	if read_buffer.len() < ACT_ONE_TWO_LENGTH {
-		return Err("need at least 50 bytes".to_string());
-	}
-
 	let act_bytes: Vec<u8> = read_buffer.drain(..ACT_ONE_TWO_LENGTH).collect();
 
 	// 2.Parse the read message (m) into v, re, and c
@@ -503,9 +541,9 @@ mod test {
 			let responder = ResponderAwaitingActOneState::new(responder_static_private_key, responder_ephemeral_private_key);
 
 			TestCtx {
-				initiator: HandshakeState::InitiatorStarting(initiator),
+				initiator: InitiatorStarting(initiator),
 				initiator_public_key,
-				responder: HandshakeState::ResponderAwaitingActOne(responder),
+				responder: ResponderAwaitingActOne(responder),
 				responder_static_public_key,
 				valid_act1: hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c6a").unwrap(),
 				valid_act2: hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730ae").unwrap(),
@@ -565,8 +603,6 @@ mod test {
 	// Responder::AwaitingActOne -> AwaitingActThree
 	// TODO: Should this fail since we don't expect data > ACT_ONE_TWO_LENGTH and likely indicates
 	// a bad peer?
-	// TODO: Should the behavior be changed to handle act1 data that is striped across multiple
-	// next() calls?
 	#[test]
 	fn awaiting_act_one_to_awaiting_act_three_input_extra_bytes() {
 		let test_ctx = TestCtx::new();
@@ -578,13 +614,18 @@ mod test {
 		assert_matches!(awaiting_act_three_state, ResponderAwaitingActThree(_));
 	}
 
-	// Responder::AwaitingActOne -> Error (input too small)
+	// Responder::AwaitingActOne -> AwaitingActThree (segmented calls)
 	// RFC test vector: transport-responder act1 short read test
+	// Divergence from RFC tests due to not reading directly from the socket (partial message OK)
 	#[test]
-	fn awaiting_act_one_to_awaiting_act_three_input_too_small() {
+	fn awaiting_act_one_to_awaiting_act_three_segmented() {
 		let test_ctx = TestCtx::new();
-		let act1 = hex::decode("00036360e856310ce5d294e8be33fc807077dc56ac80d95d9cd4ddbd21325eff73f70df6086551151f58b8afe6c195782c").unwrap();
-		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("need at least 50 bytes")))
+		let act1_partial1 = &test_ctx.valid_act1[..25];
+		let act1_partial2 = &test_ctx.valid_act1[25..];
+
+		let next_state = test_ctx.responder.next(&act1_partial1).unwrap();
+		assert_matches!(next_state, (None, ResponderAwaitingActOne(_)));
+		assert_matches!(next_state.1.next(&act1_partial2).unwrap(), (Some(_), ResponderAwaitingActThree(_)));
 	}
 
 	// Responder::AwaitingActOne -> Error (bad version byte)
@@ -659,15 +700,20 @@ mod test {
 		assert_eq!(100, conduit.decryptor.read_buffer_length());
 	}
 
-	// Initiator::AwaitingActTwo -> Error (input too small)
+	// Initiator::AwaitingActTwo -> Complete (segmented calls)
 	// RFC test vector: transport-initiator act2 short read test
+	// Divergence from RFC tests due to not reading directly from the socket (partial message OK)
 	#[test]
-	fn awaiting_act_two_input_too_small() {
+	fn awaiting_act_two_to_complete_segmented() {
 		let test_ctx = TestCtx::new();
 		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let act2 = hex::decode("0002466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276e2470b93aac583c9ef6eafca3f730").unwrap();
 
-		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("need at least 50 bytes")));
+		let act2_partial1 = &test_ctx.valid_act2[..25];
+		let act2_partial2 = &test_ctx.valid_act2[25..];
+
+		let next_state = awaiting_act_two_state.next(&act2_partial1).unwrap();
+		assert_matches!(next_state, (None, InitiatorAwaitingActTwo(_)));
+		assert_matches!(next_state.1.next(&act2_partial2).unwrap(), (Some(_), Complete(_)));
 	}
 
 	// Initiator::AwaitingActTwo -> Error (bad version byte)
@@ -751,15 +797,20 @@ mod test {
 		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("unexpected version")));
 	}
 
-	// Responder::AwaitingActThree -> Error (input too small)
+	// Responder::AwaitingActThree -> Complete (segmented calls)
 	// RFC test vector: transport-responder act3 short read test
+	// Divergence from RFC tests due to not reading directly from the socket (partial message OK)
 	#[test]
-	fn awaiting_act_three_input_too_small() {
+	fn awaiting_act_three_to_complete_segmented() {
 		let test_ctx = TestCtx::new();
 		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
-		let act3 = hex::decode("00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139").unwrap();
 
-		assert_eq!(awaiting_act_three_state.next(&act3).err(), Some(String::from("need at least 66 bytes")));
+		let act3_partial1 = &test_ctx.valid_act3[..35];
+		let act3_partial2 = &test_ctx.valid_act3[35..];
+
+		let next_state = awaiting_act_three_state.next(&act3_partial1).unwrap();
+		assert_matches!(next_state, (None, ResponderAwaitingActThree(_)));
+		assert_matches!(next_state.1.next(&act3_partial2), Ok((None, Complete(_))));
 	}
 
 	// Responder::AwaitingActThree -> Error (invalid hmac)
