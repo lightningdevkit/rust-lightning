@@ -173,7 +173,8 @@ mod test {
 	#[test]
 	fn errors_properly_returned() {
 		let mut test_ctx = TestCtx::new();
-		assert_matches!(test_ctx.inbound_handshake.process_act(&[]).err(), Some(_));
+		let invalid_act1 = [0; 50];
+		assert_matches!(test_ctx.inbound_handshake.process_act(&invalid_act1).err(), Some(_));
 	}
 
 	// Test that any use of the PeerHandshake after returning an error panics
@@ -181,7 +182,8 @@ mod test {
 	#[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
 	fn use_after_error_panics() {
 		let mut test_ctx = TestCtx::new();
-		assert_matches!(test_ctx.inbound_handshake.process_act(&[]).err(), Some(_));
+		let invalid_act1 = [0; 50];
+		assert_matches!(test_ctx.inbound_handshake.process_act(&invalid_act1).err(), Some(_));
 		test_ctx.inbound_handshake.process_act(&[]).unwrap();
 	}
 }
