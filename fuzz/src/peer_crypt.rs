@@ -111,7 +111,7 @@ fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, re
 			initiator_conduit.decrypt_single_message(Some(&encrypted_msg))
 		};
 
-		assert_eq!(sender_unencrypted_msg, receiver_unencrypted_msg.unwrap().as_slice());
+		assert_eq!(sender_unencrypted_msg, receiver_unencrypted_msg.unwrap().unwrap().as_slice());
 	}
 }
 

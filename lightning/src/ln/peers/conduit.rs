@@ -38,13 +38,29 @@ pub(super) struct Decryptor {
 
 	pending_message_length: Option<usize>,
 	read_buffer: Option<Vec<u8>>,
+	poisoned: bool, // signal an error has occurred so None is returned on iteration after failure
 }
 
 impl Iterator for Decryptor {
-	type Item = Vec<u8>;
+	type Item = Result<Option<Vec<u8>>, String>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		self.decrypt_single_message(None)
+		if self.poisoned {
+			return None;
+		}
+
+		match self.decrypt_single_message(None) {
+			Ok(Some(result)) => {
+				Some(Ok(Some(result)))
+			},
+			Ok(None) => {
+				None
+			}
+			Err(e) => {
+				self.poisoned = true;
+				Some(Err(e))
+			}
+		}
 	}
 }
 
@@ -62,7 +78,8 @@ impl Conduit {
 				receiving_chaining_key: chaining_key,
 				receiving_nonce: 0,
 				read_buffer: None,
-				pending_message_length: None
+				pending_message_length: None,
+				poisoned: false
 			}
 		}
 	}
@@ -81,8 +98,8 @@ impl Conduit {
 	/// If a message pending in the buffer still hasn't been decrypted, that message will be
 	/// returned in lieu of anything new, even if new data is provided.
 	#[cfg(any(test, feature = "fuzztarget"))]
-	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Option<Vec<u8>> {
-		self.decryptor.decrypt_single_message(new_data)
+	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
+		Ok(self.decryptor.decrypt_single_message(new_data)?)
 	}
 
 	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
@@ -135,7 +152,7 @@ impl Decryptor {
 	/// only the first message will be returned, and the rest stored in the internal buffer.
 	/// If a message pending in the buffer still hasn't been decrypted, that message will be
 	/// returned in lieu of anything new, even if new data is provided.
-	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Option<Vec<u8>> {
+	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
 		let mut read_buffer = if let Some(buffer) = self.read_buffer.take() {
 			buffer
 		} else {
@@ -150,25 +167,25 @@ impl Decryptor {
 			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
 		}
 
-		let (current_message, offset) = self.decrypt(&read_buffer[..]);
+		let (current_message, offset) = self.decrypt(&read_buffer[..])?;
 		read_buffer.drain(..offset); // drain the read buffer
 		self.read_buffer = Some(read_buffer); // assign the new value to the built-in buffer
-		current_message
+		Ok(current_message)
 	}
 
-	fn decrypt(&mut self, buffer: &[u8]) -> (Option<Vec<u8>>, usize) {
+	fn decrypt(&mut self, buffer: &[u8]) -> Result<(Option<Vec<u8>>, usize), String> {
 		let message_length = if let Some(length) = self.pending_message_length {
 			// we have already decrypted the header
 			length
 		} else {
 			if buffer.len() < TAGGED_MESSAGE_LENGTH_HEADER_SIZE {
 				// A message must be at least 18 bytes (2 for encrypted length, 16 for the tag)
-				return (None, 0);
+				return Ok((None, 0));
 			}
 
 			let encrypted_length = &buffer[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE];
 			let mut length_bytes = [0u8; MESSAGE_LENGTH_HEADER_SIZE];
-			length_bytes.copy_from_slice(&chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length).unwrap());
+			length_bytes.copy_from_slice(&chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length)?);
 
 			self.increment_nonce();
 
@@ -180,18 +197,18 @@ impl Decryptor {
 
 		if buffer.len() < message_end_index {
 			self.pending_message_length = Some(message_length);
-			return (None, 0);
+			return Ok((None, 0));
 		}
 
 		self.pending_message_length = None;
 
 		let encrypted_message = &buffer[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..message_end_index];
 
-		let message = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_message).unwrap();
+		let message = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_message)?;
 
 		self.increment_nonce();
 
-		(Some(message), message_end_index)
+		Ok((Some(message), message_end_index))
 	}
 
 	fn increment_nonce(&mut self) {
@@ -243,7 +260,7 @@ mod tests {
 		let encrypted_message = connected_peer.encrypt(&message);
 		assert_eq!(encrypted_message.len(), 2 + 16 + 16);
 
-		let decrypted_message = remote_peer.decrypt_single_message(Some(&encrypted_message)).unwrap();
+		let decrypted_message = remote_peer.decrypt_single_message(Some(&encrypted_message)).unwrap().unwrap();
 		assert_eq!(decrypted_message, Vec::<u8>::new());
 	}
 
@@ -296,15 +313,121 @@ mod tests {
 			let mut current_encrypted_message = encrypted_messages.remove(0);
 			let next_encrypted_message = encrypted_messages.remove(0);
 			current_encrypted_message.extend_from_slice(&next_encrypted_message);
-			let decrypted_message = remote_peer.decrypt_single_message(Some(&current_encrypted_message)).unwrap();
+			let decrypted_message = remote_peer.decrypt_single_message(Some(&current_encrypted_message)).unwrap().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
 
 		for _ in 0..501 {
 			// decrypt messages directly from buffer without adding to it
-			let decrypted_message = remote_peer.decrypt_single_message(None).unwrap();
+			let decrypted_message = remote_peer.decrypt_single_message(None).unwrap().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
+	}
+
+	// Decryption errors should result in Err
+	#[test]
+	fn decryption_failure_errors() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let encrypted = remote_peer.encrypt(&[1]);
+
+		connected_peer.decryptor.receiving_key = [0; 32];
+		assert_eq!(connected_peer.decrypt_single_message(Some(&encrypted)), Err("invalid hmac".to_string()));
+	}
+
+	// Test next()::None
+	#[test]
+	fn decryptor_iterator_empty() {
+		let (mut connected_peer, _) = setup_peers();
+
+		assert_eq!(connected_peer.decryptor.next(), None);
+	}
+
+	// Test next() -> next()::None
+	#[test]
+	fn decryptor_iterator_one_item_valid() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let encrypted = remote_peer.encrypt(&[1]);
+		connected_peer.read(&encrypted);
+
+		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
+		assert_eq!(connected_peer.decryptor.next(), None);
+	}
+
+	// Test next()::err -> next()::None
+	#[test]
+	fn decryptor_iterator_error() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let encrypted = remote_peer.encrypt(&[1]);
+		connected_peer.read(&encrypted);
+
+		connected_peer.decryptor.receiving_key = [0; 32];
+		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
+		assert_eq!(connected_peer.decryptor.next(), None);
+	}
+
+	// Test next()::Some -> next()::err -> next()::None
+	#[test]
+	fn decryptor_iterator_error_after_success() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let encrypted = remote_peer.encrypt(&[1]);
+		connected_peer.read(&encrypted);
+		let encrypted = remote_peer.encrypt(&[2]);
+		connected_peer.read(&encrypted);
+
+		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
+		connected_peer.decryptor.receiving_key = [0; 32];
+		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
+		assert_eq!(connected_peer.decryptor.next(), None);
+	}
+
+	// Test that next()::Some -> next()::err -> next()::None
+	// Error should poison decryptor
+	#[test]
+	fn decryptor_iterator_next_after_error_returns_none() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let encrypted = remote_peer.encrypt(&[1]);
+		connected_peer.read(&encrypted);
+		let encrypted = remote_peer.encrypt(&[2]);
+		connected_peer.read(&encrypted);
+		let encrypted = remote_peer.encrypt(&[3]);
+		connected_peer.read(&encrypted);
+
+		// Get one valid value
+		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
+		let valid_receiving_key = connected_peer.decryptor.receiving_key;
+
+		// Corrupt the receiving key and ensure we get a failure
+		connected_peer.decryptor.receiving_key = [0; 32];
+		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
+
+		// Restore the receiving key, do a read and ensure None is returned (poisoned)
+		connected_peer.decryptor.receiving_key = valid_receiving_key;
+		assert_eq!(connected_peer.decryptor.next(), None);
+	}
+
+	// Test next()::Some -> next()::err -> read() -> next()::None
+	// Error should poison decryptor even after future reads
+	#[test]
+	fn decryptor_iterator_read_next_after_error_returns_none() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let encrypted = remote_peer.encrypt(&[1]);
+		connected_peer.read(&encrypted);
+		let encrypted = remote_peer.encrypt(&[2]);
+		connected_peer.read(&encrypted);
+
+		// Get one valid value
+		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
+		let valid_receiving_key = connected_peer.decryptor.receiving_key;
+
+		// Corrupt the receiving key and ensure we get a failure
+		connected_peer.decryptor.receiving_key = [0; 32];
+		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
+
+		// Restore the receiving key, do a read and ensure None is returned (poisoned)
+		let encrypted = remote_peer.encrypt(&[3]);
+		connected_peer.read(&encrypted);
+		connected_peer.decryptor.receiving_key = valid_receiving_key;
+		assert_eq!(connected_peer.decryptor.next(), None);
 	}
 
 	#[test]
@@ -328,6 +451,6 @@ mod tests {
 
 		// MSG should not exceed LN_MAX_MSG_LEN + 16
 		let msg = [4u8; LN_MAX_MSG_LEN + 17];
-		connected_peer.decrypt_single_message(Some(&msg));
+		connected_peer.decrypt_single_message(Some(&msg)).unwrap();
 	}
 }
