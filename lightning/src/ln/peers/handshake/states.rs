@@ -297,18 +297,12 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		let chaining_key = self.chaining_key;
 
 		// 1. Read exactly 66 bytes from the network buffer
-		let mut act_three_bytes = [0u8; ACT_THREE_LENGTH];
-		act_three_bytes.copy_from_slice(&read_buffer[..ACT_THREE_LENGTH]);
-		read_buffer.drain(..ACT_THREE_LENGTH);
+		let act_three_bytes: Vec<u8> = read_buffer.drain(..ACT_THREE_LENGTH).collect();
 
 		// 2. Parse the read message (m) into v, c, and t
 		let version = act_three_bytes[0];
-
-		let mut tagged_encrypted_pubkey = [0u8; 49];
-		tagged_encrypted_pubkey.copy_from_slice(&act_three_bytes[1..50]);
-
-		let mut chacha_tag = [0u8; 16];
-		chacha_tag.copy_from_slice(&act_three_bytes[50..66]);
+		let tagged_encrypted_pubkey = &act_three_bytes[1..50];
+		let chacha_tag = &act_three_bytes[50..66];
 
 		// 3. If v is an unrecognized handshake version, then the responder MUST abort the connection attempt.
 		if version != 0 {
@@ -318,9 +312,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		// 4. rs = decryptWithAD(temp_k2, 1, h, c)
 		let remote_pubkey_vec = chacha::decrypt(&temporary_key, 1, &hash, &tagged_encrypted_pubkey)?;
-		let mut initiator_pubkey_bytes = [0u8; 33];
-		initiator_pubkey_bytes.copy_from_slice(remote_pubkey_vec.as_slice());
-		let initiator_pubkey = if let Ok(public_key) = PublicKey::from_slice(&initiator_pubkey_bytes) {
+		let initiator_pubkey = if let Ok(public_key) = PublicKey::from_slice(remote_pubkey_vec.as_slice()) {
 			public_key
 		} else {
 			return Err("invalid remote public key".to_string());
@@ -419,23 +411,18 @@ fn process_act_message(read_buffer: &mut Vec<u8>, local_private_key: &SecretKey,
 		return Err("need at least 50 bytes".to_string());
 	}
 
-	let mut act_bytes = [0u8; ACT_ONE_TWO_LENGTH];
-	act_bytes.copy_from_slice(&read_buffer[..ACT_ONE_TWO_LENGTH]);
-	read_buffer.drain(..ACT_ONE_TWO_LENGTH);
+	let act_bytes: Vec<u8> = read_buffer.drain(..ACT_ONE_TWO_LENGTH).collect();
 
 	// 2.Parse the read message (m) into v, re, and c
 	let version = act_bytes[0];
+	let ephemeral_public_key_bytes = &act_bytes[1..34];
+	let chacha_tag = &act_bytes[34..50];
 
-	let mut ephemeral_public_key_bytes = [0u8; 33];
-	ephemeral_public_key_bytes.copy_from_slice(&act_bytes[1..34]);
 	let ephemeral_public_key = if let Ok(public_key) = PublicKey::from_slice(&ephemeral_public_key_bytes) {
 		public_key
 	} else {
 		return Err("invalid remote ephemeral public key".to_string());
 	};
-
-	let mut chacha_tag = [0u8; 16];
-	chacha_tag.copy_from_slice(&act_bytes[34..50]);
 
 	// 3. If v is an unrecognized handshake version, then the responder MUST abort the connection attempt
 	if version != 0 {
