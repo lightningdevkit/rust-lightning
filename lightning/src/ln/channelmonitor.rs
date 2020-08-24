@@ -148,6 +148,16 @@ pub enum ChannelMonitorUpdateErr {
 #[derive(Debug)]
 pub struct MonitorUpdateError(pub &'static str);
 
+/// An event to be processed by the ChannelManager.
+#[derive(PartialEq)]
+pub enum MonitorEvent {
+	/// A monitor event containing an HTLCUpdate.
+	HTLCEvent(HTLCUpdate),
+
+	/// A monitor event that the Channel's commitment transaction was broadcasted.
+	CommitmentTxBroadcasted(OutPoint),
+}
+
 /// Simple structure send back by ManyChannelMonitor in case of HTLC detected onchain from a
 /// forward channel and from which info are needed to update HTLC in a backward channel.
 #[derive(Clone, PartialEq)]
@@ -292,12 +302,12 @@ impl<ChanSigner: ChannelKeys, T: Deref + Sync + Send, F: Deref + Sync + Send, L:
 		}
 	}
 
-	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
-		let mut pending_htlcs_updated = Vec::new();
+	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		let mut pending_monitor_events = Vec::new();
 		for chan in self.monitors.lock().unwrap().values_mut() {
-			pending_htlcs_updated.append(&mut chan.get_and_clear_pending_htlcs_updated());
+			pending_monitor_events.append(&mut chan.get_and_clear_pending_monitor_events());
 		}
-		pending_htlcs_updated
+		pending_monitor_events
 	}
 }
 
@@ -729,7 +739,7 @@ impl Readable for ChannelMonitorUpdateStep {
 /// information and are actively monitoring the chain.
 ///
 /// Pending Events or updated HTLCs which have not yet been read out by
-/// get_and_clear_pending_htlcs_updated or get_and_clear_pending_events are serialized to disk and
+/// get_and_clear_pending_monitor_events or get_and_clear_pending_events are serialized to disk and
 /// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
 /// gotten are fully handled before re-serializing the new state.
 pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
@@ -784,7 +794,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
-	pending_htlcs_updated: Vec<HTLCUpdate>,
+	pending_monitor_events: Vec<MonitorEvent>,
 	pending_events: Vec<events::Event>,
 
 	// Used to track onchain events, i.e transactions parts of channels confirmed on chain, on which
@@ -881,9 +891,9 @@ pub trait ManyChannelMonitor: Send + Sync {
 	/// with success or failure.
 	///
 	/// You should probably just call through to
-	/// ChannelMonitor::get_and_clear_pending_htlcs_updated() for each ChannelMonitor and return
+	/// ChannelMonitor::get_and_clear_pending_monitor_events() for each ChannelMonitor and return
 	/// the full list.
-	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate>;
+	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent>;
 }
 
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -914,7 +924,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.current_local_commitment_number != other.current_local_commitment_number ||
 			self.current_local_commitment_tx != other.current_local_commitment_tx ||
 			self.payment_preimages != other.payment_preimages ||
-			self.pending_htlcs_updated != other.pending_htlcs_updated ||
+			self.pending_monitor_events != other.pending_monitor_events ||
 			self.pending_events.len() != other.pending_events.len() || // We trust events to round-trip properly
 			self.onchain_events_waiting_threshold_conf != other.onchain_events_waiting_threshold_conf ||
 			self.outputs_to_watch != other.outputs_to_watch ||
@@ -1070,9 +1080,15 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.pending_htlcs_updated.len() as u64))?;
-		for data in self.pending_htlcs_updated.iter() {
-			data.write(writer)?;
+		writer.write_all(&byte_utils::be64_to_array(self.pending_monitor_events.len() as u64))?;
+		for event in self.pending_monitor_events.iter() {
+			match event {
+				MonitorEvent::HTLCEvent(upd) => {
+					0u8.write(writer)?;
+					upd.write(writer)?;
+				},
+				MonitorEvent::CommitmentTxBroadcasted(_) => 1u8.write(writer)?
+			}
 		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.pending_events.len() as u64))?;
@@ -1187,7 +1203,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			current_local_commitment_number: 0xffff_ffff_ffff - ((((local_tx_sequence & 0xffffff) << 3*8) | (local_tx_locktime as u64 & 0xffffff)) ^ commitment_transaction_number_obscure_factor),
 
 			payment_preimages: HashMap::new(),
-			pending_htlcs_updated: Vec::new(),
+			pending_monitor_events: Vec::new(),
 			pending_events: Vec::new(),
 
 			onchain_events_waiting_threshold_conf: HashMap::new(),
@@ -1351,6 +1367,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		for tx in self.get_latest_local_commitment_txn(logger).iter() {
 			broadcaster.broadcast_transaction(tx);
 		}
+		self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 	}
 
 	/// Used in Channel to cheat wrt the update_ids since it plays games, will be removed soon!
@@ -1443,10 +1460,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	}
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
-	/// ChannelManager via ManyChannelMonitor::get_and_clear_pending_htlcs_updated().
-	pub fn get_and_clear_pending_htlcs_updated(&mut self) -> Vec<HTLCUpdate> {
+	/// ChannelManager via ManyChannelMonitor::get_and_clear_pending_monitor_events().
+	pub fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
 		let mut ret = Vec::new();
-		mem::swap(&mut ret, &mut self.pending_htlcs_updated);
+		mem::swap(&mut ret, &mut self.pending_monitor_events);
 		ret
 	}
 
@@ -1938,7 +1955,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding { funding_redeemscript: self.funding_redeemscript.clone() }});
 		}
 		if should_broadcast {
+			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_local_tx(&self.funding_redeemscript) {
+				self.local_tx_signed = true;
 				let (mut new_outpoints, new_outputs, _) = self.broadcast_by_local_state(&commitment_tx, &self.current_local_commitment_tx);
 				if !new_outputs.is_empty() {
 					watch_outputs.push((self.current_local_commitment_tx.txid.clone(), new_outputs));
@@ -1951,11 +1970,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				match ev {
 					OnchainEvent::HTLCUpdate { htlc_update } => {
 						log_trace!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!((htlc_update.1).0));
-						self.pending_htlcs_updated.push(HTLCUpdate {
+						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							payment_hash: htlc_update.1,
 							payment_preimage: None,
 							source: htlc_update.0,
-						});
+						}));
 					},
 					OnchainEvent::MaturingOutput { descriptor } => {
 						log_trace!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
@@ -1966,6 +1985,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				}
 			}
 		}
+
 		self.onchain_tx_handler.block_connected(txn_matched, claimable_outpoints, height, &*broadcaster, &*fee_estimator, &*logger);
 
 		self.last_block_hash = block_hash.clone();
@@ -1993,7 +2013,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		self.last_block_hash = block_hash.clone();
 	}
 
-	pub(super) fn would_broadcast_at_height<L: Deref>(&self, height: u32, logger: &L) -> bool where L::Target: Logger {
+	fn would_broadcast_at_height<L: Deref>(&self, height: u32, logger: &L) -> bool where L::Target: Logger {
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked remote commitment transaction, as they could broadcast said
 		//    transactions and we'd end up in a race, or
@@ -2151,22 +2171,26 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			if let Some((source, payment_hash)) = payment_data {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				if accepted_preimage_claim {
-					if !self.pending_htlcs_updated.iter().any(|update| update.source == source) {
+					if !self.pending_monitor_events.iter().any(
+						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						payment_preimage.0.copy_from_slice(&input.witness[3]);
-						self.pending_htlcs_updated.push(HTLCUpdate {
+						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash
-						});
+						}));
 					}
 				} else if offered_preimage_claim {
-					if !self.pending_htlcs_updated.iter().any(|update| update.source == source) {
+					if !self.pending_monitor_events.iter().any(
+						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
+							upd.source == source
+						} else { false }) {
 						payment_preimage.0.copy_from_slice(&input.witness[1]);
-						self.pending_htlcs_updated.push(HTLCUpdate {
+						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash
-						});
+						}));
 					}
 				} else {
 					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), height + ANTI_REORG_DELAY - 1);
@@ -2422,10 +2446,15 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 			}
 		}
 
-		let pending_htlcs_updated_len: u64 = Readable::read(reader)?;
-		let mut pending_htlcs_updated = Vec::with_capacity(cmp::min(pending_htlcs_updated_len as usize, MAX_ALLOC_SIZE / (32 + 8*3)));
-		for _ in 0..pending_htlcs_updated_len {
-			pending_htlcs_updated.push(Readable::read(reader)?);
+		let pending_monitor_events_len: u64 = Readable::read(reader)?;
+		let mut pending_monitor_events = Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3)));
+		for _ in 0..pending_monitor_events_len {
+			let ev = match <u8 as Readable>::read(reader)? {
+				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
+				1 => MonitorEvent::CommitmentTxBroadcasted(funding_info.0),
+				_ => return Err(DecodeError::InvalidValue)
+			};
+			pending_monitor_events.push(ev);
 		}
 
 		let pending_events_len: u64 = Readable::read(reader)?;
@@ -2516,7 +2545,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 			current_local_commitment_number,
 
 			payment_preimages,
-			pending_htlcs_updated,
+			pending_monitor_events,
 			pending_events,
 
 			onchain_events_waiting_threshold_conf,

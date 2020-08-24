@@ -15,7 +15,7 @@ use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
-use ln::channelmonitor::HTLCUpdate;
+use ln::channelmonitor::MonitorEvent;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
@@ -129,8 +129,8 @@ impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
 		ret
 	}
 
-	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
-		return self.simple_monitor.get_and_clear_pending_htlcs_updated();
+	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		return self.simple_monitor.get_and_clear_pending_monitor_events();
 	}
 }
 

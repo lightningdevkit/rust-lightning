@@ -2420,13 +2420,21 @@ fn channel_monitor_network_test() {
 	// CLTV expires at TEST_FINAL_CLTV + 1 (current height) + 1 (added in send_payment for
 	// buffer space).
 
-	{
+	let (close_chan_update_1, close_chan_update_2) = {
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[3].block_notifier.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
 		for i in 3..TEST_FINAL_CLTV + 2 + LATENCY_GRACE_PERIOD_BLOCKS + 1 {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[3].block_notifier.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 		}
+		let events = nodes[3].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let close_chan_update_1 = match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
 		check_added_monitors!(nodes[3], 1);
 
 		// Clear bumped claiming txn spending node 2 commitment tx. Bumped txn are generated after reaching some height timer.
@@ -2451,7 +2459,14 @@ fn channel_monitor_network_test() {
 			header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			nodes[4].block_notifier.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
 		}
-
+		let events = nodes[4].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let close_chan_update_2 = match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
 		check_added_monitors!(nodes[4], 1);
 		test_txn_broadcast(&nodes[4], &chan_4, None, HTLCType::SUCCESS);
 
@@ -2459,8 +2474,10 @@ fn channel_monitor_network_test() {
 		nodes[4].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, TEST_FINAL_CLTV - 5);
 
 		check_preimage_claim(&nodes[4], &node_txn);
-	}
-	get_announce_close_broadcast_events(&nodes, 3, 4);
+		(close_chan_update_1, close_chan_update_2)
+	};
+	nodes[3].net_graph_msg_handler.handle_channel_update(&close_chan_update_2).unwrap();
+	nodes[4].net_graph_msg_handler.handle_channel_update(&close_chan_update_1).unwrap();
 	assert_eq!(nodes[3].node.list_channels().len(), 0);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 }
