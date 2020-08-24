@@ -27,7 +27,7 @@ use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
 use std::{cmp, fmt};
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
@@ -40,6 +40,11 @@ pub struct NetworkGraph {
 	channels: BTreeMap<u64, ChannelInfo>,
 	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
+
+/// A simple newtype for RwLockReadGuard<'a, NetworkGraph>.
+/// This exists only to make accessing a RwLock<NetworkGraph> possible from
+/// the C bindings, as it can be done directly in Rust code.
+pub struct LockedNetworkGraph<'a>(pub RwLockReadGuard<'a, NetworkGraph>);
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -84,6 +89,21 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: ChainWatchInt
 			chain_monitor,
 			logger,
 		}
+	}
+
+	/// Take a read lock on the network_graph and return it in the C-bindings
+	/// newtype helper. This is likely only useful when called via the C
+	/// bindings as you can call `self.network_graph.read().unwrap()` in Rust
+	/// yourself.
+	pub fn read_locked_graph<'a>(&'a self) -> LockedNetworkGraph<'a> {
+		LockedNetworkGraph(self.network_graph.read().unwrap())
+	}
+}
+
+impl<'a> LockedNetworkGraph<'a> {
+	/// Get a reference to the NetworkGraph which this read-lock contains.
+	pub fn graph(&self) -> &NetworkGraph {
+		&*self.0
 	}
 }
 
