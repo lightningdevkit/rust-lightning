@@ -18,7 +18,6 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
-use bitcoin::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
@@ -317,7 +316,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			}
 			$node.block_connected(&header, 1, &txn, &posn);
 			for i in 2..100 {
-				header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 				$node.block_connected(&header, i, &Vec::new(), &[0; 0]);
 			}
 		} }

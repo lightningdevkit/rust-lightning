@@ -21,7 +21,6 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -724,7 +723,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 		ChannelManager {
 			default_configuration: config.clone(),
-			genesis_hash: genesis_block(network).header.bitcoin_hash(),
+			genesis_hash: genesis_block(network).header.block_hash(),
 			fee_estimator: fee_est,
 			monitor,
 			tx_broadcaster,
@@ -3060,7 +3059,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 				L::Target: Logger,
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) {
-		let header_hash = header.bitcoin_hash();
+		let header_hash = header.block_hash();
 		log_trace!(self.logger, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
@@ -3200,7 +3199,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
-		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.block_hash();
 	}
 }
 

@@ -14,7 +14,6 @@ use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, HTLCFailChannelUpdate};
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::{Block, BlockHeader};
 
 use std::default::Default;
@@ -106,7 +105,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	// At CHAN_CONFIRM_DEPTH + 1 we have a confirmation count of 1, so CHAN_CONFIRM_DEPTH +
 	// ANTI_REORG_DELAY - 1 will give us a confirmation count of ANTI_REORG_DELAY - 1.
 	for i in CHAN_CONFIRM_DEPTH + 2..CHAN_CONFIRM_DEPTH + ANTI_REORG_DELAY - 1 {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].block_notifier.block_connected_checked(&header, i, &vec![], &[0; 0]);
 		headers.push(header.clone());
 	}
@@ -127,7 +126,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
 	} else {
 		// Confirm the timeout tx and check that we fail the HTLC backwards
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].block_notifier.block_connected_checked(&header, CHAN_CONFIRM_DEPTH + ANTI_REORG_DELAY, &vec![], &[0; 0]);
 		expect_pending_htlcs_forwardable!(nodes[1]);
 	}

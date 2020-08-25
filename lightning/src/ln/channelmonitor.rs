@@ -26,7 +26,6 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode;
-use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -203,7 +202,7 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
         C::Target: ChainWatchInterface,
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[usize]) {
-		let block_hash = header.bitcoin_hash();
+		let block_hash = header.block_hash();
 		{
 			let mut monitors = self.monitors.lock().unwrap();
 			for monitor in monitors.values_mut() {
@@ -219,7 +218,7 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let block_hash = header.bitcoin_hash();
+		let block_hash = header.block_hash();
 		let mut monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values_mut() {
 			monitor.block_disconnected(disconnected_height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);

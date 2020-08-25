@@ -11,7 +11,6 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
@@ -3327,7 +3326,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		});
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if header.bitcoin_hash() != self.last_block_connected {
+		if header.block_hash() != self.last_block_connected {
 			if self.funding_tx_confirmations > 0 {
 				self.funding_tx_confirmations += 1;
 			}
@@ -3376,8 +3375,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				}
 			}
 		}
-		if header.bitcoin_hash() != self.last_block_connected {
-			self.last_block_connected = header.bitcoin_hash();
+		if header.block_hash() != self.last_block_connected {
+			self.last_block_connected = header.block_hash();
 			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
 			if self.funding_tx_confirmations > 0 {
 				if self.funding_tx_confirmations == self.minimum_depth as u64 {
@@ -3399,7 +3398,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						// funding_tx_confirmed_in and return.
 						false
 					};
-					self.funding_tx_confirmed_in = Some(header.bitcoin_hash());
+					self.funding_tx_confirmed_in = Some(self.last_block_connected);
 
 					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
@@ -3433,10 +3432,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				return true;
 			}
 		}
-		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
+		self.last_block_connected = header.block_hash();
+		if Some(self.last_block_connected) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
-		self.last_block_connected = header.bitcoin_hash();
 		false
 	}
 
@@ -4451,7 +4450,6 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::BitcoinHash;
 	use bitcoin::util::bip143;
 	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
@@ -4545,7 +4543,7 @@ mod tests {
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
 		fee_est.fee_est = 500;
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		assert_eq!(open_channel_msg.feerate_per_kw, original_fee);
 	}
 
@@ -4566,7 +4564,7 @@ mod tests {
 		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 

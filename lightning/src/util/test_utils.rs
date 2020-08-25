@@ -21,7 +21,6 @@ use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
-use bitcoin::BitcoinHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::{Builder, Script};
@@ -196,7 +195,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
 		features: ChannelFeatures::known(),
-		chain_hash: genesis_block(network).header.bitcoin_hash(),
+		chain_hash: genesis_block(network).header.block_hash(),
 		short_channel_id: short_chan_id,
 		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
 		node_id_2: PublicKey::from_secret_key(&secp_ctx, &node_2_privkey),
@@ -220,7 +219,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	msgs::ChannelUpdate {
 		signature: Signature::from(FFISignature::new()),
 		contents: msgs::UnsignedChannelUpdate {
-			chain_hash: genesis_block(network).header.bitcoin_hash(),
+			chain_hash: genesis_block(network).header.block_hash(),
 			short_channel_id: short_chan_id,
 			timestamp: 0,
 			flags: 0,

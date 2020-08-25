@@ -23,10 +23,10 @@ max_level_debug = []
 unsafe_revoked_tx_signing = []
 
 [dependencies]
-bitcoin = "0.23"
+bitcoin = "0.24"
 
 [dev-dependencies.bitcoin]
-version = "0.23"
+version = "0.24"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]

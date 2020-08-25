@@ -424,7 +424,6 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
-	use bitcoin::util::hash::BitcoinHash;
 
 	use hex;
 
@@ -441,7 +440,7 @@ mod tests {
 
 		let unsigned_announcement = UnsignedChannelAnnouncement {
 			features,
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id,
 			node_id_1,
 			node_id_2,
@@ -598,7 +597,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[0], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 1,
@@ -614,7 +613,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 2,
 			timestamp: 1,
 			flags: 0,
@@ -626,7 +625,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 2,
 			timestamp: 1,
 			flags: 1,
@@ -642,7 +641,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[7], ChannelFeatures::from_le_bytes(id_to_feature_flags(12)), 12);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 12,
 			timestamp: 1,
 			flags: 0,
@@ -654,7 +653,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 12,
 			timestamp: 1,
 			flags: 1,
@@ -670,7 +669,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 0,
@@ -682,7 +681,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 1,
@@ -696,7 +695,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 0,
@@ -708,7 +707,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 1,
@@ -722,7 +721,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(13)), 13);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 13,
 			timestamp: 1,
 			flags: 0,
@@ -734,7 +733,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 13,
 			timestamp: 1,
 			flags: 1,
@@ -750,7 +749,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
@@ -762,7 +761,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 1,
@@ -776,7 +775,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(11)), 11);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 11,
 			timestamp: 1,
 			flags: 0,
@@ -788,7 +787,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 11,
 			timestamp: 1,
 			flags: 1,
@@ -806,7 +805,7 @@ mod tests {
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[5], ChannelFeatures::from_le_bytes(id_to_feature_flags(7)), 7);
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 7,
 			timestamp: 1,
 			flags: 0,
@@ -818,7 +817,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[5], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 7,
 			timestamp: 1,
 			flags: 1,
@@ -866,7 +865,7 @@ mod tests {
 
 		// // Disable channels 4 and 12 by flags=2
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 2, // to disable
@@ -878,7 +877,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 2, // to disable

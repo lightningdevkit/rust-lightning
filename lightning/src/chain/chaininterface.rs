@@ -17,7 +17,6 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{Txid, BlockHash};
 
@@ -366,7 +365,7 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 	}
 
 	fn get_chain_utxo(&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
+		if genesis_hash != genesis_block(self.network).header.block_hash() {
 			return Err(ChainError::NotWatched);
 		}
 		Err(ChainError::NotSupported)
