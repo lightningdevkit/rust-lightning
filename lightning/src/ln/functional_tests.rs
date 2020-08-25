@@ -4690,7 +4690,7 @@ macro_rules! check_spendable_outputs {
 									let keys = $keysinterface.derive_channel_keys($chan_value, key_derivation_params.0, key_derivation_params.1);
 									let remotepubkey = keys.pubkeys().payment_point;
 									let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
-									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
+									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
 									let remotesig = secp_ctx.sign(&sighash, &keys.inner.payment_key);
 									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
@@ -4720,7 +4720,7 @@ macro_rules! check_spendable_outputs {
 
 										let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
 										let witness_script = chan_utils::get_revokeable_redeemscript(remote_revocation_pubkey, *to_self_delay, &delayed_payment_pubkey);
-										let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
+										let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
 										let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
 										spend_tx.input[0].witness.push(local_delayedsig.serialize_der().to_vec());
 										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
@@ -4760,7 +4760,7 @@ macro_rules! check_spendable_outputs {
 									};
 									let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
 									let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
-									let sighash = Message::from_slice(&bip143::SighashComponents::new(&spend_tx).sighash_all(&spend_tx.input[0], &witness_script, output.value)[..]).unwrap();
+									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
 									let sig = secp_ctx.sign(&sighash, &secret.private_key.key);
 									spend_tx.input[0].witness.push(sig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);

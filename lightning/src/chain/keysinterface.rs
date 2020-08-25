@@ -11,7 +11,7 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, SigHashType};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
@@ -477,7 +477,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let accepted_data = self.accepted_channel_data.as_ref().expect("must accept before signing");
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &accepted_data.remote_channel_pubkeys.funding_pubkey);
 
-		let commitment_sighash = hash_to_message!(&bip143::SighashComponents::new(&commitment_tx).sighash_all(&commitment_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
+		let commitment_sighash = hash_to_message!(&bip143::SigHashCache::new(commitment_tx).signature_hash(0, &channel_funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
 		let commitment_sig = secp_ctx.sign(&commitment_sighash, &self.funding_key);
 
 		let commitment_txid = commitment_tx.txid();
@@ -487,7 +487,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.local_to_self_delay, htlc, &keys.a_delayed_payment_key, &keys.revocation_key);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
-				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
 					Ok(s) => s,
 					Err(_) => return Err(()),
@@ -548,8 +548,8 @@ impl ChannelKeys for InMemoryChannelKeys {
 			};
 			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.local_to_self_delay(), &remote_delayedpubkey)
 		};
-		let sighash_parts = bip143::SighashComponents::new(&justice_tx);
-		let sighash = hash_to_message!(&sighash_parts.sighash_all(&justice_tx.input[input], &witness_script, amount)[..]);
+		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
+		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
 		return Ok(secp_ctx.sign(&sighash, &revocation_key))
 	}
 
@@ -562,8 +562,8 @@ impl ChannelKeys for InMemoryChannelKeys {
 					} else { return Err(()) }
 				} else { return Err(()) }
 			} else { return Err(()) };
-			let sighash_parts = bip143::SighashComponents::new(&htlc_tx);
-			let sighash = hash_to_message!(&sighash_parts.sighash_all(&htlc_tx.input[input], &witness_script, amount)[..]);
+			let mut sighash_parts = bip143::SigHashCache::new(htlc_tx);
+			let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
 			return Ok(secp_ctx.sign(&sighash, &htlc_key))
 		}
 		Err(())
@@ -578,8 +578,8 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let remote_channel_data = self.accepted_channel_data.as_ref().expect("must accept before signing");
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &remote_channel_data.remote_channel_pubkeys.funding_pubkey);
 
-		let sighash = hash_to_message!(&bip143::SighashComponents::new(closing_tx)
-			.sighash_all(&closing_tx.input[0], &channel_funding_redeemscript, self.channel_value_satoshis)[..]);
+		let sighash = hash_to_message!(&bip143::SigHashCache::new(closing_tx)
+			.signature_hash(0, &channel_funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
 		Ok(secp_ctx.sign(&sighash, &self.funding_key))
 	}
 
