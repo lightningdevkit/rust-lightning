@@ -122,7 +122,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		nodes[1].block_notifier.block_connected(&Block { header, txdata: claim_txn }, CHAN_CONFIRM_DEPTH + 1);
 
-		// ChannelManager only polls ManyChannelMonitor::get_and_clear_pending_htlcs_updated when we
+		// ChannelManager only polls ManyChannelMonitor::get_and_clear_pending_monitor_events when we
 		// probe it for events, so we probe non-message events here (which should still end up empty):
 		assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
 	} else {

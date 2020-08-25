@@ -38,7 +38,7 @@ use bitcoin::secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
@@ -2966,6 +2966,48 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			Err(e) => { Err(APIError::APIMisuseError { err: e.err })}
 		}
 	}
+
+	/// Process pending events from the ManyChannelMonitor.
+	fn process_pending_monitor_events(&self) {
+		let mut failed_channels = Vec::new();
+		{
+			for monitor_event in self.monitor.get_and_clear_pending_monitor_events() {
+				match monitor_event {
+					MonitorEvent::HTLCEvent(htlc_update) => {
+						if let Some(preimage) = htlc_update.payment_preimage {
+							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+							self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+						} else {
+							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+							self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+						}
+					},
+					MonitorEvent::CommitmentTxBroadcasted(funding_outpoint) => {
+						let mut channel_lock = self.channel_state.lock().unwrap();
+						let channel_state = &mut *channel_lock;
+						let by_id = &mut channel_state.by_id;
+						let short_to_id = &mut channel_state.short_to_id;
+						let pending_msg_events = &mut channel_state.pending_msg_events;
+						if let Some(mut chan) = by_id.remove(&funding_outpoint.to_channel_id()) {
+							if let Some(short_id) = chan.get_short_channel_id() {
+								short_to_id.remove(&short_id);
+							}
+							failed_channels.push(chan.force_shutdown(false));
+							if let Ok(update) = self.get_channel_update(&chan) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: update
+								});
+							}
+						}
+					},
+				}
+			}
+		}
+
+		for failure in failed_channels.drain(..) {
+			self.finish_force_close_channel(failure);
+		}
+	}
 }
 
 impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
@@ -2976,21 +3018,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
-		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
-		// user to serialize a ChannelManager with pending events in it and lose those events on
-		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
-		{
-			//TODO: This behavior should be documented.
-			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
-				if let Some(preimage) = htlc_update.payment_preimage {
-					log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
-				} else {
-					log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
-				}
-			}
-		}
+		//TODO: This behavior should be documented. It's non-intuitive that we query
+		// ChannelMonitors when clearing other events.
+		self.process_pending_monitor_events();
 
 		let mut ret = Vec::new();
 		let mut channel_state = self.channel_state.lock().unwrap();
@@ -3007,21 +3037,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
-		// user to serialize a ChannelManager with pending events in it and lose those events on
-		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
-		{
-			//TODO: This behavior should be documented.
-			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
-				if let Some(preimage) = htlc_update.payment_preimage {
-					log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
-				} else {
-					log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
-				}
-			}
-		}
+		//TODO: This behavior should be documented. It's non-intuitive that we query
+		// ChannelMonitors when clearing other events.
+		self.process_pending_monitor_events();
 
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -3103,21 +3121,6 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 							}
 						}
 					}
-				}
-				if channel.is_funding_initiated() && channel.channel_monitor().would_broadcast_at_height(height, &self.logger) {
-					if let Some(short_id) = channel.get_short_channel_id() {
-						short_to_id.remove(&short_id);
-					}
-					// If would_broadcast_at_height() is true, the channel_monitor will broadcast
-					// the latest local tx for us, so we should skip that here (it doesn't really
-					// hurt anything, but does make tests a bit simpler).
-					failed_channels.push(channel.force_shutdown(false));
-					if let Ok(update) = self.get_channel_update(&channel) {
-						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					return false;
 				}
 				true
 			});

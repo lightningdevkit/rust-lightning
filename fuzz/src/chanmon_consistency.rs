@@ -34,7 +34,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil,ChainWatchInterface};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
 use lightning::ln::channelmonitor;
-use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, HTLCUpdate};
+use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
@@ -135,8 +135,8 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
-		return self.simple_monitor.get_and_clear_pending_htlcs_updated();
+	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		return self.simple_monitor.get_and_clear_pending_monitor_events();
 	}
 }
 
