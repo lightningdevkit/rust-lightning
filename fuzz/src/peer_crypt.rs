@@ -96,7 +96,8 @@ impl TestCtx {
 		let responder_static_public_key = PublicKey::from_secret_key(&curve, &responder_static_private_key);
 		let responder_ephemeral_private_key = generator.generate_secret_key()?;
 
-		let (act1, initiator_handshake) = PeerHandshake::create_and_initialize_outbound(&initiator_static_private_key, &responder_static_public_key, &initiator_ephemeral_private_key);
+		let mut initiator_handshake = PeerHandshake::new_outbound(&initiator_static_private_key, &responder_static_public_key, &initiator_ephemeral_private_key);
+		let act1 = initiator_handshake.set_up_outbound();
 		let responder_handshake = PeerHandshake::new_inbound(&responder_static_private_key, &responder_ephemeral_private_key);
 
 		Ok(TestCtx {
