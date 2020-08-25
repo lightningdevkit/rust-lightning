@@ -13,23 +13,40 @@ mod states;
 /// Currently requires explicit ephemeral private key specification.
 pub struct PeerHandshake {
 	state: Option<HandshakeState>,
+	ready_for_process: bool
 }
 
 impl PeerHandshake {
 	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
-	pub fn create_and_initialize_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> (Vec<u8>, Self) {
+	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		let state = HandshakeState::new_initiator(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key);
 
-		// This transition does not have a failure path
-		let (response_vec_opt, next_state) = state.next(&[]).unwrap();
-		(response_vec_opt.unwrap(), Self { state: Some(next_state) })
+		Self {
+			state: Some(state),
+			ready_for_process: false
+		}
 	}
 
 	/// Instantiate a new handshake in anticipation of a peer's first handshake act
 	pub fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			state: Some(HandshakeState::new_responder(responder_static_private_key, responder_ephemeral_private_key))
+			state: Some(HandshakeState::new_responder(responder_static_private_key, responder_ephemeral_private_key)),
+			ready_for_process: true
 		}
+	}
+
+	/// Initializes the outbound handshake and provides the initial bytes to send to the responder
+	pub fn set_up_outbound(&mut self) -> Vec<u8> {
+		assert!(!self.ready_for_process);
+		let cur_state = self.state.take().unwrap();
+
+		// This transition does not have a failure path
+		let (response_vec_opt, next_state) = cur_state.next(&[]).unwrap();
+
+		self.state = Some(next_state);
+
+		self.ready_for_process = true;
+		response_vec_opt.unwrap()
 	}
 
 	/// Process act dynamically
@@ -41,6 +58,7 @@ impl PeerHandshake {
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Some(Conduit, PublicKey) if the handshake was just processed to completion and messages can now be encrypted and decrypted
 	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
+		assert!(self.ready_for_process);
 		let cur_state = self.state.take().unwrap();
 
 		let (act_opt, mut next_state) = cur_state.next(input)?;
@@ -85,7 +103,8 @@ mod test {
 			let inbound_static_public_key = PublicKey::from_secret_key(&curve, &inbound_static_private_key);
 			let inbound_ephemeral_private_key = SecretKey::from_slice(&[0x_22_u8; 32]).unwrap();
 
-			let (act1, outbound_handshake) = PeerHandshake::create_and_initialize_outbound(&outbound_static_private_key, &inbound_static_public_key, &outbound_ephemeral_private_key);
+			let mut outbound_handshake= PeerHandshake::new_outbound(&outbound_static_private_key, &inbound_static_public_key, &outbound_ephemeral_private_key);
+			let act1 = outbound_handshake.set_up_outbound();
 			let inbound_handshake = PeerHandshake::new_inbound(&inbound_static_private_key, &inbound_ephemeral_private_key);
 
 			TestCtx {
@@ -113,9 +132,35 @@ mod test {
 		}
 	}
 
+	// Test that the outbound needs to call set_up_outbound() before process_act()
+	#[test]
+	#[should_panic(expected = "assertion failed: self.ready_for_process")]
+	fn new_outbound_no_set_up_panics() {
+		let curve = secp256k1::Secp256k1::new();
+
+		let outbound_static_private_key = SecretKey::from_slice(&[0x_11_u8; 32]).unwrap();
+		let outbound_ephemeral_private_key = SecretKey::from_slice(&[0x_12_u8; 32]).unwrap();
+		let inbound_static_private_key = SecretKey::from_slice(&[0x_21_u8; 32]).unwrap();
+		let inbound_static_public_key = PublicKey::from_secret_key(&curve, &inbound_static_private_key);
+
+		let mut outbound_handshake= PeerHandshake::new_outbound(&outbound_static_private_key, &inbound_static_public_key, &outbound_ephemeral_private_key);
+		outbound_handshake.process_act(&[]).unwrap();
+	}
+
+	// Test that calling set_up_outbound() on the inbound panics
+	#[test]
+	#[should_panic(expected = "assertion failed: !self.ready_for_process")]
+	fn new_inbound_calling_set_up_panics() {
+		let inbound_static_private_key = SecretKey::from_slice(&[0x_21_u8; 32]).unwrap();
+		let inbound_ephemeral_private_key = SecretKey::from_slice(&[0x_22_u8; 32]).unwrap();
+
+		let mut inbound_handshake = PeerHandshake::new_inbound(&inbound_static_private_key, &inbound_ephemeral_private_key);
+		inbound_handshake.set_up_outbound();
+	}
+
 	// Default Outbound::Uninitiated
 	#[test]
-	fn peer_handshake_new_outbound() {
+	fn new_outbound() {
 		let test_ctx = TestCtx::new();
 
 		assert_matches!(test_ctx.outbound_handshake.state, Some(HandshakeState::InitiatorAwaitingActTwo(_)));
@@ -123,7 +168,7 @@ mod test {
 
 	// Default Inbound::AwaitingActOne
 	#[test]
-	fn peer_handshake_new_inbound() {
+	fn new_inbound() {
 		let test_ctx = TestCtx::new();
 
 		assert_matches!(test_ctx.inbound_handshake.state, Some(HandshakeState::ResponderAwaitingActOne(_)));
