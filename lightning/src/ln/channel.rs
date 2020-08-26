@@ -488,7 +488,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			user_id: user_id,
 			config: config.channel_options.clone(),
 
-			channel_id: keys_provider.get_channel_id(),
+			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: Secp256k1::new(),
@@ -4520,8 +4520,7 @@ mod tests {
 		fn get_channel_keys(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemoryChannelKeys {
 			self.chan_keys.clone()
 		}
-		fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) { panic!(); }
-		fn get_channel_id(&self) -> [u8; 32] { [0; 32] }
+		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

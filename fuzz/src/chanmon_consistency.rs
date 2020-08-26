@@ -142,8 +142,7 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 
 struct KeyProvider {
 	node_id: u8,
-	session_id: atomic::AtomicU8,
-	channel_id: atomic::AtomicU8,
+	rand_bytes_id: atomic::AtomicU8,
 }
 impl KeysInterface for KeyProvider {
 	type ChanKeySigner = EnforcingChannelKeys;
@@ -179,14 +178,8 @@ impl KeysInterface for KeyProvider {
 		))
 	}
 
-	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
-		let id = self.session_id.fetch_add(1, atomic::Ordering::Relaxed);
-		(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 10, self.node_id]).unwrap(),
-		[0; 32])
-	}
-
-	fn get_channel_id(&self) -> [u8; 32] {
-		let id = self.channel_id.fetch_add(1, atomic::Ordering::Relaxed);
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 11, self.node_id]
 	}
 }
@@ -202,7 +195,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, session_id: atomic::AtomicU8::new(0), channel_id: atomic::AtomicU8::new(0) });
+			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
@@ -218,7 +211,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin));
 			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
 
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, session_id: atomic::AtomicU8::new(0), channel_id: atomic::AtomicU8::new(0) });
+			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
